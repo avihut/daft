@@ -24,10 +24,15 @@
 //! and renders as a yellow attention row.
 //!
 //! **Entries must be gitignored.** `git check-ignore` must pass for the entry
-//! AND nothing under it may be tracked (`git ls-files <entry>` empty) — the
-//! second probe catches a force-added file inside an otherwise-ignored
-//! directory. Copying tracked content would duplicate the working tree git
-//! is already managing.
+//! AND nothing under it may be tracked (`git ls-files <entry>` empty).
+//! Copying tracked content would duplicate the working tree git is already
+//! managing. The second probe is **defense in depth, not a division of
+//! labour**: `check-ignore` consults the index and so already refuses a
+//! force-added file and a directory with tracked content anywhere beneath it,
+//! but only as a behaviour of git's exclude machinery — precisely what
+//! `--no-index` turns off. Asking `ls-files` directly states the invariant
+//! independently of how `check-ignore` chooses to answer. See
+//! [`crate::core::git_ignore`].
 //!
 //! **One row per config ENTRY, not per expanded match.** A glob entry that
 //! matches thirty directories is still one plan row; the fan-out lands in the
@@ -53,7 +58,6 @@ use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use ignore::overrides::{Override, OverrideBuilder};
 
-use crate::core::git_ignore::IgnoreStatus;
 use crate::hooks::yaml_config::CopyFallback;
 
 // ── Resolved configuration ────────────────────────────────────────────────
@@ -65,11 +69,12 @@ use crate::hooks::yaml_config::CopyFallback;
 /// [`read_copy_config`] matches on the config enum.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ResolvedCopyConfig {
-    /// Declared entries in config order, with trailing slashes stripped
-    /// (`target/` → `target`) so a path is written exactly one way from here
-    /// on — the rail label, the `StepKey` scope, and the `dst.join(entry)`
-    /// all agree. Entries are worktree-root-relative and may contain glob
-    /// metacharacters; see [`expand_entries`].
+    /// Declared entries in config order, with the surrounding slashes stripped
+    /// (`target/`, `/target` → `target`) and duplicates removed, so a path is
+    /// written exactly one way from here on — the rail label, the `StepKey`
+    /// scope, and the `dst.join(entry)` all agree. Entries are
+    /// worktree-root-relative and may contain glob metacharacters; see
+    /// [`expand_entries`].
     pub paths: Vec<String>,
     /// What to do with an entry the filesystem cannot reflink. Defaulted to
     /// [`CopyFallback::Copy`] when the config did not say.
@@ -77,7 +82,19 @@ pub struct ResolvedCopyConfig {
     /// Per-entry size cap in bytes, parsed from the config's `max_size`
     /// string. `None` = uncapped. Gates the **byte-copy fallback only** — a
     /// reflink is near-free and is never size-checked.
+    ///
+    /// Measured as what the copy will *write*: every hard link in the source
+    /// becomes an independent file at the destination, so the cap is compared
+    /// against the non-deduplicated sum rather than the `du`-style figure. A
+    /// pnpm or ccache tree differs by an order of magnitude between the two.
     pub max_size_bytes: Option<u64>,
+    /// The `max_size` string that could not be parsed, when there was one.
+    ///
+    /// An unparseable cap degrades to uncapped rather than to zero — but the
+    /// user has to hear about it, because **nothing on any copying path runs
+    /// `validate_config`** (its only caller is `daft hooks validate`).
+    /// [`copy_entries`] warns once per run when this is set.
+    pub max_size_unparsed: Option<String>,
 }
 
 /// Read and normalize the `copy:` section of the config rooted at
@@ -97,14 +114,22 @@ pub struct ResolvedCopyConfig {
 ///
 /// Normalization, in order:
 /// 1. `CopyConfig::Paths` / `::Full` collapse to `ResolvedCopyConfig`.
-/// 2. Every entry loses its trailing `/`; entries that are empty or become
-///    empty are dropped.
-/// 3. `fallback` defaults to [`CopyFallback::Copy`].
-/// 4. `max_size` is parsed to bytes via
+/// 2. Every entry loses its trailing **and** leading `/`; entries that are
+///    empty or become empty are dropped. A leading slash is gitignore's
+///    "anchored to the repository root" — which is what a `copy:` entry
+///    already is — and `/target` is what cargo itself writes into
+///    `.gitignore`, so it is the natural thing to paste in. Refusing it would
+///    punish the obvious move.
+/// 3. Duplicates are dropped, first occurrence winning. Two entries that
+///    normalize to the same path would share one `StepKey`, and the second
+///    planned row would be swept away as unreported at teardown.
+/// 4. `fallback` defaults to [`CopyFallback::Copy`].
+/// 5. `max_size` is parsed to bytes via
 ///    `crate::coordinator::clean_policy::parse_size` (case-insensitive,
-///    binary multiples, bare integer = bytes). An unparseable value — which
-///    `validate_config` already reports as a config error — degrades to
-///    `None` (uncapped) rather than failing the read.
+///    binary multiples, bare integer = bytes). An unparseable value degrades
+///    to `None` (uncapped) and is recorded in
+///    [`ResolvedCopyConfig::max_size_unparsed`] so [`copy_entries`] can say so
+///    — nothing on the copying path runs the validator.
 ///
 /// Never returns `Err`: a config that fails to load or parse yields `None`
 /// and the copy stage silently does nothing, exactly as if the key were
@@ -117,27 +142,44 @@ pub fn read_copy_config(source_root: &Path) -> Option<ResolvedCopyConfig> {
         .flatten()?
         .copy?;
 
-    let paths: Vec<String> = copy
-        .paths()
-        .iter()
-        .map(|p| p.trim_end_matches('/').to_string())
-        .filter(|p| !p.is_empty())
-        .collect();
+    let mut paths: Vec<String> = Vec::new();
+    for declared in copy.paths() {
+        let normalized = normalize_entry(declared);
+        if normalized.is_empty() || paths.iter().any(|seen| seen == &normalized) {
+            continue;
+        }
+        paths.push(normalized);
+    }
     if paths.is_empty() {
         return None;
     }
 
+    let raw_max_size = copy.max_size();
+    let max_size_bytes =
+        raw_max_size.and_then(|raw| crate::coordinator::clean_policy::parse_size(raw).ok());
+
     Some(ResolvedCopyConfig {
         paths,
         fallback: copy.fallback(),
-        // An unparseable cap degrades to uncapped rather than to zero: the
-        // validator has already told the user their `max_size` is wrong, and
-        // silently gating every entry to 0 bytes would turn a typo into a
-        // stage that mysteriously copies nothing.
-        max_size_bytes: copy
-            .max_size()
-            .and_then(|raw| crate::coordinator::clean_policy::parse_size(raw).ok()),
+        max_size_bytes,
+        // Degrading to uncapped beats degrading to zero, which would turn one
+        // typo into a stage that mysteriously copies nothing — but the fact
+        // travels so the run can report it.
+        max_size_unparsed: match (raw_max_size, max_size_bytes) {
+            (Some(raw), None) => Some(raw.to_string()),
+            _ => None,
+        },
     })
+}
+
+/// One declared entry, written the single way everything downstream expects:
+/// no surrounding slashes.
+fn normalize_entry(declared: &str) -> String {
+    declared
+        .trim()
+        .trim_end_matches('/')
+        .trim_start_matches('/')
+        .to_string()
 }
 
 // ── Entry expansion ───────────────────────────────────────────────────────
@@ -166,18 +208,47 @@ pub fn read_copy_config(source_root: &Path) -> Option<ResolvedCopyConfig> {
 /// reports that as an expected skip, not an error. Never returns `Err`:
 /// walk errors are skipped entries, never a failed creation.
 pub fn expand_entries(source_root: &Path, entry: &str) -> Vec<String> {
+    expand_reporting(source_root, entry).matches
+}
+
+/// What expanding one entry found, including what it could not read.
+pub(crate) struct Expansion {
+    /// Worktree-relative matches, deduplicated and sorted.
+    pub matches: Vec<String>,
+    /// The first place the walk could not read, as `(path, detail)`.
+    ///
+    /// Swallowing these — the shape [`expand_entries`] is stuck with — either
+    /// under-reports a green `Copied` for a tree half of which was never seen,
+    /// or reports `NoMatches` for a glob whose matches were simply unreachable.
+    /// Both are silent, and root-owned directories inside a container image are
+    /// the common way they happen, so the copy stage folds this into the
+    /// entry's own outcome.
+    pub unreadable: Option<(String, String)>,
+}
+
+/// [`expand_entries`], keeping the walk errors it has nowhere to put.
+pub(crate) fn expand_reporting(source_root: &Path, entry: &str) -> Expansion {
     if !is_glob(entry) {
-        return vec![entry.to_string()];
+        return Expansion {
+            matches: vec![entry.to_string()],
+            unreadable: None,
+        };
     }
 
     let mut builder = OverrideBuilder::new(source_root);
     // A pattern the glob compiler rejects expands to nothing; the caller
     // reports that as an expected skip rather than failing the creation.
     if builder.add(entry).is_err() {
-        return Vec::new();
+        return Expansion {
+            matches: Vec::new(),
+            unreadable: None,
+        };
     }
     let Ok(overrides) = builder.build() else {
-        return Vec::new();
+        return Expansion {
+            matches: Vec::new(),
+            unreadable: None,
+        };
     };
     let overrides = Arc::new(overrides);
 
@@ -198,11 +269,20 @@ pub fn expand_entries(source_root: &Path, entry: &str) -> Vec<String> {
         .filter_entry(move |found| descend_into(found, &root, &prune));
 
     let mut matches = Vec::new();
+    let mut unreadable = None;
     for result in walker.build() {
-        // A walk error is an unreadable subtree, not a failure: a cache we
-        // cannot read is a cache we cannot copy, and creation never hinges on
-        // one.
-        let Ok(found) = result else { continue };
+        let found = match result {
+            Ok(found) => found,
+            Err(err) => {
+                // `ignore::Error`'s Display already names the path it could
+                // not read, and the entry is what the row is about — so the
+                // pair reads as one clause without a second path lookup.
+                if unreadable.is_none() {
+                    unreadable = Some((entry.to_string(), err.to_string()));
+                }
+                continue;
+            }
+        };
         let is_dir = found.file_type().is_some_and(|t| t.is_dir());
         if !overrides.matched(found.path(), is_dir).is_whitelist() {
             continue;
@@ -210,15 +290,42 @@ pub fn expand_entries(source_root: &Path, entry: &str) -> Vec<String> {
         let Ok(rel) = found.path().strip_prefix(source_root) else {
             continue;
         };
-        // A non-UTF-8 name cannot round-trip through a config `String`, the
-        // rail label, or the `StepKey` scope — skip it rather than lose it.
-        if let Some(rel) = rel.to_str() {
-            matches.push(rel.to_string());
+        if let Some(rel) = relative_to_slash_string(rel) {
+            matches.push(rel);
         }
     }
     matches.sort();
     matches.dedup();
-    matches
+    Expansion {
+        matches,
+        unreadable,
+    }
+}
+
+/// Render a walked relative path the one way everything downstream reads it:
+/// `/`-separated, whatever the platform's separator is.
+///
+/// On Windows a native `web\\dist` would go straight into a git pathspec and a
+/// `.gitignore` comparison, so every glob entry would be refused as not
+/// gitignored with a warning that named a path git had never heard of. Nothing
+/// in CI catches that — `windows-check` is a `cargo check`.
+///
+/// `None` for the walk root itself (no components) and for any name that is not
+/// UTF-8 or not a plain path component. Refusing the empty result is what keeps
+/// a root match from ever being reported as an entry: the worktree root is not
+/// something `copy:` may replicate.
+fn relative_to_slash_string(rel: &Path) -> Option<String> {
+    let mut out = String::new();
+    for component in rel.components() {
+        let std::path::Component::Normal(part) = component else {
+            return None;
+        };
+        if !out.is_empty() {
+            out.push('/');
+        }
+        out.push_str(part.to_str()?);
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// True when the entry carries glob metacharacters and must be expanded
@@ -271,33 +378,70 @@ pub enum CopyMethod {
     /// real byte copy. Size-gated by
     /// [`ResolvedCopyConfig::max_size_bytes`].
     Copied,
+    /// Some of the entry cloned and some of it did not — an entry whose
+    /// matches sit on different mounts, or one tree straddling a mount point.
+    /// Reported honestly rather than rounded to whichever answer came first,
+    /// because "reflinked" on a 40 GB byte copy is the lie that matters.
+    Mixed,
 }
 
-/// Why one entry was left out. Each variant is a self-contained phrase in
-/// [`report_copy_results`] — no `skipped — ` prefix is added, so the reason
-/// must read as a complete clause on its own.
+/// Why one entry was left out. Each variant renders through [`skip_phrase`]
+/// with no `skipped — ` prefix, so every one has to read as a complete clause.
+///
+/// Several variants carry the concrete path that provoked them. For a literal
+/// entry that path *is* the entry and the phrase leaves it out; for a glob it
+/// is the one match that offended, which is the only way a single row can say
+/// what went wrong with a thirty-way expansion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipReason {
     /// The entry does not exist in the source worktree. The quiet case: a
     /// declared cache that has simply never been built yet.
     NoSource,
+    /// The entry exists but cannot be read — permissions, a symlink loop, an
+    /// I/O error, an unreadable subtree found while expanding a glob. Distinct
+    /// from [`Self::NoSource`] on purpose: an unreachable cache must not read
+    /// as "never built yet".
+    SourceUnreadable { path: String, detail: String },
     /// The entry already exists at the destination. The **idempotence**
     /// case that makes re-runs and hook-job composition safe: `daft warm`
     /// twice in a row is a no-op, and `copy:` never clobbers work a
-    /// post-create hook already did. `daft warm --force` removes the
-    /// destination first, so this outcome does not arise there.
+    /// post-create hook already did.
     DestinationExists,
-    /// The entry is tracked by git, or something under it is (a force-added
-    /// file inside an ignored directory). `copy:` replicates caches, not the
-    /// working tree — the attention case, because the config asked for
-    /// something daft refuses to do.
-    NotIgnored,
+    /// Something is already at the destination path, but not the same *kind*
+    /// of thing as the source — a symlink where a directory belongs (what a
+    /// path declared in both `shared:` and `copy:` leaves behind), a file
+    /// where a tree belongs, or a dangling link. Existence alone would call
+    /// that "already present" forever.
+    DestinationConflict { path: String, detail: String },
+    /// The entry is not gitignored, or git tracks content under it. `copy:`
+    /// replicates caches, not the working tree — the attention case, because
+    /// the config asked for something daft refuses to do.
+    NotIgnored { offender: String },
+    /// `--force` would have removed a destination that the **target** worktree
+    /// tracks. The source's opinion is not enough: a path one branch gitignores
+    /// can be committed content on another, and replacing it would delete work
+    /// git is managing.
+    TargetTracked { offender: String },
+    /// git could not classify the path at all (not a repository, a probe that
+    /// failed). Fail-closed — a probe that did not run is not consent — but
+    /// said in its own words, because "must be gitignored" would be a
+    /// diagnosis daft never actually made.
+    Unclassifiable { offender: String, detail: String },
+    /// The entry resolves outside the worktree, or names the worktree root
+    /// itself. Refused before git is consulted: a config is not a capability
+    /// to write anywhere, and `copy: ["."]` under `--force` would empty the
+    /// worktree.
+    Uncontained { offender: String, detail: String },
+    /// Source and target are the same worktree. Nothing to do — and under
+    /// `--force`, clearing each destination would delete the very caches the
+    /// run was asked to replicate.
+    SameWorktree,
     /// The filesystem cannot reflink this entry and `fallback: skip` said not
     /// to pay for a byte copy.
     NoReflink,
     /// The entry's byte-copy fallback would exceed
     /// [`ResolvedCopyConfig::max_size_bytes`]. Carries the measured size and
-    /// the cap, both in bytes, so the row can say how far over it was.
+    /// the cap, both in bytes, so the row can quote both.
     TooLarge { size_bytes: u64, limit_bytes: u64 },
     /// A glob entry matched nothing in the source tree.
     NoMatches,
@@ -392,36 +536,52 @@ impl CopyPathsResult {
 /// Per entry, in order (the first condition that holds wins):
 ///
 /// 1. **Expand** via [`expand_entries`]. No matches →
-///    [`SkipReason::NoMatches`].
-/// 2. **Source missing** → [`SkipReason::NoSource`].
-/// 3. **Gitignored check** against `source`: `git check-ignore` must pass AND
-///    `git ls-files <entry>` must be empty. Either probe failing →
-///    [`SkipReason::NotIgnored`]. Run git through
+///    [`SkipReason::NoMatches`]; a walk that could not finish →
+///    [`SkipReason::SourceUnreadable`].
+/// 2. **Containment**, before git is asked: an entry resolving outside the
+///    worktree or onto the worktree root → [`SkipReason::Uncontained`].
+/// 3. **Source missing** → [`SkipReason::NoSource`]; present but unreadable →
+///    [`SkipReason::SourceUnreadable`].
+/// 4. **Gitignored check** against `source`, batched over the whole entry:
+///    `git check-ignore` must pass for every match AND `git ls-files` must
+///    come back empty. A match that fails → [`SkipReason::NotIgnored`]; a
+///    probe that could not run → [`SkipReason::Unclassifiable`], because a
+///    failed probe is not consent. The second probe is defense in depth, not
+///    a division of labour — see [`crate::core::git_ignore`]. Run git through
 ///    `crate::utils::git_command_at(source)` with both pipes nulled — an
 ///    inherited `GIT_DIR` silently overrides `-C`, and a stray
 ///    `fatal: not a git repository` on stderr would corrupt the rail.
-/// 4. **Destination exists** → [`SkipReason::DestinationExists`]. This is
-///    what makes the stage idempotent; `force` skips this check and removes
-///    the destination first.
-/// 5. **Probe reflink** by attempting `reflink_copy::reflink` on the first
-///    regular file under the entry (into a temporary destination that is
-///    removed immediately). Probing beats querying the filesystem type: the
-///    same `copy:` entry can straddle mount points, and the attempt is the
-///    only honest answer.
-/// 6. **Reflink available** → `cow_copy::copy_dir` / `cow_copy::copy_file`,
-///    reported as [`CopyMethod::Reflinked`], never size-gated.
-/// 7. **No reflink**, `fallback: skip` → [`SkipReason::NoReflink`].
-/// 8. **No reflink**, `fallback: copy` → pre-walk the entry's apparent size;
-///    over [`ResolvedCopyConfig::max_size_bytes`] →
-///    [`SkipReason::TooLarge`], otherwise byte-copy through the same
-///    `cow_copy` entry points (which degrade per file correctly) and report
-///    [`CopyMethod::Copied`].
+/// 5. **Destination shape.** Absent → copy it. Present and the same kind of
+///    thing → [`SkipReason::DestinationExists`], the idempotence case.
+///    Present but a different kind — a symlink where a directory belongs, a
+///    file where a tree belongs → [`SkipReason::DestinationConflict`], because
+///    existence alone would wear "already present" forever.
+/// 6. **Probe reflink per match**, by cloning the first regular file under it
+///    into the nearest existing ancestor of *its own* destination. Probing
+///    beats naming the filesystem, and probing per match beats probing once:
+///    an entry's matches can sit on different mounts, and one sample answering
+///    for all of them is how a byte copy gets labelled `reflinked` with the
+///    size gate never consulted.
+/// 7. **Gate the byte-copying matches only.** `fallback: skip` →
+///    [`SkipReason::NoReflink`]; their summed write size over
+///    [`ResolvedCopyConfig::max_size_bytes`] → [`SkipReason::TooLarge`]. A
+///    clone is free and never counts towards the cap, even on a mixed entry.
+/// 8. **Copy**, reporting [`CopyMethod`] from what the copier actually did.
 ///
-/// `force` (`daft warm --force`) removes an existing destination entry before
-/// copying instead of skipping it — `cow_copy::copy_dir` requires an absent
-/// destination. A `source` and `target` that name the same directory are
-/// refused outright: that is a no-op under a normal run and would delete the
-/// declared caches under `force`.
+/// `force` (`daft warm --force`) replaces an existing destination instead of
+/// skipping it — but only after two more checks, and only at the last moment:
+///
+/// * the **target** must not track what is about to be deleted
+///   ([`SkipReason::TargetTracked`]). A path one branch gitignores can be
+///   committed content on another, and the source's opinion says nothing about
+///   the destination.
+/// * the removal happens in step 8, **after** the gate. Every refusal above
+///   must be able to fire with the destination intact, or `--force` would
+///   report a skip over a cache it had already destroyed.
+///
+/// A `source` and `target` that name the same directory are refused outright
+/// ([`SkipReason::SameWorktree`]): a no-op under a normal run, and under
+/// `force` it would delete the very caches it was asked to replicate.
 ///
 /// **Never returns `Err`, and one entry's failure never affects another.**
 /// Wrap each entry so an I/O error becomes [`CopyOutcome::Failed`] and the
@@ -444,10 +604,22 @@ pub fn copy_entries(
     force: bool,
     sink: &mut impl crate::core::ProgressSink,
 ) -> CopyPathsResult {
+    // Stage-level, not entry-level: the cap applies to every entry, so saying
+    // it once is honest and saying it per row would be noise. It has to be said
+    // at all because nothing on this path runs `validate_config` — its only
+    // caller is `daft hooks validate`, which nobody runs during a checkout.
+    if let Some(raw) = &config.max_size_unparsed {
+        sink.on_warning(&format!(
+            "copy: could not read max_size {raw:?} — entries are uncapped this run; \
+             `{}` explains the config",
+            crate::daft_cmd("hooks validate")
+        ));
+    }
+
     // Copying a worktree into itself is a no-op request — and under `force` a
     // destructive one, because clearing each destination would clear the
     // source. Refuse it here rather than trusting every caller's source and
-    // target resolution to never land on the same directory.
+    // target resolution never to land on the same directory.
     if is_same_directory(source, target) {
         return CopyPathsResult {
             outcomes: config
@@ -455,18 +627,36 @@ pub fn copy_entries(
                 .iter()
                 .map(|entry| CopyOutcome::Skipped {
                     entry: entry.clone(),
-                    reason: SkipReason::DestinationExists,
+                    reason: SkipReason::SameWorktree,
                 })
                 .collect(),
         };
     }
 
+    // Ancestors before descendants, regardless of declaration order.
+    // `copy: [web/dist, web]` otherwise has the first entry manufacture an
+    // empty `target/web` on its way to `target/web/dist`, and the second then
+    // finds its destination "already present" — so everything else under
+    // `web/` never copies, on creation and on every warm after it. Shallower
+    // first is enough to make the containing entry win the race with its own
+    // descendant; outcomes are reordered back to declaration order below so
+    // the plan's rows still line up.
+    let mut order: Vec<usize> = (0..config.paths.len()).collect();
+    order.sort_by_key(|&i| config.paths[i].matches('/').count());
+
+    let mut outcomes: Vec<Option<CopyOutcome>> = vec![None; config.paths.len()];
+    for i in order {
+        outcomes[i] = Some(copy_one(
+            source,
+            target,
+            &config.paths[i],
+            config,
+            force,
+            sink,
+        ));
+    }
     CopyPathsResult {
-        outcomes: config
-            .paths
-            .iter()
-            .map(|entry| copy_one(source, target, entry, config, force, sink))
-            .collect(),
+        outcomes: outcomes.into_iter().flatten().collect(),
     }
 }
 
@@ -505,6 +695,19 @@ fn copy_one(
     }
 }
 
+/// One match, with everything decided about it.
+struct Planned {
+    rel: String,
+    /// How this match's bytes will move, decided by its own probe rather than
+    /// one taken on the entry's behalf.
+    reflinks: bool,
+    /// Bytes the copy will write — hard links counted every time, because the
+    /// copy materializes each one.
+    bytes: u64,
+    /// A destination to clear first (`--force`), already proven safe to remove.
+    remove_first: bool,
+}
+
 fn copy_one_inner(
     source: &Path,
     target: &Path,
@@ -521,140 +724,428 @@ fn copy_one_inner(
         })
     };
 
-    let expanded = expand_entries(source, entry);
-    if expanded.is_empty() {
+    // ── 1. Expand ────────────────────────────────────────────────────────
+    let Expansion {
+        matches,
+        unreadable,
+    } = expand_reporting(source, entry);
+    // An unreadable subtree is entry-attributable and must not be swallowed:
+    // silently walking past it either under-reports a green `Copied` or fakes
+    // a `NoMatches`, and root-owned directories inside a container image are
+    // the common way it happens.
+    if let Some((path, detail)) = unreadable {
+        return skipped(SkipReason::SourceUnreadable { path, detail });
+    }
+    if matches.is_empty() {
         return skipped(SkipReason::NoMatches);
     }
 
-    // A glob only ever yields paths that exist; a literal is passed through
-    // unchecked, so this is where "never built yet" is discovered.
-    let present: Vec<String> = expanded
-        .into_iter()
-        .filter(|rel| fs::symlink_metadata(source.join(rel)).is_ok())
-        .collect();
+    // ── 2. Containment ───────────────────────────────────────────────────
+    // Before git, and in its own words: a refusal here is not a diagnosis
+    // about tracking.
+    for rel in &matches {
+        if let Some(detail) = containment_violation(rel) {
+            return skipped(SkipReason::Uncontained {
+                offender: rel.clone(),
+                detail,
+            });
+        }
+    }
+
+    // ── 3. Source presence ───────────────────────────────────────────────
+    // A glob only yields paths that exist; a literal is passed through
+    // unchecked, so this is where "never built yet" is discovered — and where
+    // an unreachable cache is told apart from an absent one.
+    let mut present = Vec::new();
+    for rel in &matches {
+        match fs::symlink_metadata(source.join(rel)) {
+            Ok(_) => present.push(rel.clone()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return skipped(SkipReason::SourceUnreadable {
+                    path: rel.clone(),
+                    detail: err.to_string(),
+                });
+            }
+        }
+    }
     if present.is_empty() {
         return skipped(SkipReason::NoSource);
     }
 
-    // Both halves of the gitignored-only invariant, and one violation
-    // disqualifies the whole entry: copying the clean half of a declaration
-    // whose other half is tracked would be a success row over a half-done job.
-    if present.iter().any(|rel| !is_copyable(source, rel)) {
-        return skipped(SkipReason::NotIgnored);
+    // ── 4. The gitignored-only invariant, batched ────────────────────────
+    // One violation disqualifies the whole entry: copying the clean half of a
+    // declaration whose other half is tracked would be a success row over a
+    // half-done job.
+    match classify_matches(source, &present)? {
+        Classification::Ignored => {}
+        Classification::Tracked { offender } => {
+            return skipped(SkipReason::NotIgnored { offender });
+        }
+        Classification::Unknown { offender, detail } => {
+            return skipped(SkipReason::Unclassifiable { offender, detail });
+        }
     }
 
-    let mut todo = Vec::new();
+    // ── 5. Destination shape, and what `--force` may clear ───────────────
+    let mut planned: Vec<Planned> = Vec::new();
     for rel in &present {
+        let src = source.join(rel);
         let dst = target.join(rel);
-        if fs::symlink_metadata(&dst).is_ok() {
-            if !force {
-                continue;
+        let dst_meta = match fs::symlink_metadata(&dst) {
+            Ok(meta) => Some(meta),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                return skipped(SkipReason::DestinationConflict {
+                    path: rel.clone(),
+                    detail: err.to_string(),
+                });
             }
-            remove_existing(&dst)?;
+        };
+
+        if let Some(dst_meta) = dst_meta {
+            // Existence is not enough. A symlink where a directory belongs
+            // (what a path declared in both `shared:` and `copy:` leaves), a
+            // file where a tree belongs, or a dangling link would all wear
+            // "already present" forever.
+            let src_kind = path_kind(
+                &fs::symlink_metadata(&src)
+                    .with_context(|| format!("reading metadata of {}", src.display()))?,
+            );
+            let dst_kind = path_kind(&dst_meta);
+            if src_kind != dst_kind {
+                return skipped(SkipReason::DestinationConflict {
+                    path: rel.clone(),
+                    detail: format!("a {dst_kind} where the source is a {src_kind}"),
+                });
+            }
+            if !force {
+                continue; // the idempotence case
+            }
+            // `--force` is the only path that destroys anything, so it is the
+            // only one that has to ask the TARGET what it is about to delete.
+            // The source's gitignore says nothing about the target: `docs/` can
+            // be ignored on the branch being copied from and committed on the
+            // branch being copied into, and replacing it would delete work git
+            // is managing.
+            match tracked_in(target, rel) {
+                Ok(false) => {}
+                Ok(true) => {
+                    return skipped(SkipReason::TargetTracked {
+                        offender: rel.clone(),
+                    });
+                }
+                // Fail closed: a probe that could not run is not permission to
+                // delete. The target of a real run is always a worktree.
+                Err(detail) => {
+                    return skipped(SkipReason::Unclassifiable {
+                        offender: rel.clone(),
+                        detail,
+                    });
+                }
+            }
+            planned.push(Planned {
+                rel: rel.clone(),
+                reflinks: false,
+                bytes: 0,
+                remove_first: true,
+            });
+            continue;
         }
-        todo.push(rel.clone());
+
+        planned.push(Planned {
+            rel: rel.clone(),
+            reflinks: false,
+            bytes: 0,
+            remove_first: false,
+        });
     }
     // Every match already there: the idempotence case. A glob with *some*
     // destinations present still copies the rest — skipping them would leave
-    // caches permanently missing after one partial run.
-    if todo.is_empty() {
+    // those caches permanently missing after one interrupted run.
+    if planned.is_empty() {
         return skipped(SkipReason::DestinationExists);
     }
 
-    let bytes = measure(source, &todo);
-    let method = match plan_method(
-        reflinks_here(source, &todo, target),
+    // ── 6. Measure and probe, per match ──────────────────────────────────
+    // Per match, not once for the entry: matches can live on different mounts,
+    // and one sample answering for all of them is how a 40 GB byte copy ends
+    // up labelled `reflinked` with the size gate never consulted.
+    for item in &mut planned {
+        let src = source.join(&item.rel);
+        item.bytes = measure(&src);
+        item.reflinks = reflinks_into(&src, &target.join(&item.rel))?;
+    }
+
+    // ── 7. The gate ──────────────────────────────────────────────────────
+    // Only the byte-copying matches are weighed: a clone is free, and a cap
+    // written to stop an expensive copy has no business refusing a free one.
+    let byte_copy_bytes: u64 = planned
+        .iter()
+        .filter(|p| !p.reflinks)
+        .map(|p| p.bytes)
+        .sum();
+    if let Some(reason) = gate_byte_copies(
+        planned.iter().any(|p| !p.reflinks),
+        byte_copy_bytes,
         config.fallback,
-        bytes,
         config.max_size_bytes,
     ) {
-        Ok(method) => method,
-        Err(reason) => return skipped(reason),
-    };
+        return skipped(reason);
+    }
 
+    // ── 8. Copy ──────────────────────────────────────────────────────────
+    // Removal happens here and nowhere earlier. Every refusal above — a
+    // missing source, a tracked entry on either side, `fallback: skip`, a cap
+    // — must be able to fire with the destination still intact, or `--force`
+    // would report a skip while having destroyed the cache.
     sink.on_debug(&format!(
-        "copy: {entry} — {} path(s), {}, {}",
-        todo.len(),
-        format_bytes(bytes),
-        method_word(method),
+        "copy: {entry} — {} path(s), {}",
+        planned.len(),
+        format_bytes(planned.iter().map(|p| p.bytes).sum::<u64>()),
     ));
 
-    for rel in &todo {
-        let dst = target.join(rel);
-        if let Err(err) = replicate(&source.join(rel), &dst) {
-            return Err(discard_partial(&dst, err));
+    let mut stats = crate::cow_copy::CopyStats::default();
+    for item in &planned {
+        let dst = target.join(&item.rel);
+        if item.remove_first
+            && let Err(err) = remove_tree(&dst)
+        {
+            return Err(err.context(format!("clearing {}", dst.display())));
+        }
+        match replicate(&source.join(&item.rel), &dst) {
+            Ok(item_stats) => {
+                stats.reflinked += item_stats.reflinked;
+                stats.copied += item_stats.copied;
+                stats.bytes += item_stats.bytes;
+            }
+            Err(err) => return Err(discard_partial(&dst, err)),
         }
     }
 
     Ok(CopyOutcome::Copied {
         entry: entry.to_string(),
-        method,
-        matches: todo.len(),
-        bytes,
+        method: method_of(&stats),
+        matches: planned.len(),
+        bytes: stats.bytes,
         elapsed: started.elapsed(),
     })
 }
 
-/// The reflink / fallback / size decision, given the probe's answer.
+/// Whether the byte-copying part of an entry is allowed to proceed.
 ///
 /// Pure, and separate from [`copy_one_inner`] for one reason: no single
-/// filesystem can reach all four outcomes. A dev machine on APFS always
-/// reflinks and never sees the fallback arms; Linux CI on ext4 or tmpfs never
-/// reflinks and never sees the first. Only a decision that takes the probe as
-/// an argument can be held to all of them at once.
-fn plan_method(
-    reflinks: bool,
+/// filesystem can reach all of its outcomes. A dev machine on APFS always
+/// clones and never sees these arms at all; Linux CI on ext4 or tmpfs never
+/// clones and never sees the free path. Only a decision that takes the probe's
+/// answer as an argument can be held to both at once.
+///
+/// Only the matches that will actually be byte-copied are weighed. A clone is
+/// free, and a cap written to stop an expensive copy has no business refusing
+/// a free one — including on a mixed entry, where the cloned half must not
+/// count towards the cap the copied half is measured against.
+fn gate_byte_copies(
+    any_byte_copy: bool,
+    byte_copy_bytes: u64,
     fallback: CopyFallback,
-    bytes: u64,
     max_size_bytes: Option<u64>,
-) -> std::result::Result<CopyMethod, SkipReason> {
-    if reflinks {
-        // Never size-gated: a `max_size` exists to stop an expensive byte copy,
-        // and it has no business refusing a free clone.
-        return Ok(CopyMethod::Reflinked);
+) -> Option<SkipReason> {
+    if !any_byte_copy {
+        return None;
     }
     if fallback == CopyFallback::Skip {
-        return Err(SkipReason::NoReflink);
+        return Some(SkipReason::NoReflink);
     }
     match max_size_bytes {
-        Some(limit) if bytes > limit => Err(SkipReason::TooLarge {
-            size_bytes: bytes,
+        Some(limit) if byte_copy_bytes > limit => Some(SkipReason::TooLarge {
+            size_bytes: byte_copy_bytes,
             limit_bytes: limit,
         }),
-        _ => Ok(CopyMethod::Copied),
+        _ => None,
     }
 }
 
-/// Both halves of the gitignored-only invariant for one concrete path, plus
-/// containment.
+/// What a copy actually turned out to be, from what the copier reported.
 ///
-/// `Ignored` alone is not enough: the entry must also hold nothing git is
-/// managing. Anything other than a clean `Ignored` — tracked, visible, or an
-/// `Unknown` git could not answer — refuses, because this check exists to stop
-/// daft duplicating the working tree and a probe that failed is not consent.
-fn is_copyable(source: &Path, relpath: &str) -> bool {
-    stays_inside_worktree(relpath)
-        && crate::core::git_ignore::git_ignore_status(source, relpath) == IgnoreStatus::Ignored
-        && !crate::core::git_ignore::has_tracked_under(source, relpath)
+/// Derived, not predicted: `reflink_or_copy` decides file by file, so a tree
+/// straddling a mount point really can come back part-cloned. Rounding that to
+/// whichever answer the probe gave would put "reflinked" on a real byte copy.
+fn method_of(stats: &crate::cow_copy::CopyStats) -> CopyMethod {
+    match (stats.reflinked, stats.copied) {
+        (0, 0) => CopyMethod::Reflinked, // nothing but dirs and links: no bytes moved
+        (_, 0) => CopyMethod::Reflinked,
+        (0, _) => CopyMethod::Copied,
+        _ => CopyMethod::Mixed,
+    }
 }
 
-/// Refuse an entry that could name a path outside the worktree — an absolute
-/// path, or one that climbs out with `..`.
+/// Why an entry may not be copied at all, before git is consulted. `None` when
+/// it is a plain worktree-relative path.
 ///
-/// The git probe already refuses these (it answers `Unknown` for a path outside
-/// the repository, and `Unknown` is not consent), but a stage that writes whole
-/// trees should not be resting containment on an error code it happens to get
-/// back.
-fn stays_inside_worktree(relpath: &str) -> bool {
+/// A config is not a capability to write anywhere. `..` climbing out and an
+/// absolute path are the obvious cases; the worktree root itself is the sharp
+/// one, because `copy: ["."]` under `--force` would remove the whole worktree
+/// before copying it back.
+fn containment_violation(relpath: &str) -> Option<String> {
     use std::path::Component;
+
     let path = Path::new(relpath);
-    !path.is_absolute()
-        && !path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
+    if path.is_absolute() {
+        return Some("is an absolute path".to_string());
+    }
+    let mut depth = 0i32;
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    return Some("resolves outside the worktree".to_string());
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Some("is an absolute path".to_string());
+            }
+            Component::CurDir => {}
+            Component::Normal(_) => depth += 1,
+        }
+    }
+    (depth == 0).then(|| "names the worktree itself".to_string())
+}
+
+/// Which kind of thing a path is, for the destination-shape check.
+fn path_kind(meta: &fs::Metadata) -> &'static str {
+    let ftype = meta.file_type();
+    if ftype.is_symlink() {
+        "symlink"
+    } else if ftype.is_dir() {
+        "directory"
+    } else if ftype.is_file() {
+        "file"
+    } else {
+        "special file"
+    }
+}
+
+/// What the gitignored-only invariant decided about a set of matches.
+enum Classification {
+    Ignored,
+    Tracked { offender: String },
+    Unknown { offender: String, detail: String },
+}
+
+/// Both halves of the gitignored-only invariant for a whole entry, in two git
+/// invocations instead of three per match.
+///
+/// Per-match probing spawned `rev-parse` + `check-ignore` + `ls-files` for
+/// every expanded path — around ninety processes for a thirty-match glob, on
+/// the critical path of every worktree creation. `check-ignore --stdin` and a
+/// single multi-pathspec `ls-files` answer for the whole entry at once.
+///
+/// The two probes stay two: `check-ignore` consults the index and so already
+/// refuses tracked content, but only as a behaviour of git's exclude machinery
+/// — exactly what `--no-index` turns off. `ls-files` states the invariant
+/// independently, and the pair fails closed.
+fn classify_matches(worktree: &Path, matches: &[String]) -> Result<Classification> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    if matches.is_empty() {
+        return Ok(Classification::Ignored);
+    }
+
+    let mut child = crate::utils::git_command_at(worktree)
+        .args(["check-ignore", "-z", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("running git check-ignore")?;
+    {
+        let mut stdin = child.stdin.take().context("git check-ignore stdin")?;
+        for rel in matches {
+            stdin.write_all(rel.as_bytes())?;
+            stdin.write_all(b"\0")?;
+        }
+    }
+    let probe = child
+        .wait_with_output()
+        .context("running git check-ignore")?;
+    // 0 = at least one path is ignored, 1 = none are. Anything else (128 — not
+    // a repository, an unreadable parent) means git could not answer, and a
+    // probe that did not run is not consent.
+    if !matches!(probe.status.code(), Some(0 | 1)) {
+        return Ok(Classification::Unknown {
+            offender: matches[0].clone(),
+            detail: format!(
+                "git check-ignore exited {}",
+                probe
+                    .status
+                    .code()
+                    .map_or_else(|| "on a signal".to_string(), |c| c.to_string())
+            ),
+        });
+    }
+    let ignored: std::collections::HashSet<String> = String::from_utf8_lossy(&probe.stdout)
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if let Some(offender) = matches.iter().find(|rel| !ignored.contains(*rel)) {
+        return Ok(Classification::Tracked {
+            offender: offender.clone(),
+        });
+    }
+
+    let tracked = crate::utils::git_command_at(worktree)
+        .args(["ls-files", "-z", "--"])
+        .args(matches)
+        .stderr(Stdio::null())
+        .output()
+        .context("running git ls-files")?;
+    if tracked.status.success()
+        && let Some(first) = String::from_utf8_lossy(&tracked.stdout)
+            .split('\0')
+            .find(|s| !s.is_empty())
+            .map(str::to_string)
+    {
+        // Name the match that covers the tracked path, not the raw file: the
+        // row is about a declaration, and `web/dist` is what the user wrote.
+        let offender = matches
+            .iter()
+            .find(|rel| first == **rel || first.starts_with(&format!("{rel}/")))
+            .cloned()
+            .unwrap_or(first);
+        return Ok(Classification::Tracked { offender });
+    }
+
+    Ok(Classification::Ignored)
+}
+
+/// Does the worktree at `worktree` track anything at or under `relpath`?
+///
+/// The destination-side half of the invariant, and deliberately a narrower
+/// question than [`classify_matches`] asks of the source. `copy:` requires its
+/// *source* to be gitignored; of the *target* it only needs to know that
+/// nothing is about to be deleted out from under git. An untracked, unignored
+/// file at the destination is the user's own scratch work — `--force` may
+/// replace it — but a committed one may not be touched.
+///
+/// `Err` when git could not answer, and the caller fails closed on it.
+fn tracked_in(worktree: &Path, relpath: &str) -> std::result::Result<bool, String> {
+    let out = crate::utils::git_command_at(worktree)
+        .args(["ls-files", "-z", "--", relpath])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|err| format!("git ls-files could not run: {err}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git ls-files exited {}",
+            out.status
+                .code()
+                .map_or_else(|| "on a signal".to_string(), |c| c.to_string())
+        ));
+    }
+    Ok(!out.stdout.is_empty())
 }
 
 /// Throw away whatever a failed copy managed to land, and return the error the
@@ -675,15 +1166,7 @@ fn discard_partial(dst: &Path, err: anyhow::Error) -> anyhow::Error {
     if fs::symlink_metadata(dst).is_err() {
         return err; // nothing landed
     }
-    if remove_existing(dst).is_ok() {
-        return err;
-    }
-    // A tree daft copied can lock daft out of it: `cow_copy` reproduces source
-    // modes faithfully, so a mode-000 directory in the cache becomes a mode-000
-    // directory in the partial copy — and `remove_dir_all` has to read each
-    // directory to recurse. Restore owner traversal and try once more.
-    unlock_tree(dst);
-    match remove_existing(dst) {
+    match remove_tree(dst) {
         Ok(()) => err,
         Err(cleanup) => anyhow::anyhow!(
             "{err:#}; a partial {} could not be removed and will be mistaken for a finished copy: {cleanup:#}",
@@ -692,13 +1175,28 @@ fn discard_partial(dst: &Path, err: anyhow::Error) -> anyhow::Error {
     }
 }
 
+/// Remove a path and everything under it — the one removal helper, shared by
+/// `--force`'s pre-copy clear and [`discard_partial`]'s cleanup.
+///
+/// Both need the same second chance: `cow_copy` reproduces source modes
+/// faithfully, so a mode-000 directory in the cache becomes a mode-000
+/// directory in the copy, and `remove_dir_all` has to read each directory to
+/// recurse. A half-removed `--force` destination is the same failure as a
+/// half-written one — it reads as "already present" from then on.
+fn remove_tree(path: &Path) -> Result<()> {
+    if remove_existing(path).is_ok() {
+        return Ok(());
+    }
+    unlock_tree(path);
+    remove_existing(path)
+}
+
 /// Restore owner read/write/execute on every directory in a doomed tree,
 /// top-down so each level can be read to reach the next.
 ///
-/// Only ever runs on a partial destination daft itself created and is about to
-/// delete, and never follows symlinks out of it (`symlink_metadata` reports a
-/// link as a non-directory), so it cannot widen permissions anywhere the copy
-/// did not already write.
+/// Only ever runs on a tree daft is about to delete, and never follows symlinks
+/// out of it (`symlink_metadata` reports a link as a non-directory), so it
+/// cannot widen permissions anywhere the copy did not already write.
 #[cfg(unix)]
 fn unlock_tree(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -724,9 +1222,7 @@ fn unlock_tree(path: &Path) {
 #[cfg(not(unix))]
 fn unlock_tree(_path: &Path) {}
 
-/// Remove an existing destination so a copy can take its place (`--force`).
-/// `cow_copy::copy_dir` requires an absent destination, so this is what makes
-/// `daft warm --force` a re-copy rather than an error.
+/// Remove one existing path, once.
 fn remove_existing(path: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(path)
         .with_context(|| format!("reading metadata of {}", path.display()))?;
@@ -740,14 +1236,14 @@ fn remove_existing(path: &Path) -> Result<()> {
     .with_context(|| format!("removing {}", path.display()))
 }
 
-/// Copy one concrete path, preserving what it is.
+/// Copy one concrete path, preserving what it is, and report what it cost.
 ///
 /// Directories and regular files go through [`crate::cow_copy`] (reflink where
 /// the filesystem allows, byte copy where it does not). A symlink is recreated
 /// rather than dereferenced — a `.venv` or `node_modules` that *is* a link
 /// should stay one, and following it would copy a tree living outside the
 /// worktree entirely.
-fn replicate(src: &Path, dst: &Path) -> Result<()> {
+fn replicate(src: &Path, dst: &Path) -> Result<crate::cow_copy::CopyStats> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -756,11 +1252,12 @@ fn replicate(src: &Path, dst: &Path) -> Result<()> {
         .file_type();
 
     if ftype.is_symlink() {
-        replicate_symlink(src, dst)
+        replicate_symlink(src, dst)?;
+        Ok(crate::cow_copy::CopyStats::default())
     } else if ftype.is_dir() {
-        crate::cow_copy::copy_dir(src, dst)
+        crate::cow_copy::copy_dir_reporting(src, dst)
     } else if ftype.is_file() {
-        crate::cow_copy::copy_file(src, dst)
+        crate::cow_copy::copy_file_reporting(src, dst)
     } else {
         anyhow::bail!("{} is not a file, directory, or symlink", src.display())
     }
@@ -783,90 +1280,123 @@ fn replicate_symlink(src: &Path, _dst: &Path) -> Result<()> {
     )
 }
 
-/// Total apparent size of the paths about to be copied.
+/// What copying `src` will write.
 ///
-/// Feeds both the size gate and the completed row's annotation, so it runs on
-/// the reflink path too: "you got 1.2 GB for free" is the fact that row exists
-/// to report. Directories go through the shared bounded parallel walker
+/// Hard links are counted **every time**, unlike `du` and unlike `daft list`:
+/// the copier materializes each link as an independent file, so a pnpm or
+/// ccache tree costs several times its measured size at the destination. Gating
+/// `max_size` on the deduplicated figure is how a 500 MB measurement lands 5 GB.
+///
+/// Directories go through the shared bounded parallel walker
 /// ([`crate::core::size_walk`]) — the same `readdir`/`lstat` budget `daft list`
-/// uses — so a `node_modules` measurement can't oversubscribe the device.
-/// Unmeasurable roots contribute nothing rather than aborting the copy.
-fn measure(source: &Path, rels: &[String]) -> u64 {
-    let mut total = 0u64;
-    let mut dirs = Vec::new();
-    for rel in rels {
-        let path = source.join(rel);
-        match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.is_dir() => dirs.push(path),
-            Ok(meta) => total += meta.len(),
-            Err(_) => {}
-        }
-    }
-    if !dirs.is_empty() {
-        let jobs = crate::core::size_walk::resolve_jobs(None);
-        total += crate::core::size_walk::walk_all(&dirs, None, jobs)
+/// uses — so measuring a `node_modules` cannot oversubscribe the device. An
+/// unmeasurable root contributes nothing rather than aborting the copy; the
+/// copy itself will fail honestly if the tree is truly unreadable.
+fn measure(src: &Path) -> u64 {
+    match fs::symlink_metadata(src) {
+        Ok(meta) if meta.is_dir() => {
+            let jobs = crate::core::size_walk::resolve_jobs(None);
+            crate::core::size_walk::walk_all_sized(
+                std::slice::from_ref(&src.to_path_buf()),
+                None,
+                jobs,
+                crate::core::size_walk::HardLinks::CountEveryLink,
+            )
             .into_iter()
             .flatten()
-            .sum::<u64>();
+            .sum()
+        }
+        Ok(meta) => meta.len(),
+        Err(_) => 0,
     }
-    total
 }
 
-/// Can this entry's bytes be cloned instead of copied?
+/// Can this match's bytes be cloned into its own destination?
 ///
-/// Answered by attempting it, not by naming the filesystem: a `copy:` entry can
+/// Answered by attempting it, not by naming the filesystem: `copy:` entries can
 /// straddle mount points (an externally-mounted `node_modules`, a `target/` on
 /// a scratch volume), and reflink support is a property of the *pair* of
-/// locations, which only the attempt knows.
+/// locations — which is why the probe lands next to where this match's copy
+/// will land, not in the worktree root.
 ///
-/// An entry with no regular file under it — an empty cache, a tree of only
+/// A match with no regular file under it — an empty cache, a tree of only
 /// directories and symlinks — has no bytes to clone and so cannot fail to
-/// clone. It reports `true`, which keeps a free copy from being skipped by
-/// `fallback: skip`.
-fn reflinks_here(source: &Path, rels: &[String], target: &Path) -> bool {
-    let Some(sample) = rels
-        .iter()
-        .find_map(|rel| first_regular_file(&source.join(rel)))
-    else {
-        return true;
+/// clone. It reports `true`, which keeps a free copy from being refused by
+/// `fallback: skip`. A match that could not be *read* is a different answer and
+/// propagates as an error rather than passing for clonable.
+fn reflinks_into(src: &Path, dst: &Path) -> Result<bool> {
+    let Some(sample) = first_regular_file(src)? else {
+        return Ok(true);
     };
-    attempt_reflink(&sample, target)
+    let Some(probe_dir) = nearest_existing_dir(dst) else {
+        return Ok(false);
+    };
+    Ok(attempt_reflink(&sample, probe_dir))
+}
+
+/// The closest existing ancestor of `path` — where a probe can land without
+/// creating anything. Creating the destination's parents up front would
+/// manufacture exactly the empty ancestor stubs that make a later entry read
+/// "already present".
+fn nearest_existing_dir(path: &Path) -> Option<&Path> {
+    let mut candidate = path.parent();
+    while let Some(dir) = candidate {
+        if dir.is_dir() {
+            return Some(dir);
+        }
+        candidate = dir.parent();
+    }
+    None
 }
 
 /// Clone `sample` into a scratch name inside `dst_dir` and immediately unlink
 /// it. The clone shares blocks, so the probe costs no space even when the
-/// sample is large.
+/// sample is large; the temp file's guard removes it even on a panic.
 fn attempt_reflink(sample: &Path, dst_dir: &Path) -> bool {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    let probe = dst_dir.join(format!(
-        ".daft-reflink-probe-{}-{stamp}",
-        std::process::id()
-    ));
-    let supported = reflink_copy::reflink(sample, &probe).is_ok();
-    let _ = fs::remove_file(&probe);
-    supported
+    let Ok(guard) = tempfile::Builder::new()
+        .prefix(".daft-reflink-probe-")
+        .tempfile_in(dst_dir)
+    else {
+        return false;
+    };
+    // `reflink` needs an absent destination; the guard still owns the name and
+    // unlinks whatever is there when it drops.
+    if fs::remove_file(guard.path()).is_err() {
+        return false;
+    }
+    reflink_copy::reflink(sample, guard.path()).is_ok()
 }
 
-/// The first regular file at or under `path`, for the reflink probe. `None`
-/// when there is nothing clonable (a missing path, an empty tree, or a tree of
-/// only directories and symlinks).
-fn first_regular_file(path: &Path) -> Option<PathBuf> {
-    let meta = fs::symlink_metadata(path).ok()?;
+/// The first regular file at or under `path`, for the reflink probe.
+///
+/// `Ok(None)` means there is genuinely nothing clonable (an empty tree, or one
+/// of only directories and symlinks). `Err` means the walk could not finish and
+/// found nothing — which must not be mistaken for "nothing to clone", or an
+/// unreadable tree would skip the size gate and be labelled `reflinked`.
+fn first_regular_file(path: &Path) -> Result<Option<PathBuf>> {
+    let meta = fs::symlink_metadata(path)
+        .with_context(|| format!("reading metadata of {}", path.display()))?;
     if meta.is_file() {
-        return Some(path.to_path_buf());
+        return Ok(Some(path.to_path_buf()));
     }
     if !meta.is_dir() {
-        return None;
+        return Ok(None);
     }
-    walkdir::WalkDir::new(path)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .find(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
+    let mut walk_error = None;
+    for entry in walkdir::WalkDir::new(path).follow_links(false) {
+        match entry {
+            Ok(entry) if entry.file_type().is_file() => return Ok(Some(entry.into_path())),
+            Ok(_) => {}
+            // Remember it, but keep looking: a sample found elsewhere answers
+            // the question, and the copy will hit the same unreadable spot and
+            // fail honestly.
+            Err(err) => walk_error = Some(err),
+        }
+    }
+    match walk_error {
+        Some(err) => Err(anyhow::Error::new(err).context(format!("reading {}", path.display()))),
+        None => Ok(None),
+    }
 }
 
 /// Probe whether `dir`'s filesystem can clone blocks, for `daft doctor`.
@@ -927,8 +1457,12 @@ pub fn push_copy_section(rows: &mut Vec<crate::core::stage::Row>, planned: &[Str
 /// |---|---|---|
 /// | [`CopyOutcome::Copied`] | `Completed { annotation }` | green `✓`, annotated `3 paths · 1.2 GB · reflinked · 0.3s` |
 /// | [`SkipReason::NoSource`] / [`SkipReason::DestinationExists`] / [`SkipReason::NoMatches`] | `SkippedExpected` | dim |
-/// | [`SkipReason::NotIgnored`] / [`SkipReason::NoReflink`] / [`SkipReason::TooLarge`] | `SkippedAttention` | yellow |
+/// | every other [`SkipReason`] | `SkippedAttention` | yellow |
 /// | [`CopyOutcome::Failed`] | `SkippedAttention` | yellow |
+///
+/// The dim three are the stage working as designed — a cache that has not been
+/// built, a worktree already warm, a glob that legitimately matched nothing.
+/// Everything else is the config asking for something that did not happen.
 ///
 /// **Never `Failed`.** A `Failed` face says the operation the user asked for
 /// did not happen; here the operation is the worktree, and it did. A cache
@@ -938,8 +1472,10 @@ pub fn push_copy_section(rows: &mut Vec<crate::core::stage::Row>, planned: &[Str
 /// Skip reasons render without a `skipped — ` prefix (the timeline exempts
 /// [`StageId::CopyPath`](crate::core::stage::StageId::CopyPath) along with
 /// `SharedFile`), so each one must read as a complete phrase — e.g.
-/// `'target' is tracked — not copied`, `nothing to copy yet`,
-/// `already present`, `2.1 GB over the 1 GB max_size`.
+/// `must be gitignored — tracked content is never copied`,
+/// `nothing to copy yet`, `already present`,
+/// `2.1 GB — over the 1 GB max_size`. The row's label supplies the entry, so
+/// the phrases never name it; see [`skip_phrase`].
 ///
 /// A planned entry that produced no outcome at all resolves as
 /// `SkippedSilent` and its row is removed — the finished rail lists only
@@ -997,77 +1533,116 @@ pub fn report_copy_results(
 /// Whether a skip is the yellow face (the config asked for something that did
 /// not happen) or the dim one (nothing to do).
 fn reason_needs_attention(outcome: &CopyOutcome) -> bool {
-    matches!(
-        outcome,
-        CopyOutcome::Skipped {
-            reason: SkipReason::NotIgnored | SkipReason::NoReflink | SkipReason::TooLarge { .. },
-            ..
-        }
+    let CopyOutcome::Skipped { reason, .. } = outcome else {
+        return false;
+    };
+    // Only three skips are the stage working as designed: a cache that has not
+    // been built, a worktree that is already warm, and a glob that legitimately
+    // matched nothing. Everything else is the config asking for something that
+    // did not happen, and has to be able to say so in yellow.
+    !matches!(
+        reason,
+        SkipReason::NoSource | SkipReason::DestinationExists | SkipReason::NoMatches
     )
 }
 
 // ── Shared phrasing ───────────────────────────────────────────────────────
 //
-// The three builders below are the ONE place a copy outcome becomes words. Two
-// very different surfaces render the same facts — the creation rail's section
-// rows and `daft warm`'s plain per-entry lines — and a second copy of these
-// strings would drift the moment either was edited alone. Both consume these.
+// The builders below are the ONE place a copy outcome becomes words. Two very
+// different surfaces render the same facts — the creation rail's section rows
+// and `daft warm`'s plain per-entry lines — and a second copy of these strings
+// would drift the moment either was edited alone. Both consume these.
+//
+// The division between them is which surface already names the entry:
+//
+// * [`skip_phrase`] is the **bare clause**, for anywhere the entry is already
+//   on screen. The rail row's label *is* the entry, so a phrase that quoted it
+//   again would render `node_modules  'node_modules' must be gitignored…`.
+// * [`qualified_phrase`] adds the entry back, for a flat stderr line that has
+//   no label to lean on.
+//
+// A phrase names a path only when it is *not* the entry — the one match of a
+// thirty-way glob that offended, which is the only way one row can say what
+// went wrong with the whole expansion.
 
-/// The phrase for one skipped entry.
+/// The bare clause for one skipped entry — never naming the entry itself.
 ///
 /// `CopyPath` is exempt from the timeline's `skipped — ` prefix (beside
-/// `SharedFile`), so every arm has to read as a complete clause on its own —
-/// `already present`, `nothing to copy yet`, `2.1 GB over the 1 GB max_size`.
-/// That is also what makes them usable verbatim as `daft warm`'s line bodies.
+/// `SharedFile`), so every arm still has to read as a complete clause:
+/// `already present`, `nothing to copy yet`, `2.1 GB — over the 1 GB max_size`.
+///
+/// `entry` is passed so a phrase can tell "the entry itself offended" from "one
+/// of its matches did", not so it can be printed.
 pub fn skip_phrase(entry: &str, reason: &SkipReason) -> String {
+    // `web/dist` for a glob that expanded to it; nothing at all when the
+    // offending path IS the entry and naming it would stutter.
+    let named = |offender: &str| {
+        if offender == entry {
+            String::new()
+        } else {
+            format!("'{offender}' ")
+        }
+    };
+
     match reason {
         SkipReason::NoSource => "nothing to copy yet".to_string(),
-        SkipReason::DestinationExists => "already present".to_string(),
-        SkipReason::NoMatches => "matched nothing".to_string(),
-        // Leads with the requirement, not the diagnosis. This one variant
-        // covers a tracked entry, an untracked-but-unignored one, an ignored
-        // directory holding force-added content, and a path git could not
-        // answer for — so a bare "is tracked" would be false for the commonest
-        // cause of it: a cache the user simply forgot to gitignore. Naming the
-        // rule is true in every case and says what to change, while still
-        // carrying the word a reader (and the scenario asserting on this row)
-        // looks for.
-        SkipReason::NotIgnored => {
-            format!("'{entry}' must be gitignored — tracked content is never copied")
+        SkipReason::SourceUnreadable { path, detail } => {
+            format!("{}could not be read — {detail}", named(path))
         }
+        SkipReason::DestinationExists => "already present".to_string(),
+        SkipReason::DestinationConflict { path, detail } => {
+            format!("{}already present as {detail} — not replaced", named(path))
+        }
+        // Leads with the requirement, not the diagnosis. The one variant covers
+        // a tracked entry, an untracked-but-unignored one, and an ignored
+        // directory holding force-added content — so a bare "is tracked" would
+        // be false for the commonest cause of it: a cache the user simply
+        // forgot to gitignore. Naming the rule is true in every case and says
+        // what to change, while still carrying the word a reader looks for.
+        SkipReason::NotIgnored { offender } => format!(
+            "{}must be gitignored — tracked content is never copied",
+            named(offender)
+        ),
+        SkipReason::TargetTracked { offender } => format!(
+            "{}is tracked in this worktree — refusing to replace it",
+            named(offender)
+        ),
+        SkipReason::Unclassifiable { offender, detail } => {
+            format!("git could not classify {}— {detail}", named(offender))
+        }
+        SkipReason::Uncontained { offender, detail } => {
+            format!("{}{detail} — not copied", named(offender))
+        }
+        SkipReason::SameWorktree => "source and target are the same worktree".to_string(),
         SkipReason::NoReflink => "no reflink support — fallback: skip".to_string(),
+        // Size first, then the cap it broke: the row is answering "why not?",
+        // and the entry's own weight is the fact the user needs to act on.
         SkipReason::TooLarge {
             size_bytes,
             limit_bytes,
         } => format!(
-            "{} over the {} max_size",
+            "{} — over the {} max_size",
             format_bytes(*size_bytes),
             format_bytes(*limit_bytes)
         ),
+        SkipReason::NoMatches => "matched nothing".to_string(),
     }
 }
 
-/// The phrase for an entry whose copy broke. The rail row's label — and `daft
-/// warm`'s line prefix — already names the entry, so it leads with what
-/// happened.
+/// The bare clause for an entry whose copy broke.
 pub fn failure_phrase(detail: &str) -> String {
     format!("failed — {detail}")
 }
 
-/// Name the entry in a phrase that does not already name itself.
+/// Put the entry back in front of a bare clause, for surfaces with no row label
+/// to carry it.
 ///
-/// On the rail the row's label carries the entry, so most phrases leave it out
-/// and read as clauses about "this row". A flat stderr line has no label to
-/// lean on — `warning: no reflink support — fallback: skip` never says *which*
-/// cache. Only the `NotIgnored` phrase quotes the entry itself, and prefixing
-/// that one again would stutter, so a leading quote is the signal to leave it
-/// alone.
-fn qualified_phrase(entry: &str, phrase: &str) -> String {
-    if phrase.starts_with('\'') {
-        phrase.to_string()
-    } else {
-        format!("'{entry}': {phrase}")
-    }
+/// The rail prints `node_modules` in one column and the clause in another; a
+/// stderr line has one column, so `warning: no reflink support — fallback: skip`
+/// would never say *which* cache. This is the rule both surfaces share, which
+/// is why it is public: `daft warm` prints flat lines and needs the same one.
+pub fn qualified_phrase(entry: &str, phrase: &str) -> String {
+    format!("{entry}: {phrase}")
 }
 
 /// The completed entry's annotation: `3 paths · 1.2 GB · reflinked · 0.3s`.
@@ -1169,6 +1744,7 @@ fn method_word(method: CopyMethod) -> &'static str {
     match method {
         CopyMethod::Reflinked => "reflinked",
         CopyMethod::Copied => "copied",
+        CopyMethod::Mixed => "part reflinked",
     }
 }
 
@@ -1199,7 +1775,19 @@ fn format_bytes(bytes: u64) -> String {
 mod tests {
     use super::*;
     use crate::core::NullSink;
+    use crate::core::git_ignore::IgnoreStatus;
     use tempfile::TempDir;
+
+    /// Assert the sole outcome is a skip of a given shape, without pinning the
+    /// paths the variant carries — those are covered by the phrase tests.
+    macro_rules! assert_sole_skip {
+        ($result:expr, $pattern:pat) => {
+            match sole_skip(&$result) {
+                $pattern => {}
+                other => panic!("expected {}, got {other:?}", stringify!($pattern)),
+            }
+        };
+    }
 
     /// Write `contents` at `path`, creating parents. Fixtures only.
     fn write(path: &Path, contents: &[u8]) {
@@ -1228,12 +1816,17 @@ mod tests {
     /// plain directory because the engine only ever joins paths onto it.
     fn repo_fixture(ignore_rules: &str) -> (TempDir, PathBuf, PathBuf) {
         let (tmp, source, target) = fs_fixture();
-        let out = crate::utils::git_command_at(&source)
-            .args(["init", "-q", "-b", "main"])
-            .output()
-            .expect("git init");
-        assert!(out.status.success(), "git init failed");
-        write(&source.join(".gitignore"), ignore_rules.as_bytes());
+        // BOTH sides are repositories, because both are in a real run: the
+        // target is another worktree of the same project, and `--force` has to
+        // ask it what it tracks before deleting anything.
+        for root in [&source, &target] {
+            let out = crate::utils::git_command_at(root)
+                .args(["init", "-q", "-b", "main"])
+                .output()
+                .expect("git init");
+            assert!(out.status.success(), "git init failed");
+            write(&root.join(".gitignore"), ignore_rules.as_bytes());
+        }
         (tmp, source, target)
     }
 
@@ -1242,6 +1835,7 @@ mod tests {
             paths: paths.iter().map(|p| (*p).to_string()).collect(),
             fallback: CopyFallback::Copy,
             max_size_bytes: None,
+            max_size_unparsed: None,
         }
     }
 
@@ -1283,6 +1877,7 @@ mod tests {
                 paths: vec!["target".into(), "node_modules".into()],
                 fallback: CopyFallback::Copy,
                 max_size_bytes: None,
+                max_size_unparsed: None,
             })
         );
 
@@ -1297,6 +1892,7 @@ mod tests {
                 paths: vec!["target".into()],
                 fallback: CopyFallback::Skip,
                 max_size_bytes: Some(5 * 1024 * 1024 * 1024),
+                max_size_unparsed: None,
             })
         );
     }
@@ -1482,7 +2078,7 @@ mod tests {
 
         let result = run(&source, &target, &config(&["src"]));
 
-        assert_eq!(sole_skip(&result), SkipReason::NotIgnored);
+        assert_sole_skip!(result, SkipReason::NotIgnored { .. });
         assert!(
             !target.join("src").exists(),
             "a refused entry leaves nothing behind"
@@ -1504,7 +2100,7 @@ mod tests {
 
         let result = run(&source, &target, &config(&["node_modules"]));
 
-        assert_eq!(sole_skip(&result), SkipReason::NotIgnored);
+        assert_sole_skip!(result, SkipReason::NotIgnored { .. });
         assert!(!target.join("node_modules").exists());
     }
 
@@ -1521,13 +2117,13 @@ mod tests {
 
         for escape in ["../outside", "sub/../../outside"] {
             let result = run(&source, &target, &config(&[escape]));
-            assert_eq!(sole_skip(&result), SkipReason::NotIgnored, "{escape}");
+            assert_sole_skip!(result, SkipReason::Uncontained { .. });
         }
         assert!(!target.join("outside").exists());
         assert!(!tmp.path().join("target/outside").exists());
 
-        assert!(!stays_inside_worktree("/etc"));
-        assert!(stays_inside_worktree("target/debug"));
+        assert!(containment_violation("/etc").is_some());
+        assert!(containment_violation("target/debug").is_none());
     }
 
     // ── copy_entries: outcomes ───────────────────────────────────────────
@@ -1588,7 +2184,7 @@ mod tests {
 
         let result = copy_entries(&source, &source, &config(&["target"]), true, &mut NullSink);
 
-        assert_eq!(sole_skip(&result), SkipReason::DestinationExists);
+        assert_eq!(sole_skip(&result), SkipReason::SameWorktree);
         assert_eq!(fs::read(source.join("target/app")).unwrap(), b"precious");
     }
 
@@ -1650,17 +2246,29 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn copy_entries_isolates_a_failing_entry_from_the_rest() {
         // Warn, never abort: the worktree the user asked for exists either
-        // way, so one broken cache must cost exactly one row.
+        // way, so one broken cache must cost exactly one row and the entries
+        // after it must still run.
+        use std::os::unix::fs::PermissionsExt;
+
         let (_tmp, source, target) = repo_fixture("/target\n/web\n");
         write(&source.join("web/dist/app.js"), b"web");
         write(&source.join("target/app"), b"binary");
-        // A regular file where the destination needs a directory.
-        write(&target.join("web"), b"in the way");
+        // A read-only destination parent: `web/dist` cannot be created inside
+        // it, so the copy fails partway rather than being refused up front.
+        fs::create_dir_all(target.join("web")).unwrap();
+        fs::set_permissions(target.join("web"), fs::Permissions::from_mode(0o500)).unwrap();
+        let premise_holds = fs::create_dir(target.join("web/probe")).is_err();
 
         let result = run(&source, &target, &config(&["web/dist", "target"]));
+
+        fs::set_permissions(target.join("web"), fs::Permissions::from_mode(0o755)).unwrap();
+        if !premise_holds {
+            return;
+        }
 
         let [failed, copied] = result.outcomes.as_slice() else {
             panic!("expected two outcomes, got {:?}", result.outcomes);
@@ -1675,6 +2283,45 @@ mod tests {
             "the entry after the failure still ran: {copied:?}"
         );
         assert_eq!(fs::read(target.join("target/app")).unwrap(), b"binary");
+    }
+
+    #[test]
+    fn copy_entries_reports_a_destination_of_the_wrong_shape_rather_than_calling_it_present() {
+        // Existence alone is not "already present". A path declared in both
+        // `shared:` and `copy:` leaves a symlink where the copy needs a
+        // directory; a stale file can sit where a tree belongs. Either would
+        // wear a dim `already present` forever, and the cache would never
+        // arrive.
+        let (_tmp, source, target) = repo_fixture("/cache\n");
+        write(&source.join("cache/a.bin"), b"payload");
+        write(&target.join("cache"), b"a file, not the tree");
+
+        let result = run(&source, &target, &config(&["cache"]));
+
+        assert_sole_skip!(result, SkipReason::DestinationConflict { .. });
+        assert_eq!(
+            fs::read(target.join("cache")).unwrap(),
+            b"a file, not the tree",
+            "a conflict is reported, never silently replaced"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_entries_reports_a_symlinked_destination_rather_than_calling_it_present() {
+        // The `shared:` + `copy:` double-declaration leak, concretely: the
+        // shared stage linked the path, and the copy stage must not report a
+        // link as a finished replica.
+        let (_tmp, source, target) = repo_fixture("/cache\n");
+        write(&source.join("cache/a.bin"), b"payload");
+        fs::create_dir_all(target.join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink("elsewhere", target.join("cache")).unwrap();
+
+        assert_sole_skip!(
+            run(&source, &target, &config(&["cache"])),
+            SkipReason::DestinationConflict { .. }
+        );
+        assert!(target.join("cache").is_symlink(), "the link is left alone");
     }
 
     #[cfg(unix)]
@@ -1770,45 +2417,45 @@ mod tests {
     // ── plan_method: the reflink / fallback / size decision ──────────────
 
     #[test]
-    fn plan_method_never_size_gates_a_reflink() {
+    fn gate_byte_copies_never_size_gates_a_reflink() {
         // Cloning blocks is free, so a cap written to stop an expensive byte
         // copy must not refuse it — whatever the entry weighs.
         assert_eq!(
-            plan_method(true, CopyFallback::Copy, 100 * 1024, Some(1)),
-            Ok(CopyMethod::Reflinked)
+            gate_byte_copies(false, 100 * 1024, CopyFallback::Copy, Some(1)),
+            None
         );
         assert_eq!(
-            plan_method(true, CopyFallback::Skip, u64::MAX, Some(0)),
-            Ok(CopyMethod::Reflinked),
+            gate_byte_copies(false, u64::MAX, CopyFallback::Skip, Some(0)),
+            None,
             "fallback describes what happens when reflink is unavailable"
         );
     }
 
     #[test]
-    fn plan_method_honors_fallback_skip_when_reflink_is_unavailable() {
+    fn gate_byte_copies_honors_fallback_skip_when_reflink_is_unavailable() {
         assert_eq!(
-            plan_method(false, CopyFallback::Skip, 10, None),
-            Err(SkipReason::NoReflink)
+            gate_byte_copies(true, 10, CopyFallback::Skip, None),
+            Some(SkipReason::NoReflink)
         );
     }
 
     #[test]
-    fn plan_method_gates_the_byte_copy_on_max_size() {
+    fn gate_byte_copies_gates_the_byte_copy_on_max_size() {
         assert_eq!(
-            plan_method(false, CopyFallback::Copy, 2048, Some(1024)),
-            Err(SkipReason::TooLarge {
+            gate_byte_copies(true, 2048, CopyFallback::Copy, Some(1024)),
+            Some(SkipReason::TooLarge {
                 size_bytes: 2048,
                 limit_bytes: 1024,
             })
         );
         // At the limit, not over it.
         assert_eq!(
-            plan_method(false, CopyFallback::Copy, 1024, Some(1024)),
-            Ok(CopyMethod::Copied)
+            gate_byte_copies(true, 1024, CopyFallback::Copy, Some(1024)),
+            None
         );
         assert_eq!(
-            plan_method(false, CopyFallback::Copy, u64::MAX, None),
-            Ok(CopyMethod::Copied),
+            gate_byte_copies(true, u64::MAX, CopyFallback::Copy, None),
+            None,
             "no cap means no cap"
         );
     }
@@ -1843,7 +2490,9 @@ mod tests {
                 },
                 CopyOutcome::Skipped {
                     entry: "src".into(),
-                    reason: SkipReason::NotIgnored,
+                    reason: SkipReason::NotIgnored {
+                        offender: "src".into(),
+                    },
                 },
                 CopyOutcome::Skipped {
                     entry: "big".into(),
@@ -1903,7 +2552,7 @@ mod tests {
                 (
                     "src".into(),
                     StageEvent::SkippedAttention {
-                        reason: "'src' must be gitignored — tracked content is never copied".into(),
+                        reason: "must be gitignored — tracked content is never copied".into(),
                     }
                 ),
                 (
@@ -1915,7 +2564,7 @@ mod tests {
                 (
                     "huge".into(),
                     StageEvent::SkippedAttention {
-                        reason: "2.1 GB over the 1 GB max_size".into(),
+                        reason: "2.1 GB — over the 1 GB max_size".into(),
                     }
                 ),
                 // Never a `Failed` face — the worktree the user asked for
@@ -1957,10 +2606,15 @@ mod tests {
         // The phrase already quotes the entry: prefixing it again would stutter.
         assert_eq!(
             line(StageEvent::SkippedAttention {
-                reason: skip_phrase("cache", &SkipReason::NotIgnored),
+                reason: skip_phrase(
+                    "cache",
+                    &SkipReason::NotIgnored {
+                        offender: "cache".into(),
+                    },
+                ),
             }),
             Some(
-                "warning: 'cache' must be gitignored — tracked content is never copied".to_string()
+                "warning: cache: must be gitignored — tracked content is never copied".to_string()
             )
         );
         // The phrase does not name itself, and a flat line has no row label to
@@ -1969,13 +2623,13 @@ mod tests {
             line(StageEvent::SkippedAttention {
                 reason: skip_phrase("cache", &SkipReason::NoReflink),
             }),
-            Some("warning: 'cache': no reflink support — fallback: skip".to_string())
+            Some("warning: cache: no reflink support — fallback: skip".to_string())
         );
         assert_eq!(
             line(StageEvent::SkippedAttention {
                 reason: failure_phrase("disk full"),
             }),
-            Some("warning: 'cache': failed — disk full".to_string())
+            Some("warning: cache: failed — disk full".to_string())
         );
 
         // Expected skips and silent resolutions stay quiet, exactly as the
@@ -2042,11 +2696,13 @@ mod tests {
         assert_eq!(format_bytes(1024u64.pow(4)), "1 TB");
     }
 
-    /// The full phrase set, spelled out. These strings are a contract, not an
-    /// implementation detail: the creation rail and `daft warm` both render
-    /// them, and a YAML scenario asserts on the tracked-entry one. Pinning them
-    /// here is what makes an accidental reword a failing test rather than a
-    /// silently diverged pair of surfaces.
+    /// The full phrase set, spelled out, on both surfaces.
+    ///
+    /// These strings are a contract, not an implementation detail: the creation
+    /// rail renders them as row annotations, `daft warm` renders them as flat
+    /// lines, and a YAML scenario asserts on the tracked-entry one. Pinning
+    /// them is what makes an accidental reword a failing test rather than two
+    /// silently diverged surfaces.
     #[test]
     fn skip_phrases_are_the_pinned_shared_wording() {
         let cases = [
@@ -2054,8 +2710,48 @@ mod tests {
             (SkipReason::DestinationExists, "already present"),
             (SkipReason::NoMatches, "matched nothing"),
             (
-                SkipReason::NotIgnored,
-                "'cache' must be gitignored — tracked content is never copied",
+                SkipReason::NotIgnored {
+                    offender: "cache".into(),
+                },
+                "must be gitignored — tracked content is never copied",
+            ),
+            (
+                SkipReason::TargetTracked {
+                    offender: "cache".into(),
+                },
+                "is tracked in this worktree — refusing to replace it",
+            ),
+            (
+                SkipReason::Unclassifiable {
+                    offender: "cache".into(),
+                    detail: "git check-ignore exited 128".into(),
+                },
+                "git could not classify — git check-ignore exited 128",
+            ),
+            (
+                SkipReason::Uncontained {
+                    offender: "cache".into(),
+                    detail: "resolves outside the worktree".into(),
+                },
+                "resolves outside the worktree — not copied",
+            ),
+            (
+                SkipReason::SourceUnreadable {
+                    path: "cache".into(),
+                    detail: "permission denied".into(),
+                },
+                "could not be read — permission denied",
+            ),
+            (
+                SkipReason::DestinationConflict {
+                    path: "cache".into(),
+                    detail: "a symlink where the source is a directory".into(),
+                },
+                "already present as a symlink where the source is a directory — not replaced",
+            ),
+            (
+                SkipReason::SameWorktree,
+                "source and target are the same worktree",
             ),
             (SkipReason::NoReflink, "no reflink support — fallback: skip"),
             (
@@ -2063,26 +2759,59 @@ mod tests {
                     size_bytes: 2_254_857_830,
                     limit_bytes: 1024 * 1024 * 1024,
                 },
-                "2.1 GB over the 1 GB max_size",
+                "2.1 GB — over the 1 GB max_size",
             ),
         ];
 
         for (reason, expected) in &cases {
-            let text = skip_phrase("cache", reason);
-            assert_eq!(&text, expected, "{reason:?}");
+            let phrase = skip_phrase("cache", reason);
+            assert_eq!(&phrase, expected, "{reason:?}");
             // `CopyPath` is exempt from the timeline's `skipped — ` prefix, so
             // a phrase written to follow one would render as a fragment.
             assert!(
-                !text.starts_with("skipped"),
-                "{reason:?} must not restate the prefix it is exempt from: {text}"
+                !phrase.starts_with("skipped"),
+                "{reason:?} must not restate the prefix it is exempt from: {phrase}"
+            );
+            // NEITHER surface may print the entry twice. On the rail the row's
+            // label already IS the entry, so the bare phrase must not name it;
+            // on a flat line the entry appears exactly once, from the qualifier.
+            assert!(
+                !phrase.contains("cache"),
+                "{reason:?} stutters against its own row label: {phrase}"
+            );
+            assert_eq!(
+                qualified_phrase("cache", &phrase).matches("cache").count(),
+                1,
+                "{reason:?} names the entry more than once on a flat line"
             );
         }
 
+        // The refusal still carries the word a reader searches for.
         assert!(
-            skip_phrase("cache", &SkipReason::NotIgnored).contains("tracked"),
-            "the refusal has to name what git is doing with the entry"
+            skip_phrase(
+                "cache",
+                &SkipReason::NotIgnored {
+                    offender: "cache".into()
+                }
+            )
+            .contains("tracked")
+        );
+        // A glob names the ONE match that offended — the only way a single row
+        // can explain a thirty-way expansion.
+        assert_eq!(
+            skip_phrase(
+                "**/dist",
+                &SkipReason::NotIgnored {
+                    offender: "web/dist".into()
+                }
+            ),
+            "'web/dist' must be gitignored — tracked content is never copied"
         );
         assert_eq!(failure_phrase("disk full"), "failed — disk full");
+        assert_eq!(
+            qualified_phrase("cache", "already present"),
+            "cache: already present"
+        );
     }
 
     #[test]
@@ -2179,11 +2908,14 @@ mod tests {
 
     /// The names directly inside `dir`, sorted — for asserting what a copy
     /// (or a refusal) left behind.
+    /// What `dir` contains, minus the repository scaffolding every fixture
+    /// worktree carries — these tests ask what the COPY put there.
     fn entries_of(dir: &Path) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(dir)
             .map(|d| {
                 d.filter_map(Result::ok)
                     .map(|e| e.file_name().to_string_lossy().to_string())
+                    .filter(|name| name != ".git" && name != ".gitignore")
                     .collect()
             })
             .unwrap_or_default();
@@ -2290,7 +3022,7 @@ mod tests {
 
         let result = run(&source, &target, &config(&["src"]));
 
-        assert_eq!(sole_skip(&result), SkipReason::NotIgnored);
+        assert_sole_skip!(result, SkipReason::NotIgnored { .. });
         assert_eq!(
             fs::read(target.join("src/main.rs")).unwrap(),
             b"a previous copy",
@@ -2315,6 +3047,7 @@ mod tests {
                 paths: vec!["target".into()],
                 fallback: CopyFallback::Copy,
                 max_size_bytes: Some(1),
+                max_size_unparsed: None,
             },
             false,
             &mut NullSink,
@@ -2357,9 +3090,9 @@ mod tests {
             "fixture precondition: the entry is tracked, not merely visible"
         );
 
-        assert_eq!(
-            sole_skip(&run(&source, &target, &config(&["vendor"]))),
-            SkipReason::NotIgnored
+        assert_sole_skip!(
+            run(&source, &target, &config(&["vendor"])),
+            SkipReason::NotIgnored { .. }
         );
         assert!(!target.join("vendor").exists());
     }
@@ -2380,9 +3113,9 @@ mod tests {
             "fixture precondition: no repository, so git cannot answer"
         );
 
-        assert_eq!(
-            sole_skip(&run(&source, &target, &config(&["cache"]))),
-            SkipReason::NotIgnored
+        assert_sole_skip!(
+            run(&source, &target, &config(&["cache"])),
+            SkipReason::Unclassifiable { .. }
         );
         assert!(
             entries_of(&target).is_empty(),
@@ -2445,7 +3178,7 @@ mod tests {
 
         let result = copy_entries(&source, &alias, &config(&["target"]), true, &mut NullSink);
 
-        assert_eq!(sole_skip(&result), SkipReason::DestinationExists);
+        assert_eq!(sole_skip(&result), SkipReason::SameWorktree);
         assert_eq!(fs::read(source.join("target/app")).unwrap(), b"precious");
     }
 
@@ -2544,7 +3277,7 @@ mod tests {
 
         let result = copy_entries(&source, &target, &config(&[&absolute]), true, &mut NullSink);
 
-        assert_eq!(sole_skip(&result), SkipReason::NotIgnored);
+        assert_sole_skip!(result, SkipReason::Uncontained { .. });
         assert_eq!(
             fs::read(tmp.path().join("outside/precious")).unwrap(),
             b"not yours",
@@ -2666,6 +3399,7 @@ mod tests {
                 // fire, because nothing here has to be copied byte-wise.
                 fallback: CopyFallback::Skip,
                 max_size_bytes: Some(0),
+                max_size_unparsed: None,
             },
             false,
             &mut NullSink,
@@ -2690,46 +3424,43 @@ mod tests {
     // ── plan_method: the cells the existing matrix leaves open ───────────
 
     #[test]
-    fn plan_method_refuses_on_fallback_skip_without_consulting_the_cap() {
+    fn gate_byte_copies_refuses_on_fallback_skip_without_consulting_the_cap() {
         // Both refusals apply: no reflink, and over the cap. `NoReflink` wins,
         // and it has to — `fallback: skip` says this tree is not worth byte
         // copying at any size, so `2.1 GB over the 1 GB max_size` would send
         // the user to raise a cap that changes nothing.
         assert_eq!(
-            plan_method(false, CopyFallback::Skip, 4096, Some(1024)),
-            Err(SkipReason::NoReflink)
+            gate_byte_copies(true, 4096, CopyFallback::Skip, Some(1024)),
+            Some(SkipReason::NoReflink)
         );
         assert_eq!(
-            plan_method(false, CopyFallback::Skip, 0, Some(0)),
-            Err(SkipReason::NoReflink)
+            gate_byte_copies(true, 0, CopyFallback::Skip, Some(0)),
+            Some(SkipReason::NoReflink)
         );
     }
 
     #[test]
-    fn plan_method_gate_trips_one_byte_over_and_not_before() {
+    fn gate_byte_copies_gate_trips_one_byte_over_and_not_before() {
         // The cap is inclusive: `max_size: 1KB` admits a 1024-byte entry and
         // refuses a 1025-byte one. An off-by-one here is invisible on every
         // tree except the one that sits exactly on the boundary.
         assert_eq!(
-            plan_method(false, CopyFallback::Copy, 1025, Some(1024)),
-            Err(SkipReason::TooLarge {
+            gate_byte_copies(true, 1025, CopyFallback::Copy, Some(1024)),
+            Some(SkipReason::TooLarge {
                 size_bytes: 1025,
                 limit_bytes: 1024,
             })
         );
         assert_eq!(
-            plan_method(false, CopyFallback::Copy, 1023, Some(1024)),
-            Ok(CopyMethod::Copied)
+            gate_byte_copies(true, 1023, CopyFallback::Copy, Some(1024)),
+            None
         );
         // A zero cap still admits an entry with no bytes in it: the rule is
         // "over the cap", and nothing is not over anything.
+        assert_eq!(gate_byte_copies(true, 0, CopyFallback::Copy, Some(0)), None);
         assert_eq!(
-            plan_method(false, CopyFallback::Copy, 0, Some(0)),
-            Ok(CopyMethod::Copied)
-        );
-        assert_eq!(
-            plan_method(false, CopyFallback::Copy, 1, Some(0)),
-            Err(SkipReason::TooLarge {
+            gate_byte_copies(true, 1, CopyFallback::Copy, Some(0)),
+            Some(SkipReason::TooLarge {
                 size_bytes: 1,
                 limit_bytes: 0,
             })
@@ -2816,30 +3547,321 @@ mod tests {
         }
     }
 
-    // ── Known defect, held open ──────────────────────────────────────────
-
-    /// **KNOWN BUG — this test fails today and is `#[ignore]`d so the suite
-    /// stays green; remove the attribute with the fix.** Reported by the
-    /// coverage pass, deliberately not fixed here.
-    ///
-    /// Nothing stops an entry from resolving to the destination *root*:
-    ///
-    /// - `stays_inside_worktree` rejects `..`, `/` and Windows prefixes, but
-    ///   not `.` — and `target.join(".")` is the destination worktree.
-    /// - [`expand_entries`] reports the walk's own root as an empty-string
-    ///   match, so `copy: ["*"]` expands to `["", …]` — and `target.join("")`
-    ///   is likewise the destination worktree.
-    ///
-    /// Under `force` the engine then hands that path to `remove_existing`,
-    /// which empties the worktree the user is standing in. The `""` case is
-    /// saved by git (`check-ignore -- ""` exits 128 → `Unknown` → refused) and
-    /// the `.` case by the tracked probe (`ls-files -- .` is non-empty in any
-    /// repo with a commit) — so both currently fail closed, for reasons
-    /// outside this module and unrelated to containment. The fixture below
-    /// removes the second of those accidents (a repository with nothing
-    /// tracked yet) and the destination is wiped.
+    /// Not an assertion about speed — a guard that the batched probe stays
+    /// batched. Per-match probing spawned three git processes for every
+    /// expanded path; a thirty-match glob meant ninety, on the critical path of
+    /// every worktree creation.
     #[test]
-    #[ignore = "known bug: an entry resolving to the destination root empties it under --force"]
+    fn the_gitignore_probe_costs_two_git_invocations_per_entry() {
+        let (_tmp, source, target) = repo_fixture("dist\n");
+        for i in 0..30 {
+            write(&source.join(format!("pkg{i}/dist/app.js")), b"//");
+        }
+        let matches: Vec<String> = expand_entries(&source, "**/dist");
+        assert_eq!(matches.len(), 30, "fixture precondition");
+
+        let started = std::time::Instant::now();
+        let classified = classify_matches(&source, &matches).unwrap();
+        let batched = started.elapsed();
+        assert!(matches!(classified, Classification::Ignored));
+
+        // The old shape, measured the same way, for the report's before/after.
+        let started = std::time::Instant::now();
+        for rel in &matches {
+            let _ = crate::core::git_ignore::git_ignore_status(&source, rel);
+            let _ = crate::core::git_ignore::has_tracked_under(&source, rel);
+        }
+        let per_match = started.elapsed();
+
+        eprintln!("batched={batched:?} per-match={per_match:?}");
+        assert!(
+            batched < per_match,
+            "two invocations must beat ninety: batched={batched:?} per-match={per_match:?}"
+        );
+        let _ = target;
+    }
+
+    // ── Reading the source honestly ──────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreachable_cache_does_not_read_as_one_that_was_never_built() {
+        // `NoSource` is the quiet case — a cache nobody has built yet, dim and
+        // uninteresting. A cache that exists but cannot be read is the
+        // opposite, and collapsing the two hides a broken machine behind a row
+        // that says everything is fine.
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_tmp, source, target) = repo_fixture("/cache\n");
+        fs::create_dir_all(source.join("outer")).unwrap();
+        write(&source.join("outer/cache/a.bin"), b"a");
+        fs::set_permissions(source.join("outer"), fs::Permissions::from_mode(0o000)).unwrap();
+        let premise_holds = fs::symlink_metadata(source.join("outer/cache")).is_err();
+
+        let result = run(&source, &target, &config(&["outer/cache"]));
+
+        fs::set_permissions(source.join("outer"), fs::Permissions::from_mode(0o755)).unwrap();
+        if !premise_holds {
+            return;
+        }
+        assert_sole_skip!(result, SkipReason::SourceUnreadable { .. });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_glob_whose_walk_cannot_finish_says_so_instead_of_matching_nothing() {
+        // Swallowing walk errors either under-reports a green `Copied` for a
+        // tree half of which was never seen, or reports `NoMatches` for a glob
+        // whose matches were simply unreachable. Both are silent, and
+        // root-owned directories in a container image are the common way they
+        // happen.
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_tmp, source, target) = repo_fixture("dist\n");
+        fs::create_dir_all(source.join("locked/pkg/dist")).unwrap();
+        fs::set_permissions(source.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        let premise_holds = fs::read_dir(source.join("locked")).is_err();
+
+        let result = run(&source, &target, &config(&["**/dist"]));
+
+        fs::set_permissions(source.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+        if !premise_holds {
+            return;
+        }
+        assert_sole_skip!(result, SkipReason::SourceUnreadable { .. });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_size_gate_weighs_what_the_copy_will_write_not_what_du_reports() {
+        // `du` counts a hard-linked file once; the copy writes each link as an
+        // independent file. pnpm and ccache trees differ by an order of
+        // magnitude, which is how a 500 MB measurement lands 5 GB past a cap.
+        let (_tmp, source, _target) = repo_fixture("/cache\n");
+        write(&source.join("cache/real"), &vec![3u8; 1000]);
+        fs::hard_link(source.join("cache/real"), source.join("cache/link")).unwrap();
+
+        assert_eq!(measure(&source.join("cache")), 2000);
+    }
+
+    // ── Method reporting ─────────────────────────────────────────────────
+
+    #[test]
+    fn the_method_is_read_off_the_copier_not_guessed_from_the_probe() {
+        use crate::cow_copy::CopyStats;
+
+        let stats = |reflinked, copied| CopyStats {
+            reflinked,
+            copied,
+            bytes: 0,
+        };
+        assert_eq!(method_of(&stats(3, 0)), CopyMethod::Reflinked);
+        assert_eq!(method_of(&stats(0, 3)), CopyMethod::Copied);
+        // The case the one-sample probe could never see: a tree straddling a
+        // mount point comes back part-cloned, and "reflinked" on the copied
+        // half is the lie that matters.
+        assert_eq!(method_of(&stats(2, 1)), CopyMethod::Mixed);
+        // Nothing but directories and symlinks: no bytes moved, so nothing was
+        // copied in the expensive sense.
+        assert_eq!(method_of(&stats(0, 0)), CopyMethod::Reflinked);
+
+        assert_eq!(
+            copied_annotation(2, 1024, CopyMethod::Mixed, Duration::ZERO),
+            "2 paths · 1 KB · part reflinked"
+        );
+    }
+
+    // ── Platform-independent path spelling ───────────────────────────────
+
+    #[test]
+    fn expanded_paths_are_slash_separated_and_never_the_walk_root() {
+        // These strings go straight into git pathspecs, `.gitignore`
+        // comparisons and `StepKey` scopes. On Windows a native `web\dist`
+        // would make every glob entry fail as not-gitignored with a warning
+        // naming a path git never heard of, and nothing in CI would catch it —
+        // `windows-check` is a `cargo check`.
+        assert_eq!(
+            relative_to_slash_string(&PathBuf::from("web").join("dist")).as_deref(),
+            Some("web/dist")
+        );
+        // The walk root has no components, and the worktree itself is not
+        // something `copy:` may replicate.
+        assert_eq!(relative_to_slash_string(Path::new("")), None);
+    }
+
+    // ── Force-path safety: what may be destroyed, and when ───────────────
+
+    #[test]
+    fn force_refuses_to_delete_content_the_target_worktree_tracks() {
+        // The invariant runs against the SOURCE, and the source's opinion says
+        // nothing about the destination. Branch `experiment` gitignores
+        // `docs/`; branch `main` has it committed. `daft warm --from
+        // experiment --force` standing in main would otherwise pass the source
+        // probe and delete main's tracked, committed `docs/`, replacing it with
+        // generated output.
+        let (_tmp, source, target) = fs_fixture();
+        for root in [&source, &target] {
+            let out = crate::utils::git_command_at(root)
+                .args(["init", "-q", "-b", "main"])
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        // Source: docs/ is a gitignored build artifact.
+        write(&source.join(".gitignore"), b"/docs\n");
+        write(&source.join("docs/generated.html"), b"<generated>");
+        // Target: docs/ is committed content.
+        write(&target.join("docs/handbook.md"), b"# the real thing");
+        git(&target, &["add", "docs/handbook.md"]);
+        git(&target, &["commit", "-q", "-m", "docs"]);
+
+        let result = copy_entries(&source, &target, &config(&["docs"]), true, &mut NullSink);
+
+        assert_sole_skip!(result, SkipReason::TargetTracked { .. });
+        assert_eq!(
+            fs::read(target.join("docs/handbook.md")).unwrap(),
+            b"# the real thing",
+            "--force must never delete content the target worktree tracks"
+        );
+    }
+
+    #[test]
+    fn force_removes_nothing_when_the_entry_is_going_to_be_skipped_anyway() {
+        // Removal happens only once a copy is certain to proceed. Any refusal
+        // that can still fire after it — the cap, `fallback: skip`, a missing
+        // source — would otherwise report a dim skip over a destroyed cache:
+        // net loss wearing a "nothing happened" face.
+        let (_tmp, source, target) = repo_fixture("/cache\n");
+        write(&source.join("cache/big.bin"), &vec![7u8; 4096]);
+        write(&target.join("cache/old.bin"), b"the existing cache");
+
+        // A cap far below the entry's size. Only reachable end-to-end where the
+        // filesystem cannot clone — on APFS the cap is never consulted at all,
+        // and the copy correctly proceeds — so this arm runs on Linux CI and
+        // the gate below carries it everywhere else.
+        let capped = ResolvedCopyConfig {
+            paths: vec!["cache".to_string()],
+            fallback: CopyFallback::Copy,
+            max_size_bytes: Some(1),
+            max_size_unparsed: None,
+        };
+        let reflinks = probe_reflink_support(&target).unwrap_or(true);
+        let result = copy_entries(&source, &target, &capped, true, &mut NullSink);
+        if !reflinks {
+            assert_sole_skip!(result, SkipReason::TooLarge { .. });
+            assert!(
+                target.join("cache/old.bin").is_file(),
+                "a capped entry reported a skip over a destroyed cache"
+            );
+        }
+
+        // A source that is not there at all: the same ordering, one gate
+        // earlier, and reachable on every filesystem.
+        let missing = config(&["never-built"]);
+        write(&target.join("never-built/keep.bin"), b"still here");
+        copy_entries(&source, &target, &missing, true, &mut NullSink);
+        assert!(
+            target.join("never-built/keep.bin").is_file(),
+            "a missing source must not have cleared the destination first"
+        );
+
+        // And the gate that decides it, in isolation — the only way to see the
+        // `fallback: skip` and cap arms on a filesystem that always clones.
+        assert_eq!(
+            gate_byte_copies(true, 4096, CopyFallback::Copy, Some(1)),
+            Some(SkipReason::TooLarge {
+                size_bytes: 4096,
+                limit_bytes: 1
+            })
+        );
+    }
+
+    // ── Overlapping declarations ─────────────────────────────────────────
+
+    #[test]
+    fn overlapping_declarations_copy_the_whole_tree_in_either_order() {
+        // `copy: [web/dist, web]`: copying `web/dist` first manufactures an
+        // empty `target/web` on the way, and `web` then finds its destination
+        // "already present" — so everything else under `web/` never arrives,
+        // on creation and on every warm after it. Ancestors are processed
+        // first regardless of declaration order.
+        for declared in [["web/dist", "web"], ["web", "web/dist"]] {
+            let (_tmp, source, target) = repo_fixture("/web\n");
+            write(&source.join("web/dist/app.js"), b"bundle");
+            write(&source.join("web/cache/blob.bin"), b"blob");
+
+            let result = run(&source, &target, &config(&declared));
+
+            assert_eq!(
+                fs::read(target.join("web/cache/blob.bin")).unwrap(),
+                b"blob",
+                "declared {declared:?}: the containing entry copied its whole tree"
+            );
+            assert_eq!(fs::read(target.join("web/dist/app.js")).unwrap(), b"bundle");
+            // One outcome per declaration, still in declaration order.
+            assert_eq!(
+                result
+                    .outcomes
+                    .iter()
+                    .map(CopyOutcome::entry)
+                    .collect::<Vec<_>>(),
+                declared,
+                "outcomes follow the declaration order, not the processing order"
+            );
+        }
+    }
+
+    // ── The cap the validator never gets to report ───────────────────────
+
+    #[test]
+    fn an_unreadable_max_size_warns_once_and_leaves_entries_uncapped() {
+        // Nothing on this path runs `validate_config` — its only caller is
+        // `daft hooks validate` — so a typo'd cap would otherwise evaporate in
+        // silence. Degrading to uncapped is right; degrading quietly is not.
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp.path().join("daft.yml"),
+            b"copy:\n  paths: [target, node_modules]\n  max_size: five gigabytes\n",
+        );
+        let resolved = read_copy_config(tmp.path()).unwrap();
+        assert_eq!(resolved.max_size_bytes, None);
+        assert_eq!(
+            resolved.max_size_unparsed.as_deref(),
+            Some("five gigabytes")
+        );
+
+        let (_tmp2, source, target) = repo_fixture("/target\n");
+        let mut sink = crate::core::RecordingStageSink::default();
+        copy_entries(&source, &target, &resolved, false, &mut sink);
+
+        assert_eq!(
+            sink.warnings.len(),
+            1,
+            "one warning for the stage, not one per entry: {:?}",
+            sink.warnings
+        );
+        assert!(
+            sink.warnings[0].contains("five gigabytes") && sink.warnings[0].contains("max_size"),
+            "the warning has to quote what could not be read: {}",
+            sink.warnings[0]
+        );
+    }
+
+    // ── Destination-root containment ─────────────────────────────────────
+
+    /// An entry that resolves to the destination *root* is refused outright.
+    ///
+    /// Two routes reached it: `.` (and `sub/..`, and the empty string), whose
+    /// `target.join(...)` IS the destination worktree; and a glob's walk root,
+    /// which used to be reported as an empty-string match so `copy: ["*"]`
+    /// expanded to `["", …]`. Under `--force` either one handed the whole
+    /// worktree to the removal step.
+    ///
+    /// Both were previously saved only by accident — `check-ignore -- ""`
+    /// exits 128, and `ls-files -- .` is non-empty in any repo with a commit —
+    /// so the fixture here removes the second accident (a repository with
+    /// nothing tracked yet) and asserts containment holds on its own.
+    #[test]
     fn an_entry_that_resolves_to_the_destination_root_is_refused() {
         let (_tmp, source, target) = repo_fixture("*\n");
         write(&source.join("target/app"), b"cache");
@@ -2852,7 +3874,15 @@ mod tests {
             "the copy stage emptied the destination worktree — it now holds {:?}",
             entries_of(&target)
         );
-        assert_eq!(sole_skip(&result), SkipReason::NotIgnored);
+        assert_sole_skip!(result, SkipReason::Uncontained { .. });
+
+        // Every spelling of "the worktree itself", refused before git is asked.
+        for entry in [".", "", "sub/.."] {
+            assert!(
+                containment_violation(entry).is_some(),
+                "{entry:?} names the worktree root"
+            );
+        }
 
         // The same hazard by the other route: the walk's root is not one of
         // its own matches, and an empty relative path is not a path.

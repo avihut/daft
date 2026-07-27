@@ -243,9 +243,39 @@ pub enum CopyConfig {
         /// Parsed by `crate::coordinator::clean_policy::parse_size` —
         /// case-insensitive, binary multiples (1KB = 1024), a bare integer is
         /// bytes. Applies to the byte-copy fallback only.
+        ///
+        /// Accepts an unquoted YAML integer as well as a string. `parse_size`
+        /// already documents a bare integer as bytes, so `max_size: 1048576`
+        /// is the obvious thing to write — and against a plain
+        /// `Option<String>` it does not merely fail this key, it fails the
+        /// *whole* `daft.yml` through the untagged `copy:` enum, silently
+        /// dropping every YAML hook to the legacy-script fallback. Same blast
+        /// radius, same reasoning as [`CopyFallback`]'s hand-written impl.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "deserialize_size_string")]
         max_size: Option<String>,
     },
+}
+
+/// Accept a YAML scalar that is either a string or an integer, normalizing to
+/// the string form `parse_size` consumes. Anything else (a map, a sequence, a
+/// float) is still an error.
+fn deserialize_size_string<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum SizeScalar {
+        Text(String),
+        Bytes(u64),
+    }
+
+    Ok(match Option::<SizeScalar>::deserialize(deserializer)? {
+        Some(SizeScalar::Text(s)) => Some(s),
+        Some(SizeScalar::Bytes(n)) => Some(n.to_string()),
+        None => None,
+    })
 }
 
 impl CopyConfig {
@@ -1705,6 +1735,27 @@ copy:
         assert_eq!(copy.paths(), ["target/", "node_modules/"]);
         assert_eq!(copy.fallback(), CopyFallback::Skip);
         assert_eq!(copy.max_size(), Some("5GB"));
+    }
+
+    #[test]
+    fn copy_max_size_accepts_an_unquoted_integer() {
+        // `parse_size` documents a bare integer as bytes, so this is the
+        // obvious thing to write — and against a plain Option<String> it did
+        // not merely fail this key: the untagged `copy:` enum failed the WHOLE
+        // daft.yml, dropping every YAML hook to the legacy-script fallback.
+        for yaml in [
+            "copy:\n  paths: [target]\n  max_size: 1048576\n",
+            "copy:\n  paths: [target]\n  max_size: \"1048576\"\n",
+        ] {
+            let config: YamlConfig = serde_yaml::from_str(yaml).expect(yaml);
+            assert_eq!(config.copy.unwrap().max_size(), Some("1048576"), "{yaml}");
+        }
+
+        // The rest of the file survives either spelling.
+        let config: YamlConfig =
+            serde_yaml::from_str("shared:\n  - .env\ncopy:\n  paths: [target]\n  max_size: 5000\n")
+                .unwrap();
+        assert_eq!(config.shared.unwrap(), [".env"]);
     }
 
     #[test]
