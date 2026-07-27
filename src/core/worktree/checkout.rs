@@ -693,6 +693,22 @@ pub fn execute(
         "Changing directory to worktree: {}",
         worktree_path.display()
     ));
+    // Absolutize BEFORE the chdir, while the original cwd is still current.
+    // `--at sub/foo` reaches here as a relative path; every consumer below
+    // the chdir — shared linking, the copy stage, the post-create
+    // HookContext's DAFT_WORKTREE_PATH, the returned result — would
+    // otherwise re-resolve it against the NEW cwd and land on
+    // `<worktree>/sub/foo`. Shared linking degrades to a silent no-op there;
+    // the copy stage would write a cache-sized junk tree and report green.
+    //
+    // Deliberately NOT `canonicalize()`: that also resolves symlinks
+    // (`/tmp` → `/private/tmp` on macOS), which would change the path every
+    // downstream face prints, for a problem that is purely about relativity.
+    let worktree_path = if worktree_path.is_absolute() {
+        worktree_path
+    } else {
+        get_current_directory()?.join(&worktree_path)
+    };
     change_directory(&worktree_path)?;
 
     // Apply stashed changes
@@ -1616,11 +1632,16 @@ mod timeline_tests {
     /// key, and `daft go` is the creation path most users walk most often.
     /// The sibling assertion lives in checkout_branch.rs — the two call sites
     /// are duplicated verbatim, so a regression that edits only ONE of them
-    /// has to be caught in the file it edits. This one also pins the *splice
-    /// point*: a real neighbouring `shared:` section is present, and the
-    /// post-create row still closes the plan, so a copy section inserted one
-    /// row too early (inside the shared group) or one too late (after the
-    /// hooks) is visible here before it ever reaches a rail.
+    /// has to be caught in the file it edits.
+    ///
+    /// Scope, stated precisely because it is easy to overclaim: this pins
+    /// ABSENCE (no anchor, no step row, no event) and that the wiring reads
+    /// the entry list it was given. It does NOT pin the section's plan
+    /// *position* — with a fixture that declares no `copy:`,
+    /// `push_copy_section` is a no-op, so the call could sit anywhere in
+    /// `execute` and this test would stay green (verified by mutation). A
+    /// positional test needs a `copy:`-declaring fixture, which needs the
+    /// engine; it lands with it.
     #[test]
     #[serial]
     fn no_copy_section_when_the_source_declares_none() {
@@ -1673,9 +1694,10 @@ mod timeline_tests {
             "no `copy:` key, no events: {:?}",
             sink.events
         );
-        // The declared shared file still gets its own row — proof the plan
-        // under test is one WITH a neighbouring section, so the ordering
-        // assertion below is not passing vacuously.
+        // The declared shared file still gets its own row: proof the config
+        // was really read and a neighbouring section really planned, so the
+        // absence assertions above are about `copy:` specifically and not
+        // about a plan that came out empty for some unrelated reason.
         assert_eq!(
             plan.steps()
                 .filter(|s| s.key.id == StageId::SharedFile)
@@ -1684,9 +1706,9 @@ mod timeline_tests {
             "the neighbouring shared section is present: {:?}",
             plan.rows
         );
-        // The copy section is spliced between the shared section and the
-        // post-create row; an off-by-one that appended it after the hooks
-        // would show up here first.
+        // The plan still ends with the post-create row — the shape the copy
+        // section splices into. (This is a plan-shape guard, not a splice-
+        // point guard: see the doc comment.)
         assert!(
             matches!(
                 plan.rows.last(),

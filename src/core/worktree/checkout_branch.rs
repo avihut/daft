@@ -297,6 +297,15 @@ pub fn execute(
         "Changing directory to worktree: {}",
         worktree_path.display()
     ));
+    // Absolutize before the chdir — a relative `--at` would otherwise be
+    // re-resolved against the new worktree by everything below (shared
+    // linking, the copy stage, DAFT_WORKTREE_PATH). See checkout::execute
+    // for the full rationale.
+    let worktree_path = if worktree_path.is_absolute() {
+        worktree_path
+    } else {
+        get_current_directory()?.join(&worktree_path)
+    };
     change_directory(&worktree_path)?;
 
     // Apply stashed changes
@@ -1564,12 +1573,17 @@ mod timeline_tests {
     }
 
     /// The `copy:` stage (#387) is inert for the overwhelming majority of
-    /// repos, which declare no such key: no group anchor, no rows, no events,
-    /// and the post-create row still closes the plan. The stage was wired
-    /// into a creation path every daft user walks, so "costs nothing when
-    /// undeclared" is a contract, not an implementation detail — a stray
-    /// empty anchor here would put a dim "copied paths" heading on every
-    /// worktree anyone ever creates.
+    /// repos, which declare no such key: no group anchor, no rows, no events.
+    /// The stage was wired into a creation path every daft user walks, so
+    /// "costs nothing when undeclared" is a contract, not an implementation
+    /// detail — a stray empty anchor here would put a dim "copied paths"
+    /// heading on every worktree anyone ever creates.
+    ///
+    /// Pins absence and wiring only, NOT the section's plan position: with no
+    /// `copy:` declared, `push_copy_section` is a no-op and the call could sit
+    /// anywhere in `execute` with this test still green. The positional test
+    /// needs a declaring fixture, which needs the engine. See the sibling in
+    /// checkout.rs.
     #[test]
     #[serial]
     fn no_copy_section_when_the_source_declares_none() {
@@ -1632,9 +1646,9 @@ mod timeline_tests {
             "no `copy:` key, no events: {:?}",
             sink.events
         );
-        // The copy section is spliced between the shared section and the
-        // post-create row; an off-by-one that appended it after the hooks
-        // would show up here first.
+        // The plan still ends with the post-create row — the shape the copy
+        // section splices into. (A plan-shape guard, not a splice-point
+        // guard: see the doc comment.)
         assert!(
             matches!(
                 plan.rows.last(),
