@@ -486,6 +486,78 @@ mod tests {
         assert!(!output.has_warnings());
     }
 
+    // ── Registration ─────────────────────────────────────────────────────
+    //
+    // A new command has to be listed in a dozen places, and most of those
+    // lists are only self-consistent: their tests check ordering, or that
+    // every listed name resolves, which stays green when an entry is missing
+    // from all of them at once. These assert *presence* on the surfaces where
+    // a silent omission would leave `daft warm` half-wired.
+
+    /// `daft warm` and `git daft worktree-warm` must both be suggestible. The
+    /// existing list tests only check ordering and duplicates, so they pass
+    /// just as happily with the entries gone.
+    #[test]
+    fn warm_is_suggestible_under_both_spellings() {
+        assert!(crate::suggest::DAFT_SUBCOMMANDS.contains(&"warm"));
+        assert!(crate::suggest::DAFT_SUBCOMMANDS.contains(&"worktree-warm"));
+    }
+
+    /// The completion registry: the command has to be generated at all, its
+    /// clap definition has to be reachable, and it has to take the rich
+    /// (worktree-name) path rather than the flags-only one.
+    #[test]
+    fn warm_is_wired_into_the_completion_registry() {
+        use crate::commands::completions::{
+            COMMANDS, VERB_ALIAS_GROUPS, get_command_for_name, uses_rich_completions,
+        };
+
+        assert!(
+            COMMANDS.contains(&"git-worktree-warm"),
+            "without this, no completion script is generated for warm at all"
+        );
+        assert!(
+            get_command_for_name("git-worktree-warm").is_some(),
+            "the generator resolves flags through this map"
+        );
+        assert!(
+            uses_rich_completions("git-worktree-warm"),
+            "both of warm's slots name a worktree, which is the rich path"
+        );
+        assert!(
+            VERB_ALIAS_GROUPS
+                .iter()
+                .any(|(verbs, cmd)| verbs.contains(&"warm") && *cmd == "git-worktree-warm"),
+            "the `daft warm` alias must map to the underlying command"
+        );
+    }
+
+    /// The argument surface itself. Completions, the man page, the docs page
+    /// and every `copy` YAML scenario spell these out; a rename that compiled
+    /// would break all four silently.
+    #[test]
+    fn the_argument_surface_is_the_one_every_other_surface_spells_out() {
+        use clap::CommandFactory;
+
+        let cmd = Args::command();
+        let longs: Vec<_> = cmd.get_arguments().filter_map(|a| a.get_long()).collect();
+        assert!(longs.contains(&"from"), "{longs:?}");
+        assert!(longs.contains(&"force"), "{longs:?}");
+        assert!(longs.contains(&"verbose"), "{longs:?}");
+
+        let positionals: Vec<_> = cmd.get_positionals().map(|a| a.get_id().as_str()).collect();
+        assert_eq!(
+            positionals,
+            ["target"],
+            "warm takes exactly one optional positional — the worktree to warm"
+        );
+        assert!(
+            !cmd.get_positionals().any(clap::Arg::is_required_set),
+            "the positional defaults to the current worktree, so it is optional"
+        );
+        assert_eq!(cmd.get_name(), "git-worktree-warm");
+    }
+
     /// The copied line carries the annotation, not just the entry name —
     /// "how much, how, how long" is the answer a cache copy owes the user.
     #[test]

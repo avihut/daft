@@ -1459,6 +1459,78 @@ mod tests {
         );
     }
 
+    /// The `warm` half of the umbrella dispatch (#387). The hardcoded shell
+    /// strings are the drift-prone half of completions — flag lists are
+    /// generated from clap, but the verb cases and the top-level subcommand
+    /// list are hand-maintained, so a command can be fully registered in Rust
+    /// and still be invisible at the prompt.
+    #[test]
+    fn umbrella_shells_dispatch_warm_verb() {
+        let bash = bash::DAFT_BASH_COMPLETIONS;
+        assert!(
+            bash.contains("warm)"),
+            "bash umbrella must dispatch the `warm` verb"
+        );
+        assert!(
+            bash.contains("_git_worktree_warm"),
+            "bash umbrella must call warm's per-command completer"
+        );
+        assert!(
+            bash.contains(" warm "),
+            "bash umbrella must offer `warm` in its top-level subcommand list"
+        );
+
+        let zsh_umbrella = zsh::DAFT_ZSH_COMPLETIONS;
+        assert!(
+            zsh_umbrella.contains("warm)") && zsh_umbrella.contains("__git_worktree_warm_impl"),
+            "zsh umbrella must dispatch `warm` to its per-command completer"
+        );
+        assert!(
+            zsh_umbrella.contains(" warm "),
+            "zsh umbrella must offer `warm` in its top-level subcommand list"
+        );
+
+        let fish = fish::generate_daft_fish_completions();
+        assert!(
+            fish.contains("-a 'warm'"),
+            "fish umbrella must register the `warm` subcommand"
+        );
+        assert!(
+            fish.contains("git-worktree-warm"),
+            "fish umbrella must route warm's values through its __complete arm"
+        );
+    }
+
+    /// `--from` takes a worktree name, so its value must complete like the
+    /// positional does. A flag whose value falls through to the `-*` branch
+    /// offers flags where a worktree belongs — worse than offering nothing.
+    #[test]
+    fn warm_completes_the_from_flag_value_in_bash_and_zsh() {
+        assert!(command_has_worktree_from_flag("git-worktree-warm"));
+        assert!(!command_has_worktree_from_flag("git-worktree-carry"));
+
+        let bash = bash::generate_bash_completion_string("git-worktree-warm").expect("bash gen");
+        let from_guard = bash
+            .find(r#""$prev" == "--from""#)
+            .expect("bash must branch on a preceding --from");
+        let flag_guard = bash
+            .find(r#""$cur" == -*"#)
+            .expect("bash must have its flag branch");
+        assert!(
+            from_guard < flag_guard,
+            "the --from value branch must precede the flag branch, or flags win the slot"
+        );
+
+        let zsh = zsh::generate_zsh_completion_string("git-worktree-warm").expect("zsh gen");
+        let from_guard = zsh
+            .find(r#"== "--from""#)
+            .expect("zsh must branch on a preceding --from");
+        let flag_guard = zsh
+            .find(r#""$curword" == -*"#)
+            .expect("zsh must have its flag branch");
+        assert!(from_guard < flag_guard, "same ordering rule in zsh");
+    }
+
     #[test]
     fn zsh_gates_flag_completions_on_leading_dash() {
         let commands = [
