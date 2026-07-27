@@ -445,15 +445,11 @@ fn create_sandbox(
         worktree_path.display(),
         short_oid(&params.commit)
     ));
-    // Absolutize before the chdir — a relative `--at` would otherwise be
-    // re-resolved against the new worktree by everything below (shared
-    // linking, the copy stage, DAFT_WORKTREE_PATH). See checkout::execute
-    // for the full rationale.
-    let worktree_path = if worktree_path.is_absolute() {
-        worktree_path
-    } else {
-        get_current_directory()?.join(&worktree_path)
-    };
+    // Absolutize and lexically clean before the chdir — a relative `--at`
+    // would otherwise be re-resolved against the new worktree by everything
+    // below (shared linking, the copy stage, DAFT_WORKTREE_PATH). See
+    // `super::normalize_worktree_path`.
+    let worktree_path = super::normalize_worktree_path(worktree_path)?;
     change_directory(&worktree_path)?;
 
     if stash_created {
@@ -805,6 +801,85 @@ mod tests {
             layout: None,
             at_path: Some(at),
         }
+    }
+
+    /// The `copy:` stage (#387) is inert on the sandbox journey too — the
+    /// third of three verbatim call sites, and the one reached by
+    /// `daft go <tag>` and `daft start --fork`. Each site carries its own
+    /// guard because a regression that edits only ONE of them has to be
+    /// caught in the file it edits; without this, a stray empty anchor here
+    /// would put a dim "copied paths" heading on every fork anyone ever
+    /// mints and nothing would object.
+    ///
+    /// Pins absence and wiring only, NOT the section's plan position: with no
+    /// `copy:` declared, `push_copy_section` is a no-op and the call could sit
+    /// anywhere in `create_sandbox` with this test still green. The positional
+    /// test needs a declaring fixture, which needs the engine. Siblings live
+    /// in checkout.rs and checkout_branch.rs.
+    #[test]
+    #[serial]
+    fn no_copy_section_when_the_source_declares_none() {
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let (tmp, repo, oid) = repo_with_tag();
+        // A config that exists and parses, but says nothing about `copy:`.
+        // The `shared:` key is the vacuity guard: it makes the plan under
+        // test one that really did read a config and really did plan a
+        // neighbouring section, so the absences below are about `copy:` and
+        // not about a plan that came out empty for an unrelated reason.
+        std::fs::write(repo.join("daft.yml"), "shared:\n  - .env\n").unwrap();
+        std::env::set_current_dir(&repo).unwrap();
+
+        let wt = tmp.path().join("v1");
+        let mut sink = crate::core::RecordingStageSink::default();
+        execute_visit(
+            &params("v1", &oid, WorktreeKind::Canonical, wt.clone()),
+            &GitCommand::new(true),
+            &repo,
+            &mut sink,
+        )
+        .expect("visit materializes");
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert!(
+            !plan
+                .rows
+                .iter()
+                .any(|r| matches!(r, Row::Group { label } if label == "copied paths")),
+            "no `copy:` key, no anchor: {:?}",
+            plan.rows
+        );
+        assert_eq!(
+            plan.steps()
+                .filter(|s| s.key.id == StageId::CopyPath)
+                .count(),
+            0,
+            "no `copy:` key, no rows"
+        );
+        assert!(
+            !sink.events.iter().any(|(k, _)| k.id == StageId::CopyPath),
+            "no `copy:` key, no events: {:?}",
+            sink.events
+        );
+        assert_eq!(
+            plan.steps()
+                .filter(|s| s.key.id == StageId::SharedFile)
+                .count(),
+            1,
+            "the neighbouring shared section is present: {:?}",
+            plan.rows
+        );
+        // The plan still ends with the post-create row — the shape the copy
+        // section splices into. (A plan-shape guard, not a splice-point
+        // guard: see the doc comment.)
+        assert!(
+            matches!(
+                plan.rows.last(),
+                Some(Row::Step(spec)) if spec.key.id == StageId::PostCreateHooks
+            ),
+            "post-create still closes the plan: {:?}",
+            plan.rows
+        );
     }
 
     #[test]

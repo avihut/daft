@@ -297,15 +297,11 @@ pub fn execute(
         "Changing directory to worktree: {}",
         worktree_path.display()
     ));
-    // Absolutize before the chdir — a relative `--at` would otherwise be
-    // re-resolved against the new worktree by everything below (shared
-    // linking, the copy stage, DAFT_WORKTREE_PATH). See checkout::execute
-    // for the full rationale.
-    let worktree_path = if worktree_path.is_absolute() {
-        worktree_path
-    } else {
-        get_current_directory()?.join(&worktree_path)
-    };
+    // Absolutize and lexically clean before the chdir — a relative `--at`
+    // would otherwise be re-resolved against the new worktree by everything
+    // below (shared linking, the copy stage, DAFT_WORKTREE_PATH). See
+    // `super::normalize_worktree_path`.
+    let worktree_path = super::normalize_worktree_path(worktree_path)?;
     change_directory(&worktree_path)?;
 
     // Apply stashed changes

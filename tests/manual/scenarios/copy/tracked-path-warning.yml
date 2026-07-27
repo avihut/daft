@@ -4,17 +4,22 @@ description: >
   refused (#387). The refusal is a WARNING, never an abort — deliberately the
   opposite of post-create hooks' abort-by-default (#765): a cache copy is an
   optimization, and no config mistake may cost the user the worktree they asked
-  for. The trap covered here is the force-added file: `cache/` passes `git
-  check-ignore`, but `git ls-files cache` is non-empty, so the entry is only
-  ignored on the surface. A SECOND, perfectly valid entry is declared after it
-  and must still land — per-entry isolation is what "warn, never abort" means in
-  practice, and a stage that gave up at the first bad entry would pass every
-  single-entry test ever written. (Neither the repo name nor the branch name
-  contains "tracked" — the output assertion would otherwise pass off the rail's
-  own path annotations.) KNOWN GAP, tracked separately: the `output_contains`
-  assertions need CopyPath stage events to reach non-TTY output. Today only
-  `StageId::SharedFile` has a Plain-mode fallback (`core::progress::route_stage`
-  -> `core::shared::render_shared_stage_fallback`), so those two assertions stay
+  for. The trap covered here is the force-added file: the untracked bulk under
+  `cache/` really is ignored (`git check-ignore cache/big.bin` passes), so from
+  the outside the entry looks like an ordinary cache directory — but `git
+  ls-files cache` is non-empty, and git will not even call the directory itself
+  ignored once it has to descend into it for tracked content, so `git
+  check-ignore cache` exits 1. Both halves of the engine's eligibility probe
+  reject the entry independently. A SECOND, perfectly valid entry is declared
+  after it and must still land — per-entry isolation is what "warn, never abort"
+  means in practice, and a stage that gave up at the first bad entry would pass
+  every single-entry test ever written. (Neither the repo name nor the branch
+  name contains "tracked" — the output assertion would otherwise pass off the
+  rail's own path annotations.) KNOWN GAP, tracked separately: the
+  `output_contains` assertions need CopyPath stage events to reach non-TTY
+  output. Today only `StageId::SharedFile` has a Plain-mode fallback
+  (`core::progress::route_stage` ->
+  `core::shared::render_shared_stage_fallback`), so those two assertions stay
   red even against a correct engine until CopyPath gets the same treatment.
 
 repos:

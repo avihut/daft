@@ -693,22 +693,10 @@ pub fn execute(
         "Changing directory to worktree: {}",
         worktree_path.display()
     ));
-    // Absolutize BEFORE the chdir, while the original cwd is still current.
-    // `--at sub/foo` reaches here as a relative path; every consumer below
-    // the chdir — shared linking, the copy stage, the post-create
-    // HookContext's DAFT_WORKTREE_PATH, the returned result — would
-    // otherwise re-resolve it against the NEW cwd and land on
-    // `<worktree>/sub/foo`. Shared linking degrades to a silent no-op there;
-    // the copy stage would write a cache-sized junk tree and report green.
-    //
-    // Deliberately NOT `canonicalize()`: that also resolves symlinks
-    // (`/tmp` → `/private/tmp` on macOS), which would change the path every
-    // downstream face prints, for a problem that is purely about relativity.
-    let worktree_path = if worktree_path.is_absolute() {
-        worktree_path
-    } else {
-        get_current_directory()?.join(&worktree_path)
-    };
+    // Absolutize and lexically clean BEFORE the chdir, while the original
+    // cwd is still current — see `super::normalize_worktree_path` for why
+    // everything below the chdir depends on it.
+    let worktree_path = super::normalize_worktree_path(worktree_path)?;
     change_directory(&worktree_path)?;
 
     // Apply stashed changes

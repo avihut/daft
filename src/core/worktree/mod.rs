@@ -161,6 +161,36 @@ pub(crate) fn post_create_failure_error(
     })
 }
 
+/// Make a worktree path absolute and lexically clean, for use immediately
+/// **before** a creation core chdirs into the worktree it just made.
+///
+/// `--at sub/foo` reaches the creation cores as a relative path, and every
+/// consumer that runs after the chdir — `shared:` linking, the `copy:` stage
+/// (#387), the post-create `HookContext`'s `DAFT_WORKTREE_PATH`, the returned
+/// result — would otherwise re-resolve it against the *new* cwd and land on
+/// `<worktree>/sub/foo`. Shared linking degrades to a silent no-op there; the
+/// copy stage would create that path, fill it with a cache-sized tree, and
+/// report success.
+///
+/// Deliberately not `canonicalize()`: that also resolves symlinks (`/tmp` →
+/// `/private/tmp` on macOS), changing the path every downstream face prints
+/// for a problem that is purely about relativity. The lexical normalizer is
+/// the one every layout-derived path already goes through, so an
+/// `--at ../sibling` and its layout-derived twin are spelled identically
+/// wherever they surface instead of one of them carrying `main/../sibling`.
+///
+/// Shared by all three creation cores (checkout, checkout_branch, sandbox).
+pub(crate) fn normalize_worktree_path(
+    path: std::path::PathBuf,
+) -> anyhow::Result<std::path::PathBuf> {
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        crate::utils::get_current_directory()?.join(path)
+    };
+    Ok(crate::core::layout::template::normalize_path(&absolute))
+}
+
 /// Resolve the planned Carry row (#651): a clean tree resolves silently —
 /// the row vanishes — an applied stash completes, and a conflicted one
 /// fails with the recovery hint. Shared by the two creation cores, whose
@@ -186,6 +216,55 @@ pub(crate) fn resolve_carry_row(
             StageEvent::Failed {
                 detail: "stash conflicts \u{2014} run git stash pop".to_string(),
             },
+        );
+    }
+}
+
+#[cfg(test)]
+mod normalize_worktree_path_tests {
+    use super::normalize_worktree_path;
+    use std::path::PathBuf;
+
+    /// An absolute path keeps its spelling — symlinked prefixes included.
+    /// The `/tmp` case is the one that matters on macOS, where
+    /// `canonicalize` would rewrite it to `/private/tmp` and change what
+    /// every downstream face prints.
+    #[test]
+    fn absolute_paths_pass_through_without_resolving_symlinks() {
+        assert_eq!(
+            normalize_worktree_path(PathBuf::from("/tmp/wt/feat-x")).unwrap(),
+            PathBuf::from("/tmp/wt/feat-x"),
+        );
+    }
+
+    /// `..` and `.` collapse lexically, so `--at ../sibling` is spelled the
+    /// way its layout-derived twin would be rather than dragging
+    /// `main/../sibling` into DAFT_WORKTREE_PATH and `daft list`.
+    #[test]
+    fn parent_and_current_components_collapse() {
+        assert_eq!(
+            normalize_worktree_path(PathBuf::from("/repo/main/../sibling")).unwrap(),
+            PathBuf::from("/repo/sibling"),
+        );
+        assert_eq!(
+            normalize_worktree_path(PathBuf::from("/repo/./main")).unwrap(),
+            PathBuf::from("/repo/main"),
+        );
+    }
+
+    /// A relative path resolves against the CURRENT directory — the whole
+    /// point of calling this before the creation cores chdir into the new
+    /// worktree.
+    #[test]
+    fn relative_paths_resolve_against_the_current_directory() {
+        let cwd = crate::utils::get_current_directory().unwrap();
+        assert_eq!(
+            normalize_worktree_path(PathBuf::from("sub/foo")).unwrap(),
+            cwd.join("sub").join("foo"),
+        );
+        assert_eq!(
+            normalize_worktree_path(PathBuf::from("../sibling")).unwrap(),
+            cwd.parent().unwrap().join("sibling"),
         );
     }
 }
