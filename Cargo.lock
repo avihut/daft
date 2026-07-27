@@ -2886,13 +2886,12 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "local-store"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2dcaa968f49ef1c80b2d3474fd4728139ed0a54cf4205e37110cfa47a4d00f8"
+checksum = "3bbbf057d7ddbe646f7fdde902e3b5486ef3eeb0fd107a384137f58551ef8b6a"
 dependencies = [
  "base64",
  "dirs 5.0.1",
- "fs2",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4900,12 +4899,11 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "version-migrate"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6678fc9daff4d3d025d41ea04cc51599b74e991cb0ebad66426da5021b0875c"
+checksum = "d10d9917599b84eaea6fd02c78062100b67a1decf489c943b95fe13812452d62"
 dependencies = [
  "base64",
- "fs2",
  "local-store",
  "semver",
  "serde",
@@ -4918,9 +4916,9 @@ dependencies = [
 
 [[package]]
 name = "version-migrate-macro"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdbb2cd4eaa3676aecada8a7a44c43cfd7c927a3d8fa8b0adf7fd3fb8d32abf4"
+checksum = "e02b816f2e36488129337b088219e24ed7ef85a948590b28c5035d4ef6734227"
 dependencies = [
  "proc-macro2",
  "quote",
