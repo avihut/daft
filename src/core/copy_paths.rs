@@ -2391,7 +2391,63 @@ mod tests {
         );
     }
 
+    // ── copy_entries: what the sink is and is not told ───────────────────
+
+    #[test]
+    fn copy_entries_tells_the_sink_nothing_it_will_report_later() {
+        // The engine's half of "rendered exactly once". Per-entry facts travel
+        // in the returned outcomes and are drawn by `report_copy_results`; a
+        // `sink.on_warning` here as well would print every skip twice — once
+        // as a stderr line, once as a rail row — and tear the live region
+        // between them. Only `on_debug` (`-v` narration, which this sink drops)
+        // belongs to the engine.
+        use crate::core::RecordingStageSink;
+
+        let (_tmp, source, target) = repo_fixture("/target\n");
+        write(&source.join("target/app"), b"binary");
+        write(&source.join("src/main.rs"), b"fn main() {}");
+
+        let mut sink = RecordingStageSink::default();
+        // One of each shape the stage can produce: a copy, a refusal, and a
+        // missing source.
+        let result = copy_entries(
+            &source,
+            &target,
+            &config(&["target", "src", "never-built"]),
+            false,
+            &mut sink,
+        );
+
+        assert_eq!(result.outcomes.len(), 3);
+        assert!(sink.warnings.is_empty(), "{:?}", sink.warnings);
+        assert!(sink.steps.is_empty(), "{:?}", sink.steps);
+        assert!(
+            sink.events.is_empty(),
+            "the engine reports no stage events of its own: {:?}",
+            sink.events
+        );
+    }
+
     // ── copy_entries: entry shapes ───────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_entries_sees_through_a_symlink_to_the_same_worktree() {
+        // The same-directory refusal resolves symlinks, and has to: a source
+        // and target that reach one directory by two names is exactly what a
+        // `--from` resolved through a symlinked worktree path looks like, and
+        // under `force` a missed detection clears the source's own caches
+        // before "copying" them.
+        let (tmp, source, _target) = repo_fixture("/target\n");
+        write(&source.join("target/app"), b"precious");
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(&source, &alias).unwrap();
+
+        let result = copy_entries(&source, &alias, &config(&["target"]), true, &mut NullSink);
+
+        assert_eq!(sole_skip(&result), SkipReason::DestinationExists);
+        assert_eq!(fs::read(source.join("target/app")).unwrap(), b"precious");
+    }
 
     #[test]
     fn copy_entries_reports_a_nested_declaration_as_already_present() {
