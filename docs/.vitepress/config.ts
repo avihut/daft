@@ -250,6 +250,10 @@ export default defineConfig({
           },
           { text: "Multi-remote", link: "/worktrees/multi-remote" },
           {
+            text: "Copying build caches",
+            link: "/worktrees/copying-caches",
+          },
+          {
             text: "Running commands across worktrees",
             link: "/worktrees/running-commands",
           },

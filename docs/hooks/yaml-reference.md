@@ -32,21 +32,89 @@ Additionally:
 
 ## Top-level keys
 
-| Field              | Type        | Description                                                               |
-| ------------------ | ----------- | ------------------------------------------------------------------------- |
-| `min_version`      | string      | Minimum daft version required (e.g., `"1.5.0"`)                           |
-| `colors`           | bool        | Enable/disable colored output                                             |
-| `no_tty`           | bool        | Disable TTY detection                                                     |
-| `rc`               | string      | Shell RC file to source before running hooks                              |
-| `output`           | bool / list | `false` to suppress all output, or list of hook names to show output for  |
-| `extends`          | list        | Additional config files to merge (e.g., `["shared.yml"]`)                 |
-| `source_dir`       | string      | Directory for script files (default: `".daft"`)                           |
-| `source_dir_local` | string      | Directory for local (gitignored) script files (default: `".daft-local"`)  |
-| `hooks`            | map         | Hook definitions, keyed by hook name                                      |
-| `tasks`            | map         | Named, user-invoked task definitions (see [Tasks](#tasks))                |
-| `log`              | object      | Log configuration (see [Log configuration](#log-configuration))           |
-| `relations`        | list        | Related repositories (see [Relations](#relations))                        |
-| `merge`            | object      | Committed merge gate policy (see [Merge gate policy](#merge-gate-policy)) |
+| Field              | Type        | Description                                                                        |
+| ------------------ | ----------- | ---------------------------------------------------------------------------------- |
+| `min_version`      | string      | Minimum daft version required (e.g., `"1.5.0"`)                                    |
+| `colors`           | bool        | Enable/disable colored output                                                      |
+| `no_tty`           | bool        | Disable TTY detection                                                              |
+| `rc`               | string      | Shell RC file to source before running hooks                                       |
+| `output`           | bool / list | `false` to suppress all output, or list of hook names to show output for           |
+| `extends`          | list        | Additional config files to merge (e.g., `["shared.yml"]`)                          |
+| `source_dir`       | string      | Directory for script files (default: `".daft"`)                                    |
+| `source_dir_local` | string      | Directory for local (gitignored) script files (default: `".daft-local"`)           |
+| `copy`             | list / map  | Gitignored paths copied into each new worktree (see [Copied paths](#copied-paths)) |
+| `hooks`            | map         | Hook definitions, keyed by hook name                                               |
+| `tasks`            | map         | Named, user-invoked task definitions (see [Tasks](#tasks))                         |
+| `log`              | object      | Log configuration (see [Log configuration](#log-configuration))                    |
+| `relations`        | list        | Related repositories (see [Relations](#relations))                                 |
+| `merge`            | object      | Committed merge gate policy (see [Merge gate policy](#merge-gate-policy))          |
+
+## Copied paths
+
+A top-level `copy:` key declares gitignored paths — build caches such as
+`target/`, `node_modules/`, `.venv/` — that daft replicates into every new
+worktree, so a fresh worktree starts warm instead of paying a full build. On a
+filesystem with copy-on-write support (APFS, btrfs, XFS with `reflink=1`,
+OpenZFS 2.2+, ReFS) the replica costs almost nothing until the two copies
+diverge.
+
+```yaml
+copy:
+  - target/
+  - node_modules/
+  - "**/dist/"
+```
+
+The map form adds knobs:
+
+```yaml
+copy:
+  paths: [target/, node_modules/]
+  fallback: copy # copy | skip (default: copy)
+  max_size: 5GB # optional per-entry cap on the byte-copy fallback
+```
+
+| Field      | Type            | Description                                                                                                                              |
+| ---------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `paths`    | list            | Entries to copy, relative to the worktree root. Files or directories; a trailing `/` is cosmetic                                         |
+| `fallback` | `copy` / `skip` | What to do when the filesystem cannot reflink an entry. `copy` (the default) pays for a real byte copy; `skip` leaves the entry out      |
+| `max_size` | string          | Per-**entry** size cap (`5GB`, `500MB`, `1048576`). Gates the byte-copy fallback only — a reflink is near-free and is never size-checked |
+
+Sizes are case-insensitive and use binary multiples (`1KB` = 1024 bytes); a bare
+integer is a count of bytes. Both `fallback` spellings are matched
+case-insensitively, but lowercase is canonical.
+
+An entry containing `*`, `?`, or `[` is a glob, expanded against the source
+worktree at copy time. Expansion ignores git's ignore rules (`copy:` entries are
+gitignored by definition) and stops descending below a match — `**/dist/`
+reports `web/dist`, not `web/dist/assets`.
+
+**Entries must be gitignored.** daft checks each one with `git check-ignore`
+_and_ verifies nothing underneath it is tracked, so a force-added file inside an
+otherwise-ignored directory still disqualifies the entry. A violation is a
+per-entry warning; the worktree is still created.
+
+**Where it runs.** The copy stage sits between the `worktree-pre-create` and
+`worktree-post-create` hooks — after `shared:` symlinking, before post-create
+hooks fire — so a hook-driven `npm install` or `cargo build` hits a warm cache.
+It is a creation-time optimization and never aborts creation: every failure
+(tracked entry, unreadable source, full disk) is a warning row, never a fatal
+error. `daft clone` does not run it — a fresh clone has no source worktree to
+copy from.
+
+Existing destination entries are never overwritten, which makes the stage
+idempotent and safe to re-run;
+[`daft warm`](/worktrees/copying-caches#re-warming-a-worktree-with-daft-warm)
+replays it on demand, and `daft warm --force` replaces what is already there.
+
+Unlike most keys here, `copy:` accepts two different YAML shapes, so a mistyped
+knob (`fallback: symlink`) fails the whole file with a generic
+`data did not match any variant of untagged enum CopyConfig` rather than a
+message naming the bad value. Check the `copy:` block first when you see it.
+
+For the practical guide — what actually stays warm per toolchain, and what a
+copied cache cannot promise — see
+[Copying build caches into new worktrees](/worktrees/copying-caches).
 
 ## Relations
 
@@ -537,6 +605,14 @@ Merging rules:
 - **Named jobs**: jobs with the same `name` are replaced by the
   higher-precedence version
 - **Unnamed jobs**: appended from the overlay
+- **`copy`**: replaced **wholesale**. An overlay that restates `copy:` replaces
+  the paths _and_ the knobs — there is no element-wise union, so a local
+  override is always a complete restatement (a base `fallback: skip` does not
+  survive into an overlay that omits it)
+
+The `copy:` key is read through this merge, so a `daft.local.yml` overlay or an
+`extends:` file can declare or override it without touching the committed
+config.
 
 Use `git daft hooks dump` to inspect the fully merged configuration:
 

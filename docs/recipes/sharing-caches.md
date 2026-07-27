@@ -21,6 +21,11 @@ For the unsafe-sharing failure modes, see
 [Anti-pattern: shared mutable state](/recipes/anti-patterns/shared-mutable-state).
 This page is the safe-sharing reference.
 
+Everything in the **don't share** column still has an answer — just not sharing.
+Declare those directories in `daft.yml`'s `copy:` key and each worktree gets its
+own copy-on-write replica instead of a rebuild:
+[Copying build caches into new worktrees](/worktrees/copying-caches).
+
 ## By tool
 
 ### pnpm — store yes, `node_modules/` no
@@ -140,3 +145,5 @@ esbuild has no cache; nothing to share.
 
 - **[Anti-pattern: shared mutable state](/recipes/anti-patterns/shared-mutable-state)**
   — the failure modes when the unsafe sharing happens
+- **[Copying build caches into new worktrees](/worktrees/copying-caches)** — the
+  `copy:` key, for everything in the "don't share" column

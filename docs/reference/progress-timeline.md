@@ -121,6 +121,16 @@ never keeps an identity ink.
   `↓ … missing from shared storage` row with the `daft shared sync` remedy, and
   a real file in the way gets the `daft shared link` remedy. The section never
   silently ignores a declaration it could not honor.
+- [Copied paths](/worktrees/copying-caches) get the same treatment under a
+  `├─ copied paths` anchor, immediately after the shared-files section — one row
+  per declared **entry**, never per expanded glob match, so a `**/dist/`
+  declaration stays one row and reports its fan-out in the annotation
+  (`3 dirs · 1.2 GB · reflinked · 0.3s`). The quiet skips are dim
+  (`nothing to copy yet`, `already present`); a declaration daft refused or
+  could not honor is yellow (`'target' is tracked — not copied`,
+  `2.1 GB over the 1 GB max_size`). No copy row is ever red: the stage is an
+  optimization, and a cache that did not copy has not cost the user the worktree
+  they asked for.
 - `daft remove` lists steps in true execution order — the remote branch is
   deleted first (it is the hardest to recreate), then the worktree, then the
   local branch. Multi-branch removals group rows under `├─` branch anchors. Its
