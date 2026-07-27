@@ -4,6 +4,29 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
+CHECKOUT_PTY_RUN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pty_run.py"
+
+# Run daft with the live rail enabled (pattern from
+# test_exec_verbose_toggle.sh): the framework's DAFT_TESTING hides the
+# interactive region — the subject of the rail tests — so it comes off and
+# the background spawns it suppressed are turned off individually. TERM is
+# pinned because indicatif hides its whole draw target under an unset or
+# `dumb` TERM, as on a bare CI runner.
+_rail_daft() {
+    env -u DAFT_TESTING \
+        TERM=xterm-256color \
+        DAFT_NO_UPDATE_CHECK=1 \
+        DAFT_NO_TRUST_PRUNE=1 \
+        DAFT_NO_LOG_CLEAN=1 \
+        DAFT_NO_HINTS=1 \
+        "$@"
+}
+
+# Strip ANSI and split the pty's carriage-returned repaints into lines.
+_rail_clean() {
+    sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r/\n/g' "$1"
+}
+
 # Test basic checkout functionality
 test_checkout_basic() {
     local remote_repo=$(create_test_remote "test-repo-checkout" "main")
@@ -875,6 +898,73 @@ test_checkout_dash_with_create_branch() {
     return 0
 }
 
+# #782: with daft.checkout.fetch=true, a cross-repo catalog hop must not
+# commit a worktree-creation plan — resolution runs under the collapsed
+# planning face and dissolves without a receipt. The rail only exists on a
+# TTY, so this drives daft under the DSR-answering PTY (pty_run.py); the
+# YAML suite runs with DAFT_TESTING set and never materializes a region.
+test_go_fetch_hop_no_rail_receipt() {
+    local remote_a=$(create_test_remote "test-repo-hop-a" "main")
+    local remote_b=$(create_test_remote "test-repo-hop-b" "main")
+    git-worktree-clone --layout contained "$remote_a" || return 1
+    git-worktree-clone --layout contained "$remote_b" || return 1
+    cd "test-repo-hop-a/main"
+    git config daft.checkout.fetch true
+
+    local log="$PWD/go-hop-rail.log"
+    _rail_daft "$CHECKOUT_PTY_RUN" "$log" daft go test-repo-hop-b || return 1
+
+    local clean
+    clean=$(_rail_clean "$log")
+    if echo "$clean" | grep -q "Failed after"; then
+        log_error "hop closed a Failed rail receipt"
+        return 1
+    fi
+    if echo "$clean" | grep -q "┌"; then
+        log_error "hop committed a worktree-creation plan"
+        return 1
+    fi
+    if echo "$clean" | grep -q "Failed to fetch"; then
+        log_error "probe fetch warning leaked onto the hop"
+        return 1
+    fi
+    if ! echo "$clean" | grep -q "Opening repository 'test-repo-hop-b'"; then
+        log_error "hop line missing from the PTY output"
+        return 1
+    fi
+    return 0
+}
+
+# The counterpart guard: when resolution does warrant a worktree, the
+# collapsed face must expand into the full rail — persisted header, the
+# probe fetch as a pre-completed receipt row, and a Ready footer.
+test_go_fetch_on_rail_expands() {
+    local remote_repo=$(create_test_remote "test-repo-rail-expand" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-rail-expand/main"
+    git config daft.checkout.fetch true
+
+    local log="$PWD/go-rail-expand.log"
+    _rail_daft "$CHECKOUT_PTY_RUN" "$log" daft go develop || return 1
+
+    local clean
+    clean=$(_rail_clean "$log")
+    if ! echo "$clean" | grep -q "┌  Opening develop"; then
+        log_error "expanded rail header missing"
+        return 1
+    fi
+    if ! echo "$clean" | grep -q "✓  Fetched remote"; then
+        log_error "pre-completed fetch receipt row missing"
+        return 1
+    fi
+    if ! echo "$clean" | grep -q "Ready in"; then
+        log_error "Ready footer missing"
+        return 1
+    fi
+    assert_directory_exists "../develop" || return 1
+    return 0
+}
+
 # Run all checkout tests
 run_checkout_tests() {
     log "Running git-worktree-checkout integration tests..."
@@ -916,6 +1006,10 @@ run_checkout_tests() {
     run_test "checkout_dash_toggle" "test_checkout_dash_toggle"
     run_test "checkout_dash_deleted_previous" "test_checkout_dash_deleted_previous"
     run_test "checkout_dash_with_create_branch" "test_checkout_dash_with_create_branch"
+
+    # Rail behavior under a PTY (#782)
+    run_test "go_fetch_hop_no_rail_receipt" "test_go_fetch_hop_no_rail_receipt"
+    run_test "go_fetch_on_rail_expands" "test_go_fetch_on_rail_expands"
 }
 
 # Main execution
