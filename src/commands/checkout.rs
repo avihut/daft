@@ -854,7 +854,7 @@ fn run_start_fork(args: StartArgs, base: Option<String>, count: u32) -> Result<(
             format!("Forking {dirname}"),
         );
         timeline.set_verbose_density(hook_output_config.verbose);
-        timeline.open_planning("Pinning commit");
+        timeline.open_planning();
         let create_result = {
             let mut bridge = TimelineBridge::new(
                 &mut output,
@@ -2183,7 +2183,7 @@ fn run_checkout(
     );
     timeline.set_verbose_density(hook_output_config.verbose);
 
-    timeline.open_planning("Resolving branch");
+    timeline.open_planning();
     let checkout_result = {
         let mut bridge = TimelineBridge::new(output, &mut timeline, executor, hook_output_config);
         checkout::execute(&params, git, &project_root, &mut bridge)
@@ -2299,7 +2299,7 @@ fn run_sandbox_visit(
     );
     timeline.set_verbose_density(hook_output_config.verbose);
 
-    timeline.open_planning("Resolving commit");
+    timeline.open_planning();
     let visit_result = {
         let mut bridge = TimelineBridge::new(output, &mut timeline, executor, hook_output_config);
         sandbox::execute_visit(&params, git, &project_root, &mut bridge)
@@ -2512,7 +2512,7 @@ fn run_create_branch_core(
     // (#686's silent-gap concern is covered by the rail itself); core's
     // pause_spinner/resume_spinner bracketing in push_if_enabled stays for
     // the legacy CommandBridge commands.
-    timeline.open_planning("Resolving base branch");
+    timeline.open_planning();
     let checkout_result = {
         let mut bridge =
             TimelineBridge::new(output, &mut timeline, executor, hook_output_config.clone());

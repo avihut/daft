@@ -790,7 +790,7 @@ mod tests {
             false,
             "Removing feature",
         );
-        timeline.open_planning("Validating branches");
+        timeline.open_planning();
         assert!(timeline.region_live());
 
         let req = ConsolidationRequest {
@@ -834,7 +834,7 @@ mod tests {
             false,
             "Removing feature",
         );
-        timeline.open_planning("Validating branches");
+        timeline.open_planning();
 
         let req = ConsolidationRequest {
             branch: "feature".into(),

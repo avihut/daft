@@ -774,7 +774,7 @@ fn run_branch_delete(
         // The rail opens immediately; validation runs under the planning
         // face (the consolidation prompts suspend it for their duration)
         // and the plan replaces the face in place when validation commits.
-        timeline.open_planning("Validating branches");
+        timeline.open_planning();
     } else if !push_hook_will_render {
         output.start_spinner("Deleting branches...");
     }

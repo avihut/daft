@@ -330,7 +330,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         output.is_verbose(),
         format!("Cloning {repo_name}"),
     );
-    timeline.open_planning("Cloning repository");
+    timeline.open_planning();
 
     let bare_started = std::time::Instant::now();
     let bare_result = {
@@ -378,11 +378,11 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         timeline.abandon_planning();
         match maybe_prompt_layout_choice(output, "Clone cancelled. Nothing was changed.") {
             LayoutPromptResult::Chosen(layout) => {
-                timeline.open_planning("Resolving branches");
+                timeline.open_planning();
                 Some(layout)
             }
             LayoutPromptResult::Default => {
-                timeline.open_planning("Resolving branches");
+                timeline.open_planning();
                 None
             }
             LayoutPromptResult::Cancelled => {

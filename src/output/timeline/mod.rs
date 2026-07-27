@@ -451,13 +451,14 @@ impl Timeline {
     }
 
     /// Open the live region before the plan is known (Interactive only):
-    /// the seeded header, a static `⠹  <label>` planning row (grey), and
-    /// the stopwatch footer. `commit_plan` replaces the middle in place; a
+    /// the rail collapsed to a single line (#782) — the active dress
+    /// carrying the seeded header's text, with the region stopwatch riding
+    /// its tail. `commit_plan` expands it in place into the full rail; a
     /// command that returns without committing (navigation early exit,
-    /// resolve-phase error) collapses the face without a trace — via
-    /// [`Self::abandon_planning`], or implicitly through `finish`/`abort` —
-    /// and keeps its legacy output.
-    pub fn open_planning(&mut self, planning_label: &str) {
+    /// resolve-phase error, a catalog/sandbox fallback) collapses the face
+    /// without a trace — via [`Self::abandon_planning`], or implicitly
+    /// through `finish`/`abort` — and keeps its legacy output.
+    pub fn open_planning(&mut self) {
         if !self.is_interactive() {
             return;
         }
@@ -468,13 +469,7 @@ impl Timeline {
         let mp = inner.make_multi_progress();
         let header = inner.header.clone();
         let setup = inner.region_setup();
-        inner.core = Some(TimelineCore::open_planning(
-            mp,
-            header,
-            planning_label,
-            setup,
-            self.started,
-        ));
+        inner.core = Some(TimelineCore::open_planning(mp, header, setup, self.started));
     }
 
     /// Opt into plan-ordered receipts: rows may resolve out of completion
@@ -521,7 +516,7 @@ impl Timeline {
         self.handle.toggle_verbose()
     }
 
-    /// Update the planning face's label in place ("Cloning repository" →
+    /// Replace the collapsed face's text in place ("Cloning proj" →
     /// "Resolving branches") — liveness for a resolve phase that moves
     /// between kinds of work. No-op without a face (Plain mode, plan already
     /// committed, abandoned region).
@@ -534,8 +529,8 @@ impl Timeline {
 
     /// Materialize the region (Interactive only; no-op otherwise). Called by
     /// the bridge when the core commits its plan. Over an open planning face
-    /// the plan installs in place (the face's bars leave, the stopwatch
-    /// footer carries on); with no face this is the direct path (a command
+    /// the plan expands in place (the face's line leaves, the stopwatch
+    /// clock carries on); with no face this is the direct path (a command
     /// that commits without opening a planning face first).
     pub fn commit_plan(&mut self, plan: PlanCommit) {
         if !self.is_interactive() {
@@ -1657,30 +1652,29 @@ mod tests {
 
     // ── planning face (the region opens before the plan) ─────────────────
     //
-    // The rail opens at t=0 with the seeded header, a static planning row,
-    // and the stopwatch footer; `commit_plan` replaces the middle in place.
-    // A command that returns without committing collapses the face without
-    // a trace — resolve errors and navigation early exits keep their legacy
-    // single-line output.
+    // The rail opens at t=0 collapsed to a single line — the active dress
+    // with the header's text and the stopwatch on its tail (#782);
+    // `commit_plan` expands it in place into the full rail. A command that
+    // returns without committing collapses the face without a trace —
+    // resolve errors, navigation early exits, and the catalog/sandbox
+    // fallbacks keep their legacy single-line output.
 
     #[test]
-    fn planning_face_paints_header_planning_row_and_stopwatch() {
+    fn planning_face_is_one_line_with_the_stopwatch_on_its_tail() {
         let (mut tl, term) = captured("Removing feat/x");
-        tl.open_planning("Validating branches");
+        tl.open_planning();
         assert!(tl.region_live());
         let contents = term.contents();
         let lines: Vec<&str> = contents.lines().collect();
-        assert_eq!(lines[0], "\u{250c}  Removing feat/x");
-        assert_eq!(lines[1], "\u{2502}");
-        // The spinner glyph varies by tick; the label is the contract.
+        // The spinner glyph varies by tick; the header text and stopwatch
+        // tail are the contract — and no `┌ │ └` frame exists until a plan
+        // gives the rail a body.
         assert!(
-            lines[2].ends_with("  Validating branches"),
-            "planning row: {:?}",
-            lines[2]
+            lines[0].ends_with("  Removing feat/x  0ms"),
+            "collapsed face: {:?}",
+            lines[0]
         );
-        assert_eq!(lines[3], "\u{2502}");
-        assert_eq!(lines[4], "\u{2514}  0ms");
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 1);
         tl.abandon_planning();
     }
 
@@ -1690,11 +1684,10 @@ mod tests {
         direct.commit_plan(plan());
 
         let (mut planned, planned_term) = captured("Opening feat/x");
-        planned.open_planning("Resolving branch");
+        planned.open_planning();
         planned.commit_plan(plan());
 
         // The face leaves no residue: both paths paint the same plan.
-        assert!(!planned_term.contents().contains("Resolving branch"));
         assert_eq!(planned_term.contents(), direct_term.contents());
 
         direct.finish("Ready in 0.1s");
@@ -1705,7 +1698,7 @@ mod tests {
     #[test]
     fn plan_header_override_replaces_the_planning_seed() {
         let (mut tl, term) = captured("Removing 1 branch");
-        tl.open_planning("Validating branches");
+        tl.open_planning();
         tl.commit_plan(
             PlanCommit::new(vec![Row::Step(StepSpec::new(StepKey::scoped(
                 StageId::RemoveWorktree,
@@ -1722,7 +1715,7 @@ mod tests {
     #[test]
     fn finishing_while_planning_collapses_without_a_trace() {
         let (mut tl, term) = captured("Opening feat/x");
-        tl.open_planning("Resolving branch");
+        tl.open_planning();
         tl.finish("Ready in 0.1s");
         assert!(!tl.region_live());
         assert_eq!(term.contents(), "");
@@ -1731,7 +1724,7 @@ mod tests {
     #[test]
     fn aborting_while_planning_collapses_without_a_trace() {
         let (mut tl, term) = captured("Opening feat/x");
-        tl.open_planning("Resolving branch");
+        tl.open_planning();
         tl.abort("Failed after 0.1s");
         assert!(!tl.region_live());
         assert_eq!(term.contents(), "");
@@ -1740,7 +1733,7 @@ mod tests {
     #[test]
     fn abandoned_face_collapses_and_the_late_finish_is_a_noop() {
         let (mut tl, term) = captured("Opening feat/x");
-        tl.open_planning("Resolving branch");
+        tl.open_planning();
         tl.abandon_planning();
         assert!(!tl.region_live());
         // The command epilogue's ordinary finish must not resurrect a footer.
@@ -1751,7 +1744,7 @@ mod tests {
     #[test]
     fn dropped_while_planning_collapses_without_a_trace() {
         let (mut tl, term) = captured("Opening feat/x");
-        tl.open_planning("Resolving branch");
+        tl.open_planning();
         drop(tl);
         assert_eq!(term.contents(), "");
     }
@@ -1759,7 +1752,7 @@ mod tests {
     #[test]
     fn abandon_after_commit_leaves_the_region_alone() {
         let (mut tl, term) = captured("Opening feat/x");
-        tl.open_planning("Resolving branch");
+        tl.open_planning();
         tl.commit_plan(plan());
         tl.abandon_planning();
         assert!(tl.region_live());
@@ -1773,7 +1766,7 @@ mod tests {
     #[test]
     fn warning_during_planning_persists_above_the_face() {
         let (mut tl, term) = captured("Removing feat/x");
-        tl.open_planning("Validating branches");
+        tl.open_planning();
         tl.println_above("warning: remote is unreachable");
         assert!(
             term.contents()
@@ -1807,13 +1800,12 @@ mod tests {
         direct.commit_plan(clone_plan());
 
         let (mut planned, planned_term) = captured("Cloning proj");
-        planned.open_planning("Cloning repository");
+        planned.open_planning();
         planned.commit_plan(clone_plan());
 
         // The pre-completed `✓` row persists above the pending bars on both
         // paths (the println-vs-live-bars ordering the face must not
         // disturb), and the face leaves no residue.
-        assert!(!planned_term.contents().contains("Cloning repository"));
         assert_eq!(planned_term.contents(), direct_term.contents());
         assert!(
             planned_term
@@ -1833,23 +1825,25 @@ mod tests {
     #[test]
     fn planning_label_update_repaints_the_face() {
         let (mut tl, term) = captured("Cloning proj");
-        tl.open_planning("Cloning repository");
+        tl.open_planning();
         tl.set_planning_label("Resolving branches");
         let contents = term.contents();
         let lines: Vec<&str> = contents.lines().collect();
+        // The new text replaces the header's on the single line, in place —
+        // stopwatch tail intact.
         assert!(
-            lines[2].ends_with("  Resolving branches"),
-            "planning row: {:?}",
-            lines[2]
+            lines[0].ends_with("  Resolving branches  0ms"),
+            "collapsed face: {:?}",
+            lines[0]
         );
-        assert!(!contents.contains("Cloning repository"));
+        assert!(!contents.contains("Cloning proj"));
         tl.abandon_planning();
     }
 
     #[test]
     fn planning_label_update_after_commit_is_a_noop() {
         let (mut tl, term) = captured("Opening feat/x");
-        tl.open_planning("Resolving branch");
+        tl.open_planning();
         tl.commit_plan(plan());
         let committed = term.contents();
         tl.set_planning_label("Too late");
@@ -1861,21 +1855,21 @@ mod tests {
     #[test]
     fn reopened_face_after_abandon_commits_cleanly() {
         // The layout-prompt path: the face steps aside for the prompt, then
-        // returns with a fresh label, and the plan lands on the reopened
-        // face. (The test draw target is consumed per region, so the reopen
-        // re-arms it — production regions each get their own stderr target.)
+        // returns, and the plan lands on the reopened face. (The test draw
+        // target is consumed per region, so the reopen re-arms it —
+        // production regions each get their own stderr target.)
         let (mut direct, direct_term) = captured("Cloning proj");
         direct.commit_plan(clone_plan());
 
         let (mut tl, term) = captured("Cloning proj");
-        tl.open_planning("Cloning repository");
+        tl.open_planning();
         tl.abandon_planning();
         assert!(!tl.region_live());
         assert_eq!(term.contents(), "");
         tl.set_test_draw_target(indicatif::ProgressDrawTarget::term_like(Box::new(
             term.clone(),
         )));
-        tl.open_planning("Resolving branches");
+        tl.open_planning();
         assert!(tl.region_live());
         tl.commit_plan(clone_plan());
         assert_eq!(term.contents(), direct_term.contents());
@@ -1884,7 +1878,7 @@ mod tests {
     #[test]
     fn open_planning_is_plain_mode_inert() {
         let mut tl = Timeline::new(TimelineMode::Plain, false, "Opening feat/x");
-        tl.open_planning("Resolving branch");
+        tl.open_planning();
         assert!(!tl.region_live());
     }
 

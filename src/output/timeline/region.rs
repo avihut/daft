@@ -17,7 +17,7 @@ use super::render::{self, RowFace};
 use super::thread_block::{ThreadStyles, ThreadedJob};
 use super::{LiveVerbose, RowOutputConfig};
 use crate::core::stage::{PlanCommit, Row, StepKey, StepSpec};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -199,16 +199,15 @@ pub(super) struct TimelineCore {
     /// Seeded header text, retained until the plan lands (the plan may
     /// replace it with the resolved intent).
     header: String,
-    /// The planning face's removable header (`┌  <seed>`) — `Some` from
-    /// [`Self::open_planning`] until [`Self::install_plan`] persists the
-    /// real header. Doubles as the is-planning flag: the committed header
-    /// is scrollback, only the face's is a bar.
-    header_bar: Option<ProgressBar>,
-    /// The planning face's removable top spacer (`│`).
-    top_spacer_bar: Option<ProgressBar>,
-    /// The static `⠹  <label>` row shown while the command resolves its
-    /// plan; removed when the plan installs or the face collapses.
-    planning_row: Option<ProgressBar>,
+    /// The collapsed planning face (#782): one removable bar wearing the
+    /// active dress with the header's text and the region stopwatch on its
+    /// tail — the whole rail on a single line until a plan gives it a
+    /// body. `Some` from [`Self::open_planning`] until
+    /// [`Self::install_plan`] expands it or [`Self::collapse`] resolves it
+    /// away. Doubles as the is-planning flag — while it is up, the shell
+    /// below (bottom spacer, footer) exists but is not attached to the
+    /// `MultiProgress`.
+    planning_face: Option<ProgressBar>,
     /// Dim `│` above the footer; lives until teardown. Doubles as the
     /// hook-embed anchor when no pending row remains.
     bottom_spacer: ProgressBar,
@@ -258,80 +257,76 @@ impl TimelineCore {
         setup: RegionSetup,
         started: Instant,
     ) -> Self {
-        let mut core = Self::scaffold(mp, header, setup, started);
+        let mut core = Self::scaffold(mp, header, setup, started, true);
         core.install_plan(plan);
         core
     }
 
-    /// Open the region before the plan is known: the seeded header, a `│`,
-    /// and a static planning row render as *bars* (the committed header is
-    /// scrollback; the face's must stay removable), so a command that
-    /// resolves into an early exit or a pre-plan error can collapse the
-    /// whole face without a trace. The stopwatch footer, echo guard, and
-    /// Ctrl-C collapse are the committed region's own — they carry through
-    /// [`Self::install_plan`] untouched, so the swap never blinks.
+    /// Open the region before the plan is known: one live line — the rail
+    /// collapsed (#782). The face wears the active dress (cyan spinner)
+    /// with the header's own text and the region's stopwatch riding its
+    /// tail, so resolution reads as the rail at rest, not a separate
+    /// spinner widget. The `┌ │ └` frame appears only when a plan gives
+    /// the rail a body: [`Self::install_plan`] expands the line in place
+    /// (the detached shell attaches, the stopwatch clock carries on), and
+    /// a command that resolves into an early exit or a pre-plan error
+    /// collapses it without a trace.
     pub(super) fn open_planning(
         mp: MultiProgress,
         header: String,
-        planning_label: &str,
         setup: RegionSetup,
         started: Instant,
     ) -> Self {
         let use_color = setup.use_color;
-        let static_style = line_style();
-        let header_bar = add_line_bar(&mp, &static_style, render::header(&header, None, use_color));
-        let top_spacer_bar = add_line_bar(&mp, &static_style, render::spacer(use_color));
-        // The planning row wears the active-step dress (cyan spinner) with a
-        // grey label — busy, but meta: it is not one of the plan's rows and
-        // vanishes when they land.
-        let planning_row = mp.add(ProgressBar::new_spinner());
-        planning_row.set_style(active_style(use_color, false, false));
-        planning_row.set_message(render::paint(
-            crate::output::palette::GREY,
-            planning_label,
-            use_color,
-        ));
+        let face = mp.add(ProgressBar::new_spinner());
+        face.set_style(planning_face_style(use_color, started));
+        face.set_message(header.clone());
         // No steady tick under cfg(test): a wall-clock spinner repaint would
         // flake the InMemoryTerm sequence assertions (the footer ticker
         // stays off there for the same reason). The explicit tick paints the
         // face immediately.
         #[cfg(not(test))]
-        planning_row.enable_steady_tick(Duration::from_millis(80));
-        planning_row.tick();
+        face.enable_steady_tick(Duration::from_millis(80));
+        face.tick();
 
-        let mut core = Self::scaffold(mp, header, setup, started);
-        core.header_bar = Some(header_bar);
-        core.top_spacer_bar = Some(top_spacer_bar);
-        core.planning_row = Some(planning_row);
+        let mut core = Self::scaffold(mp, header, setup, started, false);
+        core.planning_face = Some(face);
         core
     }
 
     /// Whether the region is still the planning face (no plan installed).
     pub(super) fn is_planning(&self) -> bool {
-        self.header_bar.is_some()
+        self.planning_face.is_some()
     }
 
-    /// Repaint the planning row's label in place — the face's liveness copy
-    /// follows the resolve phase between kinds of work ("Cloning repository"
-    /// → "Resolving branches"). No-op once the plan has installed (the face
-    /// is gone). The explicit tick paints the new label immediately, matching
-    /// [`Self::open_planning`]'s first frame (no steady tick under test).
+    /// Repaint the face's text in place — the liveness copy follows the
+    /// resolve phase between kinds of work ("Cloning proj" → "Resolving
+    /// branches"). The text is the collapsed line's primary copy (it has no
+    /// other), so it renders plain, not grey. No-op once the plan has
+    /// installed (the face is gone). The explicit tick paints the new text
+    /// immediately, matching [`Self::open_planning`]'s first frame (no
+    /// steady tick under test).
     pub(super) fn set_planning_label(&mut self, label: &str) {
-        if let Some(row) = &self.planning_row {
-            row.set_message(render::paint(
-                crate::output::palette::GREY,
-                label,
-                self.use_color,
-            ));
-            row.tick();
+        if let Some(face) = &self.planning_face {
+            face.set_message(label.to_string());
+            face.tick();
         }
     }
 
     /// The shared region shell: bottom spacer + stopwatch footer (+ ticker),
     /// echo guard, and the Ctrl-C collapse — everything that survives from
     /// the planning face into the committed plan. Slots come later via
-    /// [`Self::install_plan`].
-    fn scaffold(mp: MultiProgress, header: String, setup: RegionSetup, started: Instant) -> Self {
+    /// [`Self::install_plan`]. With `attach_shell` false (the collapsed
+    /// face's path) the spacer and footer are constructed detached — the
+    /// face is the region's only live line, and [`Self::install_plan`]
+    /// attaches the shell when the plan gives the rail a body.
+    fn scaffold(
+        mp: MultiProgress,
+        header: String,
+        setup: RegionSetup,
+        started: Instant,
+        attach_shell: bool,
+    ) -> Self {
         let RegionSetup {
             verbose,
             detail_verbose,
@@ -340,7 +335,7 @@ impl TimelineCore {
             row_output,
         } = setup;
         let static_style = line_style();
-        let bottom_spacer = add_line_bar(&mp, &static_style, render::spacer(use_color));
+        let mut bottom_spacer = line_bar(&static_style, render::spacer(use_color));
         // The pending footer is a stopwatch from its first frame: `└  142ms`
         // → `└  1.0s` → … (grey — the rail's duration vocabulary), on the
         // command's own clock so it agrees with the total the outcome footer
@@ -350,11 +345,18 @@ impl TimelineCore {
         // the InMemoryTerm sequence tests assert the committed plan's face,
         // and a wall-clock repaint racing the assertion would flake them
         // (footer_counter is zeroed there for the same reason).
-        let footer = add_line_bar(
-            &mp,
+        let mut footer = line_bar(
             &static_style,
             render::footer(&footer_counter(started, use_color), use_color),
         );
+        if attach_shell {
+            // Attach, then tick: a bar whose message was set while detached
+            // has no pending draw, and under test nothing else forces one.
+            bottom_spacer = mp.add(bottom_spacer);
+            footer = mp.add(footer);
+            bottom_spacer.tick();
+            footer.tick();
+        }
         let footer_done = Arc::new(AtomicBool::new(false));
         // Set once a key listener is watching (#729): the stopwatch line then
         // also offers the key. It rides the footer rather than taking a line
@@ -420,9 +422,7 @@ impl TimelineCore {
             label_width: 0,
             slots: Vec::new(),
             header,
-            header_bar: None,
-            top_spacer_bar: None,
-            planning_row: None,
+            planning_face: None,
             bottom_spacer,
             footer,
             footer_done,
@@ -442,19 +442,15 @@ impl TimelineCore {
     /// bottom spacer.
     pub(super) fn install_plan(&mut self, plan: PlanCommit) {
         debug_assert!(self.slots.is_empty(), "plan installed twice");
-        // The face leaves without a trace; the plan replaces it in place
-        // (the shell below — bottom spacer, footer, guards — carries on).
-        for bar in [
-            self.planning_row.take(),
-            self.top_spacer_bar.take(),
-            self.header_bar.take(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            bar.disable_steady_tick();
-            self.mp.remove(&bar);
-        }
+        // The collapsed face leaves without a trace; the plan expands in
+        // its place (the guards and the stopwatch clock carry on).
+        let expanding_from_face = if let Some(face) = self.planning_face.take() {
+            face.disable_steady_tick();
+            self.mp.remove(&face);
+            true
+        } else {
+            false
+        };
 
         let header = plan.header.clone().unwrap_or_else(|| self.header.clone());
         let use_color = self.use_color;
@@ -488,6 +484,17 @@ impl TimelineCore {
             ))
             .ok();
         self.mp.println(render::spacer(use_color)).ok();
+
+        // Over a face the shell was constructed detached (the face was the
+        // region's only live line): attach it now — bottom spacer above the
+        // footer — so the rows below can anchor on it. Attach, then tick:
+        // a bar whose message was set while detached has no pending draw.
+        if expanding_from_face {
+            self.bottom_spacer = self.mp.add(self.bottom_spacer.clone());
+            self.footer = self.mp.add(self.footer.clone());
+            self.bottom_spacer.tick();
+            self.footer.tick();
+        }
 
         let static_style = line_style();
         // Rows insert directly above the surviving bottom spacer; successive
@@ -622,15 +629,12 @@ impl TimelineCore {
             "collapse tears down the planning face only"
         );
         self.footer_done.store(true, Ordering::SeqCst);
-        for bar in [&self.planning_row, &self.top_spacer_bar, &self.header_bar]
-            .into_iter()
-            .flatten()
-        {
-            bar.disable_steady_tick();
-            self.mp.remove(bar);
+        if let Some(face) = &self.planning_face {
+            face.disable_steady_tick();
+            self.mp.remove(face);
         }
-        self.mp.remove(&self.bottom_spacer);
-        self.mp.remove(&self.footer);
+        // The shell (bottom spacer, footer) never attached — the face was
+        // the region's only live line, so there is nothing else to remove.
         // Removals alone leave the erase to the rate-limited next draw —
         // which never comes (nothing else touches this region). Clear is
         // the forced final frame.
@@ -1977,8 +1981,36 @@ fn active_style(use_color: bool, in_group: bool, wide: bool) -> ProgressStyle {
         .tick_chars(TICK_CHARS)
 }
 
-fn add_line_bar(mp: &MultiProgress, style: &ProgressStyle, line: String) -> ProgressBar {
-    let bar = mp.add(ProgressBar::new_spinner());
+/// The collapsed planning face's dress (#782): the active row's spinner and
+/// text, with the region's stopwatch riding the tail — the whole rail on one
+/// line until a plan gives it a body. The stopwatch key re-renders on every
+/// spinner tick and shares the footer's clock, format, and cfg(test)
+/// zero-pin via [`footer_counter`].
+fn planning_face_style(use_color: bool, started: Instant) -> ProgressStyle {
+    let base = if use_color {
+        "{spinner:.cyan}  {msg}{stopwatch}"
+    } else {
+        "{spinner}  {msg}{stopwatch}"
+    };
+    ProgressStyle::with_template(base)
+        .expect("planning face template is valid")
+        .with_key(
+            "stopwatch",
+            move |_: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let _ = write!(w, "  {}", footer_counter(started, use_color));
+            },
+        )
+        .tick_chars(TICK_CHARS)
+}
+
+/// A line bar not yet attached to any `MultiProgress` — the collapsed
+/// face's shell is constructed detached and attached only when the plan
+/// lands ([`TimelineCore::install_plan`]). Constructed hidden: a free
+/// `ProgressBar` owns a live stderr target of its own, so without this a
+/// detached shell (and its ticker) paints stray `│` / `└  1ms` lines next
+/// to the face. `MultiProgress::add` re-targets it onto the region.
+fn line_bar(style: &ProgressStyle, line: String) -> ProgressBar {
+    let bar = ProgressBar::with_draw_target(None, ProgressDrawTarget::hidden());
     bar.set_style(style.clone());
     bar.set_message(line);
     bar
