@@ -229,6 +229,31 @@ mod tests {
     }
 
     #[test]
+    fn both_probes_refuse_a_path_that_climbs_out_of_the_work_tree() {
+        // `copy:`'s containment guard states this rule itself rather than
+        // resting on git — but it does so *because* git answers the way it
+        // does here, and the copy engine's comment says as much. If git ever
+        // started resolving `../` pathspecs into an answer, the guard would be
+        // the only thing left; pin the premise so a change in either place is
+        // visible.
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        fs::write(dir.path().join("outside.txt"), "not yours").unwrap();
+
+        assert_eq!(
+            git_ignore_status(&repo, "../outside.txt"),
+            IgnoreStatus::Unknown,
+            "a path outside the work tree is not something git consents to"
+        );
+        assert!(
+            !has_tracked_under(&repo, "../outside.txt"),
+            "a failed pathspec never invents a tracked file"
+        );
+    }
+
+    #[test]
     fn tracked_probe_is_false_outside_a_repository() {
         let dir = tempdir().unwrap();
         assert!(

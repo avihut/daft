@@ -2153,4 +2153,658 @@ mod tests {
         );
         assert!(CopyPathsResult::default().is_empty());
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Coverage pass: the contract clauses above that no test yet held to
+    // account — decision-matrix cells no single filesystem can reach, the
+    // "first condition that holds wins" ordering where two of them hold at
+    // once, and the safety guards whose failure mode is destructive rather
+    // than merely wrong.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Run one git command in a fixture repo, with identity supplied by
+    /// environment (never config — CLAUDE.md forbids touching git config) and
+    /// both pipes captured so nothing leaks into the test output.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = crate::utils::git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command");
+        assert!(out.status.success(), "git {args:?} failed");
+    }
+
+    /// The names directly inside `dir`, sorted — for asserting what a copy
+    /// (or a refusal) left behind.
+    fn entries_of(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .map(|d| {
+                d.filter_map(Result::ok)
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    // ── read_copy_config: the remaining shapes ───────────────────────────
+
+    #[test]
+    fn read_copy_config_treats_a_full_form_with_no_paths_as_absent() {
+        // The bare-list empty case is covered above; the map form has its own
+        // route to the same place, and knobs must not resurrect an empty
+        // declaration into a section that plans rows for nothing.
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp.path().join("daft.yml"),
+            b"copy:\n  paths: []\n  fallback: skip\n  max_size: 1GB\n",
+        );
+        assert_eq!(read_copy_config(tmp.path()), None);
+    }
+
+    #[test]
+    fn read_copy_config_parses_a_quoted_byte_count() {
+        // `parse_size` takes a bare integer as bytes, and the config field is
+        // a String — so the YAML has to quote it. (An *unquoted* integer is a
+        // YAML int, which the `Option<String>` field rejects: see the coverage
+        // report's note on that spelling.)
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp.path().join("daft.yml"),
+            b"copy:\n  paths: [target]\n  max_size: \"1048576\"\n",
+        );
+        assert_eq!(
+            read_copy_config(tmp.path()).unwrap().max_size_bytes,
+            Some(1024 * 1024)
+        );
+    }
+
+    // ── expand_entries: the remaining input shapes ───────────────────────
+
+    #[test]
+    fn expand_entries_matches_files_not_only_directories() {
+        // Nothing in the design says a `copy:` entry names a directory — a
+        // single `.sccache.db` or a `*.bin` fan-out is a cache too, and the
+        // override matcher has to be asked with the right is_dir answer for
+        // those to match at all.
+        let (_tmp, source, _target) = fs_fixture();
+        write(&source.join("cache/a.bin"), b"a");
+        write(&source.join("deep/nested/b.bin"), b"b");
+        write(&source.join("cache/notes.txt"), b"not a match");
+
+        assert_eq!(
+            expand_entries(&source, "**/*.bin"),
+            vec!["cache/a.bin".to_string(), "deep/nested/b.bin".to_string()]
+        );
+    }
+
+    #[test]
+    fn expand_entries_treats_a_metacharacter_free_entry_as_a_path_not_a_pattern() {
+        // `dist` is a literal, so it means `<root>/dist` and nothing else —
+        // it does not go looking for `web/dist` the way `**/dist` does. The
+        // split is `is_glob`, and getting it wrong in either direction (a
+        // literal that searches, a pattern that does not) silently changes
+        // what every config in the wild means.
+        let (_tmp, source, _target) = fs_fixture();
+        write(&source.join("web/dist/app.js"), b"//");
+
+        assert_eq!(expand_entries(&source, "dist"), vec!["dist".to_string()]);
+        assert_eq!(
+            expand_entries(&source, "**/dist"),
+            vec!["web/dist".to_string()]
+        );
+    }
+
+    #[test]
+    fn expand_entries_yields_nothing_for_a_pattern_the_glob_compiler_rejects() {
+        // `[` opens a character class that is never closed. The entry is a
+        // glob by `is_glob`'s reckoning but cannot compile, and an
+        // uncompilable pattern must expand to nothing (reported as an expected
+        // skip) rather than panic or fail the creation.
+        let (_tmp, source, target) = fs_fixture();
+        write(&source.join("cache/a.bin"), b"a");
+
+        assert!(expand_entries(&source, "[").is_empty());
+        assert_eq!(
+            sole_skip(&run(&source, &target, &config(&["["]))),
+            SkipReason::NoMatches
+        );
+    }
+
+    // ── copy_entries: which condition wins when two of them hold ─────────
+
+    #[test]
+    fn copy_entries_refuses_a_tracked_entry_before_noticing_the_destination() {
+        // Steps 3 and 4 of the documented order both apply here. The refusal
+        // has to win: `already present` is a dim "nothing to do" row, and
+        // reporting it would hide a config the user has to fix — permanently,
+        // because the destination only gets more present from here.
+        let (_tmp, source, target) = repo_fixture("");
+        write(&source.join("src/main.rs"), b"fn main() {}");
+        git(&source, &["add", "src/main.rs"]);
+        write(&target.join("src/main.rs"), b"a previous copy");
+
+        let result = run(&source, &target, &config(&["src"]));
+
+        assert_eq!(sole_skip(&result), SkipReason::NotIgnored);
+        assert_eq!(
+            fs::read(target.join("src/main.rs")).unwrap(),
+            b"a previous copy",
+            "a refusal touches nothing"
+        );
+    }
+
+    #[test]
+    fn copy_entries_reports_a_present_destination_before_weighing_the_entry() {
+        // Steps 4 and 8 both apply: the destination is there AND the entry is
+        // over the cap. The idempotence skip wins, because there is no copy
+        // left to gate — a `2 KB over the 1 KB max_size` warning about a cache
+        // that is already warm would send the user to fix nothing.
+        let (_tmp, source, target) = repo_fixture("/target\n");
+        write(&source.join("target/app"), b"0123456789");
+        write(&target.join("target/app"), b"already warm");
+
+        let result = copy_entries(
+            &source,
+            &target,
+            &ResolvedCopyConfig {
+                paths: vec!["target".into()],
+                fallback: CopyFallback::Copy,
+                max_size_bytes: Some(1),
+            },
+            false,
+            &mut NullSink,
+        );
+
+        assert_eq!(sole_skip(&result), SkipReason::DestinationExists);
+    }
+
+    #[test]
+    fn copy_entries_reports_a_tracked_entry_that_is_gone_as_never_built() {
+        // Steps 2 and 3 both apply: git tracks `src`, and it is not on disk.
+        // Absence wins — `nothing to copy yet` is the true statement, and the
+        // gitignored-only invariant has nothing to protect when there is no
+        // content to duplicate.
+        let (_tmp, source, target) = repo_fixture("");
+        write(&source.join("src/main.rs"), b"fn main() {}");
+        git(&source, &["add", "src/main.rs"]);
+        fs::remove_dir_all(source.join("src")).unwrap();
+
+        assert_eq!(
+            sole_skip(&run(&source, &target, &config(&["src"]))),
+            SkipReason::NoSource
+        );
+    }
+
+    // ── copy_entries: the gitignored-only invariant's remaining causes ───
+
+    #[test]
+    fn copy_entries_refuses_an_entry_git_holds_in_its_index() {
+        // The companion to the untracked-but-visible refusal above: this one
+        // is genuinely `Tracked`, the status the classifier reaches only after
+        // its second probe. Both must refuse, and only a fixture that stages
+        // the file proves the second one does.
+        let (_tmp, source, target) = repo_fixture("");
+        write(&source.join("vendor/lib.rs"), b"pub fn f() {}");
+        git(&source, &["add", "vendor/lib.rs"]);
+        assert_eq!(
+            crate::core::git_ignore::git_ignore_status(&source, "vendor"),
+            IgnoreStatus::Tracked,
+            "fixture precondition: the entry is tracked, not merely visible"
+        );
+
+        assert_eq!(
+            sole_skip(&run(&source, &target, &config(&["vendor"]))),
+            SkipReason::NotIgnored
+        );
+        assert!(!target.join("vendor").exists());
+    }
+
+    #[test]
+    fn copy_entries_refuses_everything_when_git_cannot_answer_at_all() {
+        // The fourth cause, and the one a validator is most likely to get
+        // backwards: the probe did not run. Outside a repository
+        // `git_ignore_status` reports `Unknown` and `has_tracked_under` reports
+        // `false` — a pair that reads exactly like "not tracked, nothing to
+        // worry about" if the check is written as "refuse when tracked"
+        // instead of "copy only when ignored". A failed probe is not consent.
+        let (_tmp, source, target) = fs_fixture();
+        write(&source.join("cache/a.bin"), b"a");
+        assert_eq!(
+            crate::core::git_ignore::git_ignore_status(&source, "cache"),
+            IgnoreStatus::Unknown,
+            "fixture precondition: no repository, so git cannot answer"
+        );
+
+        assert_eq!(
+            sole_skip(&run(&source, &target, &config(&["cache"]))),
+            SkipReason::NotIgnored
+        );
+        assert!(
+            entries_of(&target).is_empty(),
+            "an unanswerable probe copies nothing: {:?}",
+            entries_of(&target)
+        );
+    }
+
+    // ── copy_entries: entry shapes ───────────────────────────────────────
+
+    #[test]
+    fn copy_entries_reports_a_nested_declaration_as_already_present() {
+        // `copy: [a, a/b]` — the second entry is inside the first, so copying
+        // `a` already carried it. It must resolve as the idempotence skip
+        // rather than copying the subtree a second time on top of itself
+        // (which `copy_dir` would refuse) or reporting a failure.
+        let (_tmp, source, target) = repo_fixture("/a\n");
+        write(&source.join("a/top.txt"), b"top");
+        write(&source.join("a/b/deep.txt"), b"deep");
+
+        let result = run(&source, &target, &config(&["a", "a/b"]));
+
+        let [CopyOutcome::Copied { entry, .. }, second] = result.outcomes.as_slice() else {
+            panic!("expected a copy then a skip, got {:?}", result.outcomes);
+        };
+        assert_eq!(entry, "a");
+        assert_eq!(
+            second,
+            &CopyOutcome::Skipped {
+                entry: "a/b".into(),
+                reason: SkipReason::DestinationExists,
+            }
+        );
+        assert_eq!(fs::read(target.join("a/b/deep.txt")).unwrap(), b"deep");
+        assert_eq!(entries_of(&target.join("a")), ["b", "top.txt"]);
+    }
+
+    // ── copy_entries: force ──────────────────────────────────────────────
+
+    #[test]
+    fn copy_entries_force_copies_an_absent_destination_like_any_other() {
+        // `force` means "do not stop at a destination that exists", not "a
+        // destination must exist" — the common `daft warm --force` case is a
+        // worktree where half the caches were never copied at all.
+        let (_tmp, source, target) = repo_fixture("/target\n");
+        write(&source.join("target/app"), b"fresh");
+
+        let result = copy_entries(&source, &target, &config(&["target"]), true, &mut NullSink);
+
+        assert!(
+            matches!(result.outcomes.as_slice(), [CopyOutcome::Copied { .. }]),
+            "{:?}",
+            result.outcomes
+        );
+        assert_eq!(fs::read(target.join("target/app")).unwrap(), b"fresh");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_entries_reports_a_force_removal_it_cannot_perform() {
+        // `force` removes the destination before copying, and that removal can
+        // fail on its own (a read-only parent, a busy mount). It has to land
+        // as this entry's `Failed` outcome — warn, never abort — and never as
+        // a panic or a bare `?` out of the whole stage.
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_tmp, source, target) = repo_fixture("/cache\n");
+        write(&source.join("cache/a.bin"), b"new");
+        write(&target.join("cache/a.bin"), b"old");
+        // A read-only destination root: the `cache` directory inside it cannot
+        // be unlinked.
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o500)).unwrap();
+        // chmod does not stop a root euid, and some filesystems ignore perms.
+        let premise_holds = fs::create_dir(target.join("probe")).is_err();
+
+        let result = copy_entries(&source, &target, &config(&["cache"]), true, &mut NullSink);
+
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        if !premise_holds {
+            return;
+        }
+        let [CopyOutcome::Failed { entry, detail }] = result.outcomes.as_slice() else {
+            panic!("expected one failure, got {:?}", result.outcomes);
+        };
+        assert_eq!(entry, "cache");
+        assert!(
+            detail.contains("removing"),
+            "the row has to say what broke: {detail}"
+        );
+    }
+
+    #[test]
+    fn copy_entries_refuses_an_absolute_entry_before_force_removes_anything() {
+        // The containment guard's real weight is here, not in the plain run.
+        // `target.join("/abs")` IS `/abs` — an absolute entry names the same
+        // place on both sides — so under `force` an entry that got past the
+        // guard would hand `remove_existing` a path outside both worktrees and
+        // delete it. The guard runs before the removal loop; this is what
+        // holds that ordering in place.
+        let (tmp, source, target) = repo_fixture("");
+        write(&tmp.path().join("outside/precious"), b"not yours");
+        let absolute = tmp.path().join("outside").to_string_lossy().to_string();
+
+        let result = copy_entries(&source, &target, &config(&[&absolute]), true, &mut NullSink);
+
+        assert_eq!(sole_skip(&result), SkipReason::NotIgnored);
+        assert_eq!(
+            fs::read(tmp.path().join("outside/precious")).unwrap(),
+            b"not yours",
+            "an absolute entry must not reach the removal loop"
+        );
+        assert!(entries_of(&target).is_empty());
+    }
+
+    // ── copy_entries: partial-destination cleanup across a fan-out ───────
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_entries_clears_only_the_failing_match_of_a_glob() {
+        // One entry, several matches, one of them broken. The cleanup has to
+        // be surgical: the matches that landed are finished caches and must
+        // survive, while the one that broke must be cleared so the next run
+        // retries it instead of reporting `already present` over a half-copied
+        // tree. Getting this wrong in either direction is silent — the entry
+        // reports the same `Failed` row either way.
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_tmp, source, target) = repo_fixture("dist\n");
+        write(&source.join("api/dist/server.js"), b"api");
+        write(&source.join("web/dist/app.js"), b"web");
+        let locked = source.join("web/dist/locked");
+        fs::create_dir_all(&locked).unwrap();
+        write(&locked.join("inner.js"), b"unreadable");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let premise_holds = fs::read_dir(&locked).is_err();
+
+        // `api/dist` sorts first, so it is copied before `web/dist` breaks.
+        let first = run(&source, &target, &config(&["**/dist"]));
+        let survivor = fs::read(target.join("api/dist/server.js"));
+        let cleared = !target.join("web/dist").exists();
+        // A rerun while the cause persists must retry the failing match.
+        let second = run(&source, &target, &config(&["**/dist"]));
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if !premise_holds {
+            return;
+        }
+        assert!(
+            matches!(first.outcomes.as_slice(), [CopyOutcome::Failed { .. }]),
+            "{:?}",
+            first.outcomes
+        );
+        assert_eq!(
+            survivor.unwrap(),
+            b"api",
+            "the match that finished is a warm cache — cleanup must not take it"
+        );
+        assert!(
+            cleared,
+            "the partial match must not survive as a finished one"
+        );
+        assert!(
+            matches!(second.outcomes.as_slice(), [CopyOutcome::Failed { .. }]),
+            "the rerun retried the failing match: {:?}",
+            second.outcomes
+        );
+
+        // Cause gone: the retry the cleanup made possible completes, and the
+        // entry reports only the match it still had to do.
+        let third = run(&source, &target, &config(&["**/dist"]));
+        let [CopyOutcome::Copied { matches, .. }] = third.outcomes.as_slice() else {
+            panic!("expected the retry to copy, got {:?}", third.outcomes);
+        };
+        assert_eq!(*matches, 1, "the already-warm match was not copied twice");
+        assert_eq!(
+            fs::read(target.join("web/dist/locked/inner.js")).unwrap(),
+            b"unreadable"
+        );
+        assert_eq!(fs::read(target.join("api/dist/server.js")).unwrap(), b"api");
+    }
+
+    // ── The reflink probe ────────────────────────────────────────────────
+
+    #[test]
+    fn copy_entries_leaves_no_probe_file_in_the_destination() {
+        // The probe clones a sample into the destination and unlinks it. A
+        // leaked `.daft-reflink-probe-*` would land in the user's brand-new
+        // worktree — and, being untracked and unignored, in `git status`.
+        let (_tmp, source, target) = repo_fixture("/target\n");
+        write(&source.join("target/app"), b"binary");
+
+        run(&source, &target, &config(&["target"]));
+
+        assert_eq!(
+            entries_of(&target),
+            ["target"],
+            "the probe cleans up after itself"
+        );
+    }
+
+    #[test]
+    fn copy_entries_copies_a_tree_with_no_regular_file_in_it() {
+        // The probe answers "can these bytes be cloned?" by cloning one of
+        // them — and an empty cache, or one of only directories and symlinks,
+        // has none to offer. It reports clonable, which is what keeps a copy
+        // that costs nothing from being refused by `fallback: skip` or by a
+        // cap it cannot possibly exceed.
+        let (_tmp, source, target) = repo_fixture("/empty\n/links\n");
+        fs::create_dir_all(source.join("empty/inner")).unwrap();
+        fs::create_dir_all(source.join("links")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("../elsewhere", source.join("links/dangling")).unwrap();
+
+        #[cfg(unix)]
+        let declared = ["empty", "links"];
+        #[cfg(not(unix))]
+        let declared = ["empty"];
+
+        let result = copy_entries(
+            &source,
+            &target,
+            &ResolvedCopyConfig {
+                paths: declared.iter().map(|p| (*p).to_string()).collect(),
+                // The two knobs that would refuse a byte copy: neither may
+                // fire, because nothing here has to be copied byte-wise.
+                fallback: CopyFallback::Skip,
+                max_size_bytes: Some(0),
+            },
+            false,
+            &mut NullSink,
+        );
+
+        assert!(
+            result.outcomes.iter().all(|o| matches!(
+                o,
+                CopyOutcome::Copied {
+                    method: CopyMethod::Reflinked,
+                    ..
+                }
+            )),
+            "{:?}",
+            result.outcomes
+        );
+        assert!(target.join("empty/inner").is_dir());
+        #[cfg(unix)]
+        assert!(target.join("links/dangling").is_symlink());
+    }
+
+    // ── plan_method: the cells the existing matrix leaves open ───────────
+
+    #[test]
+    fn plan_method_refuses_on_fallback_skip_without_consulting_the_cap() {
+        // Both refusals apply: no reflink, and over the cap. `NoReflink` wins,
+        // and it has to — `fallback: skip` says this tree is not worth byte
+        // copying at any size, so `2.1 GB over the 1 GB max_size` would send
+        // the user to raise a cap that changes nothing.
+        assert_eq!(
+            plan_method(false, CopyFallback::Skip, 4096, Some(1024)),
+            Err(SkipReason::NoReflink)
+        );
+        assert_eq!(
+            plan_method(false, CopyFallback::Skip, 0, Some(0)),
+            Err(SkipReason::NoReflink)
+        );
+    }
+
+    #[test]
+    fn plan_method_gate_trips_one_byte_over_and_not_before() {
+        // The cap is inclusive: `max_size: 1KB` admits a 1024-byte entry and
+        // refuses a 1025-byte one. An off-by-one here is invisible on every
+        // tree except the one that sits exactly on the boundary.
+        assert_eq!(
+            plan_method(false, CopyFallback::Copy, 1025, Some(1024)),
+            Err(SkipReason::TooLarge {
+                size_bytes: 1025,
+                limit_bytes: 1024,
+            })
+        );
+        assert_eq!(
+            plan_method(false, CopyFallback::Copy, 1023, Some(1024)),
+            Ok(CopyMethod::Copied)
+        );
+        // A zero cap still admits an entry with no bytes in it: the rule is
+        // "over the cap", and nothing is not over anything.
+        assert_eq!(
+            plan_method(false, CopyFallback::Copy, 0, Some(0)),
+            Ok(CopyMethod::Copied)
+        );
+        assert_eq!(
+            plan_method(false, CopyFallback::Copy, 1, Some(0)),
+            Err(SkipReason::TooLarge {
+                size_bytes: 1,
+                limit_bytes: 0,
+            })
+        );
+    }
+
+    // ── Phrasing and formatting boundaries ───────────────────────────────
+
+    #[test]
+    fn format_bytes_switches_units_at_the_multiple_not_before() {
+        // The unit boundary is where a size the user recognizes (`1 KB`,
+        // `1 GB`) has to come back out the way they wrote it — this is the
+        // function that quotes their own `max_size` back at them.
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1 KB");
+        // One byte over rounds back to the whole unit rather than growing a
+        // misleading `1.0009` — a single decimal is the whole point.
+        assert_eq!(format_bytes(1025), "1 KB");
+        assert_eq!(format_bytes(1024 * 1024 - 1), "1024 KB");
+        assert_eq!(format_bytes(1024 * 1024), "1 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024 - 1), "1024 MB");
+        // TB is the last unit: bigger values keep counting in it rather than
+        // inventing one.
+        assert_eq!(format_bytes(u64::MAX), "16777216 TB");
+    }
+
+    #[test]
+    fn copied_annotation_counts_paths_from_two_and_times_from_a_tenth() {
+        // The two thresholds the annotation is built on, each held at its
+        // edge: the count appears from the second path, and the duration from
+        // the point where one decimal can show it.
+        let annotate = |matches, millis| {
+            copied_annotation(
+                matches,
+                2048,
+                CopyMethod::Copied,
+                Duration::from_millis(millis),
+            )
+        };
+        assert_eq!(annotate(2, 0), "2 paths · 2 KB · copied");
+        assert_eq!(annotate(1, 0), "2 KB · copied");
+        assert_eq!(annotate(1, 49), "2 KB · copied", "0.0s says nothing");
+        assert_eq!(annotate(1, 50), "2 KB · copied · 0.1s");
+    }
+
+    #[test]
+    fn exactly_one_stage_renderer_speaks_for_a_key() {
+        // Both no-live-region dispatch sites — `route_stage` and the default
+        // `ProgressSink::on_stage` — call the shared-file renderer and the
+        // copied-path one back to back for every event, and rely on each
+        // returning `None` for the other's keys. If either ever stopped
+        // filtering, every shared link and every copied cache would print
+        // twice, in two voices.
+        use crate::core::stage::{StageEvent, StageId, StepKey};
+
+        let events = [
+            StageEvent::Completed {
+                annotation: Some("1 KB · reflinked".into()),
+            },
+            StageEvent::SkippedAttention {
+                reason: "failed — disk full".into(),
+            },
+        ];
+        for event in &events {
+            assert_eq!(
+                crate::core::shared::legacy_shared_stage_line(
+                    &StepKey::scoped(StageId::CopyPath, "target"),
+                    event,
+                    false,
+                ),
+                None,
+                "the shared-file renderer answered for a copied-path key: {event:?}"
+            );
+            assert!(
+                legacy_copy_stage_line(&StepKey::scoped(StageId::CopyPath, "target"), event, false)
+                    .is_some(),
+                "the copied-path renderer must answer for its own: {event:?}"
+            );
+            assert_eq!(
+                legacy_copy_stage_line(&StepKey::scoped(StageId::SharedFile, ".env"), event, false,),
+                None,
+                "the copied-path renderer answered for a shared-file key: {event:?}"
+            );
+        }
+    }
+
+    // ── Known defect, held open ──────────────────────────────────────────
+
+    /// **KNOWN BUG — this test fails today and is `#[ignore]`d so the suite
+    /// stays green; remove the attribute with the fix.** Reported by the
+    /// coverage pass, deliberately not fixed here.
+    ///
+    /// Nothing stops an entry from resolving to the destination *root*:
+    ///
+    /// - `stays_inside_worktree` rejects `..`, `/` and Windows prefixes, but
+    ///   not `.` — and `target.join(".")` is the destination worktree.
+    /// - [`expand_entries`] reports the walk's own root as an empty-string
+    ///   match, so `copy: ["*"]` expands to `["", …]` — and `target.join("")`
+    ///   is likewise the destination worktree.
+    ///
+    /// Under `force` the engine then hands that path to `remove_existing`,
+    /// which empties the worktree the user is standing in. The `""` case is
+    /// saved by git (`check-ignore -- ""` exits 128 → `Unknown` → refused) and
+    /// the `.` case by the tracked probe (`ls-files -- .` is non-empty in any
+    /// repo with a commit) — so both currently fail closed, for reasons
+    /// outside this module and unrelated to containment. The fixture below
+    /// removes the second of those accidents (a repository with nothing
+    /// tracked yet) and the destination is wiped.
+    #[test]
+    #[ignore = "known bug: an entry resolving to the destination root empties it under --force"]
+    fn an_entry_that_resolves_to_the_destination_root_is_refused() {
+        let (_tmp, source, target) = repo_fixture("*\n");
+        write(&source.join("target/app"), b"cache");
+        write(&target.join("precious.txt"), b"the user's work");
+
+        let result = copy_entries(&source, &target, &config(&["."]), true, &mut NullSink);
+
+        assert!(
+            target.join("precious.txt").is_file(),
+            "the copy stage emptied the destination worktree — it now holds {:?}",
+            entries_of(&target)
+        );
+        assert_eq!(sole_skip(&result), SkipReason::NotIgnored);
+
+        // The same hazard by the other route: the walk's root is not one of
+        // its own matches, and an empty relative path is not a path.
+        write(&source.join("cache/a.bin"), b"a");
+        assert!(
+            !expand_entries(&source, "*").iter().any(String::is_empty),
+            "a root-matching glob expanded to the destination root itself: {:?}",
+            expand_entries(&source, "*")
+        );
+    }
 }
