@@ -347,6 +347,20 @@ fn create_sandbox(
     let planned_shared =
         crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
     crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
+    // Cache paths declared with `copy:` get their own section (#387). A
+    // sandbox is minted from a real source worktree just like a branch
+    // worktree is, so `daft go <tag>` and `daft start --fork` have exactly
+    // as much to gain from a warm cache — leaving them out would make forks
+    // silently the slow path. Read ONCE, here, and reused verbatim at
+    // execution below so plan and receipt cannot disagree. Revisits never
+    // reach this code: both idempotence lookups and the on-disk fallback
+    // return through `navigate` above, before the plan commits.
+    let copy_config = crate::core::copy_paths::read_copy_config(&source_worktree);
+    let planned_copy = copy_config
+        .as_ref()
+        .map(|c| c.paths.clone())
+        .unwrap_or_default();
+    crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy);
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
     ))));
@@ -431,6 +445,15 @@ fn create_sandbox(
         worktree_path.display(),
         short_oid(&params.commit)
     ));
+    // Absolutize before the chdir — a relative `--at` would otherwise be
+    // re-resolved against the new worktree by everything below (shared
+    // linking, the copy stage, DAFT_WORKTREE_PATH). See checkout::execute
+    // for the full rationale.
+    let worktree_path = if worktree_path.is_absolute() {
+        worktree_path
+    } else {
+        get_current_directory()?.join(&worktree_path)
+    };
     change_directory(&worktree_path)?;
 
     if stash_created {
@@ -459,10 +482,26 @@ fn create_sandbox(
     }
 
     // Shared links after propagation, before hooks — order is load-bearing
-    // (see checkout::execute).
+    // (see checkout::execute). The `copy:` stage below closes the same
+    // window for build caches.
     let link_result =
         crate::core::shared::link_shared_files_on_create(&worktree_path, git_dir, project_root);
     crate::core::shared::report_link_results(&link_result, &planned_shared, sink);
+
+    // Copy declared caches (#387) after shared linking, before the
+    // post-create hooks — the ordering IS the feature (see
+    // checkout::execute). `force = false`: an entry already present at the
+    // destination is left alone; only `daft warm --force` clobbers.
+    if let Some(config) = &copy_config {
+        let copy_result = crate::core::copy_paths::copy_entries(
+            &source_worktree,
+            &worktree_path,
+            config,
+            false,
+            sink,
+        );
+        crate::core::copy_paths::report_copy_results(&copy_result, &planned_copy, sink);
+    }
 
     let post_hook_ctx = HookContext::new(
         HookType::PostCreate,
