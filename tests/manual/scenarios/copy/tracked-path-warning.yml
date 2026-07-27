@@ -1,0 +1,79 @@
+name: A tracked copy entry warns and the worktree is still created
+description: >
+  `copy:` replicates caches, not the working tree, so an entry git tracks is
+  refused (#387). The refusal is a WARNING, never an abort — deliberately the
+  opposite of post-create hooks' abort-by-default (#765): a cache copy is an
+  optimization, and no config mistake may cost the user the worktree they asked
+  for. The trap covered here is the force-added file: `cache/` passes `git
+  check-ignore`, but `git ls-files cache` is non-empty, so the entry is only
+  ignored on the surface. Creation proceeds, the entry's untracked bulk stays
+  behind, and git's own checkout of the tracked file is untouched. (Neither the
+  repo name nor the branch name contains "tracked" — the output assertion would
+  otherwise pass off the rail's own path annotations.)
+
+repos:
+  - name: copy-forceadd
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-forceadd"
+          - path: .gitignore
+            content: |
+              cache/
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      copy:
+        - cache/
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_FORCEADD
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-forceadd/main"
+
+  - name: Force-add a file inside the ignored cache dir, then fill it
+    run: |
+      mkdir -p cache
+      printf 'checked in by mistake\n' > cache/keep.txt
+      git add -f cache/keep.txt
+      git commit -m "force-add a file under the ignored cache dir"
+      printf 'bulk\n' > cache/big.bin
+    cwd: "$WORK_DIR/copy-forceadd/main"
+    expect:
+      exit_code: 0
+
+  - name: The entry looks ignored but is not — that is the whole trap
+    run: |
+      git check-ignore cache
+      test -n "$(git ls-files cache)"
+    cwd: "$WORK_DIR/copy-forceadd/main"
+    expect:
+      exit_code: 0
+
+  - name: Creation succeeds and warns instead of copying
+    run: daft start feat-x 2>&1
+    cwd: "$WORK_DIR/copy-forceadd/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "cache"
+        - "tracked"
+      dirs_exist:
+        - "$WORK_DIR/copy-forceadd/feat-x"
+      files_not_exist:
+        - "$WORK_DIR/copy-forceadd/feat-x/cache/big.bin"
+
+  - name: Git's own checkout of the tracked file is unaffected by the refusal
+    run: "true"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-forceadd/feat-x/cache/keep.txt"
+      file_contains:
+        - path: "$WORK_DIR/copy-forceadd/feat-x/cache/keep.txt"
+          content: "checked in by mistake"

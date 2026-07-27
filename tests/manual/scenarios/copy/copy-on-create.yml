@@ -1,0 +1,79 @@
+name: Declared cache paths are copied into a new worktree
+description: >
+  `copy:` in daft.yml replicates gitignored build caches from the source
+  worktree into a newly created one (#387), so a fresh worktree starts warm
+  instead of paying a full `npm install` / `cargo build`. The replica must be a
+  REAL copy, not a symlink back into the source — that is `shared:`'s job, and
+  the whole point of `copy:` is that the two worktrees can diverge. This
+  exercises the `daft go` (existing-branch) creation journey.
+
+repos:
+  - name: copy-create
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-create"
+          - path: .gitignore
+            content: |
+              node_modules/
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+    daft_yml: |
+      copy:
+        - node_modules/
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_CREATE
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-create/main"
+
+  - name: Build a cache in the source worktree; confirm git ignores it
+    run: |
+      mkdir -p node_modules/pkg
+      printf 'module.exports = 1;\n' > node_modules/pkg/index.js
+      git check-ignore node_modules
+    cwd: "$WORK_DIR/copy-create/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "node_modules"
+
+  - name: Check out an existing branch — the cache comes along
+    run: daft go develop 2>&1
+    cwd: "$WORK_DIR/copy-create/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-create/develop/node_modules/pkg"
+      files_exist:
+        - "$WORK_DIR/copy-create/develop/node_modules/pkg/index.js"
+      file_contains:
+        - path: "$WORK_DIR/copy-create/develop/node_modules/pkg/index.js"
+          content: "module.exports = 1;"
+
+  - name: The replica is a real directory, not a symlink into the source
+    run: |
+      test -d "$WORK_DIR/copy-create/develop/node_modules"
+      test ! -L "$WORK_DIR/copy-create/develop/node_modules"
+      test ! -L "$WORK_DIR/copy-create/develop/node_modules/pkg/index.js"
+    expect:
+      exit_code: 0
+
+  - name: The replica is independent — writing to it leaves the source alone
+    run:
+      printf 'module.exports = 2;\n' >
+      "$WORK_DIR/copy-create/develop/node_modules/pkg/index.js"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/copy-create/main/node_modules/pkg/index.js"
+          content: "module.exports = 1;"
+        - path: "$WORK_DIR/copy-create/develop/node_modules/pkg/index.js"
+          content: "module.exports = 2;"
