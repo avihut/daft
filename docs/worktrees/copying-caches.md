@@ -28,6 +28,15 @@ worktree, copies both directories in, and only then runs the
 `worktree-post-create` hooks — so the `npm install` in your hooks reconciles a
 warm tree instead of building one from nothing.
 
+**The source worktree is the one you ran the command from.** Create a worktree
+while standing in `feature-a` and its caches are what gets copied; only when you
+run from the bare container root — outside any worktree — does daft fall back to
+a resident worktree, preferring the base branch's if you named one and the
+default branch's otherwise. Two consequences worth internalizing: you inherit
+the warmth of wherever you were standing, and the `copy:` configuration is read
+from that same source worktree — so if its merged config has no `copy:` key,
+nothing is planned, whatever the branch you are creating would have said.
+
 ## The four ways content reaches a new worktree
 
 `copy:` is the last piece of a set. Each mechanism moves a different kind of
@@ -65,6 +74,7 @@ two directories point at the same blocks until one of them is written to.
 | btrfs                   | Yes           |
 | XFS mounted `reflink=1` | Yes           |
 | OpenZFS 2.2+            | Yes           |
+| bcachefs                | Yes           |
 | ReFS (Windows)          | Yes           |
 | ext4, HFS+, NTFS, tmpfs | No            |
 
@@ -111,11 +121,17 @@ usually minutes and your own crates are usually seconds.
 
 ### JavaScript — `node_modules/`
 
-**pnpm is the cheapest case.** The top layer of a pnpm `node_modules/` is
-symlinks into `node_modules/.pnpm/`, and symlinks copy as symlinks — the link is
-recreated, the target is not walked. The bytes live one layer down in `.pnpm/`,
-hardlinked from pnpm's global store, and those arrive as real files (reflinked
-where the filesystem allows).
+**pnpm is the cheapest case, on Unix.** The top layer of a pnpm `node_modules/`
+is symlinks into `node_modules/.pnpm/`, and on Unix symlinks copy as symlinks —
+the link is recreated, the target is not walked. The bytes live one layer down
+in `.pnpm/`, hardlinked from pnpm's global store, and those arrive as real files
+(reflinked where the filesystem allows).
+
+On Windows the calculus is different: daft does not yet replicate symlinks
+there, so an entry containing one is abandoned and reported as a yellow
+attention row. ReFS gives Windows block cloning for ordinary files, but a
+symlink-based `node_modules/` is not currently a copyable entry — declare the
+flat-install directories instead.
 
 **npm and yarn's flat trees** are real files all the way down. This is precisely
 the case reflink exists for: near-free on APFS or btrfs, a genuine
@@ -164,15 +180,20 @@ optimization, and an optimization never costs you the worktree you asked for.**
 A tracked entry, an unreadable source, a full disk — each becomes a warning row
 and creation continues.
 
-The other rows you will see on that section:
+Every declared entry leaves exactly one row, so the section reads as a receipt.
+Dim `○` rows are expected outcomes; yellow `↓` rows want your attention. No copy
+row is ever red.
 
-| Row                                           | Meaning                                                    |
-| --------------------------------------------- | ---------------------------------------------------------- |
-| `✓ target  1 dir · 1.2 GB · reflinked · 0.3s` | Copied                                                     |
-| `○ nothing to copy yet`                       | Declared, but the cache has never been built in the source |
-| `○ already present`                           | The destination already has it — nothing to do             |
-| `↓ 'target' is tracked — not copied`          | Failed the gitignored check                                |
-| `↓ 2.1 GB over the 1 GB max_size`             | Byte-copy fallback exceeded the cap                        |
+| Row                                           | Meaning                                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `✓ target  1 dir · 1.2 GB · reflinked · 0.3s` | Copied                                                                               |
+| `○ nothing to copy yet`                       | Declared, but the cache has never been built in the source                           |
+| `○ already present`                           | The destination already has it — nothing to do                                       |
+| dim `○`, glob matched nothing                 | A glob entry expanded to no paths in the source worktree                             |
+| `↓ 'target' is tracked — not copied`          | Failed the gitignored check                                                          |
+| `↓ 2.1 GB over the 1 GB max_size`             | Byte-copy fallback exceeded the cap                                                  |
+| yellow `↓`, cannot reflink                    | The filesystem cannot reflink this entry and `fallback: skip` declined the byte copy |
+| yellow `↓`, copy failed                       | The copy was attempted and something went wrong — I/O error, permissions, disk full  |
 
 ## Re-warming a worktree with `daft warm`
 
@@ -184,6 +205,7 @@ daft warm                 # copy into the current worktree
 daft warm feature-x       # copy into another worktree
 daft warm --from main     # take the caches from a specific worktree
 daft warm --force         # replace entries that already exist at the destination
+daft warm -v              # report each entry as it is considered
 ```
 
 The default source is the current worktree when it isn't also the target, and
@@ -192,8 +214,11 @@ already present at the destination are left alone — so `daft warm` twice in a
 row is a no-op, and it never clobbers what a post-create hook already built.
 
 Reach for it when a worktree was created before you added the `copy:` key, when
-you have just built something expensive on the default branch and want it
-everywhere, or when a cache went stale and you want the current one instead.
+you have just built something expensive on the default branch and want it in the
+worktrees that predate it, or when a cache went stale and you want the current
+one instead. It targets one worktree per run — there is no fleet form, so
+spreading a fresh cache means running it per worktree or driving it with
+[`daft exec`](/worktrees/running-commands).
 
 `daft warm` does not move your shell; it only writes into the target worktree.
 
@@ -221,8 +246,15 @@ gitignored paths to bring into each new worktree — the same idea, one path per
 line. Convert it into a `copy:` block and paste the result into `daft.yml`:
 
 ```bash
-{ echo 'copy:'; grep -Ev '^[[:space:]]*(#|$)' .worktreeinclude | sed 's/^/  - /'; }
+{ echo 'copy:'; grep -Ev '^[[:space:]]*(#|$)' .worktreeinclude | sed "s/'/''/g; s/.*/  - '&'/"; }
 ```
+
+The entries come out single-quoted deliberately. A bare `*.log`, `**/dist/`, or
+`!keep/` is not a valid plain YAML scalar, and daft.yml is parsed as one
+document — a scalar that fails to scan takes the whole file down with it,
+dropping every YAML hook in the repo to the legacy-script fallback. The first
+`sed` expression doubles any embedded single quote, which is how a single-quoted
+YAML scalar escapes one.
 
 Two behavioral differences to know once you switch: daft reflinks where the
 filesystem allows instead of always copying bytes, and daft refuses entries that

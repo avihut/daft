@@ -52,11 +52,16 @@ Additionally:
 ## Copied paths
 
 A top-level `copy:` key declares gitignored paths — build caches such as
-`target/`, `node_modules/`, `.venv/` — that daft replicates into every new
+`target/`, `node_modules/`, `.gradle/` — that daft replicates into every new
 worktree, so a fresh worktree starts warm instead of paying a full build. On a
 filesystem with copy-on-write support (APFS, btrfs, XFS with `reflink=1`,
-OpenZFS 2.2+, ReFS) the replica costs almost nothing until the two copies
-diverge.
+OpenZFS 2.2+, bcachefs, ReFS) the replica costs almost nothing until the two
+copies diverge.
+
+Not every cache is a good candidate: a directory that records its own absolute
+path (a Python `.venv/` above all) breaks when copied elsewhere. See
+[what actually stays warm](/worktrees/copying-caches#what-actually-stays-warm)
+before declaring one.
 
 ```yaml
 copy:

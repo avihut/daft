@@ -21,10 +21,16 @@ For the unsafe-sharing failure modes, see
 [Anti-pattern: shared mutable state](/recipes/anti-patterns/shared-mutable-state).
 This page is the safe-sharing reference.
 
-Everything in the **don't share** column still has an answer — just not sharing.
+Most of the **don't share** column still has an answer — just not sharing.
 Declare those directories in `daft.yml`'s `copy:` key and each worktree gets its
 own copy-on-write replica instead of a rebuild:
-[Copying build caches into new worktrees](/worktrees/copying-caches).
+[Copying build caches into new worktrees](/worktrees/copying-caches). `.venv/`
+is the exception in both directions — don't share it, and don't copy it either:
+a virtualenv records its own absolute path, so a copied one keeps pointing at
+the worktree it came from. Share the uv/pip cache and rebuild it instead, or
+create it with `uv venv --relocatable` first
+([the caveat in full](/worktrees/copying-caches#what-actually-stays-warm)). The
+rows whose "don't share" cell reads "(nothing)" need neither.
 
 ## By tool
 
@@ -146,4 +152,4 @@ esbuild has no cache; nothing to share.
 - **[Anti-pattern: shared mutable state](/recipes/anti-patterns/shared-mutable-state)**
   — the failure modes when the unsafe sharing happens
 - **[Copying build caches into new worktrees](/worktrees/copying-caches)** — the
-  `copy:` key, for everything in the "don't share" column
+  `copy:` key, for most of the "don't share" column (`.venv/` excepted)

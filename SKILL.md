@@ -221,7 +221,7 @@ root via `git rev-parse --git-common-dir`.
 | `daft remove -f <branch>`                                                                                                                    | Force-delete bypassing safety checks; for the default branch, removes the worktree only (preserves branch ref and remote)                                                                                                                                                                                                                                                                                                                                                                               |
 | `daft prune [-f] [-v\|-vv]`                                                                                                                  | Remove worktrees whose remote branches were deleted AND that are verified merged (ancestor or squash); gone-but-unmerged branches are kept unless forced. `-v` hook details, `-vv` full sequential                                                                                                                                                                                                                                                                                                      |
 | `daft carry <targets>`                                                                                                                       | Transfer uncommitted changes to one or more other worktrees                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `daft warm [<worktree>] [--from <worktree>] [--force]`                                                                                       | Re-run the `copy:` stage on demand: replicate the declared gitignored build caches into `<worktree>` (default: the current one). The source defaults to the current worktree, or the repository's default-branch worktree when the current one is the target. Entries already present at the destination are skipped unless `--force`. Does not change your shell's directory. See Warm Worktrees below.                                                                                                |
+| `daft warm [<worktree>] [--from <worktree>] [--force] [-v]`                                                                                  | Re-run the `copy:` stage on demand: replicate the declared gitignored build caches into `<worktree>` (default: the current one). The source defaults to the current worktree, or the repository's default-branch worktree when the current one is the target. Entries already present at the destination are skipped unless `--force`. One worktree per run — there is no fleet form. Does not change your shell's directory. See Warm Worktrees below.                                                 |
 | `daft update [targets]`                                                                                                                      | Update worktree branches from remote; refspec syntax `source:destination` for cross-branch updates                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `daft rename <source> <new-branch>`                                                                                                          | Rename a branch, move its worktree, and rename the remote branch                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `daft sync [-f] [--rebase BRANCH [--autostash]] [--push [--force-with-lease] [--no-verify] [--jobs N] [--no-throttle]] [--include VALUE]...` | Prune stale worktrees + update all + optional rebase + optional push. Rebase and push apply only to branches you own by default; `--include` widens (`unowned`, an email, or a branch name). `-f`/`--prune-dirty` includes dirty worktrees. Parallel hook-bearing pushes are memory-governed (`--jobs N` caps concurrency, `--no-throttle` disables). First Ctrl+C cancels gracefully (partial results print, exit 130); a second force-kills.                                                          |
@@ -858,12 +858,16 @@ copy:
   max_size: 5GB # per-ENTRY cap; gates the byte-copy fallback only
 ```
 
+- **The source is the worktree the creating command ran from**, falling back to
+  the base or default branch's worktree only when it ran from the bare container
+  root. The `copy:` config is read from that same source worktree — a source
+  whose merged config lacks the key plans nothing.
 - On a copy-on-write filesystem (APFS, btrfs, XFS `reflink=1`, OpenZFS 2.2+,
-  ReFS) the replica is near-free until the copies diverge. Elsewhere `fallback:`
-  decides: `copy` (default) pays for a real byte copy, `skip` leaves the entry
-  out. `max_size` (`5GB`, `500MB`, or a quoted plain byte count) caps that byte
-  copy per entry and never applies to a reflink; `daft hooks validate` rejects
-  one it cannot parse, and rejects a map form that declares no `paths:`.
+  bcachefs, ReFS) the replica is near-free until the copies diverge. Elsewhere
+  `fallback:` decides: `copy` (default) pays for a real byte copy, `skip` leaves
+  the entry out. `max_size` (`5GB`, `500MB`, or a quoted plain byte count) caps
+  that byte copy per entry and never applies to a reflink; `daft hooks validate`
+  rejects one it cannot parse, and rejects a map form that declares no `paths:`.
 - Entries are worktree-root-relative, may be files or directories, and may use
   glob metacharacters (`*`, `?`, `[`), expanded against the source worktree.
 - **Entries must be gitignored** — `git check-ignore` must pass _and_ nothing
@@ -891,18 +895,23 @@ daft warm                 # copy into the current worktree
 daft warm feature-x       # copy into another worktree
 daft warm --from main     # take the caches from a specific worktree
 daft warm --force         # replace entries already present at the destination
+daft warm -v              # report each entry as it is considered
 ```
+
+It targets one worktree per run; to spread a fresh cache across several, run it
+per worktree or drive it with `daft exec`.
 
 What to tell users about expectations: a copied cache is a head start, not a
 guarantee, because toolchains embed absolute paths to differing degrees. Expect
 cargo's registry dependencies to survive the move and workspace-local crates to
 rebuild; expect pnpm's symlink-heavy `node_modules/` to copy far more cheaply
-than a flat npm/yarn tree. Do **not** suggest copying `.venv/` — a virtualenv
-records its own absolute path in `pyvenv.cfg`, `bin/` shebangs, and
-`bin/activate`; share the uv/pip cache and rebuild it instead, or create it with
-`uv venv --relocatable` first. The source tree is read live and is not quiesced,
-so copying while a build writes into the source yields a torn snapshot — re-run
-the build or `daft warm --force`.
+than a flat npm/yarn tree (on Unix — daft does not replicate symlinks on
+Windows, where such an entry becomes a yellow attention row). Do **not** suggest
+copying `.venv/` — a virtualenv records its own absolute path in `pyvenv.cfg`,
+`bin/` shebangs, and `bin/activate`; share the uv/pip cache and rebuild it
+instead, or create it with `uv venv --relocatable` first. The source tree is
+read live and is not quiesced, so copying while a build writes into the source
+yields a torn snapshot — re-run the build or `daft warm --force`.
 
 ## Tasks (`daft run`)
 
