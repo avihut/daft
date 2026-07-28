@@ -396,6 +396,31 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &ScreenState) {
                 let selected = focused && index == state.cursor();
                 lines.push(setting_line(resolved, selected, label_width, value_width));
             }
+            Row::StrayHeader => {
+                lines.push(Line::from(vec![
+                    "  ".into(),
+                    "Set in config, but not settings daft knows"
+                        .yellow()
+                        .underlined(),
+                ]));
+            }
+            Row::Stray(stray) => {
+                let Some(entry) = state.config.unrecognized.get(*stray) else {
+                    continue;
+                };
+                let selected = focused && index == state.cursor();
+                let value = truncate(&entry.value, value_width);
+                lines.push(Line::from(vec![
+                    if selected { "▌ ".cyan() } else { "  ".into() },
+                    Span::from(pad(&entry.key, label_width)),
+                    "  ".into(),
+                    value.clone().yellow(),
+                    " ".repeat(value_width.saturating_sub(value.chars().count()))
+                        .into(),
+                    "  ".into(),
+                    format!("{} — ignored", entry.scope.label()).dim(),
+                ]));
+            }
         }
     }
 
@@ -471,6 +496,11 @@ fn draw_detail(frame: &mut Frame, area: Rect, state: &ScreenState) {
     };
     frame.render_widget(block, area);
 
+    if let Some(stray) = state.selected_stray() {
+        frame.render_widget(Paragraph::new(stray_detail(stray, area.width)), inner);
+        return;
+    }
+
     let Some(resolved) = state.selected() else {
         return;
     };
@@ -529,6 +559,59 @@ fn draw_detail(frame: &mut Frame, area: Rect, state: &ScreenState) {
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// What to say about a `daft.*` key that is not a setting.
+///
+/// The value is real, it is in a real config file, and it does nothing. The
+/// panel's job is to say why — and the usual why is a mis-cased subsection,
+/// which git treats as a different key and which reads as correct to anyone
+/// scanning for it.
+fn stray_detail(entry: &crate::git::ConfigEntry, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from("─".repeat(width as usize).dim()),
+        Line::from(vec![
+            entry.key.clone().bold(),
+            "  ".into(),
+            "not a daft setting".yellow(),
+        ]),
+        Line::from(
+            "Set in your config, read by nothing. daft ignores keys it does not know.".to_string(),
+        ),
+        Line::from(""),
+        Line::from(vec!["   value:  ".dim(), entry.value.clone().into()]),
+        Line::from(vec!["   scope:  ".dim(), entry.scope.label().into()]),
+    ];
+
+    if let Some(path) = &entry.origin_path {
+        lines.push(Line::from(vec![
+            "   file:   ".dim(),
+            path.display().to_string().dim(),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // Suggest the real key when one is close. Git compares subsections
+    // case-sensitively, so `daft.checkoutbranch.carry` is a different key from
+    // `daft.checkoutBranch.carry` — and the only visible difference is one
+    // letter's case.
+    let keys: Vec<String> = crate::core::settings_spec::all_specs()
+        .into_iter()
+        .map(|spec| spec.key.to_string())
+        .collect();
+    match crate::suggest::find_similar(&entry.key, &keys, 1).first() {
+        Some(near) => lines.push(Line::from(vec![
+            "   ! ".yellow(),
+            format!("did you mean {near}?").yellow(),
+        ])),
+        None => lines.push(Line::from(vec![
+            "   ! ".yellow(),
+            "remove it, or check the spelling against `daft config list`".yellow(),
+        ])),
+    }
+
+    lines
 }
 
 fn diagnostic_line(diagnostic: &Diagnostic) -> Line<'static> {
@@ -872,6 +955,31 @@ mod tests {
         for (width, height) in [(20, 6), (40, 10), (60, 12), (200, 60)] {
             let _ = painted(&state, width, height);
         }
+    }
+
+    #[test]
+    fn a_stray_key_is_listed_and_explained() {
+        use crate::commands::config::screen::state::Mode;
+
+        let mut state = state_with(vec![entry(
+            "daft.checkoutbranch.carry",
+            "false",
+            ConfigScope::Local,
+        )]);
+        state.mode = Mode::Issues;
+        state.rebuild();
+        state.move_to_bottom();
+
+        let all = painted(&state, 120, 40).join("\n");
+        assert!(all.contains("not settings daft knows"), "{all}");
+        assert!(all.contains("daft.checkoutbranch.carry"));
+        assert!(all.contains("ignored"), "the row says it does nothing");
+        // And the panel names the key it was probably meant to be — the whole
+        // difference is one letter's case, which is unreadable otherwise.
+        assert!(
+            all.contains("did you mean daft.checkoutBranch.carry?"),
+            "{all}"
+        );
     }
 
     #[test]

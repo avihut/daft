@@ -44,11 +44,19 @@ pub enum RailEntry {
     Category(Category),
 }
 
-/// A row in the list: either a category heading or a setting.
+/// A row in the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     Header(Category),
     Setting(usize),
+    /// A heading for the `daft.*` keys that are not settings.
+    StrayHeader,
+    /// A `daft.*` key in the config that matches no registry row — a typo, or
+    /// a key from a newer daft. Index into `ResolvedSet::unrecognized`.
+    ///
+    /// These have no setting to attach a diagnostic to, so without a row of
+    /// their own they would be counted in the header and then be unfindable.
+    Stray(usize),
 }
 
 /// Which pane the keyboard is driving.
@@ -56,6 +64,11 @@ pub enum Row {
 pub enum Focus {
     Rail,
     List,
+}
+
+/// Whether the cursor may rest on a row. Headings are signposts, not stops.
+fn is_landable(row: &Row) -> bool {
+    matches!(row, Row::Setting(_) | Row::Stray(_))
 }
 
 /// The whole screen.
@@ -167,10 +180,18 @@ impl ScreenState {
         self.rail_cursor
     }
 
-    /// The setting under the cursor, if the list is not empty.
+    /// The setting under the cursor, if one is.
     pub fn selected(&self) -> Option<&Resolved> {
         match self.rows.get(self.cursor) {
             Some(Row::Setting(index)) => self.config.settings.get(*index),
+            _ => None,
+        }
+    }
+
+    /// The stray key under the cursor, if one is.
+    pub fn selected_stray(&self) -> Option<&crate::git::ConfigEntry> {
+        match self.rows.get(self.cursor) {
+            Some(Row::Stray(index)) => self.config.unrecognized.get(*index),
             _ => None,
         }
     }
@@ -213,6 +234,18 @@ impl ScreenState {
             self.rows.push(Row::Setting(index));
         }
 
+        // Stray keys belong to the mode whose job is "what is wrong". In the
+        // other modes the header count points here.
+        if self.mode == Mode::Issues && !self.config.unrecognized.is_empty() {
+            let strays: Vec<usize> = (0..self.config.unrecognized.len())
+                .filter(|index| self.matches_filter_text(&self.config.unrecognized[*index].key))
+                .collect();
+            if !strays.is_empty() {
+                self.rows.push(Row::StrayHeader);
+                self.rows.extend(strays.into_iter().map(Row::Stray));
+            }
+        }
+
         self.rail = self.build_rail();
         self.rail_cursor = self.rail_cursor.min(self.rail.len().saturating_sub(1));
 
@@ -231,6 +264,15 @@ impl ScreenState {
             Mode::All => true,
             Mode::Modified => resolved.is_set(),
             Mode::Issues => !resolved.diagnostics.is_empty(),
+        }
+    }
+
+    /// Whether a single piece of text survives the filter — for rows that
+    /// have nothing but a key.
+    fn matches_filter_text(&self, text: &str) -> bool {
+        match self.filter.as_deref() {
+            None | Some("") => true,
+            Some(needle) => text.to_lowercase().contains(&needle.to_lowercase()),
         }
     }
 
@@ -276,7 +318,7 @@ impl ScreenState {
                 .settings
                 .get(*index)
                 .is_some_and(|r| r.spec.key == key),
-            Row::Header(_) => false,
+            Row::Header(_) | Row::StrayHeader | Row::Stray(_) => false,
         })
     }
 
@@ -297,7 +339,7 @@ impl ScreenState {
                         .settings
                         .get(*index)
                         .is_some_and(|r| r.spec.category == category),
-                    Row::Header(_) => false,
+                    Row::Header(_) | Row::StrayHeader | Row::Stray(_) => false,
                 })
                 .count(),
         }
@@ -317,7 +359,7 @@ impl ScreenState {
                 let mut next = self.cursor;
                 while next + 1 < self.rows.len() {
                     next += 1;
-                    if matches!(self.rows[next], Row::Setting(_)) {
+                    if is_landable(&self.rows[next]) {
                         self.cursor = next;
                         break;
                     }
@@ -339,7 +381,7 @@ impl ScreenState {
                 let mut next = self.cursor;
                 while next > 0 {
                     next -= 1;
-                    if matches!(self.rows[next], Row::Setting(_)) {
+                    if is_landable(&self.rows[next]) {
                         self.cursor = next;
                         break;
                     }
@@ -376,7 +418,7 @@ impl ScreenState {
 
     /// Move the cursor forward to the next setting row, if it is on a header.
     fn settle_forward(&mut self) {
-        while self.cursor < self.rows.len() && matches!(self.rows[self.cursor], Row::Header(_)) {
+        while self.cursor < self.rows.len() && !is_landable(&self.rows[self.cursor]) {
             self.cursor += 1;
         }
         if self.cursor >= self.rows.len() {
@@ -386,7 +428,7 @@ impl ScreenState {
     }
 
     fn settle_backward(&mut self) {
-        while self.cursor > 0 && matches!(self.rows[self.cursor], Row::Header(_)) {
+        while self.cursor > 0 && !is_landable(&self.rows[self.cursor]) {
             self.cursor -= 1;
         }
     }
@@ -394,7 +436,7 @@ impl ScreenState {
     fn settle_forward_then_backward(&mut self) {
         let start = self.cursor;
         self.settle_forward();
-        if matches!(self.rows.get(self.cursor), Some(Row::Header(_)) | None) {
+        if !self.rows.get(self.cursor).is_some_and(is_landable) {
             self.cursor = start;
             self.settle_backward();
         }
@@ -403,7 +445,7 @@ impl ScreenState {
     fn settle_backward_then_forward(&mut self) {
         let start = self.cursor;
         self.settle_backward();
-        if matches!(self.rows.get(self.cursor), Some(Row::Header(_)) | None) {
+        if !self.rows.get(self.cursor).is_some_and(is_landable) {
             self.cursor = start;
             self.settle_forward();
         }
@@ -492,7 +534,7 @@ impl ScreenState {
                 .settings
                 .get(*index)
                 .is_some_and(|r| r.spec.category == category),
-            Row::Header(_) => false,
+            Row::Header(_) | Row::StrayHeader | Row::Stray(_) => false,
         }) {
             self.cursor = index;
             self.clamp();
@@ -583,6 +625,14 @@ impl ScreenState {
     /// is that Enter changes the value, and a box that can only refuse breaks
     /// it. The status line points at the command that can.
     pub fn open_modal(&mut self) {
+        if let Some(stray) = self.selected_stray() {
+            let key = stray.key.clone();
+            self.set_status(
+                format!("{key} is not a daft setting — there is nothing to edit"),
+                StatusKind::Info,
+            );
+            return;
+        }
         let Some(resolved) = self.selected() else {
             return;
         };
@@ -853,6 +903,86 @@ mod tests {
             state.mode,
             Mode::Modified,
             "a category does not change mode"
+        );
+    }
+
+    #[test]
+    fn a_stray_key_is_reachable_in_issues_mode_and_nowhere_else() {
+        let mut state = state_with(vec![entry(
+            "daft.checkoutbranch.carry",
+            "false",
+            ConfigScope::Local,
+        )]);
+
+        assert!(
+            !state.rows().iter().any(|r| matches!(r, Row::Stray(_))),
+            "All mode lists settings; the header count points at the problem"
+        );
+
+        state.mode = Mode::Issues;
+        state.rebuild();
+
+        let strays: Vec<&Row> = state
+            .rows()
+            .iter()
+            .filter(|r| matches!(r, Row::Stray(_)))
+            .collect();
+        assert_eq!(strays.len(), 1, "a counted issue has to be findable");
+
+        // And the cursor can actually reach it.
+        state.move_to_bottom();
+        assert_eq!(
+            state.selected_stray().map(|e| e.key.as_str()),
+            Some("daft.checkoutbranch.carry")
+        );
+        assert!(state.selected().is_none(), "it is not a setting");
+    }
+
+    #[test]
+    fn editing_a_stray_key_reports_instead_of_opening_an_editor() {
+        let mut state = state_with(vec![entry(
+            "daft.checkoutbranch.carry",
+            "false",
+            ConfigScope::Local,
+        )]);
+        state.mode = Mode::Issues;
+        state.rebuild();
+        state.move_to_bottom();
+
+        state.open_modal();
+        assert!(!state.modal_open(), "there is no setting to edit");
+        assert!(
+            state
+                .status
+                .as_ref()
+                .is_some_and(|s| s.text.contains("not a daft setting"))
+        );
+    }
+
+    #[test]
+    fn filtering_reaches_stray_keys_by_name() {
+        let mut state = state_with(vec![entry(
+            "daft.checkoutbranch.carry",
+            "false",
+            ConfigScope::Local,
+        )]);
+        state.mode = Mode::Issues;
+        state.rebuild();
+
+        state.start_filter();
+        for ch in "checkoutbranch".chars() {
+            state.filter_push(ch);
+        }
+        assert!(state.rows().iter().any(|r| matches!(r, Row::Stray(_))));
+
+        state.clear_filter();
+        state.start_filter();
+        for ch in "zzzz".chars() {
+            state.filter_push(ch);
+        }
+        assert!(
+            !state.rows().iter().any(|r| matches!(r, Row::Stray(_))),
+            "a filter that matches nothing must not leave the stray behind"
         );
     }
 
