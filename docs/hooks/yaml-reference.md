@@ -315,7 +315,6 @@ Each job in the `jobs` list supports:
 | `files`             | string               | Shell command producing this job's file list (one path per line)                                             |
 | `skip`              | bool / string / list | Skip condition                                                                                               |
 | `only`              | bool / string / list | Only condition                                                                                               |
-| `os`                | string / list        | Target OS (`macos`, `linux`, `windows`); skips if no match                                                   |
 | `arch`              | string / list        | Target architecture (`x86_64`, `aarch64`); skips if no match                                                 |
 | `env`               | map                  | Extra environment variables                                                                                  |
 | `fail_text`         | string               | Custom failure message                                                                                       |

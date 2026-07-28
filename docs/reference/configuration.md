@@ -5,17 +5,56 @@ description: All daft configuration options
 
 # Configuration
 
-daft reads configuration from Git's config system. Settings are loaded with
-standard Git priority: repository-local config overrides global config, which
-overrides built-in defaults.
+daft's settings live in several places — Git's config system, the repository's
+`daft.yml`, and a global config file — resolved through different precedence
+chains. `daft config` hides that split: one place lists everything, says what
+each setting currently is, and says which layer decided it.
 
-## Setting Values
+## The settings browser
 
 ```bash
-# Set for the current repository
-git config daft.autocd false
+daft config
+```
 
-# Set globally (all repositories)
+Opens a full-screen browser over every setting daft has, grouped by what it does
+rather than where it is stored. The panel below the list shows the selected
+setting's whole chain — every layer's value, with a dot on the one that won — so
+"why is this on?" has an answer that does not require knowing which file to look
+in.
+
+`enter` edits, `space` flips a boolean, `u` clears a value, and `s` chooses
+whether writes go to this repository or to every repository. `/` filters across
+names, keys, and descriptions.
+
+## Setting values from the command line
+
+```bash
+daft config list                     # everything, with values and origins
+daft config list --modified          # only what something actually sets
+daft config get daft.autocd          # one value, for scripts
+daft config get daft.autocd --origin # the value plus its full chain
+daft config set daft.autocd false    # change it here
+daft config set --global daft.autocd false
+daft config unset daft.autocd        # reveal whatever it was masking
+```
+
+`get` prints the value and nothing else, exiting non-zero when there is none —
+the same contract `git config --get` has, so it drops into scripts.
+`list --format json` carries the whole read model, including each setting's
+type, default, and description.
+
+Values are checked before anything is written, so a bad enum or an unknown
+column is refused where you typed it rather than at the next command that reads
+it. Keys are matched the way Git matches them, which means the section and the
+trailing name are case-insensitive but the part between them is not —
+`daft.checkoutbranch.carry` is a different key from `daft.checkoutBranch.carry`
+and does nothing. `daft config` reports keys like that rather than crediting
+them.
+
+Git's own commands still work for the Git-backed settings:
+
+```bash
+git config daft.autocd false
 git config --global daft.autocd false
 ```
 
@@ -88,13 +127,18 @@ settings interactively, or set them directly with `git config`.
 
 ### Enabling Remote Sync
 
-Use the interactive command to toggle remote sync settings:
+`remote-sync` toggles all three at once:
 
 ```bash
-daft config remote-sync         # Open interactive TUI
-daft config remote-sync --on    # Enable all remote sync operations
-daft config remote-sync --off   # Disable all remote sync operations
+daft config remote-sync --on      # Enable all remote sync operations
+daft config remote-sync --off     # Disable all remote sync operations
 daft config remote-sync --status  # Show current settings
+```
+
+Or set them one at a time, from the browser or the command line:
+
+```bash
+daft config set daft.checkout.fetch true
 ```
 
 You can also set values directly:
