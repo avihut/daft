@@ -637,8 +637,13 @@ where
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // A budget is as much a reason to isolate as a cancel flag: both end in
+    // the pgid cascade, and without a group of its own the teardown can only
+    // signal the direct child. A grandchild holding the pipes (git's `ssh`,
+    // a shell that forked rather than exec'd) then keeps the drain-wait open
+    // long past the deadline the caller asked for.
     #[cfg(unix)]
-    if cancel.is_some() && opts.mode == SupervisionMode::Isolated {
+    if (cancel.is_some() || opts.clock.is_some()) && opts.mode == SupervisionMode::Isolated {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
@@ -691,7 +696,7 @@ pub fn output_with_cancel(
     cmd: &mut Command,
     cancel: Option<&CancelFlag>,
 ) -> anyhow::Result<Output> {
-    output_supervised(cmd, cancel, None)
+    output_supervised(cmd, cancel, SupervisionMode::Direct, None)
 }
 
 /// [`output_with_cancel`] with a wall-clock budget.
@@ -703,17 +708,31 @@ pub fn output_with_cancel(
 /// cancel uses and the call returns [`OperationTimedOut`], which the caller
 /// can render as "could not reach the remote" rather than hanging under a
 /// spinner that has stopped moving.
+///
+/// Runs [`SupervisionMode::Isolated`], unlike [`output_with_cancel`]: the
+/// deadline has to be able to reach *everything* the probe started, and only
+/// a process group of its own makes the pgid cascade legal (Direct mode
+/// shares daft's group, where killpg would take daft down with it). The child
+/// therefore cannot read the controlling tty — correct for a probe, which
+/// must never prompt, and belt-and-braces with the caller's own
+/// `GIT_TERMINAL_PROMPT`/ssh `BatchMode` settings.
 pub fn output_with_deadline(
     cmd: &mut Command,
     cancel: Option<&CancelFlag>,
     limit: Duration,
 ) -> anyhow::Result<Output> {
-    output_supervised(cmd, cancel, Some(Arc::new(UnitClock::new(limit))))
+    output_supervised(
+        cmd,
+        cancel,
+        SupervisionMode::Isolated,
+        Some(Arc::new(UnitClock::new(limit))),
+    )
 }
 
 fn output_supervised(
     cmd: &mut Command,
     cancel: Option<&CancelFlag>,
+    mode: SupervisionMode,
     clock: Option<Arc<UnitClock>>,
 ) -> anyhow::Result<Output> {
     if cancel.is_some_and(CancelFlag::is_cancelled) {
@@ -734,7 +753,7 @@ fn output_supervised(
         cmd,
         cancel,
         SuperviseOpts {
-            mode: SupervisionMode::Direct,
+            mode,
             on_spawn: None,
             clock,
         },
@@ -844,11 +863,18 @@ mod supervisor_tests {
     /// `output_with_deadline` is the seam an unsupervised wire probe uses: no
     /// cancel flag exists to interrupt it, so the budget is the only thing
     /// standing between a silent remote and a hung command.
+    ///
+    /// The script forks deliberately (`&` + `wait`) so a *grandchild* holds
+    /// the pipes. Signalling the direct child alone leaves it alive and the
+    /// drain-wait open, which is how this failed on CI while passing on a
+    /// macOS shell that exec'd instead of forking — the budget only bites if
+    /// the teardown reaches the whole process group.
     #[test]
     fn output_with_deadline_gives_up_and_reports_the_limit() {
         let started = Instant::now();
-        let err = output_with_deadline(&mut sh("sleep 30"), None, Duration::from_millis(150))
-            .expect_err("a command that outlives its budget must not return output");
+        let err =
+            output_with_deadline(&mut sh("sleep 30 & wait"), None, Duration::from_millis(150))
+                .expect_err("a command that outlives its budget must not return output");
         let timed_out = err
             .downcast_ref::<OperationTimedOut>()
             .expect("must surface as OperationTimedOut so callers can word it");
