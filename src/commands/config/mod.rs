@@ -12,6 +12,7 @@
 
 pub mod remote_sync;
 pub mod resolve;
+pub mod screen;
 pub mod write;
 
 use anyhow::{Result, bail};
@@ -142,11 +143,41 @@ pub fn run() -> Result<()> {
 /// and falls back to `list` when there is not — a piped `daft config` should
 /// print something useful rather than refuse.
 fn cmd_default() -> Result<()> {
+    if interactive() {
+        let in_repo = crate::is_git_repository().unwrap_or(false);
+        let state = screen::state::ScreenState::new(resolved()?, in_repo, repo_label());
+        return screen::run(state);
+    }
+
     cmd_list(&ListArgs {
         modified: false,
         category: None,
         emit: EmitArgs::default(),
     })
+}
+
+/// Whether to take over the terminal.
+///
+/// Stderr, because that is where the screen draws — stdout may well be a pipe
+/// while the user is still sitting at a terminal. `DAFT_TESTING` opts out so
+/// suites that run daft without a PTY get the list rather than a screen
+/// waiting for a keystroke that never comes.
+fn interactive() -> bool {
+    use std::io::IsTerminal;
+    std::io::stderr().is_terminal() && std::env::var("DAFT_TESTING").is_err()
+}
+
+/// The repository's name for the header, best-effort.
+fn repo_label() -> Option<String> {
+    crate::get_git_common_dir()
+        .ok()
+        .and_then(|dir| {
+            std::path::Path::new(&dir)
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .filter(|name| !name.is_empty())
 }
 
 // ─────────────────────────────────────────────────────────────────────────

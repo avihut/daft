@@ -11,6 +11,7 @@ pub mod operation_table;
 mod presenter;
 mod render;
 pub mod shared_picker;
+pub mod shell;
 mod state;
 
 pub use catalog_table::{
@@ -21,4 +22,5 @@ pub use driver::{LiveScreen, RawModeGuard, TuiRenderer, enable_raw_mode_guard};
 pub use live_table::{LiveTable, LiveTableConfig};
 pub use operation_table::{CompletedTable, OperationTable, TableConfig};
 pub use presenter::TuiPresenter;
+pub use shell::restore_terminal;
 pub use state::{FinalStatus, PhaseState, PhaseStatus, TuiState, WorktreeRow, WorktreeStatus};

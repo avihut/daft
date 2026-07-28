@@ -13,7 +13,6 @@ pub mod input;
 pub mod manage_mode;
 mod remove_modal;
 mod render;
-mod shell;
 pub mod state;
 
 use anyhow::Result;
@@ -26,12 +25,12 @@ use ratatui::{Frame, Terminal, layout::Rect, style::Color, text::Line};
 use std::io;
 use std::time::Duration;
 
+use super::shell::restore_terminal;
 use crate::core::shared::{CollectDecision, MaterializedState, SharedFileInfo, UncollectedFile};
 use collect_mode::CollectMode;
 use dialog::show_confirm_dialog;
 use highlight::Highlighter;
 use manage_mode::ManageMode;
-use shell::restore_terminal;
 use state::{FileTabState, PickerState};
 
 /// What the event loop should do after handling an action.
