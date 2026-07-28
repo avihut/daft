@@ -166,8 +166,12 @@ fn render_warm_result(result: &warm::WarmResult, forced: bool, output: &mut dyn 
             // and which are the config not getting what it asked for. A
             // fourteenth SkipReason must not be able to land in the yellow
             // channel on the rail and the quiet one here.
-            CopyOutcome::Skipped { entry, reason } => {
-                let line = warm::skip_line(entry, reason);
+            CopyOutcome::Skipped {
+                entry,
+                reason,
+                unreadable,
+            } => {
+                let line = warm::skip_line(entry, reason, *unreadable);
                 if copy_paths::reason_needs_attention(outcome) {
                     output.warning(&line);
                 } else {
@@ -327,6 +331,7 @@ mod tests {
         CopyOutcome::Skipped {
             entry: entry.into(),
             reason,
+            unreadable: 0,
         }
     }
 
@@ -732,6 +737,7 @@ mod tests {
             vec![CopyOutcome::Skipped {
                 entry: "node_modules".into(),
                 reason: SkipReason::DestinationExists,
+                unreadable: 0,
             }],
         );
         let output = render(&result, false);
@@ -758,6 +764,7 @@ mod tests {
             vec![CopyOutcome::Skipped {
                 entry: "node_modules".into(),
                 reason: not_ignored("node_modules"),
+                unreadable: 0,
             }],
         );
         let output = render(&result, false);
@@ -784,6 +791,7 @@ mod tests {
             vec![CopyOutcome::Skipped {
                 entry: "node_modules".into(),
                 reason: SkipReason::DestinationExists,
+                unreadable: 0,
             }],
         );
         assert!(
@@ -802,6 +810,7 @@ mod tests {
             vec![CopyOutcome::Skipped {
                 entry: "node_modules".into(),
                 reason: SkipReason::NoSource,
+                unreadable: 0,
             }],
         );
         assert!(!render(&elsewhere, false).has_info("--force"));

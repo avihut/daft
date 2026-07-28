@@ -476,8 +476,11 @@ fn config_load_error(source: &Path) -> Option<String> {
 /// phrase had already named its entry. The engine now settles it: no clause
 /// ever names the entry, and the offending path inside a glob expansion is the
 /// only path a phrase quotes.
-pub fn skip_line(entry: &str, reason: &SkipReason) -> String {
-    copy_paths::qualified_phrase(entry, &copy_paths::skip_phrase(entry, reason))
+pub fn skip_line(entry: &str, reason: &SkipReason, unreadable: usize) -> String {
+    copy_paths::qualified_phrase(
+        entry,
+        &copy_paths::with_shortfall(copy_paths::skip_phrase(entry, reason), unreadable),
+    )
 }
 
 /// One failed entry's flat line, on the same rule as [`skip_line`].
@@ -606,7 +609,7 @@ mod tests {
         ];
 
         for reason in reasons {
-            let line = skip_line("**/dist", &reason);
+            let line = skip_line("**/dist", &reason, 0);
             let clause = copy_paths::skip_phrase("**/dist", &reason);
 
             assert_eq!(
@@ -642,6 +645,7 @@ mod tests {
             &SkipReason::NotIgnored {
                 offender: "web/dist".to_string(),
             },
+            0,
         );
         assert!(
             line.starts_with("**/dist: "),
@@ -673,6 +677,7 @@ mod tests {
             outcomes: vec![CopyOutcome::Skipped {
                 entry: "target".into(),
                 reason: SkipReason::NoSource,
+                unreadable: 0,
             }],
         };
         assert_eq!(unreported(&declared, &result), ["node_modules"]);
@@ -691,12 +696,14 @@ mod tests {
                 CopyOutcome::Skipped {
                     entry: "target".into(),
                     reason: SkipReason::NoSource,
+                    unreadable: 0,
                 },
                 // Never declared — a glob's expansion leaking out as its own
                 // outcome is the shape this guards against.
                 CopyOutcome::Skipped {
                     entry: "web/dist".into(),
                     reason: SkipReason::NoSource,
+                    unreadable: 0,
                 },
             ],
         };
@@ -717,6 +724,7 @@ mod tests {
             outcomes: vec![CopyOutcome::Skipped {
                 entry: "c".into(),
                 reason: SkipReason::NoSource,
+                unreadable: 0,
             }],
         };
         assert_eq!(unreported(&declared, &result), ["a", "b", "d"]);
@@ -737,6 +745,7 @@ mod tests {
         let existing = base(vec![CopyOutcome::Skipped {
             entry: "target".into(),
             reason: SkipReason::DestinationExists,
+            unreadable: 0,
         }]);
         assert!(existing.has_existing_skips());
         assert!(!existing.nothing_declared());
@@ -744,6 +753,7 @@ mod tests {
         let missing = base(vec![CopyOutcome::Skipped {
             entry: "target".into(),
             reason: SkipReason::NoSource,
+            unreadable: 0,
         }]);
         assert!(!missing.has_existing_skips());
     }

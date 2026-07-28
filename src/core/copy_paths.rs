@@ -301,8 +301,17 @@ pub(crate) fn expand_reporting(source_root: &Path, entry: &str) -> Expansion {
         let Ok(rel) = found.path().strip_prefix(source_root) else {
             continue;
         };
-        if let Some(rel) = relative_to_slash_string(rel) {
-            matches.push(rel);
+        match relative_to_slash_string(rel) {
+            Some(rel) => matches.push(rel),
+            // A name that cannot be written as a `/`-separated UTF-8 string has
+            // nowhere to go: not a config entry, not a git pathspec, not a
+            // `StepKey` scope. Dropping it silently would shrink the expansion
+            // with nothing to show for it, so it counts as a place the walk
+            // could not use.
+            None => unreadable.push((
+                rel.to_string_lossy().into_owned(),
+                "the name is not usable as a worktree-relative UTF-8 path".to_string(),
+            )),
         }
     }
     matches.sort();
@@ -514,7 +523,18 @@ pub enum CopyOutcome {
         unreadable: usize,
     },
     /// The entry was deliberately left out; see [`SkipReason`].
-    Skipped { entry: String, reason: SkipReason },
+    Skipped {
+        entry: String,
+        reason: SkipReason,
+        /// Places the expansion could not read, exactly as on
+        /// [`CopyOutcome::Copied`].
+        ///
+        /// A partial glob that copies today and reports `already present`
+        /// tomorrow would otherwise announce the shortfall once and hide it
+        /// forever after — and `already present` is the most reassuring row
+        /// the stage has.
+        unreadable: usize,
+    },
     /// The copy was attempted and something went wrong (I/O error, permission
     /// denied, disk full). **Not fatal** — it renders as an attention row and
     /// creation continues. `detail` is the error chain, already stringified.
@@ -674,6 +694,7 @@ pub fn copy_entries(
                 .map(|entry| CopyOutcome::Skipped {
                     entry: entry.clone(),
                     reason: SkipReason::SameWorktree,
+                    unreadable: 0,
                 })
                 .collect(),
         };
@@ -773,10 +794,11 @@ fn copy_one_inner(
     sink: &mut impl crate::core::ProgressSink,
 ) -> Result<CopyOutcome> {
     let started = Instant::now();
-    let skipped = |reason| {
+    let skipped = |reason, unreadable| {
         Ok(CopyOutcome::Skipped {
             entry: entry.to_string(),
             reason,
+            unreadable,
         })
     };
 
@@ -792,11 +814,17 @@ fn copy_one_inner(
     // for none at all. Found matches are copied and the shortfall rides in the
     // annotation; only a walk that found nothing becomes the entry's outcome.
     if matches.is_empty() {
+        let shortfall = unreadable.len();
         return match unreadable.into_iter().next() {
-            Some((path, detail)) => skipped(SkipReason::SourceUnreadable { path, detail }),
-            None => skipped(SkipReason::NoMatches),
+            Some((path, detail)) => {
+                skipped(SkipReason::SourceUnreadable { path, detail }, shortfall)
+            }
+            None => skipped(SkipReason::NoMatches, 0),
         };
     }
+    // Every refusal from here on carries it, so the shortfall cannot go quiet
+    // just because the entry did not copy this time. (The two refusals above
+    // pass their own count, which is all of it or none.)
     let unreadable_count = unreadable.len();
 
     // ── 2. Containment ───────────────────────────────────────────────────
@@ -804,10 +832,13 @@ fn copy_one_inner(
     // about tracking.
     for rel in &matches {
         if let Some(detail) = containment_violation(rel) {
-            return skipped(SkipReason::Uncontained {
-                offender: rel.clone(),
-                detail,
-            });
+            return skipped(
+                SkipReason::Uncontained {
+                    offender: rel.clone(),
+                    detail,
+                },
+                unreadable_count,
+            );
         }
     }
 
@@ -821,15 +852,18 @@ fn copy_one_inner(
             Ok(_) => present.push(rel.clone()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
-                return skipped(SkipReason::SourceUnreadable {
-                    path: rel.clone(),
-                    detail: err.to_string(),
-                });
+                return skipped(
+                    SkipReason::SourceUnreadable {
+                        path: rel.clone(),
+                        detail: err.to_string(),
+                    },
+                    unreadable_count,
+                );
             }
         }
     }
     if present.is_empty() {
-        return skipped(SkipReason::NoSource);
+        return skipped(SkipReason::NoSource, unreadable_count);
     }
 
     // ── 4. The gitignored-only invariant, batched ────────────────────────
@@ -839,10 +873,13 @@ fn copy_one_inner(
     match classify_matches(source, &present)? {
         Classification::Ignored => {}
         Classification::Tracked { offender } => {
-            return skipped(SkipReason::NotIgnored { offender });
+            return skipped(SkipReason::NotIgnored { offender }, unreadable_count);
         }
         Classification::Unknown { offender, detail } => {
-            return skipped(SkipReason::Unclassifiable { offender, detail });
+            return skipped(
+                SkipReason::Unclassifiable { offender, detail },
+                unreadable_count,
+            );
         }
     }
 
@@ -855,10 +892,13 @@ fn copy_one_inner(
             Ok(meta) => Some(meta),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
-                return skipped(SkipReason::DestinationUnreadable {
-                    path: rel.clone(),
-                    detail: err.to_string(),
-                });
+                return skipped(
+                    SkipReason::DestinationUnreadable {
+                        path: rel.clone(),
+                        detail: err.to_string(),
+                    },
+                    unreadable_count,
+                );
             }
         };
 
@@ -873,10 +913,13 @@ fn copy_one_inner(
             );
             let dst_kind = path_kind(&dst_meta);
             if src_kind != dst_kind {
-                return skipped(SkipReason::DestinationConflict {
-                    path: rel.clone(),
-                    detail: format!("a {dst_kind} where the source is a {src_kind}"),
-                });
+                return skipped(
+                    SkipReason::DestinationConflict {
+                        path: rel.clone(),
+                        detail: format!("a {dst_kind} where the source is a {src_kind}"),
+                    },
+                    unreadable_count,
+                );
             }
             if !force {
                 continue; // the idempotence case
@@ -890,17 +933,23 @@ fn copy_one_inner(
             match tracked_in(target, rel) {
                 Ok(false) => {}
                 Ok(true) => {
-                    return skipped(SkipReason::TargetTracked {
-                        offender: rel.clone(),
-                    });
+                    return skipped(
+                        SkipReason::TargetTracked {
+                            offender: rel.clone(),
+                        },
+                        unreadable_count,
+                    );
                 }
                 // Fail closed: a probe that could not run is not permission to
                 // delete. The target of a real run is always a worktree.
                 Err(detail) => {
-                    return skipped(SkipReason::DestinationUnclassifiable {
-                        offender: rel.clone(),
-                        detail,
-                    });
+                    return skipped(
+                        SkipReason::DestinationUnclassifiable {
+                            offender: rel.clone(),
+                            detail,
+                        },
+                        unreadable_count,
+                    );
                 }
             }
             planned.push(Planned {
@@ -923,46 +972,59 @@ fn copy_one_inner(
     // destinations present still copies the rest — skipping them would leave
     // those caches permanently missing after one interrupted run.
     if planned.is_empty() {
-        return skipped(SkipReason::DestinationExists);
+        return skipped(SkipReason::DestinationExists, unreadable_count);
     }
 
-    // ── 6. Measure and probe, per match ──────────────────────────────────
-    // Per match, not once for the entry: matches can live on different mounts,
-    // and one sample answering for all of them is how a 40 GB byte copy ends
-    // up labelled `reflinked` with the size gate never consulted.
-    let sources: Vec<PathBuf> = planned.iter().map(|p| source.join(&p.rel)).collect();
-    for (item, bytes) in planned.iter_mut().zip(measure_all(&sources)) {
-        item.bytes = bytes;
-    }
-    for item in &mut planned {
-        match reflinks_into(&source.join(&item.rel), &target.join(&item.rel), target)? {
-            Ok(reflinks) => item.reflinks = reflinks,
-            // Fail closed and say why: an unwritable destination is a real
-            // problem with a real cause, and the copy would fail on it anyway.
-            Err(detail) => {
-                return skipped(SkipReason::ReflinkUnprobeable {
-                    path: item.rel.clone(),
-                    detail,
-                });
+    // ── 6. Measure and probe, per match — only if anything will read them ─
+    //
+    // The gate below is a no-op under the default bare-list config
+    // (`fallback: copy`, no `max_size`), and measuring means walking every
+    // declared cache tree in full. On a reflinking filesystem that walk is the
+    // dominant cost of the entire stage — several `node_modules` worth of
+    // `lstat` spent computing a number nothing then reads. Nothing is lost by
+    // skipping it: the row's method and byte count come from what the copier
+    // reports, not from here.
+    let gate_can_fire = gate_can_fire_for(config);
+    if gate_can_fire {
+        let sources: Vec<PathBuf> = planned.iter().map(|p| source.join(&p.rel)).collect();
+        for (item, bytes) in planned.iter_mut().zip(measure_all(&sources)) {
+            item.bytes = bytes;
+        }
+        for item in &mut planned {
+            match reflinks_into(&source.join(&item.rel), &target.join(&item.rel), target)? {
+                Ok(reflinks) => item.reflinks = reflinks,
+                // Fail closed and say why: an unwritable destination is a real
+                // problem with a real cause, and the copy would fail on it
+                // anyway.
+                Err(detail) => {
+                    return skipped(
+                        SkipReason::ReflinkUnprobeable {
+                            path: item.rel.clone(),
+                            detail,
+                        },
+                        unreadable_count,
+                    );
+                }
             }
         }
-    }
 
-    // ── 7. The gate ──────────────────────────────────────────────────────
-    // Only the byte-copying matches are weighed: a clone is free, and a cap
-    // written to stop an expensive copy has no business refusing a free one.
-    let byte_copy_bytes: u64 = planned
-        .iter()
-        .filter(|p| !p.reflinks)
-        .map(|p| p.bytes)
-        .sum();
-    if let Some(reason) = gate_byte_copies(
-        planned.iter().any(|p| !p.reflinks),
-        byte_copy_bytes,
-        config.fallback,
-        config.max_size_bytes,
-    ) {
-        return skipped(reason);
+        // ── 7. The gate ──────────────────────────────────────────────────
+        // Only the byte-copying matches are weighed: a clone is free, and a
+        // cap written to stop an expensive copy has no business refusing a
+        // free one.
+        let byte_copy_bytes: u64 = planned
+            .iter()
+            .filter(|p| !p.reflinks)
+            .map(|p| p.bytes)
+            .sum();
+        if let Some(reason) = gate_byte_copies(
+            planned.iter().any(|p| !p.reflinks),
+            byte_copy_bytes,
+            config.fallback,
+            config.max_size_bytes,
+        ) {
+            return skipped(reason, unreadable_count);
+        }
     }
 
     // ── 8. Copy ──────────────────────────────────────────────────────────
@@ -970,11 +1032,17 @@ fn copy_one_inner(
     // missing source, a tracked entry on either side, `fallback: skip`, a cap
     // — must be able to fire with the destination still intact, or `--force`
     // would report a skip while having destroyed the cache.
-    sink.on_debug(&format!(
-        "copy: {entry} — {} path(s), {}",
-        planned.len(),
-        format_bytes(planned.iter().map(|p| p.bytes).sum::<u64>()),
-    ));
+    // Only quote a size that was actually measured — `0 B` on every entry
+    // under the default config is a worse `-v` line than no size at all.
+    sink.on_debug(&if gate_can_fire {
+        format!(
+            "copy: {entry} — {} path(s), {}",
+            planned.len(),
+            format_bytes(planned.iter().map(|p| p.bytes).sum::<u64>()),
+        )
+    } else {
+        format!("copy: {entry} — {} path(s)", planned.len())
+    });
 
     let mut stats = crate::cow_copy::CopyStats::default();
     for item in &planned {
@@ -1008,6 +1076,15 @@ fn copy_one_inner(
         elapsed: started.elapsed(),
         unreadable: unreadable_count,
     })
+}
+
+/// Whether [`gate_byte_copies`] can reach any outcome at all for this config.
+///
+/// `false` for the bare-list default (`fallback: copy`, no `max_size`), which
+/// is what makes skipping the measurement safe: nothing downstream reads a
+/// number the gate will not consult.
+fn gate_can_fire_for(config: &ResolvedCopyConfig) -> bool {
+    config.max_size_bytes.is_some() || config.fallback == CopyFallback::Skip
 }
 
 /// Whether the byte-copying part of an entry is allowed to proceed.
@@ -1727,8 +1804,12 @@ pub fn report_copy_results(
                     *unreadable,
                 )),
             },
-            CopyOutcome::Skipped { entry, reason } => {
-                let reason = skip_phrase(entry, reason);
+            CopyOutcome::Skipped {
+                entry,
+                reason,
+                unreadable,
+            } => {
+                let reason = with_shortfall(skip_phrase(entry, reason), *unreadable);
                 // The split is "did the config ask for something daft refused
                 // to do?" — an unbuilt cache or an already-warm worktree is
                 // the stage working as designed; a tracked entry, an
@@ -1889,6 +1970,19 @@ pub fn skip_phrase(entry: &str, reason: &SkipReason) -> String {
 /// The bare clause for an entry whose copy broke.
 pub fn failure_phrase(detail: &str) -> String {
     format!("failed — {detail}")
+}
+
+/// Append the unreadable-places count to a skip's clause.
+///
+/// The same fact [`copied_annotation`] carries, in the one other place it can
+/// be said. A partial glob that copies today and reports `already present`
+/// tomorrow would otherwise announce the shortfall once and hide it forever —
+/// and `already present` is the most reassuring row the stage has.
+pub fn with_shortfall(phrase: String, unreadable: usize) -> String {
+    if unreadable == 0 {
+        return phrase;
+    }
+    format!("{phrase} · {unreadable} unreadable")
 }
 
 /// Put the entry back in front of a bare clause, for surfaces with no row label
@@ -2763,24 +2857,29 @@ mod tests {
                 CopyOutcome::Skipped {
                     entry: "node_modules".into(),
                     reason: SkipReason::NoSource,
+                    unreadable: 0,
                 },
                 CopyOutcome::Skipped {
                     entry: ".venv".into(),
                     reason: SkipReason::DestinationExists,
+                    unreadable: 0,
                 },
                 CopyOutcome::Skipped {
                     entry: "**/dist".into(),
                     reason: SkipReason::NoMatches,
+                    unreadable: 0,
                 },
                 CopyOutcome::Skipped {
                     entry: "src".into(),
                     reason: SkipReason::NotIgnored {
                         offender: "src".into(),
                     },
+                    unreadable: 0,
                 },
                 CopyOutcome::Skipped {
                     entry: "big".into(),
                     reason: SkipReason::NoReflink,
+                    unreadable: 0,
                 },
                 CopyOutcome::Skipped {
                     entry: "huge".into(),
@@ -2788,6 +2887,7 @@ mod tests {
                         size_bytes: 2_254_857_830,
                         limit_bytes: 1024 * 1024 * 1024,
                     },
+                    unreadable: 0,
                 },
                 CopyOutcome::Failed {
                     entry: "broken".into(),
@@ -3185,6 +3285,7 @@ mod tests {
                 CopyOutcome::Skipped {
                     entry: "node_modules".into(),
                     reason: SkipReason::DestinationExists,
+                    unreadable: 0,
                 },
                 CopyOutcome::Failed {
                     entry: ".venv".into(),
@@ -3527,6 +3628,7 @@ mod tests {
             &CopyOutcome::Skipped {
                 entry: "a/b".into(),
                 reason: SkipReason::DestinationExists,
+                unreadable: 0,
             }
         );
         assert_eq!(fs::read(target.join("a/b/deep.txt")).unwrap(), b"deep");
@@ -3561,6 +3663,9 @@ mod tests {
         // blaming a filesystem that clones perfectly well and sending the user
         // to a knob that was never the problem. And under `--force` it got
         // there only after the removal had already run.
+        //
+        // The probe runs when the size gate can fire — the config that has a
+        // reason to ask what a copy will cost.
         use std::os::unix::fs::PermissionsExt;
 
         let (_tmp, source, target) = repo_fixture("/cache\n");
@@ -3570,7 +3675,13 @@ mod tests {
         // chmod does not stop a root euid, and some filesystems ignore perms.
         let premise_holds = fs::create_dir(target.join("probe")).is_err();
 
-        let result = copy_entries(&source, &target, &config(&["cache"]), true, &mut NullSink);
+        let gated = ResolvedCopyConfig {
+            paths: vec!["cache".to_string()],
+            fallback: CopyFallback::Skip,
+            max_size_bytes: None,
+            max_size_unparsed: None,
+        };
+        let result = copy_entries(&source, &target, &gated, true, &mut NullSink);
 
         fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
         if !premise_holds {
@@ -3578,7 +3689,8 @@ mod tests {
         }
 
         assert_sole_skip!(result, SkipReason::ReflinkUnprobeable { .. });
-        let SkipReason::ReflinkUnprobeable { detail, .. } = sole_skip(&result) else {
+        let reason = sole_skip(&result);
+        let SkipReason::ReflinkUnprobeable { detail, .. } = &reason else {
             unreachable!()
         };
         assert!(
@@ -3586,13 +3698,46 @@ mod tests {
             "the row has to name the real cause: {detail}"
         );
         assert!(
-            !skip_phrase("cache", &sole_skip(&result)).contains("no reflink support"),
+            !skip_phrase("cache", &reason).contains("no reflink support"),
             "a probe that never ran must not blame the filesystem"
         );
         assert!(
             target.join("cache/old.bin").is_file(),
             "refusing before the removal is the point: --force destroyed the cache \
              and then reported a skip"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skipping_the_measurement_does_not_make_a_broken_destination_quiet() {
+        // Under the default bare-list config the size gate cannot fire, so the
+        // measurement and probe are skipped entirely — the whole point of that
+        // guard. This is what keeps the saving honest: the same unwritable
+        // destination still fails loudly, from the copy itself, naming what it
+        // left behind.
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_tmp, source, target) = repo_fixture("/cache\n");
+        write(&source.join("cache/a.bin"), b"new");
+        write(&target.join("cache/old.bin"), b"the existing cache");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o500)).unwrap();
+        let premise_holds = fs::create_dir(target.join("probe")).is_err();
+
+        let result = copy_entries(&source, &target, &config(&["cache"]), true, &mut NullSink);
+
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        if !premise_holds {
+            return;
+        }
+
+        let [CopyOutcome::Failed { entry, detail }] = result.outcomes.as_slice() else {
+            panic!("expected one loud failure, got {:?}", result.outcomes);
+        };
+        assert_eq!(entry, "cache");
+        assert!(
+            detail.contains("mistaken for a finished copy"),
+            "what survives has to be called out: {detail}"
         );
     }
 
@@ -4231,6 +4376,110 @@ mod tests {
             b"SECRET=1",
             "the replacement link must still reach the shared file, got {:?}",
             fs::read_link(target.join(".env")).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_partial_expansion_keeps_reporting_its_shortfall_after_it_is_warm() {
+        // The count rode only on `Copied`, so a partial glob announced the
+        // unreadable half once and then reported `already present` — the most
+        // reassuring row the stage has — on every run after it, forever.
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_tmp, source, target) = repo_fixture("dist\n");
+        write(&source.join("readable/dist/app.js"), b"bundle");
+        fs::create_dir_all(source.join("locked/pkg/dist")).unwrap();
+        fs::set_permissions(source.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        let premise_holds = fs::read_dir(source.join("locked")).is_err();
+
+        let first = run(&source, &target, &config(&["**/dist"]));
+        // Second run: everything found is now present, and the shortfall is
+        // unchanged.
+        let second = run(&source, &target, &config(&["**/dist"]));
+
+        fs::set_permissions(source.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+        if !premise_holds {
+            return;
+        }
+
+        let [CopyOutcome::Copied { unreadable, .. }] = first.outcomes.as_slice() else {
+            panic!("expected the found match to copy, got {:?}", first.outcomes);
+        };
+        assert!(*unreadable >= 1);
+
+        let [
+            CopyOutcome::Skipped {
+                reason, unreadable, ..
+            },
+        ] = second.outcomes.as_slice()
+        else {
+            panic!(
+                "expected an already-present skip, got {:?}",
+                second.outcomes
+            );
+        };
+        assert_eq!(*reason, SkipReason::DestinationExists);
+        assert!(
+            *unreadable >= 1,
+            "the shortfall must survive the outcome that hides it best"
+        );
+        // And it reaches both surfaces, from the one helper.
+        let phrase = with_shortfall(skip_phrase("**/dist", reason), *unreadable);
+        assert!(
+            phrase.contains("already present") && phrase.contains("unreadable"),
+            "{phrase}"
+        );
+    }
+
+    #[test]
+    fn a_name_that_cannot_be_spelled_relatively_counts_as_unreadable() {
+        // Dropping it silently shrank the expansion with nothing to show for
+        // it. It is not a match and never can be, so it is a place the walk
+        // could not use.
+        assert_eq!(
+            with_shortfall("already present".into(), 0),
+            "already present"
+        );
+        assert_eq!(
+            with_shortfall("already present".into(), 2),
+            "already present · 2 unreadable"
+        );
+        assert_eq!(relative_to_slash_string(Path::new("")), None);
+    }
+
+    #[test]
+    fn the_default_config_never_walks_the_cache_to_compute_a_number_nobody_reads() {
+        // `fallback: copy` with no `max_size` — the bare-list default — cannot
+        // reach any gate outcome, so measuring and probing are pure cost. On a
+        // reflinking filesystem that walk dominates the whole stage.
+        assert!(!gate_can_fire_for(&config(&["target"])));
+
+        let capped = ResolvedCopyConfig {
+            max_size_bytes: Some(1024),
+            ..config(&["target"])
+        };
+        assert!(gate_can_fire_for(&capped), "a cap has to be weighed");
+
+        let skipping = ResolvedCopyConfig {
+            fallback: CopyFallback::Skip,
+            ..config(&["target"])
+        };
+        assert!(
+            gate_can_fire_for(&skipping),
+            "`fallback: skip` needs the probe's answer even with no cap"
+        );
+
+        // Nothing is lost: the row's method and size come from the copier.
+        let (_tmp, source, target) = repo_fixture("/target\n");
+        write(&source.join("target/app"), b"0123456789");
+        let copied = run(&source, &target, &config(&["target"]));
+        let [CopyOutcome::Copied { bytes, .. }] = copied.outcomes.as_slice() else {
+            panic!("expected a copy, got {:?}", copied.outcomes);
+        };
+        assert_eq!(
+            *bytes, 10,
+            "reported from what was written, not from a pre-walk"
         );
     }
 
