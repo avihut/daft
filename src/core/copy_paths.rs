@@ -472,6 +472,13 @@ pub enum SkipReason {
     /// The filesystem cannot reflink this entry and `fallback: skip` said not
     /// to pay for a byte copy.
     NoReflink,
+    /// The reflink probe could not run at all — it had nowhere writable to
+    /// clone into. Deliberately **not** [`Self::NoReflink`]: that sentence
+    /// blames the filesystem, and on APFS, where cloning is exactly what the
+    /// machine does, it sends the user to change a `fallback:` knob that was
+    /// never the problem. A probe that did not run also never feeds the
+    /// byte-copy size gate.
+    ReflinkUnprobeable { path: String, detail: String },
     /// The entry's byte-copy fallback would exceed
     /// [`ResolvedCopyConfig::max_size_bytes`]. Carries the measured size and
     /// the cap, both in bytes, so the row can quote both.
@@ -928,7 +935,17 @@ fn copy_one_inner(
         item.bytes = bytes;
     }
     for item in &mut planned {
-        item.reflinks = reflinks_into(&source.join(&item.rel), &target.join(&item.rel), target)?;
+        match reflinks_into(&source.join(&item.rel), &target.join(&item.rel), target)? {
+            Ok(reflinks) => item.reflinks = reflinks,
+            // Fail closed and say why: an unwritable destination is a real
+            // problem with a real cause, and the copy would fail on it anyway.
+            Err(detail) => {
+                return skipped(SkipReason::ReflinkUnprobeable {
+                    path: item.rel.clone(),
+                    detail,
+                });
+            }
+        }
     }
 
     // ── 7. The gate ──────────────────────────────────────────────────────
@@ -1494,6 +1511,13 @@ fn measure_all(paths: &[PathBuf]) -> Vec<u64> {
 
 /// Can this match's bytes be cloned into its own destination?
 ///
+/// Three answers, not two. `Ok(true)`/`Ok(false)` are the filesystem's verdict;
+/// `Err` means the probe never ran — an unwritable destination, no directory to
+/// probe in. Collapsing that third case into "cannot reflink" reported
+/// `no reflink support — fallback: skip` on APFS, where reflink support is
+/// exactly what the machine has, and fed a cloneable entry to the byte-copy
+/// size gate it should never have reached.
+///
 /// Answered by attempting it, not by naming the filesystem: `copy:` entries can
 /// straddle mount points (an externally-mounted `node_modules`, a `target/` on
 /// a scratch volume), and reflink support is a property of the *pair* of
@@ -1505,12 +1529,19 @@ fn measure_all(paths: &[PathBuf]) -> Vec<u64> {
 /// clone. It reports `true`, which keeps a free copy from being refused by
 /// `fallback: skip`. A match that could not be *read* is a different answer and
 /// propagates as an error rather than passing for clonable.
-fn reflinks_into(src: &Path, dst: &Path, target_root: &Path) -> Result<bool> {
+fn reflinks_into(
+    src: &Path,
+    dst: &Path,
+    target_root: &Path,
+) -> Result<std::result::Result<bool, String>> {
     let Some(sample) = first_regular_file(src)? else {
-        return Ok(true);
+        return Ok(Ok(true));
     };
     let Some(probe_dir) = nearest_existing_dir(dst, target_root) else {
-        return Ok(false);
+        return Ok(Err(format!(
+            "no directory to probe in below {}",
+            target_root.display()
+        )));
     };
     Ok(attempt_reflink(&sample, probe_dir))
 }
@@ -1541,19 +1572,21 @@ fn nearest_existing_dir<'a>(path: &'a Path, boundary: &Path) -> Option<&'a Path>
 /// Clone `sample` into a scratch name inside `dst_dir` and immediately unlink
 /// it. The clone shares blocks, so the probe costs no space even when the
 /// sample is large; the temp file's guard removes it even on a panic.
-fn attempt_reflink(sample: &Path, dst_dir: &Path) -> bool {
-    let Ok(guard) = tempfile::Builder::new()
+fn attempt_reflink(sample: &Path, dst_dir: &Path) -> std::result::Result<bool, String> {
+    let guard = tempfile::Builder::new()
         .prefix(".daft-reflink-probe-")
         .tempfile_in(dst_dir)
-    else {
-        return false;
-    };
+        .map_err(|err| {
+            format!(
+                "could not write a probe file in {}: {err}",
+                dst_dir.display()
+            )
+        })?;
     // `reflink` needs an absent destination; the guard still owns the name and
     // unlinks whatever is there when it drops.
-    if fs::remove_file(guard.path()).is_err() {
-        return false;
-    }
-    reflink_copy::reflink(sample, guard.path()).is_ok()
+    fs::remove_file(guard.path())
+        .map_err(|err| format!("could not clear the probe file: {err}"))?;
+    Ok(reflink_copy::reflink(sample, guard.path()).is_ok())
 }
 
 /// The first regular file at or under `path`, for the reflink probe.
@@ -1602,7 +1635,7 @@ pub fn probe_reflink_support(dir: &Path) -> Option<bool> {
     // Clone something rather than nothing: a zero-length file is a case some
     // filesystems shortcut, which would not answer the question asked.
     fs::write(sample.path(), b"daft reflink probe").ok()?;
-    Some(attempt_reflink(sample.path(), dir))
+    attempt_reflink(sample.path(), dir).ok()
 }
 
 // ── Plan / report ─────────────────────────────────────────────────────────
@@ -1834,6 +1867,11 @@ pub fn skip_phrase(entry: &str, reason: &SkipReason) -> String {
         SkipReason::Uncontained { offender, detail } => format!("{}{detail}", named(offender)),
         SkipReason::SameWorktree => "source and target are the same worktree".to_string(),
         SkipReason::NoReflink => "no reflink support — fallback: skip".to_string(),
+        // Never "no reflink support": the filesystem was never asked.
+        SkipReason::ReflinkUnprobeable { path, detail } => format!(
+            "{}could not be tested for reflink support — {detail}",
+            named(path)
+        ),
         // Size first, then the cap it broke: the row is answering "why not?",
         // and the entry's own weight is the fact the user needs to act on.
         SkipReason::TooLarge {
@@ -2498,15 +2536,19 @@ mod tests {
         let (_tmp, source, target) = repo_fixture("/target\n/web\n");
         write(&source.join("web/dist/app.js"), b"web");
         write(&source.join("target/app"), b"binary");
-        // A read-only destination parent: `web/dist` cannot be created inside
-        // it, so the copy fails partway rather than being refused up front.
-        fs::create_dir_all(target.join("web")).unwrap();
-        fs::set_permissions(target.join("web"), fs::Permissions::from_mode(0o500)).unwrap();
-        let premise_holds = fs::create_dir(target.join("web/probe")).is_err();
+        // An unreadable subtree INSIDE the entry: the copy starts, walks into
+        // it, and fails partway. (A destination-side permission problem is
+        // caught earlier now, by the reflink probe, without destroying
+        // anything — a different test.)
+        let locked = source.join("web/dist/locked");
+        fs::create_dir_all(&locked).unwrap();
+        write(&locked.join("inner"), b"x");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let premise_holds = fs::read_dir(&locked).is_err();
 
         let result = run(&source, &target, &config(&["web/dist", "target"]));
 
-        fs::set_permissions(target.join("web"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         if !premise_holds {
             return;
         }
@@ -3025,6 +3067,16 @@ mod tests {
                 "source and target are the same worktree",
             ),
             (SkipReason::NoReflink, "no reflink support — fallback: skip"),
+            // Never the sentence above: the filesystem was never asked, and on
+            // APFS blaming it sends the user to a knob that is not the problem.
+            (
+                SkipReason::ReflinkUnprobeable {
+                    path: "cache".into(),
+                    detail: "could not write a probe file in /w/feature: read-only".into(),
+                },
+                "could not be tested for reflink support — could not write a probe file \
+                 in /w/feature: read-only",
+            ),
             (
                 SkipReason::TooLarge {
                     size_bytes: 2_254_857_830,
@@ -3503,18 +3555,17 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn copy_entries_reports_a_force_removal_it_cannot_perform() {
-        // `force` removes the destination before copying, and that removal can
-        // fail on its own (a read-only parent, a busy mount). It has to land
-        // as this entry's `Failed` outcome — warn, never abort — and never as
-        // a panic or a bare `?` out of the whole stage.
+    fn an_unwritable_destination_is_named_as_such_and_costs_nothing() {
+        // Two lies in one, before the probe tri-stated: an unwritable
+        // destination on APFS reported `no reflink support — fallback: skip`,
+        // blaming a filesystem that clones perfectly well and sending the user
+        // to a knob that was never the problem. And under `--force` it got
+        // there only after the removal had already run.
         use std::os::unix::fs::PermissionsExt;
 
         let (_tmp, source, target) = repo_fixture("/cache\n");
         write(&source.join("cache/a.bin"), b"new");
-        write(&target.join("cache/a.bin"), b"old");
-        // A read-only destination root: the `cache` directory inside it cannot
-        // be unlinked.
+        write(&target.join("cache/old.bin"), b"the existing cache");
         fs::set_permissions(&target, fs::Permissions::from_mode(0o500)).unwrap();
         // chmod does not stop a root euid, and some filesystems ignore perms.
         let premise_holds = fs::create_dir(target.join("probe")).is_err();
@@ -3525,13 +3576,23 @@ mod tests {
         if !premise_holds {
             return;
         }
-        let [CopyOutcome::Failed { entry, detail }] = result.outcomes.as_slice() else {
-            panic!("expected one failure, got {:?}", result.outcomes);
+
+        assert_sole_skip!(result, SkipReason::ReflinkUnprobeable { .. });
+        let SkipReason::ReflinkUnprobeable { detail, .. } = sole_skip(&result) else {
+            unreachable!()
         };
-        assert_eq!(entry, "cache");
         assert!(
-            detail.contains("removing"),
-            "the row has to say what broke: {detail}"
+            detail.contains("probe file"),
+            "the row has to name the real cause: {detail}"
+        );
+        assert!(
+            !skip_phrase("cache", &sole_skip(&result)).contains("no reflink support"),
+            "a probe that never ran must not blame the filesystem"
+        );
+        assert!(
+            target.join("cache/old.bin").is_file(),
+            "refusing before the removal is the point: --force destroyed the cache \
+             and then reported a skip"
         );
     }
 
@@ -4024,34 +4085,33 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn a_half_gutted_force_removal_says_what_it_left_behind() {
-        // `remove_dir_all` unlinks as it descends, so a failure partway leaves
-        // a hollowed-out destination that reads as "already present" from then
-        // on — the same hazard as a partial copy, and it gets the same
-        // sentence.
-        use std::os::unix::fs::PermissionsExt;
+    fn a_removal_or_copy_that_leaves_wreckage_behind_says_so() {
+        // A failed copy and a failed `--force` removal leave the same hazard:
+        // a path that exists, is not what anyone asked for, and reads as
+        // "already present" to every later run. Warn-never-abort means the
+        // detail is the only place that can be said.
+        //
+        // Unit-level because the end-to-end route is now largely closed: an
+        // unwritable destination is refused by the reflink probe before any
+        // removal runs (see `an_unwritable_destination_is_named_as_such_...`),
+        // which is the better outcome, not a gap.
+        let tmp = TempDir::new().unwrap();
+        let gone = tmp.path().join("vanished");
+        let stays = tmp.path().join("wreckage");
+        fs::create_dir_all(&stays).unwrap();
 
-        let (_tmp, source, target) = repo_fixture("/cache\n");
-        write(&source.join("cache/a.bin"), b"new");
-        write(&target.join("cache/keep/inner.bin"), b"old");
-        // The destination root cannot be written, so `cache` cannot be unlinked.
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o500)).unwrap();
-        let premise_holds = fs::create_dir(target.join("probe")).is_err();
+        let clean = note_surviving_remains(&gone, anyhow::anyhow!("boom"));
+        assert_eq!(
+            format!("{clean:#}"),
+            "boom",
+            "nothing survived, nothing to add"
+        );
 
-        let result = copy_entries(&source, &target, &config(&["cache"]), true, &mut NullSink);
-
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
-        if !premise_holds {
-            return;
-        }
-        let [CopyOutcome::Failed { detail, .. }] = result.outcomes.as_slice() else {
-            panic!("expected one failure, got {:?}", result.outcomes);
-        };
+        let dirty = note_surviving_remains(&stays, anyhow::anyhow!("boom"));
         assert!(
-            detail.contains("mistaken for a finished copy"),
-            "a surviving destination has to be called out: {detail}"
+            format!("{dirty:#}").contains("mistaken for a finished copy"),
+            "a surviving destination has to be called out: {dirty:#}"
         );
     }
 

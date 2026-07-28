@@ -633,6 +633,10 @@ mod tests {
             },
             SkipReason::SameWorktree,
             SkipReason::NoReflink,
+            SkipReason::ReflinkUnprobeable {
+                path: s("target"),
+                detail: s("could not write a probe file in /w/feature: read-only"),
+            },
             SkipReason::TooLarge {
                 size_bytes: 4096,
                 limit_bytes: 1024,
@@ -654,6 +658,7 @@ mod tests {
                 | SkipReason::Uncontained { .. }
                 | SkipReason::SameWorktree
                 | SkipReason::NoReflink
+                | SkipReason::ReflinkUnprobeable { .. }
                 | SkipReason::TooLarge { .. }
                 | SkipReason::NoMatches => {}
             }
