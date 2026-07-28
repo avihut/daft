@@ -257,7 +257,7 @@ impl TimelineCore {
         setup: RegionSetup,
         started: Instant,
     ) -> Self {
-        let mut core = Self::scaffold(mp, header, setup, started, true);
+        let mut core = Self::scaffold(mp, header, setup, started);
         core.install_plan(plan);
         core
     }
@@ -289,7 +289,7 @@ impl TimelineCore {
         face.enable_steady_tick(Duration::from_millis(80));
         face.tick();
 
-        let mut core = Self::scaffold(mp, header, setup, started, false);
+        let mut core = Self::scaffold(mp, header, setup, started);
         core.planning_face = Some(face);
         core
     }
@@ -315,18 +315,12 @@ impl TimelineCore {
 
     /// The shared region shell: bottom spacer + stopwatch footer (+ ticker),
     /// echo guard, and the Ctrl-C collapse — everything that survives from
-    /// the planning face into the committed plan. Slots come later via
-    /// [`Self::install_plan`]. With `attach_shell` false (the collapsed
-    /// face's path) the spacer and footer are constructed detached — the
-    /// face is the region's only live line, and [`Self::install_plan`]
-    /// attaches the shell when the plan gives the rail a body.
-    fn scaffold(
-        mp: MultiProgress,
-        header: String,
-        setup: RegionSetup,
-        started: Instant,
-        attach_shell: bool,
-    ) -> Self {
+    /// the planning face into the committed plan. The spacer and footer are
+    /// constructed **detached**: a plan is what gives the rail a body, so
+    /// [`Self::install_plan`] is what attaches them (over a face, the face
+    /// is the region's only live line until then; without one, the two
+    /// happen back to back). Slots come from `install_plan` too.
+    fn scaffold(mp: MultiProgress, header: String, setup: RegionSetup, started: Instant) -> Self {
         let RegionSetup {
             verbose,
             detail_verbose,
@@ -335,7 +329,7 @@ impl TimelineCore {
             row_output,
         } = setup;
         let static_style = line_style();
-        let mut bottom_spacer = line_bar(&static_style, render::spacer(use_color));
+        let bottom_spacer = line_bar(&static_style, render::spacer(use_color));
         // The pending footer is a stopwatch from its first frame: `└  142ms`
         // → `└  1.0s` → … (grey — the rail's duration vocabulary), on the
         // command's own clock so it agrees with the total the outcome footer
@@ -345,18 +339,10 @@ impl TimelineCore {
         // the InMemoryTerm sequence tests assert the committed plan's face,
         // and a wall-clock repaint racing the assertion would flake them
         // (footer_counter is zeroed there for the same reason).
-        let mut footer = line_bar(
+        let footer = line_bar(
             &static_style,
             render::footer(&footer_counter(started, use_color), use_color),
         );
-        if attach_shell {
-            // Attach, then tick: a bar whose message was set while detached
-            // has no pending draw, and under test nothing else forces one.
-            bottom_spacer = mp.add(bottom_spacer);
-            footer = mp.add(footer);
-            bottom_spacer.tick();
-            footer.tick();
-        }
         let footer_done = Arc::new(AtomicBool::new(false));
         // Set once a key listener is watching (#729): the stopwatch line then
         // also offers the key. It rides the footer rather than taking a line
@@ -444,13 +430,10 @@ impl TimelineCore {
         debug_assert!(self.slots.is_empty(), "plan installed twice");
         // The collapsed face leaves without a trace; the plan expands in
         // its place (the guards and the stopwatch clock carry on).
-        let expanding_from_face = if let Some(face) = self.planning_face.take() {
+        if let Some(face) = self.planning_face.take() {
             face.disable_steady_tick();
             self.mp.remove(&face);
-            true
-        } else {
-            false
-        };
+        }
 
         let header = plan.header.clone().unwrap_or_else(|| self.header.clone());
         let use_color = self.use_color;
@@ -485,16 +468,15 @@ impl TimelineCore {
             .ok();
         self.mp.println(render::spacer(use_color)).ok();
 
-        // Over a face the shell was constructed detached (the face was the
-        // region's only live line): attach it now — bottom spacer above the
-        // footer — so the rows below can anchor on it. Attach, then tick:
-        // a bar whose message was set while detached has no pending draw.
-        if expanding_from_face {
-            self.bottom_spacer = self.mp.add(self.bottom_spacer.clone());
-            self.footer = self.mp.add(self.footer.clone());
-            self.bottom_spacer.tick();
-            self.footer.tick();
-        }
+        // The shell was constructed detached — a plan is what earns the rail
+        // a body. Attach it now, bottom spacer above the footer, so the rows
+        // below can anchor on it. Attach, then tick: a bar whose message was
+        // set while detached has no pending draw, and under test nothing
+        // else forces one.
+        self.bottom_spacer = self.mp.add(self.bottom_spacer.clone());
+        self.footer = self.mp.add(self.footer.clone());
+        self.bottom_spacer.tick();
+        self.footer.tick();
 
         let static_style = line_style();
         // Rows insert directly above the surviving bottom spacer; successive
