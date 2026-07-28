@@ -924,6 +924,15 @@ test_go_fetch_hop_no_rail_receipt() {
         log_error "hop committed a worktree-creation plan"
         return 1
     fi
+    # The collapsed line is the region's *only* live line: the rail's shell is
+    # built on a hidden draw target and attaches when a plan lands. Drop that
+    # hidden() and the detached spacer/footer paint themselves beside the face
+    # (`│`, `└  1ms`) — invisible to the InMemoryTerm unit tests, so this is
+    # the only guard that catches it.
+    if echo "$clean" | grep -q "[│└]"; then
+        log_error "detached rail shell painted beside the collapsed line"
+        return 1
+    fi
     if echo "$clean" | grep -q "Failed to fetch"; then
         log_error "probe fetch warning leaked onto the hop"
         return 1

@@ -1,9 +1,10 @@
 name: Go cross-repo navigation with checkout fetch enabled
 description:
   "#782 regression: with daft.checkout.fetch=true the catalog hop must not
-  commit a worktree-creation plan, run a doomed fetch against the current repo's
-  remote, or leak probe-fetch warnings — resolution runs quietly under the
-  collapsed planning face and only the hop's own output appears. A real remote
+  commit a worktree-creation plan or leak the resolution fetch's branch miss as
+  a warning — the probe runs under the collapsed rail line and only the hop's
+  own output appears. The fetch itself still runs against the current repo's
+  remote, which is what makes the miss the signal the hop needs. A real remote
   branch still fetches and creates its worktree, and a genuine miss errors
   without warning noise."
 
