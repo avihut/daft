@@ -65,7 +65,10 @@ test_branch_delete_refuses_unmerged() {
     echo "unmerged work" > unmerged.txt
     git add unmerged.txt
     git commit -m "Unmerged work" >/dev/null 2>&1
-    git push origin feature/unmerged >/dev/null 2>&1
+    # Deliberately NOT pushed: since #783 a branch identical to a surviving
+    # remote branch loses nothing on removal and no longer needs -f, so a push
+    # here would assert the opposite of this test's name. The pushed case is
+    # test_branch_delete_allows_fully_pushed below.
     cd "$project_root"
 
     # Should fail without --force
@@ -76,6 +79,45 @@ test_branch_delete_refuses_unmerged() {
 
     # Verify branch still exists
     assert_directory_exists "feature/unmerged" || return 1
+
+    return 0
+}
+
+# Test that a fully pushed, unmerged branch needs no --force (#783): the
+# commits stay reachable at the remote, which this removal preserves.
+test_branch_delete_allows_fully_pushed() {
+    local remote_repo=$(create_test_remote "test-repo-bd-pushed" "main")
+
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-bd-pushed"
+    local project_root=$(pwd)
+
+    git-worktree-checkout -b feature/pushed || return 1
+    assert_directory_exists "feature/pushed" || return 1
+
+    cd "feature/pushed"
+    echo "pushed work" > pushed.txt
+    git add pushed.txt
+    git commit -m "Pushed work" >/dev/null 2>&1
+    git push -u origin feature/pushed >/dev/null 2>&1
+    cd "$project_root"
+
+    # No --force: the branch is unmerged but whole on origin.
+    if ! git-worktree-branch-delete feature/pushed >/dev/null 2>&1; then
+        log_error "Should have allowed deleting a fully pushed branch without -D"
+        return 1
+    fi
+
+    if [[ -d "feature/pushed" ]]; then
+        log_error "Worktree directory should have been removed"
+        return 1
+    fi
+
+    # The remote branch is the whole basis for allowing this — it must survive.
+    if ! git ls-remote --heads origin feature/pushed 2>/dev/null | grep -q feature/pushed; then
+        log_error "Remote branch must survive a local-only removal"
+        return 1
+    fi
 
     return 0
 }
@@ -823,6 +865,7 @@ run_branch_delete_tests() {
 
     run_test "branch_delete_basic" "test_branch_delete_basic"
     run_test "branch_delete_refuses_unmerged" "test_branch_delete_refuses_unmerged"
+    run_test "branch_delete_allows_fully_pushed" "test_branch_delete_allows_fully_pushed"
     run_test "branch_delete_force_unmerged" "test_branch_delete_force_unmerged"
     run_test "branch_delete_refuses_default" "test_branch_delete_refuses_default"
     run_test "branch_delete_default_force_worktree_only" "test_branch_delete_default_force_worktree_only"

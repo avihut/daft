@@ -113,6 +113,17 @@ Safety checks prevent accidental data loss. Use `-f` (`--force`) to override.
 For the default branch (e.g. main), `-f` removes its worktree only -- the
 local branch ref and remote branch are always preserved.
 
+An unmerged branch does not need `-f` when it is identical to a remote branch
+that this removal preserves: the commits stay reachable at the remote, and
+`daft go <branch>` brings them back. Daft confirms that with the remote itself
+rather than trusting `refs/remotes/<remote>/<branch>`, which is a local cache
+that outlives a server-side delete. That check contacts the remote (as the
+squash-merge check may already do, via `gh`/`glab`); it is bounded at 15
+seconds, runs non-interactively, and refuses rather than assumes when the
+remote cannot be reached. Enabling remote deletion
+(`daft.branchDelete.remote`, or `--remote`) withdraws the allowance, because
+then the remote copy does not survive.
+
 ## Options
 
 | Option | Description | Default |
