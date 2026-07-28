@@ -53,6 +53,9 @@ pub struct Snapshot {
     /// False when daft is running outside a repository: there is no local
     /// scope to read or write, and the screen says so.
     pub in_repo: bool,
+    /// The two `daft.yml` files, when there is a repository to read them
+    /// from. `None` leaves those rows on their defaults.
+    pub yaml: Option<YamlLayers>,
     /// What each layer of the worktree-layout chain says, when there is a
     /// repository to ask. `None` leaves the layout row on its built-in
     /// default, which is what daft would use anyway.
@@ -149,6 +152,74 @@ impl LayoutRungs {
     }
 }
 
+/// One `daft.yml` file, parsed, with where it came from.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct YamlLayer {
+    pub path: PathBuf,
+    pub doc: serde_yaml::Value,
+    /// False for a visitor's own untracked `daft.yml` — the file is the same
+    /// shape, but it is not the team's committed convention and the ladder
+    /// should not imply it is.
+    pub tracked: bool,
+}
+
+/// The committed config and the local overlay that outranks it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct YamlLayers {
+    pub main: Option<YamlLayer>,
+    pub local: Option<YamlLayer>,
+}
+
+impl YamlLayers {
+    /// Read both files from the current worktree.
+    pub fn capture() -> Option<Self> {
+        use crate::hooks::yaml_config_loader;
+
+        let worktree = crate::get_current_worktree_path().ok()?;
+        let (main_path, _) = yaml_config_loader::find_config_file(&worktree)?;
+
+        let read = |path: &std::path::Path| -> Option<serde_yaml::Value> {
+            let text = std::fs::read_to_string(path).ok()?;
+            serde_yaml::from_str(&text).ok()
+        };
+
+        let tracked = matches!(
+            yaml_config_loader::classify_main_config(&worktree),
+            yaml_config_loader::ConfigStatus::Tracked
+        );
+        let main = read(&main_path).map(|doc| YamlLayer {
+            path: main_path.clone(),
+            doc,
+            tracked,
+        });
+        let local = yaml_config_loader::find_local_config(&main_path).and_then(|path| {
+            read(&path).map(|doc| YamlLayer {
+                path,
+                doc,
+                tracked: false,
+            })
+        });
+
+        Some(Self { main, local })
+    }
+}
+
+/// The scalar at a dotted path, rendered the way a user would type it.
+fn scalar_at(doc: &serde_yaml::Value, path: &str) -> Option<String> {
+    let mut current = doc;
+    for segment in path.split('.') {
+        current = current.get(segment)?;
+    }
+    match current {
+        serde_yaml::Value::String(text) => Some(text.clone()),
+        serde_yaml::Value::Bool(value) => Some(value.to_string()),
+        serde_yaml::Value::Number(value) => Some(value.to_string()),
+        // Sequences and mappings are not scalars; the row that owns them says
+        // so rather than rendering a shape the editor cannot write back.
+        _ => None,
+    }
+}
+
 /// The ladder label for a layout layer.
 pub fn layout_layer_label(source: LayoutSource) -> &'static str {
     match source {
@@ -169,6 +240,7 @@ impl Snapshot {
             entries,
             env: capture_env(),
             in_repo: true,
+            yaml: YamlLayers::capture(),
             layout: LayoutRungs::capture(),
         })
     }
@@ -180,8 +252,9 @@ impl Snapshot {
             entries: crate::git::daft_config_entries_global().unwrap_or_default(),
             env: capture_env(),
             in_repo: false,
-            // No repository means no repo store, no daft.yml, and nothing to
-            // detect — the chain would be one rung with nothing in it.
+            // No repository means no daft.yml, no repo store, and nothing to
+            // detect.
+            yaml: None,
             layout: None,
         })
     }
@@ -218,6 +291,9 @@ pub enum Layer {
     Env(&'static str),
     /// One layer of the worktree-layout chain.
     Layout(LayoutSource),
+    /// A `daft.yml` file. `tracked` distinguishes the team's committed
+    /// convention from a visitor's own untracked copy.
+    Yaml { file: String, tracked: bool },
 }
 
 impl Layer {
@@ -229,6 +305,13 @@ impl Layer {
             Self::Git(scope) => scope.label().to_string(),
             Self::Env(var) => format!("${var}"),
             Self::Layout(source) => layout_layer_label(*source).to_string(),
+            Self::Yaml { file, tracked } => {
+                if *tracked {
+                    file.clone()
+                } else {
+                    format!("{file} (untracked)")
+                }
+            }
         }
     }
 }
@@ -613,6 +696,29 @@ fn resolve_one(spec: &SettingSpec, snapshot: &Snapshot, inherited: Option<String
         }
     }
 
+    // ── The daft.yml files, committed first and overlay above ────────────
+    if let Backend::DaftYml { path, .. } = spec.backend
+        && let Some(files) = &snapshot.yaml
+    {
+        for (layer, file) in [(&files.main, "daft.yml"), (&files.local, "daft.local.yml")] {
+            let Some(layer) = layer else { continue };
+            rungs.push(Rung {
+                layer: Layer::Yaml {
+                    file: layer
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| file.to_string()),
+                    tracked: layer.tracked,
+                },
+                value: scalar_at(&layer.doc, path),
+                origin_path: Some(layer.path.clone()),
+                writable: spec.is_writable(),
+                inert: None,
+            });
+        }
+    }
+
     // ── The config files, lowest precedence first ────────────────────────
     //
     // Only for rows git config actually stores. A `daft.yml` scalar or the
@@ -779,6 +885,7 @@ mod tests {
             entries,
             env: HashMap::new(),
             in_repo: true,
+            yaml: None,
             layout: None,
         }
     }
@@ -902,6 +1009,7 @@ mod tests {
             entries: vec![entry("daft.remote", "glob", ConfigScope::Global)],
             env: HashMap::new(),
             in_repo: false,
+            yaml: None,
             layout: None,
         };
         let resolved = resolve_key(keys::REMOTE, &snap).unwrap();

@@ -81,6 +81,86 @@ pub fn canonical_value(ty: &ValueType, input: &str) -> String {
     }
 }
 
+/// Edit a scalar in one of the two `daft.yml` files. Returns whether
+/// anything changed.
+///
+/// `daft.yml` is tracked, so a write here lands in the user's diff. Two things
+/// follow from that: the edit is line surgery rather than a serializer
+/// round-trip (see [`yaml_scalar_edit`]), and the file is replaced atomically
+/// with its permissions preserved, so a crash mid-write cannot leave a
+/// half-written config that fails to parse on the next hook.
+fn write_yaml(scope: WriteScope, path: &str, value: Option<&str>) -> Result<bool> {
+    use crate::hooks::{yaml_config_loader, yaml_scalar_edit};
+
+    let worktree = crate::get_current_worktree_path()
+        .context("Not inside a git repository — there is no daft.yml to edit")?;
+
+    let main = yaml_config_loader::find_config_file(&worktree).map(|(path, _)| path);
+    let target = match scope {
+        // The overlay: this machine only, and created on demand. Its name
+        // follows the main config's stem, so a repo using `daft.yaml` gets
+        // `daft.local.yaml`.
+        WriteScope::Local => match &main {
+            Some(main) => {
+                yaml_config_loader::find_local_config(main).unwrap_or_else(|| local_sibling(main))
+            }
+            None => worktree.join("daft.local.yml"),
+        },
+        // The committed convention.
+        WriteScope::Global => main.clone().unwrap_or_else(|| worktree.join("daft.yml")),
+    };
+
+    let before = std::fs::read_to_string(&target).unwrap_or_default();
+    let after = match value {
+        Some(value) => Some(yaml_scalar_edit::set_scalar(&before, path, value)?),
+        None => yaml_scalar_edit::unset_scalar(&before, path)?,
+    };
+    let Some(after) = after else {
+        return Ok(false);
+    };
+
+    write_atomically(&target, &after)?;
+    Ok(true)
+}
+
+/// `daft.yml` → `daft.local.yml`, keeping whichever extension is in use.
+fn local_sibling(main: &std::path::Path) -> std::path::PathBuf {
+    let extension = main
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_else(|| "yml".to_string());
+    main.with_file_name(format!("daft.local.{extension}"))
+}
+
+/// Replace a file's contents through a temporary in the same directory, so a
+/// reader never sees a partial write.
+fn write_atomically(path: &std::path::Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+
+    let directory = path.parent().unwrap_or(std::path::Path::new("."));
+    std::fs::create_dir_all(directory).ok();
+
+    let mut temp = tempfile::Builder::new()
+        .prefix(".daft-yml-")
+        .tempfile_in(directory)
+        .with_context(|| format!("Failed to stage a write next to {}", path.display()))?;
+    temp.write_all(contents.as_bytes())?;
+    temp.flush()?;
+
+    // Keep the file's own permissions: a repo may have tightened them, and a
+    // rename would otherwise install the tempfile's 0600.
+    #[cfg(unix)]
+    if let Ok(existing) = std::fs::metadata(path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = existing.permissions().mode();
+        let _ = std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(mode));
+    }
+
+    temp.persist(path)
+        .map_err(|e| anyhow::anyhow!("Failed to replace {}: {e}", path.display()))?;
+    Ok(())
+}
+
 /// Write the worktree layout at `scope`.
 ///
 /// The two scopes map onto the two layers of the chain daft owns: local is the
@@ -222,10 +302,9 @@ pub fn set(
             WriteScope::Global => git.config_set_global(&spec.key, &value)?,
             WriteScope::Local => git.config_set(&spec.key, &value)?,
         },
-        Backend::DaftYml { path, .. } => bail!(
-            "{path} lives in daft.yml, which `daft config` cannot edit yet — \
-             change it in the file directly"
-        ),
+        Backend::DaftYml { path, .. } => {
+            write_yaml(scope, path, Some(&value))?;
+        }
         Backend::LayoutChain => set_layout(scope, &value)?,
     }
 
@@ -246,10 +325,7 @@ pub fn unset(spec: &SettingSpec, scope: WriteScope) -> Result<String> {
             WriteScope::Global => git.config_unset_global(&spec.key)?,
             WriteScope::Local => git.config_unset(&spec.key)?,
         },
-        Backend::DaftYml { path, .. } => bail!(
-            "{path} lives in daft.yml, which `daft config` cannot edit yet — \
-             change it in the file directly"
-        ),
+        Backend::DaftYml { path, .. } => write_yaml(scope, path, None)?,
         Backend::LayoutChain => unset_layout(scope)?,
     };
 
@@ -364,30 +440,24 @@ mod tests {
         assert!(err.contains("remove-branch"), "unhelpful: {err}");
     }
 
+    // No unit test calls `set` on a daft.yml row. It edits a real file in
+    // whatever worktree the test happens to run in — this repository's own,
+    // when run from here — and a test that did would leave a `daft.local.yml`
+    // in a developer's tree. The write path is covered where the worktree is
+    // a sandbox: the YAML scenarios. What is safe to assert here is the
+    // policy, which is pure.
+
     #[test]
     fn a_merge_gate_can_be_tightened_but_not_relaxed() {
         // The gate keys carry one variant precisely so an overlay cannot
-        // switch them off. The check has to consult `tighten_only`, not just
-        // the type — the type would accept "only" at either file, and the
-        // point is that "off" is not a value at all.
+        // switch them off. Two layers enforce it: the type refuses anything
+        // that is not a variant, and `check_tightening` stands behind that so
+        // widening one of these enums later cannot quietly make a committed
+        // boundary relaxable.
         let spec = find("merge.ff").unwrap();
 
-        // The tightening value passes both checks and then fails on the
-        // backend, which is what tells us it got that far.
-        let err = set(&spec, WriteScope::Local, "only", &empty_config())
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("daft.yml"),
-            "tightening should reach the writer: {err}"
-        );
+        assert!(spec.ty.validate("off").is_err(), "the type refuses first");
 
-        // Anything else is refused. Today the type gets there first, because
-        // these enums carry one variant for exactly this reason.
-        assert!(set(&spec, WriteScope::Local, "off", &empty_config()).is_err());
-
-        // And the policy check stands behind it, so widening the enum later
-        // cannot quietly make a gate relaxable.
         assert!(check_tightening(&spec, "only").is_ok());
         let err = check_tightening(&spec, "any").unwrap_err().to_string();
         assert!(err.contains("only be tightened"), "unhelpful: {err}");
@@ -397,22 +467,22 @@ mod tests {
     #[test]
     fn an_ordinary_yml_row_has_no_tightening_rule() {
         let spec = find("log.retention").unwrap();
-        let err = set(&spec, WriteScope::Local, "14d", &empty_config())
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("daft.yml") && !err.contains("tightened"),
-            "unhelpful: {err}"
-        );
+        assert!(check_tightening(&spec, "14d").is_ok());
+        assert!(check_tightening(&spec, "anything at all").is_ok());
     }
 
     #[test]
-    fn a_daft_yml_row_names_the_file_rather_than_failing_obscurely() {
-        let spec = find("log.retention").unwrap();
-        let err = set(&spec, WriteScope::Local, "14d", &empty_config())
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("daft.yml"), "unhelpful: {err}");
+    fn the_overlay_file_follows_the_main_config_extension() {
+        // A repo that spells it `daft.yaml` gets `daft.local.yaml`, not a
+        // second file with a different extension that nothing merges.
+        assert_eq!(
+            local_sibling(std::path::Path::new("/repo/daft.yml")),
+            std::path::PathBuf::from("/repo/daft.local.yml")
+        );
+        assert_eq!(
+            local_sibling(std::path::Path::new("/repo/daft.yaml")),
+            std::path::PathBuf::from("/repo/daft.local.yaml")
+        );
     }
 
     /// The layout row writes real stores — the global TOML and the trust

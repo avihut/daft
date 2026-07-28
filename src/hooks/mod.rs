@@ -60,6 +60,7 @@ pub mod yaml_config;
 pub mod yaml_config_loader;
 pub mod yaml_config_validate;
 pub mod yaml_executor;
+pub mod yaml_scalar_edit;
 
 pub use environment::{HookContext, HookEnvironment, RemovalReason};
 pub use executor::{HookAborted, HookExecutor, HookResult};
