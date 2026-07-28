@@ -1,0 +1,83 @@
+name: config set / get / unset round-trip
+description:
+  Verify `daft config` writes the registry's spelling, reads it back, and
+  reveals the layer below on unset
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: set canonicalizes the value before writing it
+    run: |
+      daft config set daft.merge.style SQUASH
+      test "$(git config --local --get daft.merge.style)" = "squash"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: get reads back what set wrote
+    run: daft config get daft.merge.style
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "squash"
+
+  - name: a boolean is stored in one spelling whichever git spelling is typed
+    run: |
+      daft config set daft.checkout.fetch YES
+      test "$(git config --local --get daft.checkout.fetch)" = "true"
+      daft config set daft.checkout.fetch off
+      test "$(git config --local --get daft.checkout.fetch)" = "false"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: unset removes the value and reveals the default
+    run: |
+      daft config set daft.remote upstream
+      test "$(daft config get daft.remote)" = "upstream"
+      daft config unset daft.remote
+      test "$(daft config get daft.remote)" = "origin"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: unsetting a key that was never set is a no-op, not an error
+    run: daft config unset daft.remote
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "was not set"
+
+  - name: get exits non-zero for a setting with no value and no default
+    run: daft config get daft.merge.edit
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+
+  - name: a hyphen-leading value is taken literally, not read as a flag
+    run: |
+      daft config set daft.update.args --no-rebase
+      test "$(git config --local --get daft.update.args)" = "--no-rebase"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: the global flag still works when it comes before the key
+    run: |
+      daft config set --global daft.update.args --ff-only
+      test "$(git config --global --get daft.update.args)" = "--ff-only"
+      daft config unset --global daft.update.args
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0

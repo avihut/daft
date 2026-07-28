@@ -43,6 +43,25 @@ pub type Variants = &'static [(&'static str, &'static str)];
 // Value types
 // ─────────────────────────────────────────────────────────────────────────
 
+/// Which grammar a comma-separated spec follows.
+///
+/// `Spec` used to be one variant that accepted anything non-empty, which
+/// meant `daft config set daft.list.columns +bogus` succeeded and only failed
+/// later, at `daft list`. Each kind now names the parser that already knows
+/// its vocabulary, so a bad column is refused where it is typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecKind {
+    /// Table columns for one of the worktree commands.
+    Columns(crate::core::columns::CommandKind),
+    /// Sort keys.
+    Sort,
+    /// Columns for rich branch tab-completion.
+    CompletionColumns,
+    /// Comma-separated tokens with no closed vocabulary daft owns —
+    /// `daft.merge.strategyOption` names git's `-X` options, not daft's.
+    Free,
+}
+
 /// Which duration spelling a setting accepts. The two dialects in daft are
 /// genuinely different, and a user typing `300` at the wrong one deserves to
 /// be told so rather than have it silently mean something else.
@@ -83,11 +102,9 @@ pub enum ValueType {
     Size,
     /// A byte size, a percentage of total RAM, or `auto`.
     SizeOrPct,
-    /// A comma-separated spec — column sets, sort keys, strategy options.
-    ///
-    /// Each spec has its own parser downstream that knows the valid tokens
-    /// for its command; the registry only checks that the shape is non-empty.
-    Spec,
+    /// A comma-separated spec — column sets, sort keys, strategy options —
+    /// validated by the parser that owns its vocabulary.
+    Spec(SpecKind),
     /// The composite worktree-layout setting: one row, six layers, three
     /// writable backends. Values are built-in layout names or an inline
     /// template.
@@ -116,11 +133,26 @@ impl ValueType {
                     Err(format!("expected one of: {}", list.join(", ")))
                 }
             }
-            Self::BoolOrKey | Self::Str | Self::Path | Self::Spec | Self::LayoutComposite => {
+            Self::BoolOrKey | Self::Str | Self::Path | Self::LayoutComposite => {
                 if value.trim().is_empty() {
                     Err("expected a value".to_string())
                 } else {
                     Ok(())
+                }
+            }
+            Self::Spec(kind) => {
+                if value.trim().is_empty() {
+                    return Err("expected a value".to_string());
+                }
+                match kind {
+                    SpecKind::Columns(command) => {
+                        crate::core::columns::ColumnSelection::parse(value, *command).map(|_| ())
+                    }
+                    SpecKind::Sort => crate::core::sort::SortSpec::parse(value).map(|_| ()),
+                    SpecKind::CompletionColumns => {
+                        crate::core::columns::CompletionColumnSelection::parse(value).map(|_| ())
+                    }
+                    SpecKind::Free => Ok(()),
                 }
             }
             Self::Int => value
@@ -175,7 +207,11 @@ impl ValueType {
             Self::Duration(DurationDialect::Suffixed) => Some("7d, 24h, 30m — a unit is required"),
             Self::Size => Some("10MB, 2GB, or bytes"),
             Self::SizeOrPct => Some("auto, 2G, 512M, or 15%"),
-            Self::Spec => Some("comma-separated; +add,-remove for a diff"),
+            Self::Spec(SpecKind::Columns(_) | SpecKind::CompletionColumns) => {
+                Some("comma-separated columns; +add,-remove for a diff")
+            }
+            Self::Spec(SpecKind::Sort) => Some("comma-separated sort keys: +name, -activity"),
+            Self::Spec(SpecKind::Free) => Some("comma-separated values"),
             Self::LayoutComposite => Some("a layout name, or an inline template"),
         }
     }
@@ -851,7 +887,7 @@ fn git_specs() -> Vec<SettingSpec> {
             "Strategy options",
             "Comma-separated strategy options, each passed to git as -X.",
             Merge,
-            Spec,
+            Spec(SpecKind::Free),
             Unset,
         ),
         SettingSpec::git(
@@ -985,7 +1021,7 @@ fn git_specs() -> Vec<SettingSpec> {
             "list · columns",
             "Column spec: a full list (branch,path,age) or a diff (+size,-annotation).",
             Output,
-            Spec,
+            Spec(SpecKind::Columns(crate::core::columns::CommandKind::List)),
             Unset,
         ),
         SettingSpec::git(
@@ -993,7 +1029,7 @@ fn git_specs() -> Vec<SettingSpec> {
             "sync · columns",
             "Column spec for sync tables.",
             Output,
-            Spec,
+            Spec(SpecKind::Columns(crate::core::columns::CommandKind::Sync)),
             Unset,
         ),
         SettingSpec::git(
@@ -1001,7 +1037,7 @@ fn git_specs() -> Vec<SettingSpec> {
             "prune · columns",
             "Column spec for prune tables.",
             Output,
-            Spec,
+            Spec(SpecKind::Columns(crate::core::columns::CommandKind::Prune)),
             Unset,
         ),
         SettingSpec::git(
@@ -1009,7 +1045,7 @@ fn git_specs() -> Vec<SettingSpec> {
             "list · sort",
             "Sort spec, such as +name, -activity, or +owner,-size.",
             Output,
-            Spec,
+            Spec(SpecKind::Sort),
             Unset,
         ),
         SettingSpec::git(
@@ -1017,7 +1053,7 @@ fn git_specs() -> Vec<SettingSpec> {
             "sync · sort",
             "Sort spec for sync tables.",
             Output,
-            Spec,
+            Spec(SpecKind::Sort),
             Unset,
         ),
         SettingSpec::git(
@@ -1025,7 +1061,7 @@ fn git_specs() -> Vec<SettingSpec> {
             "prune · sort",
             "Sort spec for prune tables.",
             Output,
-            Spec,
+            Spec(SpecKind::Sort),
             Unset,
         ),
         SettingSpec::git(
@@ -1053,7 +1089,7 @@ fn git_specs() -> Vec<SettingSpec> {
             "Completion columns",
             "Columns shown in rich branch tab-completion; unset uses the built-in set.",
             Output,
-            Spec,
+            Spec(SpecKind::CompletionColumns),
             Unset,
         ),
         // ── Governor ────────────────────────────────────────────────────
@@ -1241,7 +1277,7 @@ fn yml_specs() -> Vec<SettingSpec> {
             "shared",
             "Shared files",
             "Files symlinked across every worktree, such as .env or .idea.",
-            Spec,
+            Spec(SpecKind::Free),
             Unset,
         )
         .managed_by("daft shared"),

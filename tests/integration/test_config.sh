@@ -329,6 +329,205 @@ test_config_bool_variants() {
     return 0
 }
 
+# =============================================================================
+# `daft config` CLI tests (#470)
+# =============================================================================
+
+# set → get round-trip, with the value canonicalized on the way in
+test_config_cli_set_get_roundtrip() {
+    local remote_repo=$(create_test_remote "test-repo-cli-roundtrip" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-cli-roundtrip"
+
+    daft config set daft.merge.style SQUASH || return 1
+
+    # The registry's spelling is what lands in the file, not the user's.
+    local stored
+    stored=$(git config --local --get daft.merge.style)
+    if [[ "$stored" != "squash" ]]; then
+        log_error "Stored value was '$stored', expected canonicalized 'squash'"
+        return 1
+    fi
+    log_success "set canonicalizes the value before writing"
+
+    local got
+    got=$(daft config get daft.merge.style)
+    if [[ "$got" != "squash" ]]; then
+        log_error "get returned '$got', expected 'squash'"
+        return 1
+    fi
+    log_success "get round-trips what set wrote"
+
+    return 0
+}
+
+# unset removes the local value and reveals whatever it was masking
+test_config_cli_unset_reveals_lower_layer() {
+    local remote_repo=$(create_test_remote "test-repo-cli-unset" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-cli-unset"
+
+    daft config set daft.remote upstream || return 1
+    if [[ "$(daft config get daft.remote)" != "upstream" ]]; then
+        log_error "local value did not take effect"
+        return 1
+    fi
+
+    daft config unset daft.remote || return 1
+    if [[ "$(daft config get daft.remote)" != "origin" ]]; then
+        log_error "unset did not reveal the default"
+        return 1
+    fi
+    log_success "unset reveals the layer below"
+
+    # Unsetting again is a no-op, not an error.
+    daft config unset daft.remote || return 1
+    log_success "unsetting an absent key is not an error"
+
+    return 0
+}
+
+# A value the setting's own type rejects is refused where it is typed
+test_config_cli_rejects_invalid_values() {
+    local remote_repo=$(create_test_remote "test-repo-cli-invalid" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-cli-invalid"
+
+    if daft config set daft.merge.style octopus-ish >/dev/null 2>&1; then
+        log_error "An invalid enum value was accepted"
+        return 1
+    fi
+    log_success "invalid enum refused"
+
+    if daft config set daft.list.columns "+definitelyNotAColumn" >/dev/null 2>&1; then
+        log_error "An invalid column spec was accepted"
+        return 1
+    fi
+    log_success "invalid column spec refused at set time"
+
+    # Nothing should have been written by either refusal.
+    if git config --local --get daft.merge.style >/dev/null 2>&1; then
+        log_error "A refused set still wrote to config"
+        return 1
+    fi
+    log_success "a refused set writes nothing"
+
+    return 0
+}
+
+# --global writes the global file, and the sandbox is what that means here
+test_config_cli_global_scope() {
+    # The real-state guard does not cover git config, so prove the redirect is
+    # in place before writing anything global. Without it this test would edit
+    # the developer's own ~/.gitconfig.
+    if [[ -z "${GIT_CONFIG_GLOBAL:-}" ]]; then
+        log_error "GIT_CONFIG_GLOBAL is unset — refusing to write global config"
+        return 1
+    fi
+    case "$GIT_CONFIG_GLOBAL" in
+        "$HOME"/*)
+            log_error "GIT_CONFIG_GLOBAL ($GIT_CONFIG_GLOBAL) points inside HOME"
+            return 1
+            ;;
+    esac
+    log_success "global config is redirected away from HOME"
+
+    local remote_repo=$(create_test_remote "test-repo-cli-global" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-cli-global"
+
+    daft config set --global daft.go.autoStart true || return 1
+    if [[ "$(git config --global --get daft.go.autoStart)" != "true" ]]; then
+        log_error "--global did not write the global file"
+        return 1
+    fi
+    log_success "--global writes global config"
+
+    # A local value outranks it, and unsetting the local one reveals it again.
+    daft config set daft.go.autoStart false || return 1
+    if [[ "$(daft config get daft.go.autoStart)" != "false" ]]; then
+        log_error "local did not outrank global"
+        return 1
+    fi
+    daft config unset daft.go.autoStart || return 1
+    if [[ "$(daft config get daft.go.autoStart)" != "true" ]]; then
+        log_error "unsetting local did not reveal the global value"
+        return 1
+    fi
+    log_success "local outranks global, and unset reveals it"
+
+    daft config unset --global daft.go.autoStart || return 1
+    return 0
+}
+
+# A key daft only reads globally refuses a local write instead of pretending
+test_config_cli_global_only_key_refuses_local() {
+    local remote_repo=$(create_test_remote "test-repo-cli-globalonly" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-cli-globalonly"
+
+    if daft config set daft.updateCheck false >/dev/null 2>&1; then
+        log_error "A local write to a global-only key was accepted"
+        return 1
+    fi
+    log_success "global-only key refuses a local write"
+
+    return 0
+}
+
+# An unknown key exits non-zero and suggests the near spelling
+test_config_cli_unknown_key_suggests() {
+    local remote_repo=$(create_test_remote "test-repo-cli-unknown" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-cli-unknown"
+
+    local output
+    output=$(daft config get daft.merge.stile 2>&1)
+    if [[ $? -eq 0 ]]; then
+        log_error "An unknown key exited zero"
+        return 1
+    fi
+    if [[ "$output" != *"daft.merge.style"* ]]; then
+        log_error "No suggestion offered; got: $output"
+        return 1
+    fi
+    log_success "unknown key suggests the near spelling"
+
+    return 0
+}
+
+# list reports the value and the layer that decided it
+test_config_cli_list_shows_origin() {
+    local remote_repo=$(create_test_remote "test-repo-cli-list" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-cli-list"
+
+    daft config set daft.merge.style rebase || return 1
+
+    local output
+    output=$(daft config list --modified 2>/dev/null)
+    if [[ "$output" != *"daft.merge.style"* ]]; then
+        log_error "--modified omitted a set value; got: $output"
+        return 1
+    fi
+    if [[ "$output" != *"local"* ]]; then
+        log_error "--modified did not name the origin; got: $output"
+        return 1
+    fi
+    log_success "list --modified shows the value and its origin"
+
+    # Structured output carries the machine-readable view.
+    local json
+    json=$(daft config list --modified --format json 2>/dev/null)
+    if [[ "$json" != *'"daft.merge.style"'* ]]; then
+        log_error "--format json omitted the key; got: $json"
+        return 1
+    fi
+    log_success "list --format json emits the key"
+
+    return 0
+}
+
 # Run all config tests
 run_config_tests() {
     log "Running git config settings integration tests..."
@@ -342,6 +541,14 @@ run_config_tests() {
     run_test "config_flag_overrides_carry_true" "test_config_flag_overrides_carry_true"
     run_test "config_checkout_upstream_false" "test_config_checkout_upstream_false"
     run_test "config_bool_variants" "test_config_bool_variants"
+
+    run_test "config_cli_set_get_roundtrip" "test_config_cli_set_get_roundtrip"
+    run_test "config_cli_unset_reveals_lower_layer" "test_config_cli_unset_reveals_lower_layer"
+    run_test "config_cli_rejects_invalid_values" "test_config_cli_rejects_invalid_values"
+    run_test "config_cli_global_scope" "test_config_cli_global_scope"
+    run_test "config_cli_global_only_key_refuses_local" "test_config_cli_global_only_key_refuses_local"
+    run_test "config_cli_unknown_key_suggests" "test_config_cli_unknown_key_suggests"
+    run_test "config_cli_list_shows_origin" "test_config_cli_list_shows_origin"
 }
 
 # Main execution

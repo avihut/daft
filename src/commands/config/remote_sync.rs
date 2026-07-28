@@ -1,7 +1,6 @@
 use crate::core::settings::{defaults, keys, parse_bool};
 use crate::git::GitCommand;
 use anyhow::{Context, Result};
-use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::style::{Color, Modifier, Style};
@@ -9,25 +8,25 @@ use ratatui::text::{Line, Span};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::io::IsTerminal;
 
-#[derive(Parser)]
-#[command(name = "daft config remote-sync")]
-#[command(about = "Configure remote sync behavior")]
+/// A `clap::Args` rather than a `Parser`: `daft config` owns the command tree
+/// now, and this is one arm of it.
+#[derive(clap::Args)]
 pub struct Args {
     /// Enable all remote sync operations
     #[arg(long)]
-    on: bool,
+    pub on: bool,
 
     /// Disable all remote sync operations
     #[arg(long, conflicts_with = "on")]
-    off: bool,
+    pub off: bool,
 
     /// Show current remote sync settings
     #[arg(long)]
-    status: bool,
+    pub status: bool,
 
     /// Write to global git config instead of local
     #[arg(long)]
-    global: bool,
+    pub global: bool,
 }
 
 /// The three remote-sync settings.
@@ -111,25 +110,7 @@ enum RadioSelection {
 }
 
 /// Run the remote-sync config subcommand.
-pub fn run(args: &[String]) -> Result<()> {
-    // Parse args using clap
-    let parsed = {
-        let mut cli_args = vec!["daft config remote-sync".to_string()];
-        cli_args.extend_from_slice(args);
-        match Args::try_parse_from(cli_args) {
-            Ok(args) => args,
-            Err(e) => {
-                // clap treats --help and --version as errors; print and exit cleanly
-                e.print().ok();
-                if e.use_stderr() {
-                    std::process::exit(1);
-                } else {
-                    return Ok(());
-                }
-            }
-        }
-    };
-
+pub fn run(parsed: &Args) -> Result<()> {
     if parsed.status {
         return show_status(parsed.global);
     }

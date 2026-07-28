@@ -212,7 +212,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-daft-skill-install" => Some(daft::commands::skill::install::Args::command()),
         "git-daft-skill-show" => Some(daft::commands::skill::show::Args::command()),
         "git-daft-skill-uninstall" => Some(daft::commands::skill::uninstall::Args::command()),
-        "daft-config" => Some(daft::commands::config::remote_sync::Args::command()),
+        "daft-config" => Some(daft::commands::config::ConfigArgs::command()),
         "daft-doctor" => Some(daft::commands::doctor::Args::command()),
         "daft-file" => Some(daft::commands::file::merge::Args::command()),
         "daft-layout" => Some(daft::commands::layout::LayoutArgs::command()),
@@ -822,7 +822,7 @@ fn build_top_level_command() -> clap::Command {
         .subcommand(daft::commands::hooks::Args::command().name("hooks"))
         .subcommand(daft::commands::layout::LayoutArgs::command().name("layout"))
         .subcommand(daft::commands::multi_remote::Args::command().name("multi-remote"))
-        .subcommand(daft::commands::config::remote_sync::Args::command().name("config"))
+        .subcommand(daft::commands::config::ConfigArgs::command().name("config"))
         .subcommand(daft::commands::install::Args::command().name("install"))
         .subcommand(
             clap::Command::new("file")
@@ -1882,8 +1882,9 @@ mod tests {
 /// never blocks a merge.)
 #[cfg(test)]
 mod config_registry_drift {
+    use daft::commands::config::resolve::keys_match;
     use daft::core::settings_spec::all_specs;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::path::{Path, PathBuf};
 
     /// Final segments that make a `daft.<x>` literal a *filename* rather than
@@ -1916,9 +1917,9 @@ mod config_registry_drift {
              key, and the resolver has to report it rather than credit the real row",
         ),
         (
-            "daft.checkout.pushverify",
-            "case-folding fixture: git compares the trailing value name \
-             case-insensitively, unlike the subsection above",
+            "daft.merge.stile",
+            "did-you-mean fixture: one letter off a real key on purpose, so it \
+             cannot be spelled with a hyphen without defeating the test",
         ),
     ];
 
@@ -1984,15 +1985,28 @@ mod config_registry_drift {
 
     /// Every key the registry claims, including the deprecated spellings it
     /// still honours.
-    fn registry_keys() -> HashSet<String> {
-        let mut keys = HashSet::new();
+    fn registry_keys() -> Vec<String> {
+        let mut keys = Vec::new();
         for spec in all_specs() {
-            keys.insert(spec.key.to_string());
+            keys.push(spec.key.to_string());
             if let Some(alias) = &spec.deprecated_alias {
-                keys.insert(alias.to_string());
+                keys.push(alias.to_string());
             }
         }
         keys
+    }
+
+    /// Whether the registry claims `literal`, compared the way git compares
+    /// config keys.
+    ///
+    /// Exact string matching would flag `daft.checkout.PUSHVERIFY` as an
+    /// orphan even though git reads it as `daft.checkout.pushVerify` — the
+    /// trailing value name is case-insensitive. Borrowing the resolver's own
+    /// comparison keeps the gate and the runtime honest about the same rule,
+    /// and still catches a mis-cased *subsection*, which genuinely is a
+    /// different key.
+    fn registry_claims(keys: &[String], literal: &str) -> bool {
+        keys.iter().any(|key| keys_match(key, literal))
     }
 
     /// `"daft.autocd" -> "AUTOCD"` for every const in `settings.rs`'s `keys`
@@ -2040,7 +2054,7 @@ mod config_registry_drift {
             for literal in config_key_literals(&text) {
                 // Registry membership is checked before the filename rule so
                 // a real key can never be waved through as a file.
-                if known.contains(&literal)
+                if registry_claims(&known, &literal)
                     || is_filename(&literal)
                     || NOT_A_SETTING.iter().any(|(key, _)| *key == literal)
                 {

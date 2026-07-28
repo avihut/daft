@@ -322,6 +322,51 @@ pub fn keys_match(canonical: &str, found: &str) -> bool {
     }
 }
 
+/// Find the registry row a user-typed key names.
+///
+/// Matching follows git's rules, so `DAFT.AutoCD` finds `daft.autocd` — but a
+/// mis-cased *subsection* deliberately does not, because to git that is a
+/// different key. Silently accepting it would write a second, inert
+/// subsection under the guise of setting the real one.
+///
+/// The returned spec carries the registry's spelling, which is what any
+/// subsequent write uses.
+pub fn lookup(input: &str) -> Result<SettingSpec, String> {
+    let specs = all_specs();
+
+    if let Some(spec) = specs.iter().find(|spec| keys_match(&spec.key, input)) {
+        return Ok(spec.clone());
+    }
+
+    if let Some(spec) = specs.iter().find(|spec| {
+        spec.deprecated_alias
+            .as_deref()
+            .is_some_and(|alias| keys_match(alias, input))
+    }) {
+        return Err(format!(
+            "{input} is the retired spelling of {}. daft still reads it, but set the \
+             current key instead.",
+            spec.key
+        ));
+    }
+
+    let keys: Vec<String> = specs.iter().map(|spec| spec.key.to_string()).collect();
+    let similar = crate::suggest::find_similar(input, &keys, 3);
+
+    Err(match similar.len() {
+        0 => format!("unknown setting: {input}\n\nRun `daft config list` to see them all."),
+        1 => format!("unknown setting: {input}\n\nDid you mean {}?", similar[0]),
+        _ => format!(
+            "unknown setting: {input}\n\nDid you mean one of these?\n{}",
+            similar
+                .iter()
+                .map(|key| format!("    {key}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    })
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Resolution
 // ─────────────────────────────────────────────────────────────────────────
