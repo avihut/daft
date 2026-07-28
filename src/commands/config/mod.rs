@@ -1,4 +1,5 @@
 pub mod remote_sync;
+pub mod resolve;
 
 use anyhow::Result;
 

@@ -15,6 +15,7 @@ mod remote;
 mod stash;
 mod worktree;
 
+pub use config::{ConfigEntry, ConfigScope};
 pub use refs::FirstParentCommit;
 pub use remote::{PushIo, PushOptions, PushOutputTee, PushStream};
 
