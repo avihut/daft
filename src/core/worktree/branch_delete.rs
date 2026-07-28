@@ -1172,6 +1172,11 @@ fn validate_branches(
 
     let mut validated = Vec::new();
     let mut errors = Vec::new();
+    // Remotes that failed to answer Check 4's wire probe in this run, mapped
+    // to the refusal text they produced. A wildcard removal can target dozens
+    // of branches on one remote; without this, an unreachable host bills the
+    // full timeout once per branch to reach the identical verdict.
+    let mut unreachable_remotes: HashMap<String, String> = HashMap::new();
 
     'branches: for target in targets {
         // Sandboxes run their own three checks (registered, clean, pinned);
@@ -1345,6 +1350,11 @@ fn validate_branches(
         // opens a connection — so the round trip is confined to the case it
         // exists to rescue (work pushed, PR open, worktree done).
         let mut safe_because = None;
+        // Carries Check 4's local comparison into Check 5 so the two do not
+        // ask git the same three questions twice. `None` when the checks are
+        // skipped or the branch has no tracking config, in which case Check 5
+        // falls back to computing it.
+        let mut tracking: Option<TrackingComparison> = None;
         if !force && !keep_local_branch && !skip_merge_validation {
             let merge_check = is_branch_merged(ctx, branch, witness);
             if let Ok(ref verdict) = merge_check
@@ -1367,53 +1377,96 @@ fn validate_branches(
             // the remote with it gets no relaxation — mirroring the
             // `deletes_remote` predicate execution builds later.
             let remote_outlives_run = !params.delete_remote && !params.remote_only;
-            let mut probe_failure = None;
+            // Why the pushed proof did not hold, phrased for the refusal.
+            // Distinguished from a local fault, which is a different problem
+            // with a different fix and must not be blamed on the network.
+            let mut pushed_denial: Option<String> = None;
+            let mut local_fault: Option<String> = None;
             if safe_because.is_none()
                 && remote_outlives_run
                 && let Some(ref remote) = remote_name
                 && let Some(ref remote_branch) = remote_branch_name
             {
-                match is_branch_fully_pushed(ctx, branch, remote, remote_branch) {
-                    Ok(PushedProof::Confirmed) => {
-                        let remote_ref = format!("{remote}/{remote_branch}");
-                        sink.on_step(&format!(
-                            "Branch '{branch}' is fully pushed to {remote_ref} \
-                             (remote branch preserved)"
-                        ));
-                        safe_because = Some(SafeBecause::FullyPushed { remote_ref });
+                match compare_local_to_tracking(ctx, branch, remote, remote_branch) {
+                    Ok(comparison) => {
+                        // Only a branch that already looks whole locally is
+                        // worth a round trip — and once a remote has failed to
+                        // answer in this run, every later branch on it would
+                        // buy the same wait for the same answer.
+                        if let TrackingComparison::Equal(ref sha) = comparison {
+                            match unreachable_remotes.get(remote.as_str()) {
+                                Some(known) => pushed_denial = Some(known.clone()),
+                                None => match probe_remote_holds(ctx, remote, remote_branch, sha) {
+                                    Ok(WireProof::Holds) => {
+                                        let remote_ref = format!("{remote}/{remote_branch}");
+                                        sink.on_step(&format!(
+                                            "Branch '{branch}' is fully pushed to {remote_ref} \
+                                             (remote branch preserved)"
+                                        ));
+                                        safe_because =
+                                            Some(SafeBecause::FullyPushed { remote_ref });
+                                    }
+                                    Ok(WireProof::BranchGone) => {
+                                        pushed_denial = Some(format!(
+                                            "{remote} no longer has '{remote_branch}' — the local \
+                                             {remote}/{remote_branch} is a stale cache"
+                                        ));
+                                    }
+                                    // Not "stale, go fetch": the remote still
+                                    // has the branch, just further along. A
+                                    // fetch would only move the cached ref off
+                                    // local and swap this for a vaguer refusal.
+                                    Ok(WireProof::MovedOn) => {
+                                        pushed_denial = Some(format!(
+                                            "{remote}/{remote_branch} has moved on since it was \
+                                             last fetched, so this commit could not be confirmed \
+                                             on the remote"
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        let why = format!(
+                                            "could not reach {remote} to verify '{branch}' is \
+                                             still pushed: {e}"
+                                        );
+                                        unreachable_remotes.insert(remote.to_string(), why.clone());
+                                        pushed_denial = Some(why);
+                                    }
+                                },
+                            }
+                        }
+                        if let TrackingComparison::Differs { local_ahead: true } = comparison {
+                            pushed_denial = Some(format!(
+                                "'{branch}' has commits that are not on {remote}/{remote_branch} \
+                                 — push it and the removal needs no force"
+                            ));
+                        }
+                        tracking = Some(comparison);
                     }
-                    // Never pushed, or pushed and since moved on: the local
-                    // ref is the only copy of something, so Check 4 stands.
-                    Ok(PushedProof::NotPushedLocally) => {}
-                    Ok(PushedProof::RemoteDisagrees) => {
-                        probe_failure = Some(format!(
-                            "{remote}/{remote_branch} is stale — {remote} no longer has that \
-                             commit; run `git fetch --prune`"
-                        ));
-                    }
-                    Err(e) => {
-                        probe_failure = Some(format!(
-                            "could not reach {remote} to verify '{branch}' is still pushed: {e}"
-                        ));
-                    }
+                    // A local fault, not a network one. Reporting it as an
+                    // unreachable remote sends the user to check their VPN
+                    // while the damaged ref goes unnoticed.
+                    Err(e) => local_fault = Some(format!("failed to inspect '{branch}': {e}")),
                 }
             }
 
             if safe_because.is_none() {
                 // Neither proof held. Name what was actually learned: an
-                // unreachable remote and a genuinely unmerged, unpushed
-                // branch both refuse here, and telling the user the wrong
-                // one sends them to fix the wrong thing.
-                let message = match (&merge_check, probe_failure) {
-                    (Err(e), _) => format!(
+                // unreachable remote, a damaged local ref and a genuinely
+                // unmerged, unpushed branch all refuse here, and telling the
+                // user the wrong one sends them to fix the wrong thing.
+                let message = match (&merge_check, local_fault, pushed_denial) {
+                    (Err(e), _, _) => format!(
                         "failed to check merge status: {e} (use {} to force)",
                         params.force_flag_label
                     ),
-                    (Ok(_), Some(why)) => format!(
+                    (Ok(_), Some(why), _) => {
+                        format!("{why} (use {} to force)", params.force_flag_label)
+                    }
+                    (Ok(_), None, Some(why)) => format!(
                         "not merged into '{}', and {why} (use {} to force)",
                         ctx.default_branch, params.force_flag_label
                     ),
-                    (Ok(_), None) => format!(
+                    (Ok(_), None, None) => format!(
                         "not merged into '{}' (use {} to force)",
                         ctx.default_branch, params.force_flag_label
                     ),
@@ -1424,17 +1477,40 @@ fn validate_branches(
                 });
                 continue;
             }
+
+            // The pushed proof carried the day but the merge probe had failed
+            // on the way there. The deletion is still provably lossless, so
+            // refusing would be wrong — but the repository is telling us
+            // something (an unresolvable default branch, a damaged history)
+            // that used to surface as a hard error and must not vanish now.
+            if let Err(e) = merge_check {
+                sink.on_warning(&format!(
+                    "Could not check whether '{branch}' is merged into '{}': {e} — allowing the \
+                     removal because the branch is fully pushed",
+                    ctx.default_branch
+                ));
+            }
         }
 
         // Check 5: Local/remote in sync (skip with --force, keep_local_branch,
-        // or the merge cleanup's own validation)
+        // or the merge cleanup's own validation). Reuses Check 4's comparison
+        // when it computed one: a confirmed pushed proof has already
+        // established equality, so re-forking three git processes to rediscover
+        // it is pure waste.
         if !force
             && !keep_local_branch
             && !skip_merge_validation
             && let Some(ref remote) = remote_name
             && let Some(ref remote_branch) = remote_branch_name
         {
-            match check_local_remote_sync(ctx, branch, remote, remote_branch) {
+            let sync = match tracking {
+                // No tracking ref means nothing to be out of sync with.
+                Some(TrackingComparison::NoTrackingRef) => Ok(true),
+                Some(TrackingComparison::Equal(_)) => Ok(true),
+                Some(TrackingComparison::Differs { .. }) => Ok(false),
+                None => check_local_remote_sync(ctx, branch, remote, remote_branch),
+            };
+            match sync {
                 Ok(true) => {
                     sink.on_step(&format!("Branch '{branch}' is in sync with remote"));
                 }
@@ -1673,46 +1749,50 @@ fn is_branch_merged(
     )
 }
 
-/// What [`is_branch_fully_pushed`] could establish about the remote copy.
-enum PushedProof {
-    /// The remote itself confirmed it holds this exact commit.
-    Confirmed,
-    /// Local evidence never claimed it was pushed, so nothing was asked on
-    /// the wire: no tracking ref, or a tracking ref naming another commit.
-    NotPushedLocally,
-    /// The tracking ref claimed it and the remote said otherwise — the cache
-    /// outlived a server-side delete or a backwards force-push.
-    RemoteDisagrees,
+/// How the local branch stands against its remote-tracking ref — the free,
+/// purely local half of both Check 4's pushed proof and Check 5.
+///
+/// Computed once per branch and consumed by both. They used to ask git the
+/// same three questions separately (`show_ref_exists` + two `rev_parse`, none
+/// memoized and `rev_parse` with no gix arm, so all real forks), and a
+/// confirmed pushed proof already settles Check 5's answer.
+enum TrackingComparison {
+    /// No `refs/remotes/<remote>/<branch>` at all — never pushed, or the
+    /// tracking ref was pruned.
+    NoTrackingRef,
+    /// Local and the tracking ref name the same commit. Carries the shared
+    /// SHA so the wire probe does not have to resolve it again.
+    Equal(String),
+    /// They name different commits. `local_ahead` distinguishes the common
+    /// near-miss (committed, forgot to push) from a genuine divergence, so
+    /// the refusal can name the lossless remedy.
+    Differs { local_ahead: bool },
 }
 
-/// Whether `branch` is provably still whole on `remote` — the #783 proof
-/// that deleting it locally destroys no work, independent of merge status.
+/// Compare `refs/heads/<branch>` against `refs/remotes/<remote>/<branch>`.
 ///
-/// Deliberately not [`check_local_remote_sync`]'s boolean. That one answers
-/// `Ok(true)` when the tracking ref does not exist, which is the correct
-/// answer to *its* question ("out of sync with what?") and a catastrophic one
-/// to this one: it would wave through a never-pushed branch whose commits
-/// exist nowhere but the ref about to be deleted. Existence is required here,
-/// separately and first.
+/// Deliberately *not* [`check_local_remote_sync`]'s boolean, which answers
+/// `Ok(true)` when the tracking ref does not exist. That is the correct
+/// answer to its question ("out of sync with what?") and a catastrophic one
+/// to Check 4's: it would wave through a never-pushed branch whose commits
+/// exist nowhere but the ref about to be deleted. Here the three states stay
+/// distinct and each caller collapses them its own way.
 ///
-/// The free local evidence is checked before the wire so that only a branch
-/// that already looks fully pushed costs a round trip. It is then confirmed
-/// on the wire because it is only a cache: `refs/remotes/<remote>/<branch>`
-/// goes on naming commits the remote dropped, and a proof that a stale ref
-/// can satisfy is not a proof.
-fn is_branch_fully_pushed(
+/// Errors are all local faults (unreadable refs, a damaged object store) and
+/// must not be reported as anything else.
+fn compare_local_to_tracking(
     ctx: &BranchDeleteContext,
     branch: &str,
     remote: &str,
     remote_branch: &str,
-) -> Result<PushedProof> {
+) -> Result<TrackingComparison> {
     let remote_ref = format!("refs/remotes/{remote}/{remote_branch}");
     if !ctx
         .git
         .show_ref_exists(&remote_ref)
         .context("failed to check remote ref existence")?
     {
-        return Ok(PushedProof::NotPushedLocally);
+        return Ok(TrackingComparison::NoTrackingRef);
     }
 
     let local_sha = ctx
@@ -1723,18 +1803,49 @@ fn is_branch_fully_pushed(
         .git
         .rev_parse(&remote_ref)
         .context("failed to resolve remote tracking SHA")?;
-    if local_sha != cached_sha {
-        return Ok(PushedProof::NotPushedLocally);
+    if local_sha == cached_sha {
+        return Ok(TrackingComparison::Equal(local_sha));
     }
 
-    // Strict equality, not ancestry: a local ref that is merely an ancestor
-    // of the remote is equally lossless, but Check 5 refuses anything where
-    // the two SHAs differ, so relaxing only here would change nothing.
-    let wire_sha = ctx.git.ls_remote_branch_oid(remote, remote_branch)?;
-    if wire_sha.as_deref() == Some(local_sha.as_str()) {
-        Ok(PushedProof::Confirmed)
-    } else {
-        Ok(PushedProof::RemoteDisagrees)
+    // Only asked on the refusal path, and only to pick the wording: if the
+    // tracking ref is an ancestor of local, the branch is simply unpushed and
+    // `git push` makes the removal lossless. A failed probe just means the
+    // hint is withheld.
+    let local_ahead = ctx
+        .git
+        .merge_base_is_ancestor(&cached_sha, &local_sha)
+        .unwrap_or(false);
+    Ok(TrackingComparison::Differs { local_ahead })
+}
+
+/// What the remote itself said about a commit the tracking ref claims it has.
+enum WireProof {
+    /// The remote holds exactly this commit.
+    Holds,
+    /// The remote answered and has no such branch — a server-side delete the
+    /// local cache outlived.
+    BranchGone,
+    /// The remote has the branch at a different commit.
+    MovedOn,
+}
+
+/// Ask `remote` what it actually holds for `remote_branch`.
+///
+/// The tracking ref is only a cache: it goes on naming commits the remote
+/// dropped in a server-side delete or a force-push, and a proof that a stale
+/// ref can satisfy is not a proof. This is the one call on the path that
+/// touches the network, so its `Err` means exactly one thing — the remote
+/// could not be asked — and callers may say so.
+fn probe_remote_holds(
+    ctx: &BranchDeleteContext,
+    remote: &str,
+    remote_branch: &str,
+    expected_sha: &str,
+) -> Result<WireProof> {
+    match ctx.git.ls_remote_branch_oid(remote, remote_branch)? {
+        Some(sha) if sha == expected_sha => Ok(WireProof::Holds),
+        Some(_) => Ok(WireProof::MovedOn),
+        None => Ok(WireProof::BranchGone),
     }
 }
 
@@ -3049,7 +3160,9 @@ mod tests {
         assert!(result.deletions.is_empty());
     }
 
-    /// Local ahead of the remote: the extra commits exist only here.
+    /// Local ahead of the remote: the extra commits exist only here. The
+    /// refusal must name the lossless remedy (push) and not only the
+    /// destructive one, since this is the commonest near-miss.
     #[test]
     #[serial]
     fn a_branch_ahead_of_its_remote_is_still_refused() {
@@ -3066,7 +3179,139 @@ mod tests {
             1,
             "commits that never left this machine must still be protected"
         );
+        let message = &result.validation_errors[0].message;
+        assert!(
+            message.contains("push it"),
+            "an unpushed-ahead branch must be told to push, not only to force; got: {message}"
+        );
         assert!(result.deletions.is_empty());
+    }
+
+    /// A remote that moved ahead still has the commit; it is not "stale", and
+    /// telling the user to `git fetch --prune` would only make the next run's
+    /// message worse. Regression for the wording, not the verdict.
+    #[test]
+    #[serial]
+    fn a_remote_that_moved_on_is_not_reported_as_stale() {
+        let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
+        let (tmp, _feat_wt, bare) = pushed_unmerged_repo();
+
+        // Advance origin/feature past the local tip without fetching, so the
+        // tracking ref still equals local and the wire disagrees.
+        let other = tmp.path().join("other");
+        git_quiet(
+            tmp.path(),
+            &[
+                "clone",
+                "-q",
+                &bare.display().to_string(),
+                &other.display().to_string(),
+            ],
+        );
+        git_quiet(&other, &["checkout", "-q", "feature"]);
+        commit_empty(&other, "someone else's work");
+        assert!(git_quiet(&other, &["push", "-q", "origin", "feature"]).success());
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_remove(&remove_params("feature"));
+
+        assert_eq!(result.validation_errors.len(), 1);
+        let message = &result.validation_errors[0].message;
+        assert!(
+            message.contains("moved on"),
+            "must say the remote moved on; got: {message}"
+        );
+        assert!(
+            !message.contains("fetch --prune"),
+            "must not advise a fetch that degrades the next run's message; got: {message}"
+        );
+        assert!(result.deletions.is_empty());
+    }
+
+    /// The path the clap help, all three man pages and the docs promise by
+    /// name: an unreachable remote refuses rather than assumes. Fails closed.
+    #[test]
+    #[serial]
+    fn an_unreachable_remote_refuses_rather_than_assuming() {
+        let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
+        let (tmp, _feat_wt, _bare) = pushed_unmerged_repo();
+
+        // Point origin at nothing. The tracking ref survives and still claims
+        // the branch is pushed, so only the wire probe can catch it.
+        let gone = tmp.path().join("gone.git");
+        git_quiet(
+            tmp.path(),
+            &["remote", "set-url", "origin", &gone.display().to_string()],
+        );
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_remove(&remove_params("feature"));
+
+        assert_eq!(
+            result.validation_errors.len(),
+            1,
+            "an unverifiable remote must refuse, never assume"
+        );
+        let message = &result.validation_errors[0].message;
+        assert!(
+            message.contains("could not reach origin"),
+            "refusal must name the unreachable remote; got: {message}"
+        );
+        assert!(result.deletions.is_empty());
+    }
+
+    /// A local ref fault must surface as an `Err` from the comparison, never
+    /// be folded into the wire probe's error channel — the caller renders
+    /// those two as different problems with different fixes, and only this
+    /// separation makes that possible.
+    ///
+    /// Tested at the seam rather than end-to-end: manufacturing a repo broken
+    /// in exactly this way, but still intact enough to reach Check 4, means
+    /// corrupting git's object store in a way no user hits and no assertion
+    /// pins down. The distinction that matters is right here.
+    #[test]
+    #[serial]
+    fn a_local_ref_fault_is_an_error_not_a_verdict() {
+        let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
+        let (tmp, _feat_wt, _bare) = pushed_unmerged_repo();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let git = GitCommand::new(true);
+        let ctx = BranchDeleteContext {
+            git: &git,
+            project_root: tmp.path().to_path_buf(),
+            git_dir: tmp.path().join(".git"),
+            remote_name: "origin".to_string(),
+            source_worktree: tmp.path().to_path_buf(),
+            default_branch: "main".to_string(),
+            no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
+            presenter: None,
+        };
+
+        // Healthy: the tracking ref and the local branch agree.
+        assert!(
+            matches!(
+                compare_local_to_tracking(&ctx, "feature", "origin", "feature"),
+                Ok(TrackingComparison::Equal(_))
+            ),
+            "precondition: the fixture must start out fully pushed"
+        );
+
+        // Drop the local branch ref while the tracking ref survives, so the
+        // local resolve fails after the existence probe has already passed.
+        git_quiet(tmp.path(), &["worktree", "remove", "--force", "feat"]);
+        std::fs::remove_file(tmp.path().join(".git/refs/heads/feature")).unwrap();
+
+        let outcome = compare_local_to_tracking(&ctx, "feature", "origin", "feature");
+        assert!(
+            outcome.is_err(),
+            "an unresolvable local branch is a fault to report, not a \
+             'not pushed' verdict to act on"
+        );
     }
 
     /// The relaxation is premised on the remote copy outliving the run, so a

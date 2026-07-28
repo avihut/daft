@@ -1,0 +1,52 @@
+name: Branch delete allows a fully pushed branch
+description:
+  An unmerged branch identical to a surviving remote branch needs no --force
+  (#783), and the remote branch is left in place
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and push an unmerged feature branch
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/pushed
+      cd $WORK_DIR/test-repo/feature/pushed
+      echo "pushed work" > pushed.txt
+      git add pushed.txt
+      git commit -m "Pushed work"
+      git push -u origin feature/pushed
+    expect:
+      exit_code: 0
+
+  # No -f: the commits stay reachable at origin/feature/pushed, so nothing is
+  # lost. -v because the reason line renders in verbose mode, exactly as the
+  # merged-branch line does.
+  - name: Remove without --force succeeds and says why
+    run: daft remove -v feature/pushed 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "fully pushed to origin/feature/pushed"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/pushed"
+
+  - name: Verify the remote branch survived
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git ls-remote --heads origin feature/pushed | grep feature/pushed \
+        && echo "REMOTE_EXISTS"
+    expect:
+      output_contains:
+        - "REMOTE_EXISTS"
+
+  - name: Verify the local branch ref is gone
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git branch | grep -q "feature/pushed" && echo "STILL_THERE" || echo "BRANCH_GONE"
+    expect:
+      output_contains:
+        - "BRANCH_GONE"

@@ -1,12 +1,17 @@
 name: Branch delete refuses unmerged
-description: Rejects unmerged branches without --force
+description:
+  Rejects an unmerged branch whose commits exist nowhere else, without --force
 
 repos:
   - name: test-repo
     use_fixture: standard-remote
 
 steps:
-  - name: Clone and create feature branch
+  # Deliberately NOT pushed. Since #783 a branch identical to a surviving
+  # remote branch is lossless to delete and no longer needs -f, so pushing
+  # here would test the opposite of what this scenario is named for. The
+  # pushed case has its own scenario: allows-fully-pushed.yml.
+  - name: Clone and create an unpushed feature branch
     run: |
       git-worktree-clone --layout contained $REMOTE_TEST_REPO
       cd $WORK_DIR/test-repo
@@ -15,7 +20,6 @@ steps:
       echo "unmerged work" > unmerged.txt
       git add unmerged.txt
       git commit -m "Unmerged work"
-      git push origin feature/unmerged
     expect:
       exit_code: 0
 
@@ -24,5 +28,7 @@ steps:
     cwd: "$WORK_DIR/test-repo"
     expect:
       exit_code: 1
+      output_contains:
+        - "not merged"
       dirs_exist:
         - "$WORK_DIR/test-repo/feature/unmerged"

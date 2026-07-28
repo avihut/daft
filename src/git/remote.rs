@@ -7,6 +7,16 @@ use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
+
+/// How long a single-ref `ls-remote` probe waits before giving up.
+///
+/// Matched to `WITNESS_FETCH_TIMEOUT` in `commands::forge_cache`, the other
+/// bounded network call on the branch-removal validation path, for the same
+/// reason it gives: an unreachable host would otherwise stall a command that
+/// has no progress display for the wait and nothing to cancel. A bounded wait
+/// turns "hung" into "slow once, then refuses with a reason".
+const LS_REMOTE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Which pipe a teed `git push` output line arrived on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -620,10 +630,21 @@ impl GitCommand {
     /// routing it through OID parsing would turn an unparseable body into a
     /// different answer for the prune and sync loops that call it.
     ///
-    /// `GIT_TERMINAL_PROMPT=0` because this runs inside validation for
-    /// commands that are otherwise fully offline. A remote demanding
-    /// credentials must fail fast and let the caller refuse, not park the
-    /// process on a prompt the caller never expected to render.
+    /// Runs strictly non-interactively and under a bounded wait, because the
+    /// callers are validation paths with no cancel flag attached: there is
+    /// nothing to interrupt a stalled connection, and a prompt would render
+    /// underneath a live spinner where nobody would see it. Three separate
+    /// mouths have to be stopped —
+    /// `GIT_TERMINAL_PROMPT=0` for git's own credential helper, ssh
+    /// `BatchMode` for key passphrases and unknown-host confirmations (which
+    /// that variable does not reach), and [`LS_REMOTE_TIMEOUT`] for a remote
+    /// that completes the handshake and then goes quiet.
+    ///
+    /// The ssh option is *appended to* whatever ssh command the repository
+    /// already configures rather than replacing it: clobbering a
+    /// `core.sshCommand` that selects a deploy key would turn a working setup
+    /// into an auth failure, which this probe would then report as an
+    /// unreachable remote — a false refusal, strictly worse than the hang.
     pub fn ls_remote_branch_oid(&self, remote_name: &str, branch: &str) -> Result<Option<String>> {
         let mut cmd = Command::new("git");
         cmd.args([
@@ -632,9 +653,19 @@ impl GitCommand {
             remote_name,
             &format!("refs/heads/{branch}"),
         ])
-        .env("GIT_TERMINAL_PROMPT", "0");
-        let output = cancel::output_with_cancel(&mut cmd, self.cancel_flag())
-            .context("Failed to execute git ls-remote command")?;
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", self.batch_mode_ssh_command());
+        let output = cancel::output_with_deadline(&mut cmd, self.cancel_flag(), LS_REMOTE_TIMEOUT)
+            .map_err(|e| {
+                if e.is::<cancel::OperationTimedOut>() {
+                    anyhow::anyhow!(
+                        "no answer from '{remote_name}' within {}s",
+                        LS_REMOTE_TIMEOUT.as_secs()
+                    )
+                } else {
+                    e.context("Failed to execute git ls-remote command")
+                }
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -648,6 +679,30 @@ impl GitCommand {
             .next()
             .and_then(|line| line.split_whitespace().next())
             .map(str::to_string))
+    }
+
+    /// The repository's own ssh command with `BatchMode=yes` appended, so a
+    /// probe never blocks on a passphrase or an unknown-host confirmation.
+    ///
+    /// Precedence deliberately matches git's: an explicit `GIT_SSH_COMMAND`
+    /// in the environment wins over `core.sshCommand`, and a repo that
+    /// configures neither gets a plain `ssh`. In every case the caller's own
+    /// choice of binary and flags survives — only the interactivity is
+    /// removed.
+    fn batch_mode_ssh_command(&self) -> String {
+        let configured = std::env::var("GIT_SSH_COMMAND")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                let out = git_command_at(Path::new("."))
+                    .args(["config", "--get", "core.sshCommand"])
+                    .output()
+                    .ok()?;
+                let value = String::from_utf8(out.stdout).ok()?.trim().to_string();
+                (out.status.success() && !value.is_empty()).then_some(value)
+            })
+            .unwrap_or_else(|| "ssh".to_string());
+        format!("{configured} -o BatchMode=yes")
     }
 
     pub fn remote_set_head_auto(&self, remote: &str) -> Result<()> {
