@@ -14,6 +14,7 @@
 //! to `reset`.
 
 pub mod input;
+pub mod modal;
 pub mod render;
 pub mod state;
 
@@ -26,9 +27,13 @@ use crossterm::terminal::{self, EnterAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use crate::commands::config::resolve::Snapshot;
+use crate::commands::config::{resolve, write};
+use crate::git::GitCommand;
 use crate::output::tui::restore_terminal;
 use input::Action;
-use state::ScreenState;
+use modal::Apply;
+use state::{ScreenState, StatusKind};
 
 /// Open the settings browser.
 pub fn run(state: ScreenState) -> Result<()> {
@@ -78,10 +83,64 @@ fn event_loop(
 
         // Resize and mouse events land here too; both just fall through to the
         // redraw at the top of the next turn.
-        if let Event::Key(key) = event::read()?
-            && input::handle_key(state, key, page) == Action::Quit
-        {
-            return Ok(());
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+
+        match input::handle_key(state, key, page) {
+            Action::Quit => return Ok(()),
+            Action::Continue => {}
+            Action::Write(apply) => perform(state, apply),
         }
     }
+}
+
+/// Carry out a change and show the result.
+///
+/// The only place in the screen that touches git, which is why it is here and
+/// not in the key handler. A refusal is reported and the editor stays open on
+/// the value that caused it — closing would throw away what the user typed at
+/// the moment they need to fix it.
+fn perform(state: &mut ScreenState, apply: Apply) {
+    let outcome = match &apply {
+        Apply::Set { key, scope, value } => resolve::lookup(key)
+            .map_err(anyhow::Error::msg)
+            .and_then(|spec| write::set(&spec, *scope, value, &state.config)),
+        Apply::Unset { key, scope } => resolve::lookup(key)
+            .map_err(anyhow::Error::msg)
+            .and_then(|spec| write::unset(&spec, *scope)),
+    };
+
+    match outcome {
+        Ok(narration) => {
+            state.close_modal();
+            // Re-read rather than patching the row in place: a write can move
+            // which layer wins for *other* settings too, and a stale ladder is
+            // the one thing this screen cannot afford to show.
+            match reload(state) {
+                Ok(()) => state.set_status(narration, StatusKind::Success),
+                Err(error) => state.set_status(
+                    format!("{narration}, but re-reading the config failed: {error}"),
+                    StatusKind::Error,
+                ),
+            }
+        }
+        Err(error) => {
+            let message = error.to_string();
+            match state.modal.as_mut() {
+                Some(modal) => modal.error = Some(message),
+                None => state.set_status(message, StatusKind::Error),
+            }
+        }
+    }
+}
+
+fn reload(state: &mut ScreenState) -> Result<()> {
+    let snapshot = if state.in_repo {
+        Snapshot::capture(&GitCommand::new(false))?
+    } else {
+        Snapshot::capture_global_only()?
+    };
+    state.reload(resolve::resolve_all(&snapshot));
+    Ok(())
 }

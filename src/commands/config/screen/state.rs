@@ -6,6 +6,7 @@
 //! group headers, keeping a selection through a filter change, what the rail
 //! does versus what it filters) is exactly the part a screenshot cannot check.
 
+use super::modal::Modal;
 use crate::commands::config::resolve::{Resolved, ResolvedSet};
 use crate::core::settings_spec::Category;
 use crate::git::ConfigScope;
@@ -94,6 +95,9 @@ pub struct ScreenState {
     /// can drive — `tab` into an invisible rail loses the cursor entirely.
     pub rail_visible: bool,
 
+    /// The value editor, when one is open. While it is, it owns the keyboard.
+    pub modal: Option<Modal>,
+
     /// The last thing that happened, narrated.
     pub status: Option<Status>,
 }
@@ -138,6 +142,7 @@ impl ScreenState {
             rail: Vec::new(),
             rail_cursor: 0,
             rail_visible: true,
+            modal: None,
             status: None,
         };
         state.rebuild();
@@ -568,6 +573,44 @@ impl ScreenState {
             _ => ConfigScope::Local,
         };
         self.status = None;
+    }
+
+    // ── The editor ───────────────────────────────────────────────────────
+
+    /// Open the value editor on the selected setting.
+    ///
+    /// Rows another command owns do not open one: the editor's whole promise
+    /// is that Enter changes the value, and a box that can only refuse breaks
+    /// it. The status line points at the command that can.
+    pub fn open_modal(&mut self) {
+        let Some(resolved) = self.selected() else {
+            return;
+        };
+        if let Some(owner) = resolved.spec.managed_by {
+            let key = resolved.spec.key.to_string();
+            self.set_status(
+                format!("{key} is managed by `{owner}` — change it there"),
+                StatusKind::Info,
+            );
+            return;
+        }
+        self.modal = Some(Modal::open(resolved, self.write_scope, self.in_repo));
+        self.status = None;
+    }
+
+    pub fn close_modal(&mut self) {
+        self.modal = None;
+    }
+
+    pub fn modal_open(&self) -> bool {
+        self.modal.is_some()
+    }
+
+    /// Swap in freshly resolved config after a write, keeping the cursor on
+    /// the setting the user was looking at.
+    pub fn reload(&mut self, config: ResolvedSet) {
+        self.config = config;
+        self.rebuild();
     }
 
     pub fn set_status(&mut self, text: impl Into<String>, kind: StatusKind) {

@@ -88,6 +88,49 @@ test_config_tui_paints_and_exits() {
     return 0
 }
 
+# A change made in the screen actually lands in git config
+test_config_tui_write_lands() {
+    local remote_repo=$(create_test_remote "test-repo-config-tui-write" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-config-tui-write/main" || return 1
+
+    # daft.autocd is the first row and a boolean, so `space` toggles it off
+    # its default. Then wait for the narration before quitting, which is what
+    # proves the write completed rather than merely being dispatched.
+    local log="$TEMP_BASE_DIR/config-tui-write.log"
+    _config_tui_daft python3 "$CONFIG_TUI_PTY_RUN" \
+        --send-after 'Daft Settings: ' \
+        --send-after 'Set daft.autocd:q' \
+        "$log" \
+        daft config
+    local status=$?
+
+    if [[ $status -ne 0 ]]; then
+        log_error "The settings screen exited $status (expected 0)"
+        _config_tui_clean "$log" | tail -20
+        return 1
+    fi
+
+    local stored
+    stored=$(git config --local --get daft.autocd)
+    if [[ "$stored" != "false" ]]; then
+        log_error "The toggle did not reach git config (got '${stored:-unset}')"
+        _config_tui_clean "$log" | tail -20
+        return 1
+    fi
+    log_success "a toggle in the screen writes local git config"
+
+    local painted
+    painted=$(_config_tui_clean "$log")
+    if [[ "$painted" != *"Set daft.autocd = false (local)"* ]]; then
+        log_error "The write was never narrated; got: $(printf '%s' "$painted" | tail -5)"
+        return 1
+    fi
+    log_success "the write is narrated with its value and scope"
+
+    return 0
+}
+
 # Without a terminal the bare command prints the list rather than hanging
 test_config_tui_falls_back_without_a_terminal() {
     local remote_repo=$(create_test_remote "test-repo-config-notty" "main")
@@ -112,6 +155,7 @@ run_config_tui_tests() {
     log "Running config settings screen integration tests..."
 
     run_test "config_tui_paints_and_exits" "test_config_tui_paints_and_exits"
+    run_test "config_tui_write_lands" "test_config_tui_write_lands"
     run_test "config_tui_falls_back_without_a_terminal" "test_config_tui_falls_back_without_a_terminal"
 }
 

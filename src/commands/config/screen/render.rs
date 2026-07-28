@@ -9,8 +9,9 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph};
 
+use super::modal::{Field, Modal, Option_};
 use super::state::{Focus, Mode, RailEntry, Row, ScreenState, StatusKind};
 use crate::commands::config::resolve::{Diagnostic, Layer, Resolved};
 
@@ -65,6 +66,185 @@ pub fn draw(frame: &mut Frame, state: &ScreenState) {
 
     draw_detail(frame, rows[3], state);
     draw_footer(frame, rows[4], state, show_rail);
+
+    // Last, and over everything: the editor is modal, and a box the list
+    // paints through would not read as one.
+    if let Some(modal) = &state.modal {
+        draw_modal(frame, area, modal);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// The value editor
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Centre a box of at most `width` x `height` inside `area`.
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width.saturating_sub(2)).max(1);
+    let height = height.min(area.height.saturating_sub(2)).max(1);
+    Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    }
+}
+
+fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
+    let lines = modal_lines(modal);
+
+    // Size the box from what goes in it. Guessing the row count is how the
+    // hint line ends up clipped off the bottom by exactly one.
+    let height = lines.len() as u16 + 2;
+    let box_area = centered(area, 74, height);
+
+    // Clear first: without it the list bleeds through the box.
+    frame.render_widget(Clear, box_area);
+    frame.render_widget(Block::bordered().cyan(), box_area);
+
+    let inner = Rect {
+        x: box_area.x + 2,
+        y: box_area.y + 1,
+        width: box_area.width.saturating_sub(4),
+        height: box_area.height.saturating_sub(2),
+    };
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn modal_lines(modal: &Modal) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![
+            modal.spec.label.to_string().bold(),
+            "  ".into(),
+            modal.spec.key.to_string().dim(),
+        ]),
+        Line::from(modal.spec.help.to_string().dim()),
+        Line::from(""),
+        scope_row(modal),
+    ];
+
+    if modal.scope_is_inert {
+        lines.push(Line::from(
+            "   daft reads this key from global config only".yellow(),
+        ));
+    }
+    lines.push(Line::from(""));
+
+    match &modal.field {
+        Field::Options { cursor } => {
+            for (index, option) in modal.options.iter().enumerate() {
+                lines.push(option_row(option, index == *cursor));
+            }
+        }
+        Field::Text {
+            buffer,
+            caret,
+            on_unset,
+        } => {
+            lines.push(text_row(buffer, *caret, !*on_unset));
+            if let Some(feedback) = modal.text_feedback() {
+                let span = if modal.text_is_valid() {
+                    feedback.dim()
+                } else {
+                    feedback.red()
+                };
+                lines.push(Line::from(vec!["      ".into(), span]));
+            }
+            if let Some(unset) = modal.options.last() {
+                lines.push(option_row(unset, *on_unset));
+            }
+        }
+    }
+
+    lines.push(Line::from(""));
+    match &modal.error {
+        Some(error) => lines.push(Line::from(format!("✗ {error}").red())),
+        None => lines.push(modal_hints(modal)),
+    }
+
+    lines
+}
+
+/// `scope:  (•) local   ( ) global`
+fn scope_row(modal: &Modal) -> Line<'static> {
+    let mut spans: Vec<Span> = vec!["scope: ".dim()];
+    for scope in &modal.scopes {
+        let chosen = *scope == modal.scope;
+        spans.push(if chosen {
+            "  (•) ".cyan()
+        } else {
+            "  ( ) ".dim()
+        });
+        spans.push(if chosen {
+            scope.label().bold()
+        } else {
+            Span::from(scope.label())
+        });
+    }
+    Line::from(spans)
+}
+
+fn option_row(option: &Option_, selected: bool) -> Line<'static> {
+    let marker: Span = if selected {
+        " (•) ".cyan()
+    } else {
+        " ( ) ".into()
+    };
+    match option {
+        Option_::Value { value, gloss } => Line::from(vec![
+            marker,
+            Span::from(pad(value, 18)),
+            "  ".into(),
+            gloss.clone().dim(),
+        ]),
+        // Unset always names what it would reveal — otherwise it reads as
+        // "delete" rather than "fall back to".
+        Option_::Unset { reveals } => Line::from(vec![
+            marker,
+            Span::from(pad("unset", 18)),
+            "  ".into(),
+            format!("inherit: {reveals}").dim(),
+        ]),
+    }
+}
+
+fn text_row(buffer: &str, caret: usize, focused: bool) -> Line<'static> {
+    let marker: Span = if focused {
+        " (•) ".cyan()
+    } else {
+        " ( ) ".into()
+    };
+    let before: String = buffer.chars().take(caret).collect();
+    let after: String = buffer.chars().skip(caret).collect();
+    let mut spans = vec![marker, Span::from(before)];
+    if focused {
+        spans.push("▏".cyan());
+    }
+    spans.push(Span::from(after));
+    if buffer.trim().is_empty() && focused {
+        spans.push("  type a value".dim());
+    }
+    Line::from(spans)
+}
+
+fn modal_hints(modal: &Modal) -> Line<'static> {
+    let mut hints: Vec<Span> = Vec::new();
+    let push = |key: &str, what: &str, hints: &mut Vec<Span>| {
+        hints.push(format!(" {key} ").bold());
+        hints.push(format!("{what}  ").dim());
+    };
+    if modal.is_picking() {
+        push("j/k", "choose", &mut hints);
+    } else {
+        push("↑/↓", "value or unset", &mut hints);
+    }
+    if modal.scopes.len() > 1 {
+        push("tab", "scope", &mut hints);
+    }
+    push("enter", "apply", &mut hints);
+    push("esc", "cancel", &mut hints);
+    Line::from(hints)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -408,15 +588,22 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &ScreenState, show_rail: bo
             push("esc", "clear filter", &mut hints);
         }
         push("j/k", "move", &mut hints);
-        // No rail means no second pane, so the key that switches between them
-        // is not offered — advertising it would promise a place to go.
         if show_rail {
+            // No rail means no second pane, so the key that switches between
+            // them is not offered — advertising it would promise a place to
+            // go. The same width that costs the rail costs the shortcuts that
+            // only save a keystroke over `enter`.
             push("tab", "panes", &mut hints);
-        }
-        push("/", "filter", &mut hints);
-        push("s", &format!("write to {}", other_scope(state)), &mut hints);
-        push("q", "quit", &mut hints);
-        if !show_rail {
+            push("enter", "edit", &mut hints);
+            push("space", "toggle", &mut hints);
+            push("u", "unset", &mut hints);
+            push("/", "filter", &mut hints);
+            push("s", other_scope(state), &mut hints);
+            push("q", "quit", &mut hints);
+        } else {
+            push("enter", "edit", &mut hints);
+            push("/", "filter", &mut hints);
+            push("q", "quit", &mut hints);
             hints.push("rail hidden — widen".dim());
         }
     }
@@ -611,6 +798,80 @@ mod tests {
         }
         let all = painted(&state, 120, 40).join("\n");
         assert!(all.contains("Nothing matches"), "{all}");
+    }
+
+    #[test]
+    fn the_editor_shows_the_scope_the_options_and_the_way_out() {
+        let mut state = state_with(vec![]);
+        while state
+            .selected()
+            .is_some_and(|r| r.spec.key != keys::MERGE_STYLE)
+        {
+            state.move_down();
+        }
+        state.open_modal();
+
+        let all = painted(&state, 120, 40).join("\n");
+        assert!(all.contains("Merge style"), "{all}");
+        assert!(all.contains("scope:"), "the write target is never implicit");
+        assert!(all.contains("local") && all.contains("global"));
+        assert!(all.contains("squash"), "the variants are listed");
+        assert!(
+            all.contains("unset") && all.contains("inherit: merge"),
+            "unset has to say what it reveals, or it reads as delete"
+        );
+        assert!(all.contains("apply") && all.contains("cancel"));
+    }
+
+    #[test]
+    fn the_editor_keeps_its_refusal_next_to_the_field() {
+        let mut state = state_with(vec![]);
+        while state
+            .selected()
+            .is_some_and(|r| r.spec.key != keys::UPDATE_CHECK)
+        {
+            state.move_down();
+        }
+        state.open_modal();
+        if let Some(modal) = state.modal.as_mut() {
+            modal.error = Some("refused for a reason".to_string());
+        }
+
+        let all = painted(&state, 120, 40).join("\n");
+        assert!(all.contains("refused for a reason"), "{all}");
+    }
+
+    #[test]
+    fn a_text_setting_gets_a_field_and_a_live_format_hint() {
+        let mut state = state_with(vec![]);
+        while state
+            .selected()
+            .is_some_and(|r| r.spec.key != keys::hooks::TIMEOUT)
+        {
+            state.move_down();
+        }
+        state.open_modal();
+        if let Some(modal) = state.modal.as_mut() {
+            for ch in "abc".chars() {
+                modal.type_char(ch);
+            }
+        }
+
+        let all = painted(&state, 120, 40).join("\n");
+        assert!(all.contains("abc"), "the typed text shows: {all}");
+        assert!(
+            all.contains("expected a whole number"),
+            "a value that will not parse says so while you type: {all}"
+        );
+    }
+
+    #[test]
+    fn the_editor_fits_a_terminal_that_barely_has_room() {
+        let mut state = state_with(vec![]);
+        state.open_modal();
+        for (width, height) in [(20, 6), (40, 10), (60, 12), (200, 60)] {
+            let _ = painted(&state, width, height);
+        }
     }
 
     #[test]

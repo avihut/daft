@@ -6,15 +6,20 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::state::ScreenState;
+use super::modal::{Apply, toggled_value};
+use super::state::{ScreenState, StatusKind};
+use crate::commands::config::write::WriteScope;
 
 /// What the event loop should do next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Redraw and keep going.
     Continue,
     /// Leave the screen.
     Quit,
+    /// Carry out a change and re-resolve. The loop does this rather than the
+    /// key handler so everything above stays free of git.
+    Write(Apply),
 }
 
 /// Apply a keystroke.
@@ -26,6 +31,12 @@ pub fn handle_key(state: &mut ScreenState, key: KeyEvent, page: usize) -> Action
     // kitty protocol; acting on both halves double-moves the cursor.
     if key.kind == KeyEventKind::Release {
         return Action::Continue;
+    }
+
+    // The editor owns the keyboard while it is open — including the letters,
+    // which are values rather than commands in there.
+    if state.modal_open() {
+        return modal_key(state, key);
     }
 
     // Anything typed while the filter prompt is open is filter text, except
@@ -106,6 +117,152 @@ pub fn handle_key(state: &mut ScreenState, key: KeyEvent, page: usize) -> Action
             Action::Continue
         }
 
+        (KeyCode::Enter, _) => {
+            state.open_modal();
+            Action::Continue
+        }
+        // The two shortcuts that skip the editor for the things it would only
+        // slow down: flipping a boolean, and clearing a value you can see.
+        (KeyCode::Char(' '), _) => quick_toggle(state),
+        (KeyCode::Char('u'), _) => quick_unset(state),
+
+        _ => Action::Continue,
+    }
+}
+
+/// `space`: flip a two-state setting at the pill scope.
+fn quick_toggle(state: &mut ScreenState) -> Action {
+    let Some(resolved) = state.selected() else {
+        return Action::Continue;
+    };
+    let key = resolved.spec.key.to_string();
+
+    if let Some(owner) = resolved.spec.managed_by {
+        state.set_status(
+            format!("{key} is managed by `{owner}` — change it there"),
+            StatusKind::Info,
+        );
+        return Action::Continue;
+    }
+
+    match toggled_value(resolved, state.write_scope) {
+        Some(value) => Action::Write(Apply::Set {
+            key,
+            scope: write_scope(state),
+            value,
+        }),
+        // A duration has no opposite; say so rather than picking one.
+        None => {
+            state.set_status(
+                format!("{key} is not a toggle — press enter to edit it"),
+                StatusKind::Info,
+            );
+            Action::Continue
+        }
+    }
+}
+
+/// `u`: clear the value at the pill scope.
+fn quick_unset(state: &mut ScreenState) -> Action {
+    let Some(resolved) = state.selected() else {
+        return Action::Continue;
+    };
+    let key = resolved.spec.key.to_string();
+
+    if let Some(owner) = resolved.spec.managed_by {
+        state.set_status(
+            format!("{key} is managed by `{owner}` — change it there"),
+            StatusKind::Info,
+        );
+        return Action::Continue;
+    }
+
+    Action::Write(Apply::Unset {
+        key,
+        scope: write_scope(state),
+    })
+}
+
+fn write_scope(state: &ScreenState) -> WriteScope {
+    match state.write_scope {
+        crate::git::ConfigScope::Global => WriteScope::Global,
+        _ => WriteScope::Local,
+    }
+}
+
+/// Keys while the value editor is open.
+fn modal_key(state: &mut ScreenState, key: KeyEvent) -> Action {
+    // Ctrl-C leaves from anywhere; nothing may swallow it.
+    if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+        return Action::Quit;
+    }
+
+    let picking = state.modal.as_ref().is_some_and(|m| m.is_picking());
+    let Some(modal) = state.modal.as_mut() else {
+        return Action::Continue;
+    };
+
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) => {
+            state.close_modal();
+            Action::Continue
+        }
+        (KeyCode::Enter, _) => match modal.apply() {
+            Ok(apply) => Action::Write(apply),
+            // Refused: the reason stays in the box, next to the field that
+            // caused it, rather than closing and reporting from a distance.
+            Err(reason) => {
+                modal.error = Some(reason);
+                Action::Continue
+            }
+        },
+        // Tab reaches the scope from either mode. h/l only when picking,
+        // where the arrows are otherwise idle — in a text field they are the
+        // caret, which is what a typist expects them to be.
+        (KeyCode::Tab, _) | (KeyCode::BackTab, _) => {
+            modal.cycle_scope();
+            Action::Continue
+        }
+        (KeyCode::Left, _) if !picking => {
+            modal.caret_left();
+            Action::Continue
+        }
+        (KeyCode::Right, _) if !picking => {
+            modal.caret_right();
+            Action::Continue
+        }
+        (KeyCode::Left, _) | (KeyCode::Char('h'), _) if picking => {
+            modal.set_scope(WriteScope::Local);
+            Action::Continue
+        }
+        (KeyCode::Right, _) | (KeyCode::Char('l'), _) if picking => {
+            modal.set_scope(WriteScope::Global);
+            Action::Continue
+        }
+        (KeyCode::Down, _) => {
+            modal.move_down();
+            Action::Continue
+        }
+        (KeyCode::Up, _) => {
+            modal.move_up();
+            Action::Continue
+        }
+        (KeyCode::Char('j'), _) if picking => {
+            modal.move_down();
+            Action::Continue
+        }
+        (KeyCode::Char('k'), _) if picking => {
+            modal.move_up();
+            Action::Continue
+        }
+        (KeyCode::Backspace, _) if !picking => {
+            modal.backspace();
+            Action::Continue
+        }
+        (KeyCode::Char(ch), m) if !picking && (m.is_empty() || m == KeyModifiers::SHIFT) => {
+            modal.type_char(ch);
+            Action::Continue
+        }
         _ => Action::Continue,
     }
 }
@@ -151,6 +308,7 @@ mod tests {
     use super::*;
     use crate::commands::config::resolve::{Snapshot, resolve_all};
     use crate::commands::config::screen::state::{Focus, Mode};
+    use crate::core::settings::keys;
     use crate::git::ConfigScope;
 
     fn state() -> ScreenState {
@@ -374,6 +532,195 @@ mod tests {
 
         press(&mut state, KeyCode::Tab);
         assert_eq!(state.focus, Focus::List);
+    }
+
+    // ── The editor ───────────────────────────────────────────────────────
+
+    fn on(key: &str) -> ScreenState {
+        let mut state = state();
+        while state.selected().is_some_and(|r| r.spec.key != key) {
+            state.move_down();
+        }
+        assert_eq!(state.selected().unwrap().spec.key, key);
+        state
+    }
+
+    #[test]
+    fn enter_opens_the_editor_and_esc_closes_it() {
+        let mut state = on(keys::MERGE_STYLE);
+        press(&mut state, KeyCode::Enter);
+        assert!(state.modal_open());
+
+        assert_eq!(press(&mut state, KeyCode::Esc), Action::Continue);
+        assert!(!state.modal_open());
+        // And Esc is the screen's again.
+        assert_eq!(press(&mut state, KeyCode::Esc), Action::Quit);
+    }
+
+    #[test]
+    fn the_editor_swallows_the_command_letters() {
+        // `q` inside the editor of a text setting is a character, not a quit.
+        let mut state = on(keys::REMOTE);
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(press(&mut state, KeyCode::Char('q')), Action::Continue);
+        assert!(state.modal_open());
+
+        match state.modal.as_ref().map(|m| m.apply()) {
+            Some(Ok(Apply::Set { value, .. })) => assert!(value.ends_with('q')),
+            other => panic!("expected the letter to be typed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_c_leaves_even_from_inside_the_editor() {
+        let mut state = on(keys::REMOTE);
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(ctrl(&mut state, 'c'), Action::Quit);
+    }
+
+    #[test]
+    fn enter_in_the_editor_hands_the_write_to_the_caller() {
+        let mut state = on(keys::MERGE_STYLE);
+        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Char('j'));
+
+        assert_eq!(
+            press(&mut state, KeyCode::Enter),
+            Action::Write(Apply::Set {
+                key: keys::MERGE_STYLE.to_string(),
+                scope: WriteScope::Local,
+                value: "squash".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_refusal_stays_in_the_editor_rather_than_closing_it() {
+        let mut state = on(keys::UPDATE_CHECK);
+        press(&mut state, KeyCode::Enter);
+
+        assert_eq!(press(&mut state, KeyCode::Enter), Action::Continue);
+        assert!(
+            state.modal_open(),
+            "closing would discard the fix in progress"
+        );
+        assert!(
+            state
+                .modal
+                .as_ref()
+                .and_then(|m| m.error.as_deref())
+                .is_some_and(|e| e.contains("global config only"))
+        );
+    }
+
+    #[test]
+    fn tab_reaches_the_scope_from_either_kind_of_field() {
+        for key in [keys::MERGE_STYLE, keys::REMOTE] {
+            let mut state = on(key);
+            press(&mut state, KeyCode::Enter);
+            assert_eq!(state.modal.as_ref().unwrap().scope, WriteScope::Local);
+            press(&mut state, KeyCode::Tab);
+            assert_eq!(
+                state.modal.as_ref().unwrap().scope,
+                WriteScope::Global,
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_arrows_are_the_caret_in_a_text_field_and_the_scope_when_picking() {
+        // Text: Left moves the caret, so an insert lands mid-word.
+        let mut state = on(keys::REMOTE);
+        press(&mut state, KeyCode::Enter);
+        for ch in "abc".chars() {
+            press(&mut state, KeyCode::Char(ch));
+        }
+        press(&mut state, KeyCode::Left);
+        press(&mut state, KeyCode::Char('X'));
+        match state.modal.as_ref().unwrap().apply() {
+            Ok(Apply::Set { value, .. }) => assert_eq!(value, "abXc"),
+            other => panic!("expected the caret to have moved, got {other:?}"),
+        }
+
+        // Picking: the same key picks a scope, where the caret has no meaning.
+        let mut state = on(keys::MERGE_STYLE);
+        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Right);
+        assert_eq!(state.modal.as_ref().unwrap().scope, WriteScope::Global);
+        press(&mut state, KeyCode::Left);
+        assert_eq!(state.modal.as_ref().unwrap().scope, WriteScope::Local);
+    }
+
+    // ── Quick actions ────────────────────────────────────────────────────
+
+    #[test]
+    fn space_toggles_a_boolean_at_the_pill_scope() {
+        let mut state = on(keys::CHECKOUT_FETCH);
+        assert_eq!(
+            press(&mut state, KeyCode::Char(' ')),
+            Action::Write(Apply::Set {
+                key: keys::CHECKOUT_FETCH.to_string(),
+                scope: WriteScope::Local,
+                value: "true".to_string(),
+            })
+        );
+
+        // Flip the pill and the write follows it.
+        press(&mut state, KeyCode::Char('s'));
+        assert_eq!(
+            press(&mut state, KeyCode::Char(' ')),
+            Action::Write(Apply::Set {
+                key: keys::CHECKOUT_FETCH.to_string(),
+                scope: WriteScope::Global,
+                value: "true".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn space_on_something_that_is_not_a_toggle_says_so() {
+        let mut state = on(keys::hooks::TIMEOUT);
+        assert_eq!(press(&mut state, KeyCode::Char(' ')), Action::Continue);
+        assert!(
+            state
+                .status
+                .as_ref()
+                .is_some_and(|s| s.text.contains("not a toggle")),
+            "a key that does nothing must say why"
+        );
+    }
+
+    #[test]
+    fn u_unsets_at_the_pill_scope() {
+        let mut state = on(keys::MERGE_STYLE);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('u')),
+            Action::Write(Apply::Unset {
+                key: keys::MERGE_STYLE.to_string(),
+                scope: WriteScope::Local,
+            })
+        );
+    }
+
+    #[test]
+    fn a_row_another_command_owns_refuses_every_way_in() {
+        let mut state = on("shared");
+
+        press(&mut state, KeyCode::Enter);
+        assert!(
+            !state.modal_open(),
+            "an editor that can only refuse is a lie"
+        );
+        assert!(
+            state
+                .status
+                .as_ref()
+                .is_some_and(|s| s.text.contains("daft shared"))
+        );
+
+        assert_eq!(press(&mut state, KeyCode::Char(' ')), Action::Continue);
+        assert_eq!(press(&mut state, KeyCode::Char('u')), Action::Continue);
     }
 
     #[test]
