@@ -31,6 +31,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::core::layout::resolver::LayoutSource;
 use crate::core::settings_spec::{Backend, SettingLookup, SettingSpec, all_specs, find};
 use crate::git::{ConfigEntry, ConfigScope};
 
@@ -52,6 +53,112 @@ pub struct Snapshot {
     /// False when daft is running outside a repository: there is no local
     /// scope to read or write, and the screen says so.
     pub in_repo: bool,
+    /// What each layer of the worktree-layout chain says, when there is a
+    /// repository to ask. `None` leaves the layout row on its built-in
+    /// default, which is what daft would use anyway.
+    pub layout: Option<LayoutRungs>,
+}
+
+/// Every layer of the layout chain, already read.
+///
+/// The layout is not a git-config key: six layers across three different
+/// stores decide where worktrees go, and the one that surprises people is the
+/// repo store outranking the committed `daft.yml` — a team convention a
+/// teammate's local choice silently overrides. Showing the whole chain is the
+/// point of giving it a row at all.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LayoutRungs {
+    /// `--layout` on this invocation. Never set here (the screen has no CLI
+    /// flag), but present so the ladder shows the layer exists.
+    pub cli: Option<String>,
+    /// The per-repo choice in the trust store.
+    pub repo_store: Option<String>,
+    /// The committed `daft.yml layout:` field.
+    pub yaml: Option<String>,
+    /// `defaults.layout` in the global TOML.
+    pub global: Option<String>,
+    /// Inferred from where the worktrees actually are.
+    pub detected: Option<String>,
+    /// What daft resolves to, and which layer decided.
+    pub effective: String,
+    pub source: LayoutSource,
+}
+
+impl LayoutRungs {
+    /// Read the chain from the current repository.
+    pub fn capture() -> Option<Self> {
+        use crate::core::global_config::GlobalConfig;
+        use crate::core::layout::detect::detect_layout;
+        use crate::core::layout::resolver::{
+            DetectionResult, LayoutResolutionContext, resolve_layout,
+        };
+        use crate::hooks::{TrustDatabase, yaml_config_loader};
+
+        let global_config = GlobalConfig::load().unwrap_or_default();
+        let git_dir = crate::get_git_common_dir().ok()?;
+        let trust_db = TrustDatabase::load().unwrap_or_default();
+
+        let yaml = crate::get_current_worktree_path()
+            .ok()
+            .and_then(|wt| yaml_config_loader::load_merged_config(&wt).ok().flatten())
+            .and_then(|cfg| cfg.layout);
+        let repo_store = trust_db.get_layout(&git_dir).map(String::from);
+
+        // Detection is only run when nothing explicit is set, matching
+        // `daft layout show` — walking the filesystem to answer a question
+        // already answered would be a cost for nothing.
+        let detection = if repo_store.is_none() && yaml.is_none() {
+            Some(detect_layout(&git_dir, &global_config))
+        } else {
+            None
+        };
+        let detected = match &detection {
+            Some(DetectionResult::Detected(layout)) => Some(layout.name.clone()),
+            _ => None,
+        };
+
+        let (layout, source) = resolve_layout(&LayoutResolutionContext {
+            cli_layout: None,
+            repo_store_layout: repo_store.as_deref(),
+            yaml_layout: yaml.as_deref(),
+            global_config: &global_config,
+            detection,
+        });
+
+        Some(Self {
+            cli: None,
+            repo_store,
+            yaml,
+            global: global_config.defaults.layout.clone(),
+            detected,
+            effective: layout.name,
+            source,
+        })
+    }
+
+    /// The layers in precedence order, lowest first — the order a ladder
+    /// renders in.
+    pub(crate) fn rungs(&self) -> Vec<(LayoutSource, Option<String>)> {
+        vec![
+            (LayoutSource::Detected, self.detected.clone()),
+            (LayoutSource::GlobalConfig, self.global.clone()),
+            (LayoutSource::YamlConfig, self.yaml.clone()),
+            (LayoutSource::RepoStore, self.repo_store.clone()),
+            (LayoutSource::Cli, self.cli.clone()),
+        ]
+    }
+}
+
+/// The ladder label for a layout layer.
+pub fn layout_layer_label(source: LayoutSource) -> &'static str {
+    match source {
+        LayoutSource::Cli => "--layout",
+        LayoutSource::RepoStore => "repo store",
+        LayoutSource::YamlConfig => "daft.yml",
+        LayoutSource::GlobalConfig => "global toml",
+        LayoutSource::Detected => "detected",
+        LayoutSource::Unresolved => "built-in",
+    }
 }
 
 impl Snapshot {
@@ -62,6 +169,7 @@ impl Snapshot {
             entries,
             env: capture_env(),
             in_repo: true,
+            layout: LayoutRungs::capture(),
         })
     }
 
@@ -72,6 +180,9 @@ impl Snapshot {
             entries: crate::git::daft_config_entries_global().unwrap_or_default(),
             env: capture_env(),
             in_repo: false,
+            // No repository means no repo store, no daft.yml, and nothing to
+            // detect — the chain would be one rung with nothing in it.
+            layout: None,
         })
     }
 }
@@ -105,6 +216,8 @@ pub enum Layer {
     Git(ConfigScope),
     /// An environment variable that outranks every config file.
     Env(&'static str),
+    /// One layer of the worktree-layout chain.
+    Layout(LayoutSource),
 }
 
 impl Layer {
@@ -115,6 +228,7 @@ impl Layer {
             Self::Alias { key, scope } => format!("{key} ({})", scope.label()),
             Self::Git(scope) => scope.label().to_string(),
             Self::Env(var) => format!("${var}"),
+            Self::Layout(source) => layout_layer_label(*source).to_string(),
         }
     }
 }
@@ -475,6 +589,25 @@ fn resolve_one(spec: &SettingSpec, snapshot: &Snapshot, inherited: Option<String
         });
     }
 
+    // ── The layout chain, for the one row that is not a config key ───────
+    if spec.backend == Backend::LayoutChain
+        && let Some(chain) = &snapshot.layout
+    {
+        for (source, value) in chain.rungs() {
+            rungs.push(Rung {
+                layer: Layer::Layout(source),
+                value,
+                origin_path: None,
+                // Two of the six layers are somewhere daft can write. The
+                // committed daft.yml is a team convention this screen does not
+                // edit, detection is an observation, and --layout is one
+                // invocation's argument.
+                writable: matches!(source, LayoutSource::RepoStore | LayoutSource::GlobalConfig),
+                inert: None,
+            });
+        }
+    }
+
     // ── The config files, lowest precedence first ────────────────────────
     //
     // Only for rows git config actually stores. A `daft.yml` scalar or the
@@ -641,6 +774,7 @@ mod tests {
             entries,
             env: HashMap::new(),
             in_repo: true,
+            layout: None,
         }
     }
 
@@ -763,6 +897,7 @@ mod tests {
             entries: vec![entry("daft.remote", "glob", ConfigScope::Global)],
             env: HashMap::new(),
             in_repo: false,
+            layout: None,
         };
         let resolved = resolve_key(keys::REMOTE, &snap).unwrap();
 
@@ -1083,6 +1218,92 @@ mod tests {
             "global capture must not claim repository scopes: {:?}",
             snap.entries
         );
+    }
+
+    // ── The layout chain ─────────────────────────────────────────────────
+
+    fn layout_snapshot(rungs: LayoutRungs) -> Snapshot {
+        Snapshot {
+            in_repo: true,
+            layout: Some(rungs),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_layout_row_shows_every_layer_of_its_chain() {
+        let set = resolve_all(&layout_snapshot(LayoutRungs {
+            global: Some("sibling".to_string()),
+            yaml: Some("contained".to_string()),
+            repo_store: Some("nested".to_string()),
+            effective: "nested".to_string(),
+            source: LayoutSource::RepoStore,
+            ..Default::default()
+        }));
+
+        let layout = set.get("layout").unwrap();
+        let labels: Vec<String> = layout.rungs.iter().map(|r| r.layer.label()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "default",
+                "detected",
+                "global toml",
+                "daft.yml",
+                "repo store",
+                "--layout"
+            ],
+            "the ladder has to show all six, in precedence order"
+        );
+
+        // The inversion this row exists to make visible: a teammate's local
+        // repo-store choice outranks the committed daft.yml convention.
+        assert_eq!(layout.effective.as_deref(), Some("nested"));
+        assert_eq!(
+            layout.origin,
+            Origin::Layer(Layer::Layout(LayoutSource::RepoStore))
+        );
+    }
+
+    #[test]
+    fn only_the_two_layers_daft_owns_are_writable() {
+        let set = resolve_all(&layout_snapshot(LayoutRungs::default()));
+        let layout = set.get("layout").unwrap();
+
+        for rung in &layout.rungs {
+            let expected = matches!(
+                rung.layer,
+                Layer::Layout(LayoutSource::RepoStore | LayoutSource::GlobalConfig)
+            );
+            assert_eq!(
+                rung.writable,
+                expected,
+                "{} writability — a committed convention, an observation, and \
+                 one invocation's flag are none of them places to write",
+                rung.layer.label()
+            );
+        }
+    }
+
+    #[test]
+    fn the_layout_row_falls_back_to_its_built_in_when_nothing_answers() {
+        let set = resolve_all(&layout_snapshot(LayoutRungs::default()));
+        let layout = set.get("layout").unwrap();
+        assert_eq!(layout.effective.as_deref(), Some("sibling"));
+        assert_eq!(layout.origin, Origin::Default);
+        assert!(!layout.is_set());
+    }
+
+    #[test]
+    fn outside_a_repository_the_layout_row_has_no_chain_to_show() {
+        let set = resolve_all(&snapshot(vec![]));
+        let layout = set.get("layout").unwrap();
+        assert_eq!(
+            layout.rungs.len(),
+            1,
+            "no repo store, no daft.yml, nothing to detect"
+        );
+        assert_eq!(layout.effective.as_deref(), Some("sibling"));
     }
 
     #[test]

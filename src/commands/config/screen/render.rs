@@ -176,10 +176,11 @@ fn scope_row(modal: &Modal) -> Line<'static> {
         } else {
             "  ( ) ".dim()
         });
+        let label = scope.label_for(&modal.spec);
         spans.push(if chosen {
-            scope.label().bold()
+            label.bold()
         } else {
-            Span::from(scope.label())
+            Span::from(label)
         });
     }
     Line::from(spans)

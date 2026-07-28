@@ -30,13 +30,17 @@ pub struct LayoutResolutionContext<'a> {
 }
 
 /// Which level of the config chain provided the resolved layout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Unresolved` is the default: nothing in the chain answered, so the
+/// built-in layout applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LayoutSource {
     Cli,
     RepoStore,
     YamlConfig,
     GlobalConfig,
     Detected,
+    #[default]
     Unresolved,
 }
 

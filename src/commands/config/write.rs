@@ -12,7 +12,7 @@
 //! exact typo the unrecognized-key diagnostic exists to report. The registry's
 //! spelling is the one that goes in the file.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use super::resolve::ResolvedSet;
 use crate::core::settings_spec::{Backend, SettingSpec, ValueType, parse_git_bool};
@@ -34,6 +34,20 @@ impl WriteScope {
         match self {
             Self::Global => "global",
             Self::Local => "local",
+        }
+    }
+
+    /// What this scope is called for a particular setting.
+    ///
+    /// "local" and "global" are the git-config words. The layout row's two
+    /// writable layers are a per-repo entry in the trust store and a default
+    /// in the global TOML, and calling those "local" and "global" would send
+    /// someone looking in `.git/config` for a value that is not there.
+    pub fn label_for(self, spec: &SettingSpec) -> &'static str {
+        match (spec.backend, self) {
+            (Backend::LayoutChain, Self::Local) => "repo store",
+            (Backend::LayoutChain, Self::Global) => "global toml",
+            _ => self.label(),
         }
     }
 
@@ -64,6 +78,62 @@ pub fn canonical_value(ty: &ValueType, input: &str) -> String {
             .map(|(variant, _)| (*variant).to_string())
             .unwrap_or_else(|| trimmed.to_string()),
         _ => trimmed.to_string(),
+    }
+}
+
+/// Write the worktree layout at `scope`.
+///
+/// The two scopes map onto the two layers of the chain daft owns: local is the
+/// per-repo choice in the trust store, global is `defaults.layout` in the TOML.
+/// This records the *preference* — it does not move any worktrees, which is
+/// `daft layout transform`'s job and a very different thing to set off from a
+/// settings list.
+fn set_layout(scope: WriteScope, value: &str) -> Result<()> {
+    use crate::core::global_config::GlobalConfig;
+    use crate::hooks::TrustDatabase;
+
+    match scope {
+        WriteScope::Global => GlobalConfig::set_default_layout(value),
+        WriteScope::Local => {
+            let git_dir = crate::get_git_common_dir()
+                .context("Not inside a git repository — no repo to set a layout for")?;
+            // Through `update_if`, which takes the store's lock — the same
+            // path `daft layout` uses, so two daft processes cannot lose each
+            // other's repo entries.
+            let value = value.to_string();
+            TrustDatabase::update_if(|db| {
+                db.set_layout(std::path::Path::new(&git_dir), value.clone());
+                Ok(true)
+            })
+        }
+    }
+}
+
+/// Clear the worktree layout at `scope`. Returns whether anything was set.
+fn unset_layout(scope: WriteScope) -> Result<bool> {
+    use crate::core::global_config::GlobalConfig;
+    use crate::hooks::TrustDatabase;
+
+    match scope {
+        WriteScope::Global => {
+            let had = GlobalConfig::load()
+                .unwrap_or_default()
+                .defaults
+                .layout
+                .is_some();
+            GlobalConfig::remove_default_layout()?;
+            Ok(had)
+        }
+        WriteScope::Local => {
+            let git_dir = crate::get_git_common_dir()
+                .context("Not inside a git repository — no repo to clear a layout for")?;
+            let mut removed = false;
+            TrustDatabase::update_if(|db| {
+                removed = db.remove_layout(std::path::Path::new(&git_dir));
+                Ok(removed)
+            })?;
+            Ok(removed)
+        }
     }
 }
 
@@ -122,13 +192,14 @@ pub fn set(
             "{path} lives in daft.yml, which `daft config` cannot edit yet — \
              change it in the file directly"
         ),
-        Backend::LayoutChain => bail!(
-            "the worktree layout has its own command: `daft layout default <name>` \
-             for the global default, `daft layout transform <name>` for this repo"
-        ),
+        Backend::LayoutChain => set_layout(scope, &value)?,
     }
 
-    Ok(format!("Set {} = {value} ({})", spec.key, scope.label()))
+    Ok(format!(
+        "Set {} = {value} ({})",
+        spec.key,
+        scope.label_for(spec)
+    ))
 }
 
 /// Remove `spec`'s value at `scope`, returning the line to narrate.
@@ -145,16 +216,13 @@ pub fn unset(spec: &SettingSpec, scope: WriteScope) -> Result<String> {
             "{path} lives in daft.yml, which `daft config` cannot edit yet — \
              change it in the file directly"
         ),
-        Backend::LayoutChain => bail!(
-            "the worktree layout has its own command: `daft layout reset` clears \
-             this repo's stored layout"
-        ),
+        Backend::LayoutChain => unset_layout(scope)?,
     };
 
     Ok(if removed {
-        format!("Unset {} ({})", spec.key, scope.label())
+        format!("Unset {} ({})", spec.key, scope.label_for(spec))
     } else {
-        format!("{} was not set ({})", spec.key, scope.label())
+        format!("{} was not set ({})", spec.key, scope.label_for(spec))
     })
 }
 
@@ -271,12 +339,22 @@ mod tests {
         assert!(err.contains("daft.yml"), "unhelpful: {err}");
     }
 
+    /// The layout row writes real stores — the global TOML and the trust
+    /// database — so there is deliberately no unit test that calls `set` on
+    /// it. A test that did would edit the developer's own config the moment
+    /// it ran outside a sandbox. Its write path is covered where the state
+    /// dirs are redirected: the integration suite.
+    ///
+    /// What is safe to assert here is the shape: the row is writable, and it
+    /// is not a git-config key.
     #[test]
-    fn the_layout_row_points_at_the_layout_command() {
+    fn the_layout_row_is_writable_but_is_not_a_git_config_key() {
         let spec = find("layout").unwrap();
-        let err = set(&spec, WriteScope::Global, "nested", &empty_config())
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("daft layout"), "unhelpful: {err}");
+        assert!(spec.is_writable());
+        assert_eq!(
+            spec.backend,
+            crate::core::settings_spec::Backend::LayoutChain
+        );
+        assert!(!spec.key.starts_with("daft."));
     }
 }
