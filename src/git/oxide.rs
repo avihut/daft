@@ -238,14 +238,33 @@ pub fn config_entries_prefixed(
     repo: &Repository,
     section_name: &str,
 ) -> Result<Vec<super::config::ConfigEntry>> {
+    Ok(config_entries_in(&repo.config_snapshot(), section_name))
+}
+
+/// The same enumeration from outside any repository: system and global config
+/// only, read the way [`config_get_global`] reads a single key.
+///
+/// `daft config` has to work from anywhere — a user standing in their home
+/// directory should still see what their `~/.gitconfig` sets, and be able to
+/// change it. Returning nothing here would make every setting look unset.
+pub fn config_entries_global(section_name: &str) -> Result<Vec<super::config::ConfigEntry>> {
+    let file = gix::config::File::from_globals().context("Failed to read global git config")?;
+    Ok(config_entries_in(&file, section_name))
+}
+
+/// The shared walk. Takes the parsed config rather than a repository so the
+/// in-repo and global paths cannot drift in how they read provenance.
+fn config_entries_in(
+    config: &gix::config::File<'_>,
+    section_name: &str,
+) -> Vec<super::config::ConfigEntry> {
     use super::config::ConfigEntry;
     use std::collections::HashSet;
 
-    let snapshot = repo.config_snapshot();
     let mut entries = Vec::new();
 
-    let Some(sections) = snapshot.sections_by_name(section_name) else {
-        return Ok(entries);
+    let Some(sections) = config.sections_by_name(section_name) else {
+        return entries;
     };
 
     for section in sections {
@@ -279,7 +298,7 @@ pub fn config_entries_prefixed(
         }
     }
 
-    Ok(entries)
+    entries
 }
 
 /// Collapse gitoxide's ten config sources onto the five layers a user can

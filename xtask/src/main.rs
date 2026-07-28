@@ -1901,6 +1901,27 @@ mod config_registry_drift {
     /// by construction.
     const REGISTRY_FILE: &str = "settings_spec.rs";
 
+    /// Key-shaped literals that are deliberately not settings, each with the
+    /// reason it earns an exemption.
+    ///
+    /// The usual way to opt out is a hyphen — `daft.no-such-key` is not key
+    /// shaped, so the scan ignores it. These are the cases where that does not
+    /// work because the fixture's whole point is to be indistinguishable from
+    /// a real key. An entry that stops appearing in the source is a test
+    /// failure, so this list cannot quietly rot.
+    const NOT_A_SETTING: &[(&str, &str)] = &[
+        (
+            "daft.checkoutbranch.carry",
+            "mis-cased subsection fixture: git stores this as a separate, inert \
+             key, and the resolver has to report it rather than credit the real row",
+        ),
+        (
+            "daft.checkout.pushverify",
+            "case-folding fixture: git compares the trailing value name \
+             case-insensitively, unlike the subsection above",
+        ),
+    ];
+
     fn repo_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -2019,7 +2040,10 @@ mod config_registry_drift {
             for literal in config_key_literals(&text) {
                 // Registry membership is checked before the filename rule so
                 // a real key can never be waved through as a file.
-                if known.contains(&literal) || is_filename(&literal) {
+                if known.contains(&literal)
+                    || is_filename(&literal)
+                    || NOT_A_SETTING.iter().any(|(key, _)| *key == literal)
+                {
                     continue;
                 }
                 orphans.push((literal, path.display().to_string()));
@@ -2098,6 +2122,27 @@ mod config_registry_drift {
              that does nothing is worse than an undocumented one.",
             unread.join("\n")
         );
+    }
+
+    /// An exemption that no longer applies is worse than no exemption: it
+    /// silently widens the gate for whatever key-shaped literal appears next
+    /// under that name.
+    #[test]
+    fn every_exemption_is_still_in_use() {
+        let sources: Vec<String> = rust_sources()
+            .into_iter()
+            .filter_map(|path| std::fs::read_to_string(path).ok())
+            .collect();
+
+        for (key, reason) in NOT_A_SETTING {
+            assert!(!reason.trim().is_empty(), "{key}: exemptions need a reason");
+            assert!(
+                sources
+                    .iter()
+                    .any(|text| config_key_literals(text).iter().any(|lit| lit == key)),
+                "{key} is exempted but no longer appears in src/ — drop the entry"
+            );
+        }
     }
 
     #[test]

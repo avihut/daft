@@ -31,9 +31,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::core::settings_spec::{
-    Backend, DefaultDesc, SettingLookup, SettingSpec, all_specs, find,
-};
+use crate::core::settings_spec::{Backend, SettingLookup, SettingSpec, all_specs, find};
 use crate::git::{ConfigEntry, ConfigScope};
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -67,11 +65,11 @@ impl Snapshot {
         })
     }
 
-    /// Capture what is visible from outside any repository: global and system
+    /// Capture what is visible from outside any repository: system and global
     /// config only.
     pub fn capture_global_only() -> anyhow::Result<Self> {
         Ok(Self {
-            entries: Vec::new(),
+            entries: crate::git::daft_config_entries_global().unwrap_or_default(),
             env: capture_env(),
             in_repo: false,
         })
@@ -204,8 +202,10 @@ pub struct Resolved {
     /// Index into `rungs` of the layer git would answer with, if any. This is
     /// the ● in the ladder — it can point at an invalid value.
     pub winner: Option<usize>,
-    /// What daft actually uses.
-    pub effective: String,
+    /// What daft actually uses — `None` when nothing sets it and it has no
+    /// default, which is a real state for the settings whose absence is
+    /// itself meaningful (`daft.merge.edit` lets git decide).
+    pub effective: Option<String>,
     pub origin: Origin,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -215,6 +215,12 @@ impl Resolved {
     /// default. Drives the "Modified" filter and the bold value in the list.
     pub fn is_set(&self) -> bool {
         self.winner.is_some()
+    }
+
+    /// The effective value as a row renders it: the em dash stands for
+    /// "nothing", which belongs in the display and not in the data.
+    pub fn effective_display(&self) -> &str {
+        self.effective.as_deref().unwrap_or("—")
     }
 
     /// The value stored at `scope`, if any — what the editor pre-selects and
@@ -256,7 +262,7 @@ impl ResolvedSet {
 
 impl SettingLookup for ResolvedSet {
     fn effective(&self, key: &str) -> Option<String> {
-        self.get(key).map(|r| r.effective.clone())
+        self.get(key).and_then(|r| r.effective.clone())
     }
 }
 
@@ -341,7 +347,7 @@ pub fn resolve_all(snapshot: &Snapshot) -> ResolvedSet {
                 let inherited = first
                     .iter()
                     .find(|r| r.spec.key == parent)
-                    .map(|r| r.effective.clone());
+                    .and_then(|r| r.effective.clone());
                 resolve_one(spec, snapshot, inherited)
             }
             None => initial.clone(),
@@ -359,7 +365,7 @@ pub fn resolve_key(key: &str, snapshot: &Snapshot) -> Option<Resolved> {
     let spec = find(key)?;
     let inherited = spec
         .inherits
-        .and_then(|parent| find(parent).map(|p| resolve_one(&p, snapshot, None).effective));
+        .and_then(|parent| find(parent).and_then(|p| resolve_one(&p, snapshot, None).effective));
     Some(resolve_one(&spec, snapshot, inherited))
 }
 
@@ -386,10 +392,9 @@ fn resolve_one(spec: &SettingSpec, snapshot: &Snapshot, inherited: Option<String
     let mut diagnostics = Vec::new();
 
     // ── The bottom rung: what applies when nothing is set ────────────────
-    let default_value = match (&spec.default, &inherited) {
-        (DefaultDesc::Unset, Some(parent)) => Some(parent.clone()),
-        (DefaultDesc::Fixed(value), _) => Some((*value).to_string()),
-        (DefaultDesc::Computed(_), _) | (DefaultDesc::Unset, None) => None,
+    let default_value = match (spec.default.value(), &inherited) {
+        (Some(value), _) => Some(value.to_string()),
+        (None, parent) => parent.clone(),
     };
     rungs.push(Rung {
         layer: Layer::Default,
@@ -530,13 +535,13 @@ fn resolve_one(spec: &SettingSpec, snapshot: &Snapshot, inherited: Option<String
             let rung = &rungs[index];
             let value = rung.value.clone().unwrap_or_default();
             if spec.ty.validate(&value).is_ok() {
-                (value, Origin::Layer(rung.layer.clone()))
+                (Some(value), Origin::Layer(rung.layer.clone()))
             } else {
                 // The loaders fold an unparseable value into the default
                 // rather than the next scope down, so a broken local value
                 // masks a good global one.
                 (
-                    default_display(spec, &default_value),
+                    default_value.clone(),
                     Origin::DefaultAfterInvalid(rung.layer.clone()),
                 )
             }
@@ -546,7 +551,7 @@ fn resolve_one(spec: &SettingSpec, snapshot: &Snapshot, inherited: Option<String
                 (Some(parent), Some(_)) => Origin::Inherited(parent),
                 _ => Origin::Default,
             };
-            (default_display(spec, &default_value), origin)
+            (default_value.clone(), origin)
         }
     };
 
@@ -570,14 +575,6 @@ fn last_entry_for<'a>(snapshot: &'a Snapshot, key: &str) -> Option<&'a ConfigEnt
         .iter()
         .filter(|entry| keys_match(key, &entry.key))
         .max_by_key(|entry| entry.scope)
-}
-
-/// What to show when nothing sets a value.
-fn default_display(spec: &SettingSpec, resolved_default: &Option<String>) -> String {
-    match resolved_default {
-        Some(value) => value.clone(),
-        None => spec.default.display().to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -649,7 +646,7 @@ mod tests {
     #[test]
     fn nothing_set_resolves_to_the_default() {
         let resolved = resolve(keys::CHECKOUT_FETCH, vec![]);
-        assert_eq!(resolved.effective, "false");
+        assert_eq!(resolved.effective.as_deref(), Some("false"));
         assert_eq!(resolved.origin, Origin::Default);
         assert!(!resolved.is_set());
         assert!(resolved.diagnostics.is_empty());
@@ -665,7 +662,7 @@ mod tests {
                 entry("daft.remote", "loc", ConfigScope::Local),
             ],
         );
-        assert_eq!(resolved.effective, "loc");
+        assert_eq!(resolved.effective.as_deref(), Some("loc"));
         assert_eq!(
             resolved.origin,
             Origin::Layer(Layer::Git(ConfigScope::Local))
@@ -686,7 +683,7 @@ mod tests {
                 entry("daft.remote", "env", ConfigScope::Ephemeral),
             ],
         );
-        assert_eq!(resolved.effective, "env");
+        assert_eq!(resolved.effective.as_deref(), Some("env"));
         assert!(
             resolved
                 .diagnostics
@@ -708,7 +705,7 @@ mod tests {
             .insert("DAFT_SIZE_WALK_JOBS".to_string(), "16".to_string());
 
         let resolved = resolve_key(keys::LIST_SIZE_CONCURRENCY, &snap).unwrap();
-        assert_eq!(resolved.effective, "16");
+        assert_eq!(resolved.effective.as_deref(), Some("16"));
         assert_eq!(
             resolved.origin,
             Origin::Layer(Layer::Env("DAFT_SIZE_WALK_JOBS"))
@@ -731,7 +728,7 @@ mod tests {
                 .any(|r| r.layer == Layer::Git(ConfigScope::Local)),
             "a local rung outside a repo would offer a write with nowhere to go"
         );
-        assert_eq!(resolved.effective, "glob");
+        assert_eq!(resolved.effective.as_deref(), Some("glob"));
     }
 
     // ── Writability ──────────────────────────────────────────────────────
@@ -771,7 +768,11 @@ mod tests {
             ],
         );
 
-        assert_eq!(resolved.effective, "true", "the local value must not win");
+        assert_eq!(
+            resolved.effective.as_deref(),
+            Some("true"),
+            "the local value must not win"
+        );
         assert_eq!(
             resolved.origin,
             Origin::Layer(Layer::Git(ConfigScope::Global))
@@ -802,7 +803,7 @@ mod tests {
             keys::UPDATE_CHECK,
             vec![entry("daft.updateCheck", "false", ConfigScope::Local)],
         );
-        assert_eq!(resolved.effective, "true");
+        assert_eq!(resolved.effective.as_deref(), Some("true"));
         assert_eq!(resolved.origin, Origin::Default);
         assert!(!resolved.is_set());
     }
@@ -815,7 +816,7 @@ mod tests {
             keys::UPDATE_ARGS,
             vec![entry("daft.fetch.args", "--rebase", ConfigScope::Global)],
         );
-        assert_eq!(resolved.effective, "--rebase");
+        assert_eq!(resolved.effective.as_deref(), Some("--rebase"));
         assert!(
             resolved
                 .diagnostics
@@ -837,7 +838,7 @@ mod tests {
                 entry("daft.update.args", "--ff-only", ConfigScope::Global),
             ],
         );
-        assert_eq!(resolved.effective, "--ff-only");
+        assert_eq!(resolved.effective.as_deref(), Some("--ff-only"));
         assert!(
             !resolved
                 .diagnostics
@@ -857,7 +858,7 @@ mod tests {
                 ConfigScope::Local,
             )],
         );
-        assert_eq!(resolved.effective, "warn");
+        assert_eq!(resolved.effective.as_deref(), Some("warn"));
     }
 
     // ── Inheritance ──────────────────────────────────────────────────────
@@ -868,7 +869,7 @@ mod tests {
             keys::CHECKOUT_PUSH_VERIFY,
             vec![entry("daft.pushVerify", "never", ConfigScope::Global)],
         );
-        assert_eq!(resolved.effective, "never");
+        assert_eq!(resolved.effective.as_deref(), Some("never"));
         assert_eq!(resolved.origin, Origin::Inherited(keys::PUSH_VERIFY));
     }
 
@@ -879,17 +880,23 @@ mod tests {
             entry("daft.checkout.pushVerify", "always", ConfigScope::Local),
         ]));
 
-        assert_eq!(set.get(keys::PUSH_VERIFY).unwrap().effective, "never");
         assert_eq!(
-            set.get(keys::CHECKOUT_PUSH_VERIFY).unwrap().effective,
-            "always"
+            set.get(keys::PUSH_VERIFY).unwrap().effective.as_deref(),
+            Some("never")
+        );
+        assert_eq!(
+            set.get(keys::CHECKOUT_PUSH_VERIFY)
+                .unwrap()
+                .effective
+                .as_deref(),
+            Some("always")
         );
     }
 
     #[test]
     fn inheritance_reaches_the_parents_default_when_neither_is_set() {
         let resolved = resolve(keys::CHECKOUT_PUSH_VERIFY, vec![]);
-        assert_eq!(resolved.effective, "auto");
+        assert_eq!(resolved.effective.as_deref(), Some("auto"));
     }
 
     // ── Invalid values ───────────────────────────────────────────────────
@@ -908,7 +915,11 @@ mod tests {
             ],
         );
 
-        assert_eq!(resolved.effective, "false", "the built-in default");
+        assert_eq!(
+            resolved.effective.as_deref(),
+            Some("false"),
+            "the built-in default"
+        );
         assert_eq!(
             resolved.origin,
             Origin::DefaultAfterInvalid(Layer::Git(ConfigScope::Local))
@@ -931,7 +942,7 @@ mod tests {
                 entry("daft.merge.style", "squash", ConfigScope::Local),
             ],
         );
-        assert_eq!(resolved.effective, "squash");
+        assert_eq!(resolved.effective.as_deref(), Some("squash"));
         assert!(
             resolved.diagnostics.iter().any(|d| matches!(
                 d,
@@ -956,8 +967,11 @@ mod tests {
 
         // It must NOT be treated as the real setting...
         assert_eq!(
-            set.get(keys::CHECKOUT_BRANCH_CARRY).unwrap().effective,
-            "true"
+            set.get(keys::CHECKOUT_BRANCH_CARRY)
+                .unwrap()
+                .effective
+                .as_deref(),
+            Some("true")
         );
         // ...and the user must be told why their setting does nothing.
         assert_eq!(set.unrecognized.len(), 1);
@@ -989,7 +1003,41 @@ mod tests {
     fn resolving_everything_covers_the_whole_registry() {
         let set = resolve_all(&snapshot(vec![]));
         assert_eq!(set.settings.len(), all_specs().len());
-        assert!(set.settings.iter().all(|r| !r.effective.is_empty()));
+    }
+
+    #[test]
+    fn every_effective_value_is_one_a_user_could_type_back() {
+        // The get→set round-trip is the invariant: whatever `daft config get`
+        // prints, `daft config set` has to accept. A default described as
+        // "auto = max(2, cores/4)" reads fine in a ladder and then fails that
+        // trip, which is how it got here.
+        for resolved in resolve_all(&snapshot(vec![])).settings {
+            let Some(value) = &resolved.effective else {
+                continue;
+            };
+            assert!(
+                resolved.spec.ty.validate(value).is_ok(),
+                "{}: effective {value:?} would be rejected by its own type: {:?}",
+                resolved.spec.key,
+                resolved.spec.ty.validate(value)
+            );
+        }
+    }
+
+    #[test]
+    fn capturing_from_outside_a_repository_reads_the_global_files() {
+        // Read-only, and machine-independent in what it asserts: whatever the
+        // developer's own ~/.gitconfig holds, nothing from it may come back
+        // labelled local — that would offer a write with nowhere to go.
+        let snap = Snapshot::capture_global_only().unwrap();
+        assert!(!snap.in_repo);
+        assert!(
+            snap.entries
+                .iter()
+                .all(|e| matches!(e.scope, ConfigScope::System | ConfigScope::Global)),
+            "global capture must not claim repository scopes: {:?}",
+            snap.entries
+        );
     }
 
     #[test]
@@ -1014,12 +1062,24 @@ mod tests {
         // S9 and S10 give these rows real ladders; until then they must at
         // least resolve rather than panic or come back blank.
         let set = resolve_all(&snapshot(vec![]));
-        assert_eq!(set.get("layout").unwrap().effective, "sibling");
-        assert_eq!(set.get("log.retention").unwrap().effective, "7d");
         assert_eq!(
-            set.get("rc").unwrap().effective,
+            set.get("layout").unwrap().effective.as_deref(),
+            Some("sibling")
+        );
+        assert_eq!(
+            set.get("log.retention").unwrap().effective.as_deref(),
+            Some("7d")
+        );
+
+        let rc = set.get("rc").unwrap();
+        assert!(
+            rc.effective.is_none(),
+            "nothing sets it and it has no default"
+        );
+        assert_eq!(
+            rc.effective_display(),
             "—",
-            "an unset row with no default shows the ladder's em dash"
+            "the em dash is a display concern, not a value"
         );
     }
 }

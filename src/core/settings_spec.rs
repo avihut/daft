@@ -215,20 +215,35 @@ pub fn parse_git_bool(value: &str) -> Option<bool> {
 pub enum DefaultDesc {
     /// A literal that parses under the row's [`ValueType`] — enforced by test.
     Fixed(&'static str),
-    /// Resolved at runtime; the string states the rule, not a value
-    /// (`"auto = max(2, cores/4)"`).
-    Computed(&'static str),
+    /// Resolved at runtime.
+    ///
+    /// Split in two on purpose: `value` is the spelling a user can type to
+    /// ask for this back, and `rule` says what it works out to. Collapsing
+    /// them into one "auto = max(2, cores/4)" string reads fine in a ladder
+    /// and then leaks out of `daft config get` as a value nothing accepts.
+    Computed {
+        value: &'static str,
+        rule: &'static str,
+    },
     /// No default: unset is itself meaningful, and daft or git decides.
     Unset,
 }
 
 impl DefaultDesc {
-    /// How the default reads in a provenance ladder's bottom rung.
-    pub fn display(&self) -> &'static str {
+    /// The value that applies when nothing is set — always something the user
+    /// could type back. `None` when unset is the answer.
+    pub fn value(&self) -> Option<&'static str> {
         match self {
-            Self::Fixed(v) => v,
-            Self::Computed(desc) => desc,
-            Self::Unset => "—",
+            Self::Fixed(value) | Self::Computed { value, .. } => Some(value),
+            Self::Unset => None,
+        }
+    }
+
+    /// What a computed default works out to, for the ladder's detail line.
+    pub fn rule(&self) -> Option<&'static str> {
+        match self {
+            Self::Computed { rule, .. } => Some(rule),
+            Self::Fixed(_) | Self::Unset => None,
         }
     }
 }
@@ -878,7 +893,10 @@ fn git_specs() -> Vec<SettingSpec> {
             "Directory of user-level hooks that run for every repository.",
             Hooks,
             Path,
-            Computed("~/.config/daft/hooks"),
+            Computed {
+                value: "~/.config/daft/hooks",
+                rule: "the XDG config directory",
+            },
         ),
         SettingSpec::git(
             keys::hooks::TIMEOUT,
@@ -1016,9 +1034,12 @@ fn git_specs() -> Vec<SettingSpec> {
             "Parallel jobs for the worktree size walk.",
             Output,
             IntOrAuto,
-            Computed("auto = CPU count"),
+            Computed {
+                value: "auto",
+                rule: "the CPU count",
+            },
         )
-        .env("DAFT_SIZE_WALK_JOBS"),
+        .env(crate::core::size_walk::JOBS_ENV),
         SettingSpec::git(
             keys::PRUNE_CD_TARGET,
             "Prune cd target",
@@ -1030,10 +1051,10 @@ fn git_specs() -> Vec<SettingSpec> {
         SettingSpec::git(
             keys::completions::BRANCHES_COLUMNS,
             "Completion columns",
-            "Columns shown in rich branch tab-completion.",
+            "Columns shown in rich branch tab-completion; unset uses the built-in set.",
             Output,
             Spec,
-            Computed("the built-in completion column set"),
+            Unset,
         ),
         // ── Governor ────────────────────────────────────────────────────
         SettingSpec::git(
@@ -1050,7 +1071,10 @@ fn git_specs() -> Vec<SettingSpec> {
             "Maximum concurrent hook-bearing pushes.",
             Governor,
             IntOrAuto,
-            Computed("auto = max(2, cores/4)"),
+            Computed {
+                value: "auto",
+                rule: "max(2, cores/4)",
+            },
         ),
         SettingSpec::git(
             keys::GOVERNOR_MEMORY_RESERVE,
@@ -1058,7 +1082,10 @@ fn git_specs() -> Vec<SettingSpec> {
             "Memory headroom the governor keeps free, as a size or a percentage.",
             Governor,
             SizeOrPct,
-            Computed("auto = max(10% of RAM, 2G)"),
+            Computed {
+                value: "auto",
+                rule: "max(10% of RAM, 2G)",
+            },
         ),
         SettingSpec::git(
             keys::GOVERNOR_JOBSERVER,
@@ -1302,16 +1329,40 @@ mod tests {
     }
 
     #[test]
-    fn every_fixed_default_parses_under_its_own_type() {
+    fn every_declared_default_parses_under_its_own_type() {
+        // Computed defaults are held to the same bar as fixed ones: whatever
+        // a row falls back to has to be a value the user could type back, or
+        // `daft config get` prints something `daft config set` refuses.
         for spec in all_specs() {
-            if let DefaultDesc::Fixed(value) = spec.default {
-                assert!(
-                    spec.ty.validate(value).is_ok(),
-                    "{}: default {value:?} does not parse as {:?}: {:?}",
-                    spec.key,
-                    spec.ty,
-                    spec.ty.validate(value)
-                );
+            let Some(value) = spec.default.value() else {
+                continue;
+            };
+            assert!(
+                spec.ty.validate(value).is_ok(),
+                "{}: default {value:?} does not parse as {:?}: {:?}",
+                spec.key,
+                spec.ty,
+                spec.ty.validate(value)
+            );
+        }
+    }
+
+    #[test]
+    fn a_computed_default_states_its_rule_separately_from_its_value() {
+        for spec in all_specs() {
+            match spec.default {
+                DefaultDesc::Computed { value, rule } => {
+                    assert!(!value.is_empty(), "{}: computed value is empty", spec.key);
+                    assert!(!rule.is_empty(), "{}: computed rule is empty", spec.key);
+                    assert!(
+                        !value.contains('='),
+                        "{}: {value:?} reads like a rule, not a value a user can type",
+                        spec.key
+                    );
+                }
+                DefaultDesc::Fixed(_) | DefaultDesc::Unset => {
+                    assert!(spec.default.rule().is_none());
+                }
             }
         }
     }

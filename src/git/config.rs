@@ -106,6 +106,15 @@ pub struct ConfigEntry {
     pub origin_path: Option<std::path::PathBuf>,
 }
 
+/// Every `daft.*` entry visible from outside any repository — system and
+/// global config only.
+///
+/// `daft config` works from anywhere; a user in their home directory still
+/// needs to see and change what `~/.gitconfig` sets.
+pub fn daft_config_entries_global() -> Result<Vec<ConfigEntry>> {
+    oxide::config_entries_global("daft")
+}
+
 impl GitCommand {
     /// Every `daft.*` entry visible from this repository, with provenance.
     ///

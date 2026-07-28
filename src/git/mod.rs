@@ -15,7 +15,7 @@ mod remote;
 mod stash;
 mod worktree;
 
-pub use config::{ConfigEntry, ConfigScope};
+pub use config::{ConfigEntry, ConfigScope, daft_config_entries_global};
 pub use refs::FirstParentCommit;
 pub use remote::{PushIo, PushOptions, PushOutputTee, PushStream};
 
