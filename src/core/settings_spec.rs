@@ -1782,6 +1782,9 @@ mod tests {
         assert!(find("daft.hooks.worktreePostCreate.failMode").is_some());
         assert!(find("layout").is_some());
         assert!(find("log.retention").is_some());
-        assert!(find("daft.nope").is_none());
+        // Hyphenated on purpose: the xtask drift gate treats every
+        // key-shaped `daft.*` literal in src/ as a setting that owes the
+        // registry a row, and a hyphen is how a fixture opts out.
+        assert!(find("daft.no-such-key").is_none());
     }
 }
