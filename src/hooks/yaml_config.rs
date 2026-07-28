@@ -80,8 +80,8 @@ pub struct YamlConfig {
     /// The independent-copy sibling of [`Self::shared`]: where `shared:`
     /// centralizes one file and symlinks it everywhere, `copy:` gives every
     /// worktree its own private replica — build caches (`target/`,
-    /// `node_modules/`, `.venv/`) that must not be shared but are expensive to
-    /// rebuild. Entries must be gitignored; see [`CopyConfig`].
+    /// `node_modules/`, `.gradle/`) that must not be shared but are expensive
+    /// to rebuild. Entries must be gitignored; see [`CopyConfig`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copy: Option<CopyConfig>,
 

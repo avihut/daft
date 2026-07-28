@@ -18,6 +18,12 @@
       - any-glob-to-any-file:
           - "src/core/worktree/**"
 
+"area:copy":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/core/copy_paths.rs"
+          - "src/cow_copy.rs"
+
 "area:layout":
   - changed-files:
       - any-glob-to-any-file:
@@ -85,6 +91,7 @@
   - changed-files:
       - any-glob-to-any-file:
           - "src/git/**"
+          - "src/core/git_ignore.rs"
 
 "area:output":
   - changed-files:

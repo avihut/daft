@@ -30,6 +30,10 @@ steps:
 
   - name: Build a gitignored cache in main and declare it
     run: |
+      # `set -e` is load-bearing: bodies run under `bash -c` with no
+      # errexit, so without it the exit status is the LAST command's and
+      # earlier failures silently cannot fail the step.
+      set -e
       printf 'node_modules/\n' > .gitignore
       printf 'copy:\n  - node_modules/\n' > daft.yml
       mkdir -p node_modules/pkg

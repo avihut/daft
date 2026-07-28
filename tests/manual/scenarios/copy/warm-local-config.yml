@@ -34,6 +34,10 @@ steps:
   # merge at all, which is a different scenario (warm-malformed-config.yml).
   - name: Declare the cache only in the source's untracked local overlay
     run: |
+      # `set -e` is load-bearing: bodies run under `bash -c` with no
+      # errexit, so without it the exit status is the LAST command's and
+      # earlier failures silently cannot fail the step.
+      set -e
       printf 'node_modules/\n' > .gitignore
       printf 'shared:\n  - .env\n' > daft.yml
       printf 'copy:\n  - node_modules/\n' > daft.local.yml
@@ -64,6 +68,7 @@ steps:
   # with the cache it describes.
   - name: An overlay in the target does not declare the source's caches
     run: |
+      set -e
       rm "$WORK_DIR/test-repo/main/daft.local.yml"
       printf 'copy:\n  - node_modules/\n' > "$WORK_DIR/test-repo/develop/daft.local.yml"
       rm -rf "$WORK_DIR/test-repo/develop/node_modules"

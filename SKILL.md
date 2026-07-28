@@ -909,9 +909,9 @@ daft warm -v              # add the engine's per-entry narration
 ```
 
 Naming no target warms the current worktree from the default branch's; naming
-one warms it from where you stand. All three slots take a worktree directory
-name, a branch name, or a path under the project root. The result line names
-both resolved ends at ordinary verbosity
+one warms it from where you stand. Both slots (the target and `--from`) take a
+worktree directory name, a branch name, or a path under the project root. The
+result line names both resolved ends at ordinary verbosity
 (`Copied 1 of 2 declared paths (1 KB) into 'develop' from 'main'`) — do not tell
 users they need `-v` to see which pair ran; `-v` only adds engine narration.
 

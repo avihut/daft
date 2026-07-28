@@ -29,6 +29,10 @@ steps:
   # run that read the config from the destination would find nothing.
   - name: Build a gitignored cache in develop and declare it there
     run: |
+      # `set -e` is load-bearing: bodies run under `bash -c` with no
+      # errexit, so without it the exit status is the LAST command's and
+      # earlier failures silently cannot fail the step.
+      set -e
       printf 'target/\n' > .gitignore
       printf 'copy:\n  - target/\n' > daft.yml
       mkdir -p target/debug

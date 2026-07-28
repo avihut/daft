@@ -289,8 +289,11 @@ mod normalize_worktree_path_tests {
 
     /// A relative path resolves against the CURRENT directory — the whole
     /// point of calling this before the creation cores chdir into the new
-    /// worktree.
+    /// worktree. `#[serial]`: the assertion compares two cwd reads (one here,
+    /// one inside the function), and the suite's chdir-happy serial tests run
+    /// on other threads — a chdir landing in the gap would flake this.
     #[test]
+    #[serial_test::serial]
     fn relative_paths_resolve_against_the_current_directory() {
         let cwd = crate::utils::get_current_directory().unwrap();
         assert_eq!(

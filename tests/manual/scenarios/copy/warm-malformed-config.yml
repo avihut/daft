@@ -58,6 +58,10 @@ steps:
 
   - name: Fixing the typo returns warm to ordinary behavior
     run: |
+      # `set -e` is load-bearing: bodies run under `bash -c` with no
+      # errexit, so without it the exit status is the LAST command's and
+      # earlier failures silently cannot fail the step.
+      set -e
       printf 'copy:\n  paths: [node_modules]\n  fallback: skip\n' > daft.yml
       daft warm develop 2>&1
     cwd: "$WORK_DIR/test-repo/main"

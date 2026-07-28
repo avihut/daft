@@ -15,12 +15,11 @@ description: >
   means in practice, and a stage that gave up at the first bad entry would pass
   every single-entry test ever written. (Neither the repo name nor the branch
   name contains "tracked" — the output assertion would otherwise pass off the
-  rail's own path annotations.) KNOWN GAP, tracked separately: the
-  `output_contains` assertions need CopyPath stage events to reach non-TTY
-  output. Today only `StageId::SharedFile` has a Plain-mode fallback
-  (`core::progress::route_stage` ->
-  `core::shared::render_shared_stage_fallback`), so those two assertions stay
-  red even against a correct engine until CopyPath gets the same treatment.
+  rail's own path annotations.) The `output_contains` assertions ride the
+  CopyPath Plain-mode fallback (`copy_paths::render_copy_stage_fallback`,
+  dispatched from both `core::progress::route_stage` and the default
+  `ProgressSink::on_stage`): this scenario is the standing regression guard that
+  copy warnings stay visible in non-TTY output, where the runner lives.
 
 repos:
   - name: copy-forceadd

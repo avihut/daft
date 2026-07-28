@@ -282,6 +282,12 @@ A source and target that resolve to the same directory are refused outright:
 harmless under a normal run, and under `--force` it would delete the very caches
 it was asked to replicate.
 
+One edge to know about: if `--force`'s removal itself fails partway (a
+permission-locked file inside the entry), that run warns that what is left "will
+be mistaken for a finished copy" — and later runs will indeed report the remnant
+as `already present`. The warning run names the path; clear it by hand and
+re-run.
+
 ## What `copy:` does not do
 
 - **It does not run on `daft clone`.** A fresh clone has no source worktree to

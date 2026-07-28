@@ -3,10 +3,11 @@
 //! The independent-copy sibling of [`crate::core::shared`]: where `shared:`
 //! centralizes one file in `.git/.daft/shared/` and symlinks it into every
 //! worktree, `copy:` gives every worktree its own private replica of the
-//! paths it declares — `target/`, `node_modules/`, `.venv/` — so a fresh
+//! paths it declares — `target/`, `node_modules/`, `.gradle/` — so a fresh
 //! worktree starts warm instead of paying a full `cargo build` / `npm
 //! install`. On a reflinking filesystem (APFS, btrfs, XFS `reflink=1`,
-//! OpenZFS 2.2+, ReFS) that replica costs almost nothing until it diverges.
+//! OpenZFS 2.2+, bcachefs, ReFS) that replica costs almost nothing until it
+//! diverges.
 //!
 //! This completes the creation-flow symmetry: carry (uncommitted changes) →
 //! visitor propagation (untracked config) → `shared:` (linked config) →

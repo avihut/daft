@@ -48,6 +48,10 @@ steps:
   # print "No `copy:` paths declared".
   - name: A daft.yml without a copy section is the same case
     run: |
+      # `set -e` is load-bearing: bodies run under `bash -c` with no
+      # errexit, so without it the exit status is the LAST command's and
+      # earlier failures silently cannot fail the step.
+      set -e
       printf 'shared:\n  - .env\n' > daft.yml
       daft warm develop 2>&1
     cwd: "$WORK_DIR/test-repo/main"
