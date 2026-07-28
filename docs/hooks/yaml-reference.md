@@ -79,15 +79,15 @@ copy:
   max_size: 5GB # optional per-entry cap on the byte-copy fallback
 ```
 
-| Field      | Type            | Description                                                                                                                                |
-| ---------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `paths`    | list            | Entries to copy, relative to the worktree root. Files or directories; a trailing `/` is cosmetic                                           |
-| `fallback` | `copy` / `skip` | What to do when the filesystem cannot reflink an entry. `copy` (the default) pays for a real byte copy; `skip` leaves the entry out        |
-| `max_size` | string          | Per-**entry** size cap (`5GB`, `500MB`, `"1048576"`). Gates the byte-copy fallback only — a reflink is near-free and is never size-checked |
+| Field      | Type            | Description                                                                                                                              |
+| ---------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `paths`    | list            | Entries to copy, relative to the worktree root. Files or directories; a trailing `/` is cosmetic                                         |
+| `fallback` | `copy` / `skip` | What to do when the filesystem cannot reflink an entry. `copy` (the default) pays for a real byte copy; `skip` leaves the entry out      |
+| `max_size` | string / int    | Per-**entry** size cap (`5GB`, `500MB`, `1048576`). Gates the byte-copy fallback only — a reflink is near-free and is never size-checked |
 
 Sizes are case-insensitive and use binary multiples (`1KB` = 1024 bytes); a
-plain byte count works too — quote it so YAML keeps it a string. Both `fallback`
-spellings are matched case-insensitively, but lowercase is canonical.
+plain byte count works too, quoted or not. Both `fallback` spellings are matched
+case-insensitively, but lowercase is canonical.
 
 `daft hooks validate` rejects a `max_size` it cannot parse, and a map form that
 declares no `paths:` at all (which is how a misspelled `paths:` key surfaces).
@@ -112,10 +112,14 @@ It is a creation-time optimization and never aborts creation: every failure
 error. `daft clone` does not run it — a fresh clone has no source worktree to
 copy from.
 
+The gitignored check asks the **source** worktree only, so the destination's own
+`.gitignore` never gets a vote — copying into a branch that does not ignore the
+entry leaves it as untracked content in that worktree's `git status`.
+
 Existing destination entries are never overwritten, which makes the stage
-idempotent and safe to re-run;
-[`daft warm`](/worktrees/copying-caches#re-warming-a-worktree-with-daft-warm)
-replays it on demand, and `daft warm --force` replaces what is already there.
+idempotent and safe to re-run; [`daft warm`](/reference/cli/daft-warm) replays
+it on demand, and `daft warm --force` replaces what is already there — except
+content the **target** worktree tracks, which it refuses to delete.
 
 Unlike most keys here, `copy:` accepts two different YAML shapes, so a mistyped
 knob (`fallback: symlink`) fails the whole file with a generic

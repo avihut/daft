@@ -125,12 +125,17 @@ never keeps an identity ink.
   `├─ copied paths` anchor, immediately after the shared-files section — one row
   per declared **entry**, never per expanded glob match, so a `**/dist/`
   declaration stays one row and reports its fan-out in the annotation
-  (`3 dirs · 1.2 GB · reflinked · 0.3s`). The quiet skips are dim
-  (`nothing to copy yet`, `already present`); a declaration daft refused or
-  could not honor is yellow (`'target' is tracked — not copied`,
-  `2.1 GB over the 1 GB max_size`). No copy row is ever red: the stage is an
-  optimization, and a cache that did not copy has not cost the user the worktree
-  they asked for.
+  (`3 paths · 1.2 GB · reflinked · 0.3s`; `part reflinked` when only some
+  matches cloned, `· 2 unreadable` when the expansion could not read
+  everywhere). Exactly three skips are dim, because they are the stage working
+  as designed: `nothing to copy yet`, `already present`, `matched nothing`.
+  Every other outcome is yellow — a declaration daft refused
+  (`must be gitignored — tracked content is never copied`), could not size
+  (`2.1 GB — over the 1 GB max_size`), or could not carry out (`failed — …`).
+  The row's label is the entry, so its phrase never repeats it; when a glob
+  expands, the phrase names the one match that offended. No copy row is ever
+  red: the stage is an optimization, and a cache that did not copy has not cost
+  the user the worktree they asked for.
 - `daft remove` lists steps in true execution order — the remote branch is
   deleted first (it is the hardest to recreate), then the worktree, then the
   local branch. Multi-branch removals group rows under `├─` branch anchors. Its

@@ -128,10 +128,12 @@ in `.pnpm/`, hardlinked from pnpm's global store, and those arrive as real files
 (reflinked where the filesystem allows).
 
 On Windows the calculus is different: daft does not yet replicate symlinks
-there, so an entry containing one is abandoned and reported as a yellow
-attention row. ReFS gives Windows block cloning for ordinary files, but a
-symlink-based `node_modules/` is not currently a copyable entry — declare the
-flat-install directories instead.
+there, so an entry containing one fails and is reported as a yellow attention
+row. Whatever had already landed at the destination is then cleared away, which
+means the next creation or `daft warm` retries the entry cleanly rather than
+finding a half-copy and reporting `already present` over it forever. ReFS gives
+Windows block cloning for ordinary files, but a symlink-based `node_modules/` is
+not currently a copyable entry — declare the flat-install directories instead.
 
 **npm and yarn's flat trees** are real files all the way down. This is precisely
 the case reflink exists for: near-free on APFS or btrfs, a genuine
@@ -166,6 +168,13 @@ The question to ask of a cache is: _does it record its own absolute path?_ If
 yes, expect partial reuse. If no — Vite's `node_modules/.vite/`, webpack 5's
 `node_modules/.cache/`, most output directories — expect it to work as-is.
 
+One thing no cache carries across: **special files are silently omitted.** Unix
+sockets, FIFOs, and device nodes are not reproduced — regular files,
+directories, and (on Unix) symlinks are. Daemons that leave a socket behind in
+`node_modules/.cache/` or `.venv/` therefore arrive without it, which is what
+you want: a stale socket pointing at a process that was never in this worktree
+is worse than an absent one, and the tool recreates it on next start.
+
 ## Entries must be gitignored
 
 `copy:` replicates caches, not the working tree. Every entry is checked with
@@ -174,44 +183,75 @@ tracked — which catches the force-added file inside an otherwise-ignored
 directory.
 
 An entry that fails either check gets a yellow row on the creation rail
-(`'target' is tracked — not copied`) and is skipped. The worktree is still
-created. That is the general rule for this stage: **a cache copy is an
-optimization, and an optimization never costs you the worktree you asked for.**
-A tracked entry, an unreadable source, a full disk — each becomes a warning row
-and creation continues.
+(`must be gitignored — tracked content is never copied`) and is skipped. The
+worktree is still created. That is the general rule for this stage: **a cache
+copy is an optimization, and an optimization never costs you the worktree you
+asked for.** A tracked entry, an unreadable source, a full disk — each becomes a
+warning row and creation continues.
+
+The check asks the **source** worktree only, which is the right question for
+"may daft copy this?" — but it means the destination's own `.gitignore` never
+gets a vote. Warm a branch that does not ignore `target/` and you land a large
+untracked directory in that worktree's `git status`. Keep the ignore rules
+consistent across branches you copy between.
+
+### Reading the copied-paths section
 
 Every declared entry leaves exactly one row, so the section reads as a receipt.
-Dim `○` rows are expected outcomes; yellow `↓` rows want your attention. No copy
-row is ever red.
+Dim `○` rows are the stage working as designed; yellow `↓` rows are the config
+asking for something that did not happen. No copy row is ever red.
 
-| Row                                           | Meaning                                                                              |
-| --------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `✓ target  1 dir · 1.2 GB · reflinked · 0.3s` | Copied                                                                               |
-| `○ nothing to copy yet`                       | Declared, but the cache has never been built in the source                           |
-| `○ already present`                           | The destination already has it — nothing to do                                       |
-| dim `○`, glob matched nothing                 | A glob entry expanded to no paths in the source worktree                             |
-| `↓ 'target' is tracked — not copied`          | Failed the gitignored check                                                          |
-| `↓ 2.1 GB over the 1 GB max_size`             | Byte-copy fallback exceeded the cap                                                  |
-| yellow `↓`, cannot reflink                    | The filesystem cannot reflink this entry and `fallback: skip` declined the byte copy |
-| yellow `↓`, copy failed                       | The copy was attempted and something went wrong — I/O error, permissions, disk full  |
+A row's label is the entry, so its phrase never repeats it — and when a glob
+expands, the phrase names the one match that offended, which is how a single row
+can report on a thirty-way expansion.
+
+| Row                                                      | Meaning                                                                                                                                                                   |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `✓ target  1.2 GB · reflinked · 0.3s`                    | Copied. A multi-match entry counts them (`3 paths · …`), a mixed entry reports `part reflinked`, and an expansion that could not read everywhere appends `· 2 unreadable` |
+| `○ nothing to copy yet`                                  | Declared, but the cache has never been built in the source                                                                                                                |
+| `○ already present`                                      | The destination already has it — nothing to do                                                                                                                            |
+| `○ matched nothing`                                      | A glob entry expanded to no paths in the source worktree                                                                                                                  |
+| `↓ must be gitignored — tracked content is never copied` | Not gitignored, or git tracks content under it                                                                                                                            |
+| `↓ 2.1 GB — over the 1 GB max_size`                      | Byte-copy fallback exceeded the cap                                                                                                                                       |
+| `↓ no reflink support — fallback: skip`                  | The filesystem cannot reflink and `fallback: skip` declined the byte copy                                                                                                 |
+| `↓ already present as … — not replaced`                  | Something is at the destination, but the wrong shape — a symlink where a directory belongs, a file where a tree belongs, a dangling link                                  |
+| `↓ … — not copied`                                       | Containment refusal: the entry is absolute, contains `..`, or names the worktree itself                                                                                   |
+| `↓ could not be read — …`                                | The source entry could not be read                                                                                                                                        |
+| `↓ the destination could not be read — …`                | The destination could not be read, so nothing about it could be established                                                                                               |
+| `↓ could not be classified by git — …`                   | `check-ignore` / `ls-files` failed on the source, so the gitignore question went unanswered                                                                               |
+| `↓ the destination could not be classified by git — …`   | The same failure on the destination side                                                                                                                                  |
+| `↓ is tracked in this worktree — refusing to replace it` | `--force` would have deleted content the **target** tracks                                                                                                                |
+| `↓ source and target are the same worktree`              | `daft warm` was pointed at its own source                                                                                                                                 |
+| `↓ failed — …`                                           | The copy was attempted and broke — I/O error, permissions, disk full                                                                                                      |
 
 ## Re-warming a worktree with `daft warm`
 
-The creation-time stage is not the only way to run it. `daft warm` replays the
-same `copy:` declarations on demand:
+The creation-time stage is not the only way to run it.
+[`daft warm`](/reference/cli/daft-warm) replays the same `copy:` declarations on
+demand:
 
 ```bash
-daft warm                 # copy into the current worktree
-daft warm feature-x       # copy into another worktree
-daft warm --from main     # take the caches from a specific worktree
-daft warm --force         # replace entries that already exist at the destination
-daft warm -v              # report each entry as it is considered
+daft warm                 # warm the current worktree from the default branch's
+daft warm feature-x       # warm that worktree from where you are standing
+daft warm --from main     # name the source explicitly
+daft warm --force         # replace entries that already exist in the target
+daft warm -v              # add the engine's per-entry narration
 ```
 
-The default source is the current worktree when it isn't also the target, and
-the repository's default-branch worktree otherwise. Without `--force`, entries
-already present at the destination are left alone — so `daft warm` twice in a
-row is a no-op, and it never clobbers what a post-create hook already built.
+Standing still and naming nothing warms **you**, from the default branch's
+worktree; naming a target warms **it**, from where you stand. `--from` overrides
+the source either way, and all three slots accept a worktree directory name, a
+branch name, or a path under the project root.
+
+Whichever pair it resolves, the result line names both ends —
+`Copied 1 of 2 declared paths (1 KB) into 'develop' from 'main'` — at ordinary
+verbosity, so a name that resolved to something you did not mean is visible
+without `-v`. `-v` adds the engine's narration on top; it is not what makes the
+pair visible.
+
+Without `--force`, entries already present in the target are left alone — so
+`daft warm` twice in a row is a no-op, and it never clobbers what a post-create
+hook already built.
 
 Reach for it when a worktree was created before you added the `copy:` key, when
 you have just built something expensive on the default branch and want it in the
@@ -221,6 +261,26 @@ spreading a fresh cache means running it per worktree or driving it with
 [`daft exec`](/worktrees/running-commands).
 
 `daft warm` does not move your shell; it only writes into the target worktree.
+
+### What `--force` will still refuse
+
+`--force` is the only thing here that deletes, so it is the only thing that asks
+the **target** what it is about to delete:
+
+- **Content the target tracks is never replaced.** A path one branch gitignores
+  can be committed content on another, and the source's opinion says nothing
+  about the destination. The entry is refused with
+  `is tracked in this worktree — refusing to replace it`.
+- **The bare container is refused as either end.** It has no working tree to
+  copy from or into.
+- **Nothing is removed until the copy is actually going to proceed.** Every
+  other refusal — containment, unreadable source, size cap — fires with the
+  destination still intact, so `--force` can never report a skip over a cache it
+  has already destroyed.
+
+A source and target that resolve to the same directory are refused outright:
+harmless under a normal run, and under `--force` it would delete the very caches
+it was asked to replicate.
 
 ## What `copy:` does not do
 
@@ -238,6 +298,10 @@ spreading a fresh cache means running it per worktree or driving it with
   skipped. `daft warm --force` is the explicit opt-in to replace.
 - **It never blocks creation.** See above — warnings only, in every failure
   mode.
+- **It does not deduplicate across a fan-out.** `daft start --fork -n 3` runs
+  the stage once per fork, so on a reflinking filesystem you get three near-free
+  clones — but on one without reflink and `fallback: copy`, three real byte
+  copies. Size the fan-out accordingly, or set `fallback: skip` there.
 
 ## Migrating from worktrunk's `.worktreeinclude`
 
@@ -274,3 +338,4 @@ are not gitignored rather than copying them.
   [`daft shared`](/reference/cli/daft-shared)
 - **Reading the creation rail:**
   [Progress timeline](/reference/progress-timeline)
+- **The command's full surface:** [`daft warm`](/reference/cli/daft-warm)
