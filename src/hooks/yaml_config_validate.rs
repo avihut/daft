@@ -134,6 +134,22 @@ fn validate_copy(copy: &CopyConfig, result: &mut ValidationResult) {
         );
     }
 
+    // An absolute entry is refused at copy time; catching it here means the
+    // author hears about it once, at `daft hooks validate`, instead of once
+    // per worktree creation. Same sentence both places.
+    for entry in copy.paths() {
+        if entry.trim().starts_with('/') {
+            result.error(
+                "copy.paths",
+                format!(
+                    "'{}' {}",
+                    entry.trim(),
+                    crate::core::copy_paths::absolute_entry_hint(entry.trim())
+                ),
+            );
+        }
+    }
+
     if let Some(max_size) = copy.max_size()
         && let Err(e) = crate::coordinator::clean_policy::parse_size(max_size)
     {
@@ -616,6 +632,39 @@ hooks:
         // The bare-list form's empty spelling is honest, not a mistake.
         let config: YamlConfig = serde_yaml::from_str("copy: []\n").unwrap();
         assert!(validate_config(&config).unwrap().is_ok());
+    }
+
+    #[test]
+    fn copy_rejects_an_absolute_entry_with_the_fix_in_the_message() {
+        // An absolute entry is refused at copy time; catching it here means
+        // the answer arrives once, from `daft hooks validate`, instead of once
+        // per worktree creation. `/target` is what cargo writes into
+        // `.gitignore`, so it is the likeliest way one appears.
+        let config: YamlConfig =
+            serde_yaml::from_str("copy:\n  - /target\n  - node_modules/\n").unwrap();
+        let result = validate_config(&config).unwrap();
+
+        let message = result
+            .errors
+            .iter()
+            .find(|e| e.path == "copy.paths")
+            .map(|e| e.message.clone())
+            .expect("an absolute entry is an error");
+        assert!(
+            message.contains("/target") && message.contains("write 'target'"),
+            "the error has to name the entry and the fix: {message}"
+        );
+        // A relative entry alongside it is not implicated.
+        assert_eq!(
+            result
+                .errors
+                .iter()
+                .filter(|e| e.path == "copy.paths")
+                .count(),
+            1,
+            "{:?}",
+            result.errors
+        );
     }
 
     #[test]

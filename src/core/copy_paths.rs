@@ -120,12 +120,13 @@ pub struct ResolvedCopyConfig {
 ///
 /// Normalization, in order:
 /// 1. `CopyConfig::Paths` / `::Full` collapse to `ResolvedCopyConfig`.
-/// 2. Every entry loses its trailing **and** leading `/`; entries that are
-///    empty or become empty are dropped. A leading slash is gitignore's
-///    "anchored to the repository root" — which is what a `copy:` entry
-///    already is — and `/target` is what cargo itself writes into
-///    `.gitignore`, so it is the natural thing to paste in. Refusing it would
-///    punish the obvious move.
+/// 2. Every entry loses its **trailing** `/`; entries that are empty or become
+///    empty are dropped. A leading `/` is deliberately *not* stripped: an
+///    absolute entry is refused, not quietly reinterpreted. `/target` is what
+///    cargo writes into `.gitignore` and is the natural thing to paste, so the
+///    refusal carries the fix — but rewriting it here would mean
+///    `copy: ["/var"]` silently copying the worktree's own `var/` and
+///    reporting success over a tree the config never named.
 /// 3. Duplicates are dropped, first occurrence winning. Two entries that
 ///    normalize to the same path would share one `StepKey`, and the second
 ///    planned row would be swept away as unreported at teardown.
@@ -181,11 +182,13 @@ pub fn read_copy_config(source_root: &Path) -> Option<ResolvedCopyConfig> {
 /// One declared entry, written the single way everything downstream expects:
 /// no surrounding slashes.
 fn normalize_entry(declared: &str) -> String {
-    declared
-        .trim()
-        .trim_end_matches('/')
-        .trim_start_matches('/')
-        .to_string()
+    // Trailing slashes only. A LEADING slash is not cosmetic — it is the
+    // difference between `target` and `/target`, and stripping it silently
+    // rewrote a config into one the user never wrote: `copy: ["/var"]` copied
+    // the worktree's own `var/` and reported a green row over a tree the
+    // config never named. It is refused instead, with a hint, by
+    // `containment_violation`.
+    declared.trim().trim_end_matches('/').to_string()
 }
 
 // ── Entry expansion ───────────────────────────────────────────────────────
@@ -1061,16 +1064,36 @@ fn containment_violation(relpath: &str) -> Option<String> {
     for component in path.components() {
         match component {
             Component::ParentDir => {
-                return Some("contains '..' and may resolve outside the worktree".to_string());
+                return Some(
+                    "contains '..' and may resolve outside the worktree — not copied".to_string(),
+                );
             }
             Component::RootDir | Component::Prefix(_) => {
-                return Some("is an absolute path".to_string());
+                return Some(absolute_entry_hint(relpath));
             }
             Component::CurDir => {}
             Component::Normal(_) => depth += 1,
         }
     }
-    (depth == 0).then(|| "names the worktree itself".to_string())
+    (depth == 0).then(|| "names the worktree itself — not copied".to_string())
+}
+
+/// The refusal for an absolute entry, carrying the fix.
+///
+/// `/target` is what cargo writes into `.gitignore`, so a `copy:` list pasted
+/// from one is the likeliest way an absolute entry appears — and "is an
+/// absolute path" alone leaves the user to guess that dropping one character
+/// is the answer. Shared with `daft hooks validate`, which catches it at
+/// authoring time.
+pub fn absolute_entry_hint(entry: &str) -> String {
+    let anchored = entry.trim_start_matches('/').trim_end_matches('/');
+    if anchored.is_empty() {
+        return "is an absolute path — entries are relative to the worktree root".to_string();
+    }
+    format!(
+        "is an absolute path — drop the leading '/' to anchor at the worktree root \
+         (write '{anchored}')"
+    )
 }
 
 /// Which kind of thing a path is, for the destination-shape check.
@@ -1801,9 +1824,10 @@ pub fn skip_phrase(entry: &str, reason: &SkipReason) -> String {
                 named(offender)
             )
         }
-        SkipReason::Uncontained { offender, detail } => {
-            format!("{}{detail} — not copied", named(offender))
-        }
+        // The detail carries its own ending here: the absolute-path refusal
+        // ends in a remedy, and appending "— not copied" after it would put
+        // three dashes in one line.
+        SkipReason::Uncontained { offender, detail } => format!("{}{detail}", named(offender)),
         SkipReason::SameWorktree => "source and target are the same worktree".to_string(),
         SkipReason::NoReflink => "no reflink support — fallback: skip".to_string(),
         // Size first, then the cap it broke: the row is answering "why not?",
@@ -2955,9 +2979,21 @@ mod tests {
             (
                 SkipReason::Uncontained {
                     offender: "cache".into(),
-                    detail: "resolves outside the worktree".into(),
+                    detail: "resolves outside the worktree — not copied".into(),
                 },
                 "resolves outside the worktree — not copied",
+            ),
+            // The absolute-path refusal carries its own remedy: `/target` is
+            // what cargo writes into `.gitignore`, so this is the likeliest
+            // way an absolute entry appears and the likeliest place a bare
+            // "is an absolute path" would leave someone stuck.
+            (
+                SkipReason::Uncontained {
+                    offender: "cache".into(),
+                    detail: absolute_entry_hint("/target"),
+                },
+                "is an absolute path — drop the leading '/' to anchor at the worktree root \
+                 (write 'target')",
             ),
             (
                 SkipReason::SourceUnreadable {
@@ -4005,6 +4041,43 @@ mod tests {
         assert!(
             detail.contains("mistaken for a finished copy"),
             "a surviving destination has to be called out: {detail}"
+        );
+    }
+
+    #[test]
+    fn an_absolute_entry_is_refused_not_quietly_rewritten() {
+        // Stripping the leading `/` turned `copy: ["/var"]` into `copy: ["var"]`
+        // — a green row over the worktree's own `var/`, a tree the config never
+        // named — and made the documented absolute-path refusal unreachable on
+        // Unix. The entry survives normalization intact and is refused, with
+        // the one-character fix in the phrase.
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp.path().join("daft.yml"),
+            b"copy:\n  - /var\n  - target/\n",
+        );
+        assert_eq!(
+            read_copy_config(tmp.path()).unwrap().paths,
+            vec!["/var".to_string(), "target".to_string()],
+            "a leading slash is not cosmetic; only a trailing one is"
+        );
+
+        let (_tmp, source, target) = repo_fixture("*\n");
+        write(&source.join("var/decoy.bin"), b"the worktree's own var/");
+
+        let result = run(&source, &target, &config(&["/var"]));
+
+        assert_sole_skip!(result, SkipReason::Uncontained { .. });
+        assert!(
+            !target.join("var").exists(),
+            "an absolute entry must not be reinterpreted as a relative one"
+        );
+        let SkipReason::Uncontained { detail, .. } = sole_skip(&result) else {
+            unreachable!()
+        };
+        assert!(
+            detail.contains("drop the leading '/'") && detail.contains("write 'var'"),
+            "the refusal has to carry the fix: {detail}"
         );
     }
 

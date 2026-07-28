@@ -79,11 +79,11 @@ copy:
   max_size: 5GB # optional per-entry cap on the byte-copy fallback
 ```
 
-| Field      | Type            | Description                                                                                                                              |
-| ---------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `paths`    | list            | Entries to copy, relative to the worktree root. Files or directories; a trailing `/` is cosmetic                                         |
-| `fallback` | `copy` / `skip` | What to do when the filesystem cannot reflink an entry. `copy` (the default) pays for a real byte copy; `skip` leaves the entry out      |
-| `max_size` | string / int    | Per-**entry** size cap (`5GB`, `500MB`, `1048576`). Gates the byte-copy fallback only — a reflink is near-free and is never size-checked |
+| Field      | Type            | Description                                                                                                                                                    |
+| ---------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `paths`    | list            | Entries to copy, relative to the worktree root. Files or directories; a trailing `/` is cosmetic, a **leading** `/` is refused — write `target`, not `/target` |
+| `fallback` | `copy` / `skip` | What to do when the filesystem cannot reflink an entry. `copy` (the default) pays for a real byte copy; `skip` leaves the entry out                            |
+| `max_size` | string / int    | Per-**entry** size cap (`5GB`, `500MB`, `1048576`). Gates the byte-copy fallback only — a reflink is near-free and is never size-checked                       |
 
 Sizes are case-insensitive and use binary multiples (`1KB` = 1024 bytes); a
 plain byte count works too, quoted or not. Both `fallback` spellings are matched
