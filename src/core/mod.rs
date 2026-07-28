@@ -63,6 +63,17 @@ pub trait ProgressSink {
         let _ = plan;
     }
 
+    /// Name the resolve phase now running, before any plan exists.
+    ///
+    /// Until a plan commits, the rail is a single collapsed line and its
+    /// text is the only thing that can say what daft is doing — a
+    /// multi-second fetch under a face still reading `Opening <branch>` is
+    /// indistinguishable from a hang (#782). Sinks with no live face ignore
+    /// it: the phase is liveness copy, never a durable signal.
+    fn on_resolve_phase(&mut self, phase: &str) {
+        let _ = phase;
+    }
+
     /// Report a lifecycle event for one committed plan step.
     ///
     /// The default renders the legacy stderr lines for `SharedFile` events
@@ -259,6 +270,8 @@ pub struct RecordingStageSink {
     pub events: Vec<(stage::StepKey, stage::StageEvent)>,
     pub steps: Vec<String>,
     pub warnings: Vec<String>,
+    /// Each resolve phase the core named for the collapsed rail line (#782).
+    pub resolve_phases: Vec<String>,
     pub hooks_run: Vec<crate::hooks::HookType>,
 }
 
@@ -270,6 +283,10 @@ impl ProgressSink for RecordingStageSink {
 
     fn on_warning(&mut self, msg: &str) {
         self.warnings.push(msg.to_string());
+    }
+
+    fn on_resolve_phase(&mut self, phase: &str) {
+        self.resolve_phases.push(phase.to_string());
     }
 
     fn on_debug(&mut self, _msg: &str) {}

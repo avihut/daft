@@ -329,9 +329,11 @@ pub fn execute(
     // errors). With `daft.checkout.fetch` on the probe must follow the
     // network; a deferring caller (every non-forge checkout, #782) runs
     // the fetch under the planning face — its stage events land on no row,
-    // its warnings stay quiet (a probe miss is expected, not alarming) —
-    // and it joins the committed plan as a pre-completed row, so a missing
-    // branch still errors before any plan commits. Only forge targets
+    // and the one warning a probe can expect (the refspec miss on a name
+    // that may not be a branch) waits until the probe says whether it was
+    // an incident at all — and it joins the committed plan as a
+    // pre-completed row, so a missing branch still errors before any plan
+    // commits. Only forge targets
     // fetch as planned work below the commit: their misses are Other
     // (the fork-ref fallback), never BranchNotFound.
     let mut prefetch: Option<Prefetch> = None;
@@ -350,11 +352,20 @@ pub fn execute(
         Some((local_exists, false))
     } else if params.checkout_fetch {
         if params.defer_plan_until_branch_known {
+            // The face is the whole rail until a plan lands, so it has to
+            // name the network work itself — nothing else can (#782 review).
+            sink.on_resolve_phase(&format!("Fetching {}", params.remote_name));
             let fetch_started = std::time::Instant::now();
-            let failed = !fetch_branch(git, &params.remote_name, &params.branch_name, sink, true);
+            let attempt = fetch_branch(
+                git,
+                &params.remote_name,
+                &params.branch_name,
+                sink,
+                FetchVoice::HoldBranchMiss,
+            );
             prefetch = Some(Prefetch {
                 elapsed: fetch_started.elapsed(),
-                failed,
+                failed: !attempt.ok,
             });
             let (local_exists, remote_exists) =
                 check_branch_existence(git, &params.branch_name, &params.remote_name)?;
@@ -362,8 +373,15 @@ pub fn execute(
                 return Err(CheckoutError::BranchNotFound {
                     branch: params.branch_name.clone(),
                     remote: params.remote_name.clone(),
-                    fetch_failed: failed,
+                    fetch_failed: !attempt.ok,
                 });
+            }
+            // The name turned out to be a branch, so the held refspec
+            // failure was an incident, not the probe's answer — and the row
+            // it lands on is green off the general fetch, which says nothing
+            // about this branch failing to move. Voice it.
+            if let Some(warning) = attempt.held_branch_miss {
+                sink.on_warning(&warning);
             }
             Some((local_exists, remote_exists))
         } else {
@@ -481,7 +499,14 @@ pub fn execute(
             local_exists
         }
         None => {
-            let fetch_failed = !fetch_branch(git, source_remote, &params.branch_name, sink, false);
+            let fetch_failed = !fetch_branch(
+                git,
+                source_remote,
+                &params.branch_name,
+                sink,
+                FetchVoice::Announce,
+            )
+            .ok;
             let (local_exists, remote_exists) =
                 check_branch_existence(git, &params.branch_name, source_remote)?;
             if !local_exists && !remote_exists {
@@ -786,24 +811,38 @@ fn find_existing_worktree_for_branch(
     )
 }
 
+/// How a fetch voices the failures it hits.
+enum FetchVoice {
+    /// Planned work: every failure warns where it happens.
+    Announce,
+    /// A resolution probe running under the planning face (the deferred path,
+    /// #782). Only the branch-specific miss is held back — the name being
+    /// probed may not be a branch at all, so its refspec failing is an
+    /// answer, not an incident — and the caller voices it once the probe
+    /// proves the branch does exist. A general fetch failure is never held:
+    /// an unreachable remote is nobody's expected outcome, and on this path
+    /// the warning is the only signal that survives every output mode.
+    HoldBranchMiss,
+}
+
+/// What a [`fetch_branch`] attempt produced.
+struct FetchAttempt {
+    /// At least one leg succeeded — the checkout continues on the refs it has.
+    ok: bool,
+    /// The branch-specific failure [`FetchVoice::HoldBranchMiss`] held back.
+    /// The caller voices it for a branch that exists and drops it on a
+    /// genuine miss, where the miss is its own message.
+    held_branch_miss: Option<String>,
+}
+
 /// Fetch latest changes for a branch from the remote.
-///
-/// Returns `true` if at least the general fetch succeeded, `false` if both
-/// fetches failed.
-///
-/// `quiet_probe` marks a resolution fetch running under the planning face
-/// (the deferred path): transient fetch warnings stay off stderr — a
-/// refspec miss is the expected outcome of probing a name that may not be
-/// a branch at all (#782) — while the durable signals survive: the yellow
-/// Fetch row when a plan commits, and `fetch_failed` on `BranchNotFound`
-/// for the miss messaging.
 fn fetch_branch(
     git: &GitCommand,
     remote_name: &str,
     branch_name: &str,
     sink: &mut impl ProgressSink,
-    quiet_probe: bool,
-) -> bool {
+    voice: FetchVoice,
+) -> FetchAttempt {
     // The fetch is a planned rail row (mirrors checkout_branch's
     // `fetch_remote`): it resolves green on success and yellow — with the
     // continuing-anyway fact — when both fetches failed.
@@ -814,9 +853,7 @@ fn fetch_branch(
     let general_ok = match git.fetch(remote_name, false) {
         Ok(()) => true,
         Err(e) => {
-            if !quiet_probe {
-                sink.on_warning(&format!("Failed to fetch from remote '{remote_name}': {e}"));
-            }
+            sink.on_warning(&format!("Failed to fetch from remote '{remote_name}': {e}"));
             false
         }
     };
@@ -824,23 +861,26 @@ fn fetch_branch(
     sink.on_step(&format!(
         "Fetching specific branch '{branch_name}' from remote '{remote_name}'..."
     ));
+    let mut held_branch_miss = None;
     let specific_ok = match git.fetch_refspec(remote_name, &format!("{branch_name}:{branch_name}"))
     {
         Ok(()) => true,
         Err(e) => {
-            if !quiet_probe {
-                sink.on_warning(&format!("Failed to fetch specific branch: {e}"));
+            let warning = format!("Failed to fetch specific branch: {e}");
+            match voice {
+                FetchVoice::Announce => sink.on_warning(&warning),
+                FetchVoice::HoldBranchMiss => held_branch_miss = Some(warning),
             }
             false
         }
     };
 
-    if general_ok || specific_ok {
+    let ok = general_ok || specific_ok;
+    if ok {
         sink.on_stage(
             &StepKey::new(StageId::Fetch),
             StageEvent::Completed { annotation: None },
         );
-        true
     } else {
         sink.on_stage(
             &StepKey::new(StageId::Fetch),
@@ -848,7 +888,10 @@ fn fetch_branch(
                 reason: super::FETCH_FAILED_REASON.to_string(),
             },
         );
-        false
+    }
+    FetchAttempt {
+        ok,
+        held_branch_miss,
     }
 }
 
@@ -1151,7 +1194,11 @@ mod timeline_tests {
             checkout_fetch: fetch,
             layout: None,
             at_path: Some(at),
-            defer_plan_until_branch_known: false,
+            // Production parity: the command layer defers for every
+            // non-forge checkout (#782). A test that wants the planned-fetch
+            // shape — plan first, probe after — wants `forge_params`, the
+            // only shape that still takes it.
+            defer_plan_until_branch_known: true,
             forge: None,
         }
     }
@@ -1241,12 +1288,13 @@ mod timeline_tests {
         assert!(sink.plan.is_none(), "no plan for a resolve-phase error");
     }
 
-    /// Fetch on: the plan commits before the network — a Fetch row leads it,
-    /// the CheckOut row starts without provenance, and the post-fetch probe
-    /// notes the resolved annotation onto the pending row (#651).
+    /// The planned-fetch shape, which since #782 only forge targets take:
+    /// the plan commits before the network, so the CheckOut row starts
+    /// without provenance and the post-fetch probe notes the resolved
+    /// annotation onto the pending row (#651).
     #[test]
     #[serial]
-    fn fetch_on_plans_the_fetch_row_and_notes_the_annotation() {
+    fn planned_fetch_notes_the_annotation_onto_the_pending_row() {
         // `execute` records the worktree's identity — without this, the
         // write lands in the developer's real state dir (#697).
         let _state = crate::store::paths::IsolatedStateDir::new();
@@ -1264,8 +1312,17 @@ mod timeline_tests {
         let worktree_path = tmp.path().join("feat-y-wt");
         let git_cmd = GitCommand::new(true);
         let mut sink = RecordingStageSink::default();
+        let forge = ForgeCheckout {
+            remote: "origin".to_string(),
+            fork: None,
+            head_fallback: None,
+            display: "PR #12".to_string(),
+            title: "Planned fetch".to_string(),
+            state_note: None,
+            resolve_elapsed: std::time::Duration::from_millis(2),
+        };
         execute(
-            &params("feat-y", worktree_path.clone(), true),
+            &forge_params("feat-y", worktree_path.clone(), forge),
             &git_cmd,
             &work,
             &mut sink,
@@ -1273,19 +1330,9 @@ mod timeline_tests {
         .expect("checkout succeeds");
         assert!(worktree_path.exists());
 
+        // The row order itself is `same_repo_forge_leads_plan_with_resolve_receipt`'s
+        // subject; this test owns what the annotation does across the fetch.
         let plan = sink.plan.as_ref().expect("plan committed");
-        let ids: Vec<StageId> = plan.steps().map(|s| s.key.id).collect();
-        assert_eq!(
-            ids,
-            vec![
-                StageId::Fetch,
-                StageId::PreCreateHooks,
-                StageId::CheckOut,
-                StageId::CreateWorktree,
-                StageId::PostCreateHooks,
-            ],
-            "fetch on => the Fetch row leads the plan"
-        );
         let fetch_annotation = plan
             .steps()
             .find(|s| s.key.id == StageId::Fetch)
@@ -1323,46 +1370,11 @@ mod timeline_tests {
         );
     }
 
-    /// Fetch on + unknown branch: the plan is already committed when the
-    /// post-fetch probe fails — the command layer aborts the rail into a
-    /// Failed receipt (the accepted #651 semantic for fetch-on go).
-    #[test]
-    #[serial]
-    fn fetch_on_unknown_branch_errors_after_the_committed_plan() {
-        // `execute` records the worktree's identity — without this, the
-        // write lands in the developer's real state dir (#697).
-        let _state = crate::store::paths::IsolatedStateDir::new();
-        let _cwd = CwdGuard::new();
-        let tmp = tempfile::tempdir().unwrap();
-        let origin = tmp.path().join("origin");
-        std::fs::create_dir_all(&origin).unwrap();
-        git(&origin, &["init", "-q", "-b", "main"]);
-        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
-        git(tmp.path(), &["clone", "-q", "origin", "work"]);
-        let work = tmp.path().join("work");
-        std::env::set_current_dir(&work).unwrap();
-
-        let git_cmd = GitCommand::new(true);
-        let mut sink = RecordingStageSink::default();
-        let Err(err) = execute(
-            &params("no-such-branch", tmp.path().join("wt"), true),
-            &git_cmd,
-            &work,
-            &mut sink,
-        ) else {
-            panic!("unknown branch must fail");
-        };
-        assert!(matches!(err, CheckoutError::BranchNotFound { .. }));
-        assert!(
-            sink.plan.is_some(),
-            "fetch on commits the plan before the probe can fail"
-        );
-    }
-
-    /// Morph-armed (`go --start` / autoStart) + fetch on + unknown branch:
-    /// the fetch runs under the planning face and no plan ever commits —
-    /// the face dissolves tracelessly and the morph's own rail is the only
-    /// rail (two rails + a Failed receipt on an exit-0 run otherwise).
+    /// Fetch on + unknown branch: the fetch runs under the planning face and
+    /// no plan ever commits — the face dissolves tracelessly, leaving the
+    /// morph / catalog hop / plain error to own the run's only output. A
+    /// committed plan here would close as a `Failed` receipt on a run that
+    /// goes on to succeed elsewhere, which is #782.
     #[test]
     #[serial]
     fn deferred_unknown_branch_commits_no_plan() {
@@ -1381,22 +1393,31 @@ mod timeline_tests {
 
         let git_cmd = GitCommand::new(true);
         let mut sink = RecordingStageSink::default();
-        let mut p = params("no-such-branch", tmp.path().join("wt"), true);
-        p.defer_plan_until_branch_known = true;
+        let p = params("no-such-branch", tmp.path().join("wt"), true);
         let Err(err) = execute(&p, &git_cmd, &work, &mut sink) else {
             panic!("unknown branch must fail");
         };
         assert!(matches!(err, CheckoutError::BranchNotFound { .. }));
+        // The refspec miss IS the answer here, not an incident: `daft go
+        // <other-repo>` must reach the catalog hop with clean output.
+        assert!(
+            !sink
+                .warnings
+                .iter()
+                .any(|w| w.contains("Failed to fetch specific branch")),
+            "a probe miss must stay quiet: {:?}",
+            sink.warnings
+        );
         assert!(
             sink.plan.is_none(),
-            "a morph-armed miss must leave no plan behind"
+            "a miss must leave no worktree-creation plan behind"
         );
     }
 
-    /// Morph-armed + fetch on + branch exists: the plan commits with the
-    /// already-done fetch leading it as a pre-completed row, and the
-    /// CheckOut row carries its provenance from the moment the plan
-    /// commits (no post-fetch `Note` needed).
+    /// Fetch on + branch exists: the plan commits with the already-done
+    /// fetch leading it as a pre-completed row, and the CheckOut row carries
+    /// its provenance from the moment the plan commits (no post-fetch `Note`
+    /// needed).
     #[test]
     #[serial]
     fn deferred_fetch_leads_the_plan_pre_completed() {
@@ -1417,8 +1438,7 @@ mod timeline_tests {
         let worktree_path = tmp.path().join("feat-z-wt");
         let git_cmd = GitCommand::new(true);
         let mut sink = RecordingStageSink::default();
-        let mut p = params("feat-z", worktree_path.clone(), true);
-        p.defer_plan_until_branch_known = true;
+        let p = params("feat-z", worktree_path.clone(), true);
         execute(&p, &git_cmd, &work, &mut sink).expect("checkout succeeds");
         assert!(worktree_path.exists());
 
@@ -1447,6 +1467,116 @@ mod timeline_tests {
                 .any(|(k, e)| k.id == StageId::CheckOut && matches!(e, StageEvent::Note(_))),
             "no post-fetch Note — the plan already carried the provenance: {:?}",
             sink.events
+        );
+        // The collapsed line is the only thing that can name the network work
+        // it is running (#782 review).
+        assert_eq!(
+            sink.resolve_phases,
+            vec!["Fetching origin".to_string()],
+            "the face names the fetch while it runs"
+        );
+    }
+
+    /// A resolution fetch whose remote is unreachable is nobody's expected
+    /// outcome: it warns, on every path and in every output mode. The
+    /// deferred fetch's compensating yellow row only exists once a plan
+    /// commits, and Plain / quiet / piped runs never commit one — so
+    /// suppressing this warning made an offline `daft go` completely silent
+    /// about the network while it checked out a stale local ref (#782 review).
+    #[test]
+    #[serial]
+    fn deferred_probe_warns_when_the_remote_is_unreachable() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(tmp.path(), &["clone", "-q", "origin", "work"]);
+        let work = tmp.path().join("work");
+        std::env::set_current_dir(&work).unwrap();
+        // A local-only branch, so the checkout succeeds on local refs while
+        // both fetch legs fail against a remote that isn't there.
+        git(&work, &["branch", "local-only"]);
+        git(
+            &work,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                &tmp.path().join("gone").display().to_string(),
+            ],
+        );
+
+        let worktree_path = tmp.path().join("local-only-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        execute(
+            &params("local-only", worktree_path.clone(), true),
+            &git_cmd,
+            &work,
+            &mut sink,
+        )
+        .expect("a local branch checks out without the remote");
+        assert!(worktree_path.exists());
+        assert!(
+            sink.warnings
+                .iter()
+                .any(|w| w.contains("Failed to fetch from remote 'origin'")),
+            "an unreachable remote must say so: {:?}",
+            sink.warnings
+        );
+    }
+
+    /// The branch-specific fetch failing on a name that IS a branch is an
+    /// incident, not the probe's answer — and the row it lands on resolves
+    /// green off the general fetch, which says nothing about this branch
+    /// failing to move. The warning is the only signal, so holding it back
+    /// left a green `✓ Fetched remote` over a stale ref (#782 review).
+    #[test]
+    #[serial]
+    fn deferred_probe_voices_the_branch_miss_once_the_branch_proves_real() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(&origin, &["checkout", "-q", "-b", "div"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "theirs"]);
+        git(&origin, &["checkout", "-q", "main"]);
+        git(tmp.path(), &["clone", "-q", "origin", "work"]);
+        let work = tmp.path().join("work");
+        std::env::set_current_dir(&work).unwrap();
+        // Local `div` diverges from `origin/div` (neither tip is the other's
+        // ancestor), so `git fetch origin div:div` is rejected non-fast-forward
+        // while the general fetch succeeds.
+        git(&work, &["commit", "--allow-empty", "-q", "-m", "mine"]);
+        git(&work, &["branch", "div"]);
+
+        let worktree_path = tmp.path().join("div-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        execute(
+            &params("div", worktree_path.clone(), true),
+            &git_cmd,
+            &work,
+            &mut sink,
+        )
+        .expect("a diverged branch still checks out");
+        assert!(worktree_path.exists());
+        assert!(
+            sink.warnings
+                .iter()
+                .any(|w| w.contains("Failed to fetch specific branch")),
+            "a real branch that could not be updated must say so: {:?}",
+            sink.warnings
         );
     }
 
@@ -1479,8 +1609,11 @@ mod timeline_tests {
     }
 
     fn forge_params(branch: &str, at: PathBuf, forge: ForgeCheckout) -> CheckoutParams {
-        // The command layer forces the fetch on for every forge target.
+        // The command layer forces the fetch on for every forge target, and
+        // never defers one: a forge miss is `Other` (the fork-ref fallback),
+        // never `BranchNotFound`, so its fetch is planned work (#782).
         let mut p = params(branch, at, true);
+        p.defer_plan_until_branch_known = false;
         p.forge = Some(forge);
         p
     }

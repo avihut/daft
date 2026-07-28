@@ -347,7 +347,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     let bare_elapsed = bare_started.elapsed();
 
     // The clone landed; the rest of the resolve span is branch work.
-    timeline.set_planning_label("Resolving branches");
+    timeline.set_planning_label(RESOLVING_BRANCHES);
 
     // Phase 2: Read daft.yml from the bare repo (if no --layout flag)
     let yaml_layout = if args.layout.is_none() && !bare_result.is_empty {
@@ -378,11 +378,11 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         timeline.abandon_planning();
         match maybe_prompt_layout_choice(output, "Clone cancelled. Nothing was changed.") {
             LayoutPromptResult::Chosen(layout) => {
-                timeline.open_planning();
+                reopen_resolving(&mut timeline);
                 Some(layout)
             }
             LayoutPromptResult::Default => {
-                timeline.open_planning();
+                reopen_resolving(&mut timeline);
                 None
             }
             LayoutPromptResult::Cancelled => {
@@ -840,6 +840,21 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     }
 
     Ok(())
+}
+
+/// The collapsed face's copy for everything after the bare clone lands.
+const RESOLVING_BRANCHES: &str = "Resolving branches";
+
+/// Reopen the planning face on the phase it stepped aside from.
+///
+/// `open_planning` seeds the face's text from the region header (`Cloning
+/// <repo>`), which by this point names work that finished before the prompt
+/// — so the label has to be re-applied, or the face advertises the clone for
+/// the whole branch-resolve span and a slow resolve reads as a hung network
+/// clone (#782 review).
+fn reopen_resolving(timeline: &mut Timeline) {
+    timeline.open_planning();
+    timeline.set_planning_label(RESOLVING_BRANCHES);
 }
 
 /// Close the live rail as a failure before propagating `e`: an ordinary

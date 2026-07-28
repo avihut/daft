@@ -351,6 +351,10 @@ impl ProgressSink for TimelineSink<'_> {
         route_step(self.output, self.timeline, msg);
     }
 
+    fn on_resolve_phase(&mut self, phase: &str) {
+        self.timeline.set_planning_label(phase);
+    }
+
     fn on_warning(&mut self, msg: &str) {
         route_warning(self.output, self.timeline, msg);
     }
@@ -420,6 +424,10 @@ impl<'a> TimelineBridge<'a> {
 impl ProgressSink for TimelineBridge<'_> {
     fn on_step(&mut self, msg: &str) {
         route_step(self.output, self.timeline, msg);
+    }
+
+    fn on_resolve_phase(&mut self, phase: &str) {
+        self.timeline.set_planning_label(phase);
     }
 
     fn on_warning(&mut self, msg: &str) {
