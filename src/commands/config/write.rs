@@ -160,6 +160,39 @@ fn check_writable(spec: &SettingSpec, scope: WriteScope) -> Result<()> {
     Ok(())
 }
 
+/// Refuse a value that would loosen a policy an overlay may only tighten.
+///
+/// The merge-gate keys are the case: a repository commits `merge.ff: only` as
+/// a boundary, and an untracked `daft.local.yml` that could switch it off
+/// would not be a boundary at all. Their types carry a single variant for
+/// exactly this reason, so the check is that the value is *that* variant —
+/// anything else is someone trying to relax a gate through the back door.
+fn check_tightening(spec: &SettingSpec, value: &str) -> Result<()> {
+    let Backend::DaftYml {
+        tighten_only: true,
+        path,
+    } = spec.backend
+    else {
+        return Ok(());
+    };
+
+    let allowed: Vec<&str> = spec
+        .ty
+        .variants()
+        .map(|variants| variants.iter().map(|(v, _)| *v).collect())
+        .unwrap_or_default();
+
+    if allowed.iter().any(|v| v.eq_ignore_ascii_case(value)) {
+        return Ok(());
+    }
+
+    bail!(
+        "{path} is a merge-gate policy — it can only be tightened, to {}. \
+         Relaxing it is a per-invocation decision, not a config change.",
+        allowed.join(" or ")
+    )
+}
+
 /// Set `spec` to `raw` at `scope`, returning the line to narrate.
 ///
 /// `config` supplies the rest of the configuration to any cross-key rule —
@@ -176,6 +209,7 @@ pub fn set(
     if let Err(reason) = spec.ty.validate(&value) {
         bail!("{}: {reason}", spec.key);
     }
+    check_tightening(spec, &value)?;
     if let Some(validate) = spec.validate
         && let Err(reason) = validate(config, &value)
     {
@@ -328,6 +362,48 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("remove-branch"), "unhelpful: {err}");
+    }
+
+    #[test]
+    fn a_merge_gate_can_be_tightened_but_not_relaxed() {
+        // The gate keys carry one variant precisely so an overlay cannot
+        // switch them off. The check has to consult `tighten_only`, not just
+        // the type — the type would accept "only" at either file, and the
+        // point is that "off" is not a value at all.
+        let spec = find("merge.ff").unwrap();
+
+        // The tightening value passes both checks and then fails on the
+        // backend, which is what tells us it got that far.
+        let err = set(&spec, WriteScope::Local, "only", &empty_config())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("daft.yml"),
+            "tightening should reach the writer: {err}"
+        );
+
+        // Anything else is refused. Today the type gets there first, because
+        // these enums carry one variant for exactly this reason.
+        assert!(set(&spec, WriteScope::Local, "off", &empty_config()).is_err());
+
+        // And the policy check stands behind it, so widening the enum later
+        // cannot quietly make a gate relaxable.
+        assert!(check_tightening(&spec, "only").is_ok());
+        let err = check_tightening(&spec, "any").unwrap_err().to_string();
+        assert!(err.contains("only be tightened"), "unhelpful: {err}");
+        assert!(err.contains("merge.ff"), "the message names the policy");
+    }
+
+    #[test]
+    fn an_ordinary_yml_row_has_no_tightening_rule() {
+        let spec = find("log.retention").unwrap();
+        let err = set(&spec, WriteScope::Local, "14d", &empty_config())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("daft.yml") && !err.contains("tightened"),
+            "unhelpful: {err}"
+        );
     }
 
     #[test]

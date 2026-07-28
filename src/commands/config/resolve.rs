@@ -356,6 +356,10 @@ pub struct ResolvedSet {
     /// mis-cased subsection is a different key to git and silently does
     /// nothing.
     pub unrecognized: Vec<ConfigEntry>,
+    /// The layout chain this was resolved against, carried through so a
+    /// caller can reuse it rather than re-walking the filesystem for a write
+    /// that cannot have moved it.
+    pub layout_rungs: Option<LayoutRungs>,
 }
 
 impl ResolvedSet {
@@ -515,6 +519,7 @@ pub fn resolve_all(snapshot: &Snapshot) -> ResolvedSet {
 
     ResolvedSet {
         unrecognized: unrecognized_entries(snapshot, &specs),
+        layout_rungs: snapshot.layout.clone(),
         settings,
     }
 }

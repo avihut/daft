@@ -117,7 +117,7 @@ fn perform(state: &mut ScreenState, apply: Apply) {
             // Re-read rather than patching the row in place: a write can move
             // which layer wins for *other* settings too, and a stale ladder is
             // the one thing this screen cannot afford to show.
-            match reload(state) {
+            match reload(state, &apply) {
                 Ok(()) => state.set_status(narration, StatusKind::Success),
                 Err(error) => state.set_status(
                     format!("{narration}, but re-reading the config failed: {error}"),
@@ -135,12 +135,37 @@ fn perform(state: &mut ScreenState, apply: Apply) {
     }
 }
 
-fn reload(state: &mut ScreenState) -> Result<()> {
-    let snapshot = if state.in_repo {
+fn reload(state: &mut ScreenState, applied: &Apply) -> Result<()> {
+    let mut snapshot = if state.in_repo {
         Snapshot::capture(&GitCommand::new(false))?
     } else {
         Snapshot::capture_global_only()?
     };
+
+    // Capturing the layout chain walks the filesystem to detect where
+    // worktrees are. Only a layout write can change what it says, so every
+    // other write — a `space` toggle included — keeps the chain it already
+    // had rather than paying for a walk that cannot return anything new.
+    if !touches_layout(applied)
+        && let Some(previous) = previous_layout(state)
+    {
+        snapshot.layout = Some(previous);
+    }
+
     state.reload(resolve::resolve_all(&snapshot));
     Ok(())
+}
+
+fn touches_layout(applied: &Apply) -> bool {
+    let key = match applied {
+        Apply::Set { key, .. } | Apply::Unset { key, .. } => key,
+    };
+    resolve::lookup(key)
+        .map(|spec| spec.backend == crate::core::settings_spec::Backend::LayoutChain)
+        .unwrap_or(true)
+}
+
+/// The layout chain the screen is currently showing, rebuilt from its rungs.
+fn previous_layout(state: &ScreenState) -> Option<resolve::LayoutRungs> {
+    state.config.layout_rungs.clone()
 }
