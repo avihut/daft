@@ -1,0 +1,102 @@
+name: Creation copies from the worktree you ran from, not the default branch
+description: >
+  Which worktree the cache comes from is a decision the creation stage makes
+  silently, and every other creation scenario is run from the default-branch
+  worktree — where "the worktree you ran from" and "the default branch's
+  worktree" are the same directory, so no assertion in the suite could tell the
+  two apart (#387). `daft warm` is the surface where they visibly differ: its
+  default source is the DEFAULT BRANCH's worktree, and `warm-from` pins that.
+  Creation's rule is the other one — the source is wherever you stand — and it
+  matters most to the person who works out of a long-lived feature worktree and
+  branches off it all day. Its caches are the warm ones; main's may be months
+  stale or absent.
+
+  So the fixture makes the two answers distinguishable: main and develop hold
+  the same declared entry with different contents, and a branch is started from
+  inside develop. The copied cache identifies its origin. It also pins the
+  config's origin, which travels with the same decision: the section is read
+  from the source worktree, so a `copy:` regression that re-rooted either the
+  read or the copy at the default branch fails here and nowhere else.
+
+repos:
+  - name: copy-origin
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-origin"
+          - path: .gitignore
+            content: |
+              cache/
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+    daft_yml: |
+      copy:
+        - cache/
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_ORIGIN
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-origin/main"
+
+  - name: Build a cache in main that says where it came from
+    # `set -e`: step bodies run under `bash -c` with no errexit, so without it
+    # only the last command's status is reported.
+    run: |
+      set -e
+      mkdir -p cache
+      printf 'from-main\n' > cache/who.txt
+      git check-ignore cache
+    cwd: "$WORK_DIR/copy-origin/main"
+    expect:
+      exit_code: 0
+
+  - name: Check out develop from main — it inherits main's cache
+    run: daft go develop 2>&1
+    cwd: "$WORK_DIR/copy-origin/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/copy-origin/develop/cache/who.txt"
+          content: "from-main"
+
+  - name: Rebuild develop's cache so the two worktrees now disagree
+    run: |
+      set -e
+      printf 'from-develop\n' > cache/who.txt
+      test -f "$WORK_DIR/copy-origin/main/cache/who.txt"
+    cwd: "$WORK_DIR/copy-origin/develop"
+    expect:
+      exit_code: 0
+
+  - name: Starting a branch from develop copies DEVELOP's cache
+    run: daft start feat-origin 2>&1
+    cwd: "$WORK_DIR/copy-origin/develop"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Copied cache"
+      files_exist:
+        - "$WORK_DIR/copy-origin/feat-origin/cache/who.txt"
+      file_contains:
+        - path: "$WORK_DIR/copy-origin/feat-origin/cache/who.txt"
+          content: "from-develop"
+      file_not_contains:
+        - path: "$WORK_DIR/copy-origin/feat-origin/cache/who.txt"
+          content: "from-main"
+
+  - name: Neither existing worktree's cache was disturbed
+    run: "true"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/copy-origin/main/cache/who.txt"
+          content: "from-main"
+        - path: "$WORK_DIR/copy-origin/develop/cache/who.txt"
+          content: "from-develop"
