@@ -20,6 +20,7 @@ pub mod remote;
 pub mod repo;
 pub mod repo_identity;
 pub mod settings;
+pub mod settings_spec;
 pub mod shared;
 pub mod size_walk;
 pub mod sort;

@@ -262,9 +262,22 @@ pub fn repo_forge_capable(git: &GitCommand) -> bool {
     names_a_forge(platform.as_deref(), &remote_forge_hosts(git))
 }
 
+/// Accepted `daft.forge.platform` values, each with a one-phrase gloss.
+///
+/// The single source of truth for which platforms the override may name:
+/// [`names_a_forge`] matches against it and the settings registry offers it
+/// as the key's value set.
+pub const PLATFORM_VARIANTS: &[(&str, &str)] = &[
+    ("github", "force GitHub (gh)"),
+    ("gitlab", "force GitLab (glab)"),
+];
+
 /// Pure core of [`repo_forge_capable`].
 fn names_a_forge(platform: Option<&str>, hosts: &[String]) -> bool {
-    if platform.is_some_and(|p| matches!(p.to_ascii_lowercase().as_str(), "github" | "gitlab")) {
+    if platform.is_some_and(|p| {
+        let p = p.to_ascii_lowercase();
+        PLATFORM_VARIANTS.iter().any(|(value, _)| *value == p)
+    }) {
         return true;
     }
     hosts

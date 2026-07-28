@@ -88,6 +88,14 @@ impl PruneCdTarget {
             _ => None,
         }
     }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("root", "the repository root"),
+            ("default-branch", "the default branch's worktree"),
+        ]
+    }
 }
 
 /// When a daft-initiated push consults the repo's `pre-push` hook.
@@ -121,6 +129,15 @@ impl PushVerify {
             _ => None,
         }
     }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("auto", "skip pre-push hooks for provably ref-only pushes"),
+            ("always", "run pre-push hooks on every push"),
+            ("never", "never run pre-push hooks from daft"),
+        ]
+    }
 }
 
 /// How `daft start --fork` names the sandboxes it mints (#53).
@@ -142,6 +159,14 @@ impl ForkNaming {
             "memorable" => Some(Self::Memorable),
             _ => None,
         }
+    }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("derived", "derive the name from the base branch"),
+            ("memorable", "random memorable names (brave-otter)"),
+        ]
     }
 }
 
@@ -166,6 +191,14 @@ impl PushHookStrategy {
             _ => None,
         }
     }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("per-branch", "run pre-push hooks once per branch"),
+            ("batched", "batch every branch into one hook run"),
+        ]
+    }
 }
 
 /// Whether the sync push resource governor is active (#678).
@@ -186,6 +219,15 @@ impl GovernorMode {
             "off" => Some(Self::Off),
             _ => None,
         }
+    }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    ///
+    /// The gloss stays generic because two settings share this type
+    /// (`daft.governor.mode` and `daft.governor.jobserver`) — what `auto`
+    /// actually turns on is the *setting's* help, not the variant's.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[("auto", "daft manages it"), ("off", "disabled")]
     }
 }
 
@@ -1435,12 +1477,8 @@ fn load_merge_settings(git: &GitCommand, settings: &mut DaftSettings) -> Result<
     }
 
     if let Some(value) = git.config_get(keys::MERGE_ADOPT_TARGET_ON_DEMAND)? {
-        settings.merge_adopt_target_on_demand = match value.as_str() {
-            "prompt" => AdoptPreset::Prompt,
-            "yes" => AdoptPreset::Yes,
-            "no" => AdoptPreset::No,
-            _ => defaults::MERGE_ADOPT_TARGET_ON_DEMAND,
-        };
+        settings.merge_adopt_target_on_demand =
+            AdoptPreset::parse(&value).unwrap_or(defaults::MERGE_ADOPT_TARGET_ON_DEMAND);
     }
 
     if let Some(value) = git.config_get(keys::MERGE_REQUIRE_CLEAN_TARGET)? {

@@ -275,6 +275,22 @@ impl FailMode {
             _ => None,
         }
     }
+
+    /// The canonical spelling, as written to git config / `daft.yml`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FailMode::Abort => "abort",
+            FailMode::Warn => "warn",
+        }
+    }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("abort", "a failing hook aborts the operation"),
+            ("warn", "report the failure and continue"),
+        ]
+    }
 }
 
 impl<'de> Deserialize<'de> for FailMode {
