@@ -1429,7 +1429,11 @@ fn replicate(src: &Path, dst: &Path) -> Result<crate::cow_copy::CopyStats> {
 
 #[cfg(unix)]
 fn replicate_symlink(src: &Path, dst: &Path) -> Result<()> {
-    let link = fs::read_link(src).with_context(|| format!("reading symlink {}", src.display()))?;
+    // The entry IS the link, so its "copied tree" is the link itself and any
+    // target at all is outside it: a relative `.venv -> ../.venvs/proj` gets
+    // re-based onto the destination's depth rather than copied verbatim into a
+    // dangling one. See `cow_copy::rebased_link_target`.
+    let link = crate::cow_copy::rebased_link_target(src, dst, src)?;
     std::os::unix::fs::symlink(link, dst)
         .with_context(|| format!("creating symlink {}", dst.display()))
 }
@@ -2469,9 +2473,16 @@ mod tests {
         {
             // Recreated, not dereferenced: a cache that *is* a link stays one.
             assert!(target.join("link").is_symlink());
+            // And it still resolves. `real/` lives outside the copied entry
+            // (the entry is the link), so the text is re-based onto the
+            // destination's position rather than copied verbatim into a
+            // dangling link. Resolution is the invariant; the exact text is
+            // whatever reaching the same target requires.
             assert_eq!(
-                fs::read_link(target.join("link")).unwrap(),
-                Path::new("real")
+                fs::read(target.join("link/inner")).unwrap(),
+                b"inner",
+                "the link resolves to the same tree, via {:?}",
+                fs::read_link(target.join("link")).unwrap()
             );
         }
     }
@@ -4078,6 +4089,88 @@ mod tests {
         assert!(
             detail.contains("drop the leading '/'") && detail.contains("write 'var'"),
             "the refusal has to carry the fix: {detail}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_entry_that_is_an_escaping_link_is_rebased_onto_the_destination() {
+        // A `.venv -> ../.venvs/proj` entry copied verbatim resolves from the
+        // source's depth and dangles from the destination's. daft's own
+        // contained layout produces exactly that pair of depths.
+        let tmp = TempDir::new().unwrap();
+        write(&tmp.path().join(".venvs/proj/bin/python"), b"#!");
+        let source = tmp.path().join("main");
+        let target = tmp.path().join("feature/login");
+        for root in [&source, &target] {
+            fs::create_dir_all(root).unwrap();
+            let out = crate::utils::git_command_at(root)
+                .args(["init", "-q", "-b", "main"])
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            write(&root.join(".gitignore"), b"/.venv\n");
+        }
+        std::os::unix::fs::symlink("../.venvs/proj", source.join(".venv")).unwrap();
+        assert!(source.join(".venv/bin/python").exists(), "fixture premise");
+
+        let result = run(&source, &target, &config(&[".venv"]));
+
+        assert!(
+            matches!(result.outcomes.as_slice(), [CopyOutcome::Copied { .. }]),
+            "{:?}",
+            result.outcomes
+        );
+        assert!(
+            target.join(".venv").is_symlink(),
+            "still a link, not a copy"
+        );
+        assert!(
+            target.join(".venv/bin/python").exists(),
+            "the link must reach the same interpreter from its new depth, got {:?}",
+            fs::read_link(target.join(".venv")).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn force_replacing_a_shared_link_leaves_one_that_still_resolves() {
+        // The `shared:` + `copy:` double declaration. The shared stage links
+        // the path into both worktrees; `warm --force` then replaces the
+        // target's correct link with a copy of the source's text — which,
+        // between worktrees at different depths, dangles. It was reported
+        // `✓ 0 B · reflinked`: a green row over a broken link.
+        let tmp = TempDir::new().unwrap();
+        let shared = tmp.path().join(".git/.daft/shared");
+        write(&shared.join(".env"), b"SECRET=1");
+        let source = tmp.path().join("main");
+        let target = tmp.path().join("feature/login");
+        for root in [&source, &target] {
+            fs::create_dir_all(root).unwrap();
+            let out = crate::utils::git_command_at(root)
+                .args(["init", "-q", "-b", "main"])
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            write(&root.join(".gitignore"), b"/.env\n");
+        }
+        // Each worktree's own correct relative link to the shared file.
+        std::os::unix::fs::symlink("../.git/.daft/shared/.env", source.join(".env")).unwrap();
+        std::os::unix::fs::symlink("../../.git/.daft/shared/.env", target.join(".env")).unwrap();
+        assert_eq!(fs::read(target.join(".env")).unwrap(), b"SECRET=1");
+
+        let result = copy_entries(&source, &target, &config(&[".env"]), true, &mut NullSink);
+
+        assert!(
+            matches!(result.outcomes.as_slice(), [CopyOutcome::Copied { .. }]),
+            "{:?}",
+            result.outcomes
+        );
+        assert_eq!(
+            fs::read(target.join(".env")).unwrap(),
+            b"SECRET=1",
+            "the replacement link must still reach the shared file, got {:?}",
+            fs::read_link(target.join(".env")).unwrap()
         );
     }
 

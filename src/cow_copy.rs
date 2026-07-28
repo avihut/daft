@@ -45,6 +45,96 @@ impl CopyStats {
     }
 }
 
+/// The link text to write at `dst_link` for the symlink at `src_link`, when the
+/// tree rooted at `entry_root` is being copied.
+///
+/// Copying relative link text verbatim only works while the link and its target
+/// move together. They do not when the target sits **outside** the copied tree:
+/// `.venv -> ../.venvs/proj` is correct from `repo/main` and dangles from
+/// `repo/feature/login`, and daft's own contained layout puts worktrees at
+/// exactly those differing depths. The same shape is how a path declared in
+/// both `shared:` and `copy:` loses its shared link under `warm --force` —
+/// the correct link is replaced by a dangling one and reported as a clean copy.
+///
+/// So: a relative link resolving outside `entry_root` is rewritten to reach the
+/// **same resolved target** from its new position. Everything else is left
+/// alone, and deliberately:
+///
+/// * a link resolving **inside** the copied tree keeps its text — its base
+///   moved with it, and rewriting would point the copy back at the original;
+/// * an **absolute** link is already position-independent;
+/// * a link whose target does not exist replicates **verbatim** — the source
+///   is already broken, and inventing a path would fabricate a target the user
+///   never had. Preserved garbage beats invented meaning.
+///
+/// Resolution is **lexical**: `..` is folded textually rather than by walking
+/// the filesystem, because resolving for real would follow the very symlinks
+/// this is reasoning about. An intermediate symlinked component can therefore
+/// classify as inside when the kernel would land outside; the failure mode is a
+/// link left verbatim, which is what the old code did for every link.
+pub fn rebased_link_target(src_link: &Path, dst_link: &Path, entry_root: &Path) -> Result<PathBuf> {
+    let text = fs::read_link(src_link)
+        .with_context(|| format!("reading symlink {}", src_link.display()))?;
+    if text.is_absolute() {
+        return Ok(text);
+    }
+
+    let src_dir = src_link.parent().unwrap_or(Path::new("/"));
+    let resolved = lexically_normalize(&src_dir.join(&text));
+    let root = lexically_normalize(entry_root);
+    if resolved.starts_with(&root) || fs::symlink_metadata(&resolved).is_err() {
+        return Ok(text);
+    }
+
+    let dst_dir = lexically_normalize(dst_link.parent().unwrap_or(Path::new("/")));
+    Ok(relative_path_from(&dst_dir, &resolved))
+}
+
+/// Fold `.` and `..` out of a path textually, without touching the filesystem.
+fn lexically_normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            // `..` above the root is the root, matching how the kernel treats
+            // it; `..` above a relative path's start has to be kept.
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The relative path from `from_dir` to `to`, both already normalized.
+fn relative_path_from(from_dir: &Path, to: &Path) -> PathBuf {
+    let from: Vec<_> = from_dir.components().collect();
+    let to_parts: Vec<_> = to.components().collect();
+    let shared = from
+        .iter()
+        .zip(&to_parts)
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let mut rel = PathBuf::new();
+    for _ in shared..from.len() {
+        rel.push("..");
+    }
+    for component in &to_parts[shared..] {
+        rel.push(component);
+    }
+    // Same directory: a link needs a body, and `.` is the one that means here.
+    if rel.as_os_str().is_empty() {
+        rel.push(".");
+    }
+    rel
+}
+
 /// Copy a regular file from `src` to `dst`, using reflink where supported
 /// and a byte copy otherwise. Preserves mode bits.
 ///
@@ -135,8 +225,10 @@ pub fn copy_dir_reporting(src: &Path, dst: &Path) -> Result<CopyStats> {
         } else if ftype.is_symlink() {
             #[cfg(unix)]
             {
-                let target = fs::read_link(entry.path())
-                    .with_context(|| format!("reading symlink {}", entry.path().display()))?;
+                // `src` is the copied tree's root: a link pointing within it
+                // keeps its text, one escaping it is re-based on the new
+                // position. See `rebased_link_target`.
+                let target = rebased_link_target(entry.path(), &dst_path, src)?;
                 std::os::unix::fs::symlink(target, &dst_path)
                     .with_context(|| format!("creating symlink {}", dst_path.display()))?;
             }
@@ -267,6 +359,102 @@ mod tests {
         assert_eq!(
             fs::read_link(dst.join("link.txt")).unwrap(),
             Path::new("target.txt")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_rebases_a_link_that_escapes_the_copied_tree() {
+        // The depth-differing case, which daft's own contained layout produces:
+        // `repo/main` and `repo/feature/login` are not siblings, so verbatim
+        // link text that resolves from one dangles from the other.
+        let tmp = TempDir::new().unwrap();
+        write_file(&tmp.path().join(".venvs/proj/bin/python"), b"#!");
+        let src = tmp.path().join("main/cache");
+        let dst = tmp.path().join("feature/login/cache");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        // From `main/cache/`, `../../.venvs/proj` is `<tmp>/.venvs/proj`.
+        symlink("../../.venvs/proj", src.join("venv")).unwrap();
+
+        copy_dir(&src, &dst).unwrap();
+
+        assert_ne!(
+            fs::read_link(dst.join("venv")).unwrap(),
+            Path::new("../../.venvs/proj"),
+            "verbatim text cannot resolve from a different depth"
+        );
+        assert!(
+            dst.join("venv/bin/python").exists(),
+            "the copy must reach the same target: {:?}",
+            fs::read_link(dst.join("venv")).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_leaves_links_that_stay_inside_the_copied_tree_alone() {
+        // The pnpm/node_modules shape. These links' base moved with them, so
+        // rewriting would point the copy back at the original tree.
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        write_file(&src.join("pkg/bin/tool"), b"#!");
+        fs::create_dir_all(src.join(".bin")).unwrap();
+        symlink("../pkg/bin/tool", src.join(".bin/tool")).unwrap();
+
+        copy_dir(&src, &dst).unwrap();
+
+        assert_eq!(
+            fs::read_link(dst.join(".bin/tool")).unwrap(),
+            Path::new("../pkg/bin/tool"),
+            "an inside link keeps its text"
+        );
+        assert!(dst.join(".bin/tool").exists());
+        // And it points at the COPY, not back at the source.
+        write_file(&src.join("pkg/bin/tool"), b"MUTATED");
+        assert_eq!(fs::read(dst.join(".bin/tool")).unwrap(), b"#!");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_preserves_absolute_and_dangling_links_verbatim() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        fs::create_dir_all(&src).unwrap();
+        let absolute = tmp.path().join("elsewhere");
+        write_file(&absolute, b"x");
+        symlink(&absolute, src.join("abs")).unwrap();
+        // Already broken at the source: inventing a target would fabricate one
+        // the user never had.
+        symlink("../nowhere/at/all", src.join("dangling")).unwrap();
+
+        copy_dir(&src, &dst).unwrap();
+
+        assert_eq!(fs::read_link(dst.join("abs")).unwrap(), absolute);
+        assert_eq!(
+            fs::read_link(dst.join("dangling")).unwrap(),
+            Path::new("../nowhere/at/all")
+        );
+    }
+
+    #[test]
+    fn rebasing_is_lexical_and_never_walks_the_filesystem() {
+        // The path math on its own, including the same-directory case a link
+        // body cannot express as the empty string.
+        assert_eq!(
+            lexically_normalize(Path::new("/a/b/../c/./d")),
+            Path::new("/a/c/d")
+        );
+        assert_eq!(lexically_normalize(Path::new("/../..")), Path::new("/"));
+        assert_eq!(
+            relative_path_from(Path::new("/a/b/c"), Path::new("/a/x")),
+            Path::new("../../x")
+        );
+        assert_eq!(
+            relative_path_from(Path::new("/a/b"), Path::new("/a/b")),
+            Path::new(".")
         );
     }
 
