@@ -963,6 +963,48 @@ DRIVE_EOS
 }
 
 # Main test execution
+# Test: config key/value completion comes from the registry
+test_config_key_and_value_completion() {
+    run_test "daft config completes registry keys and their values"
+
+    # Registry-only: no repository needed, which is the point — this fires on
+    # every Tab and must not open anything.
+    local keys
+    keys=$("$DAFT_BIN" __complete config-key "daft.merge.st" 2>&1)
+    if [[ "$keys" != *"daft.merge.style"* ]]; then
+        fail_test "config-key did not offer daft.merge.style; got: $keys"
+        return
+    fi
+
+    # The key travels by env because the __complete protocol carries only the
+    # word under the cursor.
+    local values
+    values=$(DAFT_COMPLETE_CONFIG_KEY=daft.merge.style "$DAFT_BIN" __complete config-value "" 2>&1)
+    if [[ "$values" != *"squash"* ]] || [[ "$values" != *"rebase-merge"* ]]; then
+        fail_test "config-value did not offer the enum variants; got: $values"
+        return
+    fi
+
+    # A mis-cased subsection is a different key to git, so it must complete
+    # nothing rather than guess at the real row.
+    local wrong
+    wrong=$(DAFT_COMPLETE_CONFIG_KEY=daft.MERGE.style "$DAFT_BIN" __complete config-value "" 2>&1)
+    if [[ -n "$wrong" ]]; then
+        fail_test "A mis-cased subsection completed values; got: $wrong"
+        return
+    fi
+
+    # No key in the environment at all: nothing, not a crash.
+    local none
+    none=$("$DAFT_BIN" __complete config-value "" 2>&1)
+    if [[ -n "$none" ]]; then
+        fail_test "config-value invented completions with no key; got: $none"
+        return
+    fi
+
+    pass_test
+}
+
 main() {
     echo "========================================="
     echo "Shell Completions Integration Tests"
@@ -1007,6 +1049,7 @@ main() {
     test_zsh_completion_generation
     test_fish_completion_generation
     test_dynamic_branch_completion
+    test_config_key_and_value_completion
     test_repo_name_completion_case_insensitive
     test_start_repo_positional_completion
     test_remove_repo_flag_completion

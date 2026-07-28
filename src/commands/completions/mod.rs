@@ -1095,6 +1095,63 @@ mod tests {
     /// `daft repo remove --repo <name>` / `--keep-files`: the repo-verb
     /// sections of the umbrella completions are hardcoded per shell, so a
     /// new flag must land in all three (fig has its own spec test).
+    /// Every shell offers the same `daft config` verbs, and each completes
+    /// keys from the registry rather than a hardcoded list.
+    ///
+    /// The verb list lives in four places by necessity (three shell scripts
+    /// plus the Fig spec) and `DAFT_CONFIG_SUBCOMMANDS` is the fifth. This is
+    /// what stops a new verb from completing in one shell and not the others.
+    #[test]
+    fn config_verbs_and_keys_complete_in_all_shells() {
+        let zsh = zsh::DAFT_ZSH_COMPLETIONS;
+        let bash = bash::DAFT_BASH_COMPLETIONS;
+        let fish = fish::generate_daft_fish_completions();
+        let fig = fig::generate_fig_daft_spec().expect("fig spec generates");
+
+        // The umbrella scripts list the verbs inline; they must be the same
+        // list `DAFT_CONFIG_SUBCOMMANDS` holds, in the same order.
+        let inline = crate::suggest::DAFT_CONFIG_SUBCOMMANDS.join(" ");
+        assert!(
+            zsh.contains(&format!("compadd {inline}")),
+            "zsh must offer exactly the config verbs"
+        );
+        assert!(
+            bash.contains(&inline),
+            "bash must offer exactly the config verbs"
+        );
+
+        for verb in crate::suggest::DAFT_CONFIG_SUBCOMMANDS {
+            assert!(
+                fish.contains(&format!("-f -a '{verb}'")),
+                "fish must offer the config verb {verb}"
+            );
+            assert!(
+                fig.contains(&format!("\"{verb}\"")),
+                "the fig spec must offer the config verb {verb}"
+            );
+        }
+
+        // Keys come from the registry through `__complete`, never a literal
+        // list — that is the whole point of the registry existing.
+        for (shell, script) in [("zsh", zsh), ("bash", bash), ("fish", fish.as_str())] {
+            assert!(
+                script.contains("daft __complete config-key"),
+                "{shell} must complete config keys from the registry"
+            );
+            assert!(
+                script.contains("DAFT_COMPLETE_CONFIG_KEY="),
+                "{shell} must hand the typed key to the value completer — the \
+                 __complete protocol carries only the word under the cursor"
+            );
+            assert!(
+                script.contains("daft __complete config-value"),
+                "{shell} must complete config values"
+            );
+        }
+
+        assert!(fig.contains("config-key") && fig.contains("config-value"));
+    }
+
     #[test]
     fn repo_remove_completes_repo_flag_and_keep_files_in_all_shells() {
         let zsh = zsh::DAFT_ZSH_COMPLETIONS;

@@ -261,6 +261,14 @@ fn complete(
             complete_layouts(word)
         }
 
+        // config get/set/unset <KEY>: every setting in the registry.
+        ("config-key", _) => complete_config_keys(word),
+
+        // config set <KEY> <VALUE>: the values that key accepts. The key
+        // travels in DAFT_COMPLETE_CONFIG_KEY because the __complete protocol
+        // carries only the word under the cursor.
+        ("config-value", _) => complete_config_values(word),
+
         // shared-files: complete declared shared file paths from daft.yml
         ("shared-files", _) => complete_shared_files(word),
 
@@ -298,6 +306,53 @@ fn complete(
 // ---------------------------------------------------------------------------
 // Gitoxide helpers — repo discovery and time formatting
 // ---------------------------------------------------------------------------
+
+/// Every setting key, with its one-line help.
+///
+/// The registry and nothing else: no config read, no repo discovery, no
+/// subprocess. This runs on every Tab, and answering "which settings exist" has
+/// never needed to open anything.
+fn complete_config_keys(prefix: &str) -> Result<Vec<String>> {
+    Ok(crate::core::settings_spec::all_specs()
+        .into_iter()
+        .filter(|spec| spec.key.starts_with(prefix))
+        .map(|spec| format!("{}\t{}", spec.key, spec.help))
+        .collect())
+}
+
+/// The values the already-typed key accepts.
+///
+/// Closed-vocabulary types offer their variants with the gloss; everything else
+/// offers its default, which is the value most people are reaching for when
+/// they Tab at an empty slot. An unknown or absent key completes nothing rather
+/// than guessing.
+fn complete_config_values(prefix: &str) -> Result<Vec<String>> {
+    let Ok(key) = std::env::var("DAFT_COMPLETE_CONFIG_KEY") else {
+        return Ok(vec![]);
+    };
+    // Git-aware matching, so a key the user typed in a different case still
+    // finds its row — the same rule `daft config set` resolves through.
+    let Ok(spec) = crate::commands::config::resolve::lookup(&key) else {
+        return Ok(vec![]);
+    };
+
+    let entries: Vec<String> = match spec.ty.variants() {
+        Some(variants) => variants
+            .iter()
+            .map(|(value, gloss)| format!("{value}\t{gloss}"))
+            .collect(),
+        None => spec
+            .default
+            .value()
+            .map(|value| vec![format!("{value}\tthe default")])
+            .unwrap_or_default(),
+    };
+
+    Ok(entries
+        .into_iter()
+        .filter(|entry| entry.starts_with(prefix))
+        .collect())
+}
 
 /// Discover the git repository from the current working directory via gitoxide.
 /// This avoids spawning a subprocess and reuses the in-process gix object cache.
@@ -2571,6 +2626,37 @@ pub(crate) fn format_rich_completions(entries: &[CompletionEntry]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Config-key completion is the whole registry and nothing else.
+    ///
+    /// It must stay a pure table lookup: this runs on every Tab, and reaching
+    /// for the resolver — which does gitoxide discovery — would put a repo
+    /// open on the keystroke path.
+    #[test]
+    fn config_key_completion_offers_every_setting() {
+        let all = complete_config_keys("").unwrap();
+        assert_eq!(all.len(), crate::core::settings_spec::all_specs().len());
+
+        // The prefix is carved off a real key rather than typed out: it cannot
+        // drift from the registry, and a key-shaped literal here would owe the
+        // drift gate a row it is not.
+        let key = crate::core::settings::keys::MERGE_STYLE;
+        let prefix = &key[..key.len() - "yle".len()];
+
+        let merge = complete_config_keys(prefix).unwrap();
+        assert!(merge.iter().any(|e| e.starts_with(&format!("{key}\t"))));
+        assert!(merge.iter().all(|e| e.starts_with(prefix)));
+        assert!(
+            merge.iter().all(|e| e.contains('\t')),
+            "each entry carries its help after a tab"
+        );
+
+        assert!(
+            complete_config_keys("daft.nothing-like-this")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     use super::*;
 
     #[test]

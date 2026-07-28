@@ -1016,9 +1016,56 @@ _daft() {
         return
     fi
 
-    # config: complete subcommands
-    if (( CURRENT == 3 )) && [[ "$words[2]" == "config" ]]; then
-        compadd remote-sync
+    # config: subcommands, then registry keys and the values they accept
+    if [[ "$words[2]" == "config" ]]; then
+        if (( CURRENT == 3 )); then
+            compadd get list remote-sync set unset
+            return
+        fi
+        local config_sub="$words[3]"
+        case "$config_sub" in
+            get|set|unset)
+                if [[ "$curword" == -* ]]; then
+                    if [[ "$config_sub" == "get" ]]; then
+                        compadd -- --origin -h --help
+                    else
+                        compadd -- --global -h --help
+                    fi
+                    return
+                fi
+                # Count positionals after the verb so the key slot and the
+                # value slot complete against different things.
+                local -i cfg_pos=0 cfg_i
+                local cfg_key=""
+                for (( cfg_i = 4; cfg_i < CURRENT; cfg_i++ )); do
+                    [[ "$words[cfg_i]" == -* ]] && continue
+                    (( cfg_pos++ ))
+                    [[ $cfg_pos -eq 1 ]] && cfg_key="$words[cfg_i]"
+                done
+                local -a cfg_out
+                if (( cfg_pos == 0 )); then
+                    cfg_out=( ${(f)"$(daft __complete config-key "$curword" 2>/dev/null | cut -f1)"} )
+                elif [[ "$config_sub" == "set" ]] && (( cfg_pos == 1 )); then
+                    cfg_out=( ${(f)"$(DAFT_COMPLETE_CONFIG_KEY="$cfg_key" daft __complete config-value "$curword" 2>/dev/null | cut -f1)"} )
+                else
+                    return
+                fi
+                (( ${#cfg_out} )) && compadd -- "${cfg_out[@]}"
+                return
+                ;;
+            list)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --modified --category --format --template --no-headers -h --help
+                fi
+                return
+                ;;
+            remote-sync)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --on --off --status --global -h --help
+                fi
+                return
+                ;;
+        esac
         return
     fi
 

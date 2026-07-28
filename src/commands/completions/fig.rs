@@ -951,6 +951,154 @@ fn build_fig_layout_subcommand() -> FigSubcommand {
 ///
 /// Wired inline in the daft umbrella spec (not via `COMMANDS`) so the shell
 /// completions pick it up without registering merge in the auto-generated list.
+/// `daft config` — the settings browser's scriptable verbs.
+///
+/// `set` gets two generators: the key slot pulls the registry, and the value
+/// slot pulls what that key accepts. Fig re-runs the script per slot, so the
+/// value generator reads the key back out of the command line the same way the
+/// shell wrappers do.
+fn build_fig_config_subcommand() -> FigSubcommand {
+    let key_arg = FigArgs::Single(FigArg {
+        name: "key".to_string(),
+        description: Some("The setting to change".to_string()),
+        generators: Some(FigGenerator {
+            script: vec![
+                "daft".into(),
+                "__complete".into(),
+                "config-key".into(),
+                String::new(),
+            ],
+            split_on: "\n".to_string(),
+        }),
+    });
+
+    let global_option = || FigOption {
+        name: FigName::Single("--global".into()),
+        description: "Write to global config instead of this repository".into(),
+        args: None,
+    };
+
+    let get = FigSubcommand {
+        name: "get".to_string(),
+        description: Some("Print one setting's effective value".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(key_arg.clone()),
+        options: Some(vec![FigOption {
+            name: FigName::Single("--origin".into()),
+            description: "Show every layer's value and which one won".into(),
+            args: None,
+        }]),
+    };
+
+    let set = FigSubcommand {
+        name: "set".to_string(),
+        description: Some("Change a setting".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Multiple(vec![
+            FigArg {
+                name: "key".to_string(),
+                description: Some("The setting to change".to_string()),
+                generators: Some(FigGenerator {
+                    script: vec![
+                        "daft".into(),
+                        "__complete".into(),
+                        "config-key".into(),
+                        String::new(),
+                    ],
+                    split_on: "\n".to_string(),
+                }),
+            },
+            FigArg {
+                name: "value".to_string(),
+                description: Some("The new value".to_string()),
+                generators: Some(FigGenerator {
+                    script: vec![
+                        "daft".into(),
+                        "__complete".into(),
+                        "config-value".into(),
+                        String::new(),
+                    ],
+                    split_on: "\n".to_string(),
+                }),
+            },
+        ])),
+        options: Some(vec![global_option()]),
+    };
+
+    let unset = FigSubcommand {
+        name: "unset".to_string(),
+        description: Some("Remove a setting".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(key_arg),
+        options: Some(vec![global_option()]),
+    };
+
+    let list = FigSubcommand {
+        name: "list".to_string(),
+        description: Some("List every setting with its value and origin".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: None,
+        options: Some(vec![
+            FigOption {
+                name: FigName::Single("--modified".into()),
+                description: "Only settings something actually sets".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--category".into()),
+                description: "Only settings in this category".into(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
+            },
+        ]),
+    };
+
+    let remote_sync = FigSubcommand {
+        name: "remote-sync".to_string(),
+        description: Some("Configure remote sync behavior".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: None,
+        options: Some(vec![
+            FigOption {
+                name: FigName::Single("--on".into()),
+                description: "Enable all remote sync operations".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--off".into()),
+                description: "Disable all remote sync operations".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--status".into()),
+                description: "Show current remote sync settings".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--global".into()),
+                description: "Write to global git config instead of local".into(),
+                args: None,
+            },
+        ]),
+    };
+
+    FigSubcommand {
+        name: "config".to_string(),
+        description: Some("Browse and change daft settings".to_string()),
+        load_spec: None,
+        subcommands: Some(vec![get, list, remote_sync, set, unset]),
+        args: None,
+        options: None,
+    }
+}
+
 fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
     let branch_generator = FigGenerator {
         script: vec![
@@ -1348,6 +1496,7 @@ pub(super) fn generate_fig_daft_spec() -> Result<String> {
         build_fig_hooks_subcommand(),
         build_fig_multi_remote_subcommand(),
         build_fig_layout_subcommand(),
+        build_fig_config_subcommand(),
         build_fig_repo_subcommand(),
         build_fig_skill_subcommand(),
         build_fig_merge_subcommand("merge"),

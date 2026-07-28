@@ -631,7 +631,20 @@ complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcomma
 complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from uninstall' -s v -l verbose -d 'Show detailed progress'
 # skill show: flags
 complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from show' -l no-pager -d 'Print rendered output directly instead of through a pager'
-complete -c daft -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from remote-sync' -f -a 'remote-sync'
+# config: subcommands
+complete -c daft -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from get list remote-sync set unset' -f -a 'get' -d 'Print one setting'"'"'s effective value'
+complete -c daft -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from get list remote-sync set unset' -f -a 'list' -d 'List every setting with its value and origin'
+complete -c daft -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from get list remote-sync set unset' -f -a 'set' -d 'Change a setting'
+complete -c daft -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from get list remote-sync set unset' -f -a 'unset' -d 'Remove a setting'
+complete -c daft -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from get list remote-sync set unset' -f -a 'remote-sync' -d 'Configure remote sync behavior'
+# config get/set/unset: the registry keys, then the values that key accepts
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from get unset' -f -a "(daft __complete config-key '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from set; and test (count (commandline -opc | string match -rv '^-')) -le 3' -f -a "(daft __complete config-key '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from set; and test (count (commandline -opc | string match -rv '^-')) -eq 4' -f -a "(set -l cfgkey (commandline -opc | string match -rv '^-' | tail -n1); DAFT_COMPLETE_CONFIG_KEY=\$cfgkey daft __complete config-value '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from get' -l origin -d 'Show every layer'"'"'s value and which one won'
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from set unset' -l global -d 'Write to global config instead of this repository'
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from list' -l modified -d 'Only settings something actually sets'
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from list' -l category -x -d 'Only settings in this category'
 # file: subcommands
 complete -c daft -n '__fish_seen_subcommand_from file; and not __fish_seen_subcommand_from merge' -f -a 'merge' -d 'Merge a source daft.yml into a target daft.yml'
 # file merge: file completion + flags
