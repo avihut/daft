@@ -188,6 +188,37 @@ fn is_comment(line: &str) -> bool {
     line.trim_start().starts_with('#')
 }
 
+/// Where the quoted scalar opening `raw` ends, as a byte index of its closing
+/// quote.
+///
+/// The two quote styles escape differently: a double-quoted scalar uses
+/// backslash, a single-quoted one doubles the quote. An unterminated scalar
+/// returns `None`, which leaves the value unscanned and so drops a trailing
+/// comment rather than inventing one from the value's own contents — the safe
+/// direction, since [`verify`] can see a lost comment's line but not a
+/// fabricated one's meaning.
+fn closing_quote(raw: &str, quote: char) -> Option<usize> {
+    let chars: Vec<(usize, char)> = raw.char_indices().collect();
+    let mut index = 1;
+    while index < chars.len() {
+        let (at, ch) = chars[index];
+        if quote == '"' && ch == '\\' {
+            index += 2;
+            continue;
+        }
+        if ch == quote {
+            // `''` inside a single-quoted scalar is a literal quote, not the end.
+            if quote == '\'' && chars.get(index + 1).is_some_and(|(_, next)| *next == '\'') {
+                index += 2;
+                continue;
+            }
+            return Some(at);
+        }
+        index += 1;
+    }
+    None
+}
+
 /// Rewrite one line's value, keeping its indentation and trailing comment.
 fn replace_value(text: &str, line_index: usize, key: &str, value: &str) -> String {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
@@ -199,11 +230,26 @@ fn replace_value(text: &str, line_index: usize, key: &str, value: &str) -> Strin
     // separator included, because reflowing someone's alignment is a diff
     // they did not ask for.
     //
-    // Only a `#` preceded by whitespace starts a comment in YAML, which is
-    // also what keeps a `#` inside the old value from being mistaken for one.
+    // Only a `#` preceded by whitespace starts a comment in YAML — but inside
+    // a quoted scalar that rule does not apply at all, and `rc: "a # b"` has
+    // one that qualifies. Taking it as the comment would splice the tail of
+    // the *old* value into the file as a comment on the new one, and it would
+    // survive verification: the document still parses and the key still holds
+    // the right value. So step over a quoted scalar before looking.
+    // `value_of` keeps the space after the colon, so the quote — if there is
+    // one — starts at the first non-blank character, not at zero.
     let raw = value_of(line, key);
-    let comment = raw
+    let lead = raw.len() - raw.trim_start().len();
+    let body = &raw[lead..];
+    let scan_from = match body.chars().next() {
+        Some(quote @ ('"' | '\'')) => {
+            closing_quote(body, quote).map_or(raw.len(), |at| lead + at + 1)
+        }
+        _ => 0,
+    };
+    let comment = raw[scan_from..]
         .char_indices()
+        .map(|(at, ch)| (scan_from + at, ch))
         .find(|(at, ch)| {
             *ch == '#'
                 && raw[..*at]
@@ -235,19 +281,31 @@ fn insert(text: &str, segments: &[String], value: &str) -> Result<String> {
                 // Append as the block's last child, matching the indentation
                 // its existing children already use.
                 Some(at) => {
+                    let parent_indent = indent_of(&lines[at]);
+                    let mut indent = parent_indent + 2;
+                    // An empty block still gets its child directly beneath it.
                     let mut insert_at = at + 1;
-                    let mut indent = indent_of(&lines[at]) + 2;
-                    while insert_at < lines.len() {
-                        let line = &lines[insert_at];
+                    let mut scan = at + 1;
+                    while scan < lines.len() {
+                        let line = &lines[scan];
+                        // A blank line or a comment is stepped over but never
+                        // becomes the insertion point: the run of them before
+                        // the next section belongs to *that* section, and
+                        // planting a key in the middle of it lands under a
+                        // heading written about something else. The document
+                        // parses identically either way, so `verify` — which
+                        // compares values and cannot see comments — would wave
+                        // it through into the user's diff.
                         if line.trim().is_empty() || is_comment(line) {
-                            insert_at += 1;
+                            scan += 1;
                             continue;
                         }
-                        if indent_of(line) <= indent_of(&lines[at]) {
+                        if indent_of(line) <= parent_indent {
                             break;
                         }
                         indent = indent_of(line);
-                        insert_at += 1;
+                        scan += 1;
+                        insert_at = scan;
                     }
                     lines.insert(
                         insert_at,
@@ -592,5 +650,56 @@ merge:
         let after = set_scalar(before, "source_dir", "scripts").unwrap();
         assert!(after.contains("source_dir_local: .daft-local"), "{after}");
         assert!(after.contains("source_dir: scripts"), "{after}");
+    }
+
+    // Both tests below assert the whole file rather than parsing it and
+    // checking the value. That is the point: the bugs they cover produced
+    // documents that parsed correctly and held the right value, so `verify`
+    // passed them through — only the exact bytes show the damage.
+
+    #[test]
+    fn a_hash_inside_a_quoted_value_is_not_mistaken_for_a_comment() {
+        let before = "rc: \"a # b\"  # keep this\nsource_dir: .daft\n";
+        let after = set_scalar(before, "rc", ".envrc").unwrap();
+        assert_eq!(after, "rc: .envrc  # keep this\nsource_dir: .daft\n");
+    }
+
+    #[test]
+    fn a_single_quoted_value_with_a_hash_survives_the_same_way() {
+        let before = "rc: 'x # y'\n";
+        let after = set_scalar(before, "rc", ".envrc").unwrap();
+        assert_eq!(after, "rc: .envrc\n");
+    }
+
+    #[test]
+    fn a_new_child_lands_in_its_own_block_not_under_the_next_comment() {
+        let before = "\
+log:
+  retention: 7d
+
+# merge policy
+merge:
+  ff: only
+";
+        let after = set_scalar(before, "log.max_log_size", "5MB").unwrap();
+        assert_eq!(
+            after,
+            "\
+log:
+  retention: 7d
+  max_log_size: 5MB
+
+# merge policy
+merge:
+  ff: only
+"
+        );
+    }
+
+    #[test]
+    fn a_block_that_ends_the_file_still_appends_at_its_end() {
+        let before = "log:\n  retention: 7d\n";
+        let after = set_scalar(before, "log.max_log_size", "5MB").unwrap();
+        assert_eq!(after, "log:\n  retention: 7d\n  max_log_size: 5MB\n");
     }
 }
