@@ -36,6 +36,10 @@ steps:
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
+      # Named for the file it landed in. "global" would be a lie here: this is
+      # the repository's committed config, not anything user-wide.
+      output_contains:
+        - "committed config"
 
   - name: the committed file is the only thing that changed
     run: |
@@ -88,6 +92,22 @@ steps:
       exit_code: 1
       output_contains:
         - "merge.ff"
+
+  - name: nor deleted, which would drop it just as completely
+    run: daft config unset --global merge.ff 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "merge.ff"
+
+  - name: the gate is still in the file it was committed in
+    run: |
+      grep -q 'ff: only' daft.yml
+      test -z "$(git diff --name-only)"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
 
   - name: a value the config type rejects leaves the file untouched
     run: |

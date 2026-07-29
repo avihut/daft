@@ -47,6 +47,13 @@ impl WriteScope {
         match (spec.backend, self) {
             (Backend::LayoutChain, Self::Local) => "repo store",
             (Backend::LayoutChain, Self::Global) => "global toml",
+            // Neither daft.yml file is user-wide: "global" here is the
+            // repository's *committed* config, which every clone gets and
+            // which lands in the writer's diff. Calling that "global" would
+            // tell someone reaching for a personal preference that they had
+            // set one, when they had in fact edited the team's file.
+            (Backend::DaftYml { .. }, Self::Global) => "committed config",
+            (Backend::DaftYml { .. }, Self::Local) => "local overlay",
             _ => self.label(),
         }
     }
@@ -104,6 +111,17 @@ fn write_yaml(scope: WriteScope, path: &str, value: Option<&str>) -> Result<bool
             Some(main) => {
                 yaml_config_loader::find_local_config(main).unwrap_or_else(|| local_sibling(main))
             }
+            // The overlay is discovered *from* the main config — the loader
+            // derives its name from that file's stem and bails before the
+            // merge when there is none. Writing one anyway produces a file
+            // daft will never read, reported as a success. Refuse instead,
+            // and only for a set: an unset with no file to edit is already a
+            // truthful "was not set".
+            None if value.is_some() => bail!(
+                "This repository has no daft.yml, so there is nothing for a local \
+                 overlay to override — daft would never read the file.\n\
+                 Create daft.yml first, or use --global to write it there."
+            ),
             None => worktree.join("daft.local.yml"),
         },
         // The committed convention.
@@ -273,6 +291,30 @@ fn check_tightening(spec: &SettingSpec, value: &str) -> Result<()> {
     )
 }
 
+/// Refuse to delete a policy an overlay may only tighten.
+///
+/// [`check_tightening`] guards the value; this guards its absence. Removing
+/// `merge.ff: only` leaves no policy at all, which is the same hole as setting
+/// it to `any` and reached with one fewer keystroke — so `set` refusing to
+/// relax the gate while `unset` deleted it outright would be a guard in name
+/// only. Refused at both scopes: the committed line is the boundary itself,
+/// and the overlay cannot hold a gate it is not allowed to loosen. Retiring a
+/// gate is a reviewed edit to the tracked file, not a config operation.
+fn check_removable(spec: &SettingSpec) -> Result<()> {
+    let Backend::DaftYml {
+        tighten_only: true,
+        path,
+    } = spec.backend
+    else {
+        return Ok(());
+    };
+
+    bail!(
+        "{path} is a merge-gate policy — removing it would drop the gate entirely. \
+         Edit the file directly if the repository means to retire it."
+    )
+}
+
 /// Set `spec` to `raw` at `scope`, returning the line to narrate.
 ///
 /// `config` supplies the rest of the configuration to any cross-key rule —
@@ -318,6 +360,7 @@ pub fn set(
 /// Remove `spec`'s value at `scope`, returning the line to narrate.
 pub fn unset(spec: &SettingSpec, scope: WriteScope) -> Result<String> {
     check_writable(spec, scope)?;
+    check_removable(spec)?;
 
     let git = GitCommand::new(false);
     let removed = match spec.backend {
@@ -384,6 +427,47 @@ mod tests {
             .to_string();
         assert!(err.contains("global config only"), "unhelpful: {err}");
         assert!(err.contains("--global"), "the fix must be in the message");
+    }
+
+    #[test]
+    fn neither_daft_yml_scope_calls_itself_global() {
+        // "global" means ~/.gitconfig everywhere else in this screen. For a
+        // daft.yml row it would name the repository's *committed* file, so a
+        // user reaching for a personal preference would be told they had set
+        // one while editing the team's config.
+        let spec = find("log.retention").unwrap();
+        assert_eq!(WriteScope::Global.label_for(&spec), "committed config");
+        assert_eq!(WriteScope::Local.label_for(&spec), "local overlay");
+
+        // The git rows keep git's own words, where they are true.
+        let git = find(keys::MERGE_STYLE).unwrap();
+        assert_eq!(WriteScope::Global.label_for(&git), "global");
+        assert_eq!(WriteScope::Local.label_for(&git), "local");
+    }
+
+    #[test]
+    fn a_merge_gate_cannot_be_deleted_from_either_scope() {
+        // `set` already refuses to relax the gate. Deleting it leaves no
+        // policy at all — the same hole, one keystroke cheaper — so `unset`
+        // has to refuse too, or the guard is decorative.
+        let spec = find("merge.ff").unwrap();
+        for scope in [WriteScope::Global, WriteScope::Local] {
+            let err = unset(&spec, scope).unwrap_err().to_string();
+            assert!(err.contains("merge.ff"), "unhelpful: {err}");
+            assert!(
+                err.contains("gate"),
+                "the message must say what is being protected: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_yml_key_is_still_removable() {
+        // The refusal above is about merge gates specifically. It must not
+        // have quietly frozen every daft.yml row — but proving that cannot
+        // run the write, which touches the worktree, so it stops at the guard.
+        let spec = find("log.retention").unwrap();
+        assert!(check_removable(&spec).is_ok());
     }
 
     #[test]
