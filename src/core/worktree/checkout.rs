@@ -455,17 +455,41 @@ pub fn execute(
     let planned_shared =
         crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
     crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
-    // Cache paths declared with `copy:` get their own section (#387). Read
-    // ONCE, here, from the source worktree — the tree being copied *from* —
-    // and reused verbatim at execution below, so the plan and the receipt
-    // cannot disagree. One row per declared ENTRY, planned unexpanded: the
-    // plan face never walks the filesystem.
+    // Cache paths declared with `copy:` get their own section (#387). The
+    // CONFIG is read from the propagation source — a visitor's untracked
+    // overlay lives where they are standing — while the BYTES come from
+    // whichever worktree best matches the branch being materialized. Both are
+    // resolved ONCE, here, and reused verbatim at execution below, so the plan
+    // and the receipt cannot disagree. One row per declared ENTRY, planned
+    // unexpanded: the plan face never walks the filesystem.
     let copy_config = crate::core::copy_paths::read_copy_config(&source_worktree);
     let planned_copy = copy_config
         .as_ref()
         .map(|c| c.paths.clone())
         .unwrap_or_default();
-    crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy);
+    // The branch rung is vacuous here by construction — a branch that already
+    // has a worktree is a navigation, not a creation — so what does the work
+    // is the identical-commit rung: a sibling or sandbox already sitting at
+    // this branch's tip holds exactly the tree being checked out. A branch
+    // that exists only on the remote resolves through the tracking ref, and
+    // resolving neither simply falls through to where you are standing.
+    let copy_source = crate::core::copy_source::resolve(
+        git,
+        &crate::core::copy_source::CopyAnchor {
+            branch: Some(params.branch_name.clone()),
+            commit: crate::core::copy_source::resolve_oid(&source_worktree, &params.branch_name)
+                .or_else(|| {
+                    crate::core::copy_source::resolve_oid(
+                        &source_worktree,
+                        &format!("{}/{}", params.remote_name, params.branch_name),
+                    )
+                }),
+        },
+        &source_worktree,
+        &worktree_path,
+        &planned_copy,
+    );
+    crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy, &copy_source);
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
     ))));
@@ -770,7 +794,7 @@ pub fn execute(
     // `daft warm --force` clobbers.
     if let Some(config) = &copy_config {
         let copy_result = crate::core::copy_paths::copy_entries(
-            &source_worktree,
+            &copy_source.path,
             &worktree_path,
             config,
             false,
@@ -1757,7 +1781,10 @@ mod timeline_tests {
                 "group:shared files",
                 "step:SharedFile",
                 "endgroup",
-                "group:copied paths",
+                // `feat-x` was branched from main's tip and has no worktree
+                // yet, so the branch rung is vacuous and the identical-commit
+                // rung finds main — the anchor says so.
+                "group:copied paths from 'main' · same commit",
                 "step:CopyPath",
                 "step:CopyPath",
                 "endgroup",

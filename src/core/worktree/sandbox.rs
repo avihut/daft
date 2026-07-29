@@ -360,7 +360,22 @@ fn create_sandbox(
         .as_ref()
         .map(|c| c.paths.clone())
         .unwrap_or_default();
-    crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy);
+    // A sandbox has no branch, so the pinned commit is the whole anchor — and
+    // it is the sharpest one any journey has: another worktree already sitting
+    // at this exact OID holds precisely the tree being minted. `--fork -n N`
+    // benefits most, since every fork after the first has a sibling at the
+    // identical commit to copy from.
+    let copy_source = crate::core::copy_source::resolve(
+        git,
+        &crate::core::copy_source::CopyAnchor {
+            branch: None,
+            commit: Some(params.commit.clone()),
+        },
+        &source_worktree,
+        &worktree_path,
+        &planned_copy,
+    );
+    crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy, &copy_source);
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
     ))));
@@ -490,7 +505,7 @@ fn create_sandbox(
     // destination is left alone; only `daft warm --force` clobbers.
     if let Some(config) = &copy_config {
         let copy_result = crate::core::copy_paths::copy_entries(
-            &source_worktree,
+            &copy_source.path,
             &worktree_path,
             config,
             false,
@@ -916,7 +931,10 @@ mod tests {
                 "group:shared files",
                 "step:SharedFile",
                 "endgroup",
-                "group:copied paths",
+                // A sandbox names no branch and the tag sits at no worktree's
+                // tip, so both specific rungs miss and the floor — where the
+                // command was run — carries the section.
+                "group:copied paths from 'main'",
                 "step:CopyPath",
                 "step:CopyPath",
                 "endgroup",

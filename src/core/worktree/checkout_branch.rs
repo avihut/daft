@@ -168,17 +168,32 @@ pub fn execute(
     let planned_shared =
         crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
     crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
-    // Cache paths declared with `copy:` get their own section (#387). Read
-    // ONCE, here, from the source worktree — the tree being copied *from* —
-    // and reused verbatim at execution below, so the plan and the receipt
-    // cannot disagree. One row per declared ENTRY, planned unexpanded: the
-    // plan face never walks the filesystem.
+    // Cache paths declared with `copy:` get their own section (#387). The
+    // CONFIG is read from the propagation source — a visitor's untracked
+    // overlay lives where they are standing — while the BYTES come from
+    // whichever worktree best matches the base being branched from. Both are
+    // resolved ONCE, here, and reused verbatim at execution below, so the plan
+    // and the receipt cannot disagree. One row per declared ENTRY, planned
+    // unexpanded: the plan face never walks the filesystem.
     let copy_config = crate::core::copy_paths::read_copy_config(&source_worktree);
     let planned_copy = copy_config
         .as_ref()
         .map(|c| c.paths.clone())
         .unwrap_or_default();
-    crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy);
+    // The base is the whole point: `daft start feature-b master` takes
+    // master's content, so master's caches are the ones that match — from
+    // wherever the command was typed.
+    let copy_source = crate::core::copy_source::resolve(
+        git,
+        &crate::core::copy_source::CopyAnchor {
+            branch: Some(base_branch.clone()),
+            commit: crate::core::copy_source::resolve_oid(&source_worktree, &base_branch),
+        },
+        &source_worktree,
+        &worktree_path,
+        &planned_copy,
+    );
+    crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy, &copy_source);
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
     ))));
@@ -378,7 +393,7 @@ pub fn execute(
     // `daft warm --force` clobbers.
     if let Some(config) = &copy_config {
         let copy_result = crate::core::copy_paths::copy_entries(
-            &source_worktree,
+            &copy_source.path,
             &worktree_path,
             config,
             false,
@@ -1707,7 +1722,9 @@ mod timeline_tests {
                 "group:shared files",
                 "step:SharedFile",
                 "endgroup",
-                "group:copied paths",
+                // The base branch has a resident worktree, so rank 1 takes it
+                // outright and the anchor carries no tiebreak qualifier.
+                "group:copied paths from 'main'",
                 "step:CopyPath",
                 "step:CopyPath",
                 "endgroup",

@@ -193,6 +193,31 @@ fn mtime_secs(meta: &std::fs::Metadata) -> u64 {
         .unwrap_or(0)
 }
 
+/// Resolve a rev to a full commit OID inside `dir`, or `None` when it names
+/// nothing.
+///
+/// Deliberately not [`GitCommand::rev_parse`]: that helper shells out in the
+/// process cwd with the ambient environment, so an inherited `GIT_DIR` — daft
+/// running inside a git hook — silently retargets it at another repository.
+/// [`crate::utils::git_command_at`] scrubs the `GIT_*` vars so `-C` is
+/// authoritative. A wrong OID here would not error; it would quietly rank the
+/// wrong worktree as the cache source, which is the class of bug this whole
+/// module exists to close.
+///
+/// `--verify --quiet` is what makes an unknown ref a clean `None` instead of
+/// an error on stderr.
+pub fn resolve_oid(dir: &Path, rev: &str) -> Option<String> {
+    let output = crate::utils::git_command_at(dir)
+        .args(["rev-parse", "--verify", "--quiet", rev])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let oid = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!oid.is_empty()).then_some(oid)
+}
+
 /// Resolve the cache source, doing the IO.
 ///
 /// `standing` is the propagation source (what `resolve_source_worktree`

@@ -1729,14 +1729,26 @@ pub fn probe_reflink_support(dir: &Path) -> Option<bool> {
 /// entry is planned as itself, unexpanded. `planned` is
 /// [`ResolvedCopyConfig::paths`], and every string in it must later reach
 /// [`report_copy_results`] as a `planned` element so no row is orphaned.
-pub fn push_copy_section(rows: &mut Vec<crate::core::stage::Row>, planned: &[String]) {
+///
+/// The group anchor names the resolved source
+/// ([`CopySource::provenance_phrase`]). Which worktree the caches came from is
+/// no longer inferable from the command — the source is *ranked*
+/// ([`crate::core::copy_source`]), so a run that quietly picked a different
+/// tree than the reader assumes is exactly the failure the label prevents.
+///
+/// [`CopySource::provenance_phrase`]: crate::core::copy_source::CopySource::provenance_phrase
+pub fn push_copy_section(
+    rows: &mut Vec<crate::core::stage::Row>,
+    planned: &[String],
+    source: &crate::core::copy_source::CopySource,
+) {
     use crate::core::stage::{Row, StageId, StepKey, StepSpec};
 
     if planned.is_empty() {
         return;
     }
     rows.push(Row::Group {
-        label: "copied paths".into(),
+        label: format!("copied paths {}", source.provenance_phrase()),
     });
     for entry in planned {
         rows.push(Row::Step(
@@ -3242,12 +3254,26 @@ mod tests {
     fn push_copy_section_plans_anchor_and_entry_labeled_rows() {
         use crate::core::stage::{Row, StageId};
 
+        use crate::core::copy_source::{CopySource, CopySourceReason};
+
+        let source = CopySource {
+            path: std::path::PathBuf::from("/p/master"),
+            label: "master".into(),
+            reason: CopySourceReason::AnchorBranch,
+        };
+
         let mut rows = Vec::new();
-        push_copy_section(&mut rows, &[]);
+        push_copy_section(&mut rows, &[], &source);
         assert!(rows.is_empty(), "nothing declared, nothing planned");
 
-        push_copy_section(&mut rows, &["target".to_string(), "**/dist".to_string()]);
-        assert!(matches!(&rows[0], Row::Group { label } if label == "copied paths"));
+        push_copy_section(
+            &mut rows,
+            &["target".to_string(), "**/dist".to_string()],
+            &source,
+        );
+        // The anchor names the resolved source: which tree the bytes came
+        // from is a ranking outcome, not something the command line shows.
+        assert!(matches!(&rows[0], Row::Group { label } if label == "copied paths from 'master'"));
 
         let Row::Step(spec) = &rows[1] else {
             panic!("expected step row");
