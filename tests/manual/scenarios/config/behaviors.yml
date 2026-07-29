@@ -19,14 +19,13 @@ steps:
 
   - name: an untouched repository sits in the default state, not Custom
     run: |
-      daft config get remote-sync
+      # Exact, not output_contains: this step exists to prove the state is
+      # the named default rather than Custom, and a substring match would
+      # pass on any output that merely mentions it.
+      test "$(daft config get remote-sync)" = "off"
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
-      # The rule that keeps Custom meaningful: the default is a named state,
-      # so it is what most people read.
-      output_contains:
-        - "off"
 
   - name: one command writes all three keys
     run: |
