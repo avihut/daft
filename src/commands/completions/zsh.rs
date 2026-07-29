@@ -1016,8 +1016,12 @@ _daft() {
         return
     fi
 
-    # config: subcommands, then registry keys and the values they accept
-    if [[ "$words[2]" == "config" ]]; then
+    # config: subcommands, then registry keys and the values they accept.
+    # The CURRENT guard matters: while `config` is itself the word being
+    # completed it already sits in words[2], so testing the word alone claims
+    # the completion, matches no case arm below, and returns nothing at all --
+    # `daft config<TAB>` would stop completing the verb it is spelling.
+    if [[ "$words[2]" == "config" ]] && (( CURRENT >= 3 )); then
         if (( CURRENT == 3 )); then
             compadd get list remote-sync set unset
             return

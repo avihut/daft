@@ -813,8 +813,12 @@ _daft() {
         return 0
     fi
 
-    # config: subcommands, then registry keys and the values they accept
-    if [[ "${words[1]}" == "config" ]]; then
+    # config: subcommands, then registry keys and the values they accept.
+    # The cword guard matters: while `config` is itself the word being
+    # completed it already sits in words[1], so testing the word alone claims
+    # the completion, matches no case arm below, and returns nothing at all --
+    # `daft config<TAB>` would stop completing the verb it is spelling.
+    if [[ "${words[1]}" == "config" && $cword -ge 2 ]]; then
         if [[ $cword -eq 2 ]]; then
             COMPREPLY=( $(compgen -W "get list remote-sync set unset" -- "$cur") )
             return 0

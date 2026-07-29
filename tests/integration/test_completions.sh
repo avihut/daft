@@ -1005,6 +1005,61 @@ test_config_key_and_value_completion() {
     pass_test
 }
 
+# Test: completing the verb `config` itself still offers it
+#
+# The config block keys off words[1]/$words[2] being "config" — which is
+# already true while that very word is being completed. Without a cursor-
+# position guard the block claims the completion, matches none of its inner
+# arms, and returns an empty COMPREPLY: `daft conf<TAB>` stops completing.
+# Driven through a real bash so the guard is exercised, not just grepped for.
+test_config_verb_completes_itself() {
+    run_test "daft config<TAB> still completes the verb, and then its subcommands"
+
+    local result
+    result=$(
+        set +eu
+        drive_bash=""
+        for candidate in "$(command -v bash)" /opt/homebrew/bin/bash \
+                         /usr/local/bin/bash /bin/bash; do
+            if [[ -x "$candidate" ]] && "$candidate" -c 'type mapfile' >/dev/null 2>&1; then
+                drive_bash="$candidate"
+                break
+            fi
+        done
+        if [[ -z "$drive_bash" ]]; then
+            echo "SKIP: no bash 4+ available for the sourced-wrapper layer"
+            exit 0
+        fi
+        "$drive_bash" <<'DRIVE_EOS'
+_init_completion() {
+    cur="${COMP_WORDS[COMP_CWORD]}"; prev="${COMP_WORDS[COMP_CWORD-1]}"
+    words=("${COMP_WORDS[@]}"); cword=$COMP_CWORD; return 0
+}
+eval "$(daft completions bash 2>/dev/null)"
+drive() { COMP_WORDS=("$@"); COMP_CWORD=$(($# - 1)); COMPREPLY=(); _daft 2>/dev/null; }
+
+# The word under the cursor IS "config" — the top-level list must answer.
+drive daft config;      verb="${COMPREPLY[*]}"
+# A partial spelling of it, likewise.
+drive daft conf;        partial="${COMPREPLY[*]}"
+# One word further along, the config block takes over with its subcommands.
+drive daft config "";   subs="${COMPREPLY[*]}"
+
+if [[ "$verb" == *config* && "$partial" == *config* \
+   && "$subs" == *get* && "$subs" == *set* && "$subs" == *unset* ]]; then
+    echo "PASS"
+else
+    echo "FAIL verb=[$verb] partial=[$partial] subs=[$subs]"
+fi
+DRIVE_EOS
+    )
+    case "$result" in
+        PASS) pass_test ;;
+        SKIP*) skip_test "${result#SKIP: }" ;;
+        *) fail_test "$result" ;;
+    esac
+}
+
 main() {
     echo "========================================="
     echo "Shell Completions Integration Tests"
@@ -1050,6 +1105,7 @@ main() {
     test_fish_completion_generation
     test_dynamic_branch_completion
     test_config_key_and_value_completion
+    test_config_verb_completes_itself
     test_repo_name_completion_case_insensitive
     test_start_repo_positional_completion
     test_remove_repo_flag_completion
