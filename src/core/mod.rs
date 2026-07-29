@@ -8,6 +8,7 @@ pub mod cache;
 pub mod columns;
 pub mod config;
 pub mod copy_paths;
+pub mod copy_source;
 pub mod git_ignore;
 pub mod global_config;
 pub mod install;

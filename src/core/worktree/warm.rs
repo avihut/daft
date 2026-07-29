@@ -34,6 +34,7 @@ use crate::core::copy_paths;
 use crate::core::copy_paths::{
     CopyOutcome, CopyPathsResult, SkipReason, copy_entries, read_copy_config,
 };
+use crate::core::copy_source::same_path;
 use crate::git::GitCommand;
 
 /// Input parameters for the warm operation.
@@ -254,17 +255,6 @@ fn is_bare_checkout(path: &Path) -> bool {
         .is_ok_and(|out| {
             out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true"
         })
-}
-
-/// Path equality that survives spelling differences — `/var` vs
-/// `/private/var`, a trailing `.`, a symlinked checkout. Falls back to a plain
-/// comparison for paths that do not exist, which is what the vanished-worktree
-/// case needs.
-fn same_path(a: &Path, b: &Path) -> bool {
-    fn canonical(p: &Path) -> PathBuf {
-        p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
-    }
-    canonical(a) == canonical(b)
 }
 
 /// Assert `path` is a directory, naming *why* it is not when the answer is
