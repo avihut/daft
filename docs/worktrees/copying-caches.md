@@ -49,12 +49,22 @@ Ties on rank 2 — several worktrees at the same commit — go to the one you ar
 standing in, and failing that to the warmest, judged by which declared entries
 exist and how recently they were touched.
 
+Two candidates never win. A worktree that is only still _listed_ — deleted
+without `git worktree prune`, or on a volume that is no longer mounted — is not
+a source; git keeps reporting it with its last commit until someone prunes. And
+a rank-2 match that carries **none** of the declared caches loses to a source
+that has them: specificity earns the choice, but it does not earn copying
+nothing when there is something to copy. That demotion only ever moves towards
+something warmer, so a repository where nothing is built yet still resolves
+exactly as the ladder says.
+
 **The rail says which one it picked**, on the section anchor:
 
 ```
 copied paths from 'master'                    # the base branch's worktree
 copied paths from 'release' · same commit     # no worktree for the base
 copied paths from 'sandbox-3' · same commit, warmest
+copied paths from 'main' · the same-commit worktree is empty
 ```
 
 Two consequences worth internalizing. The commit is what is matched, not the
@@ -232,24 +242,25 @@ A row's label is the entry, so its phrase never repeats it — and when a glob
 expands, the phrase names the one match that offended, which is how a single row
 can report on a thirty-way expansion.
 
-| Row                                                      | Meaning                                                                                                                                                                   |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `✓ target  1.2 GB · reflinked · 0.3s`                    | Copied. A multi-match entry counts them (`3 paths · …`), a mixed entry reports `part reflinked`, and an expansion that could not read everywhere appends `· 2 unreadable` |
-| `○ nothing to copy yet`                                  | Declared, but the cache has never been built in the source                                                                                                                |
-| `○ already present`                                      | The destination already has it — nothing to do                                                                                                                            |
-| `○ matched nothing`                                      | A glob entry expanded to no paths in the source worktree                                                                                                                  |
-| `↓ must be gitignored — tracked content is never copied` | Not gitignored, or git tracks content under it                                                                                                                            |
-| `↓ 2.1 GB — over the 1 GB max_size`                      | Byte-copy fallback exceeded the cap                                                                                                                                       |
-| `↓ no reflink support — fallback: skip`                  | The filesystem cannot reflink and `fallback: skip` declined the byte copy                                                                                                 |
-| `↓ already present as … — not replaced`                  | Something is at the destination, but the wrong shape — a symlink where a directory belongs, a file where a tree belongs, a dangling link                                  |
-| `↓ … — not copied`                                       | Containment refusal: the entry is absolute, contains `..`, or names the worktree itself                                                                                   |
-| `↓ could not be read — …`                                | The source entry could not be read                                                                                                                                        |
-| `↓ the destination could not be read — …`                | The destination could not be read, so nothing about it could be established                                                                                               |
-| `↓ could not be classified by git — …`                   | `check-ignore` / `ls-files` failed on the source, so the gitignore question went unanswered                                                                               |
-| `↓ the destination could not be classified by git — …`   | The same failure on the destination side                                                                                                                                  |
-| `↓ is tracked in this worktree — refusing to replace it` | `--force` would have deleted content the **target** tracks                                                                                                                |
-| `↓ source and target are the same worktree`              | `daft warm` was pointed at its own source                                                                                                                                 |
-| `↓ failed — …`                                           | The copy was attempted and broke — I/O error, permissions, disk full                                                                                                      |
+| Row                                                             | Meaning                                                                                                                                                                   |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `✓ target  1.2 GB · reflinked · 0.3s`                           | Copied. A multi-match entry counts them (`3 paths · …`), a mixed entry reports `part reflinked`, and an expansion that could not read everywhere appends `· 2 unreadable` |
+| `○ nothing to copy yet`                                         | Declared, but the cache has never been built in the source                                                                                                                |
+| `○ already present`                                             | The destination already has it — nothing to do                                                                                                                            |
+| `○ matched nothing`                                             | A glob entry expanded to no paths in the source worktree                                                                                                                  |
+| `↓ must be gitignored — tracked content is never copied`        | Not gitignored, or git tracks content under it                                                                                                                            |
+| `↓ 2.1 GB — over the 1 GB max_size`                             | Byte-copy fallback exceeded the cap                                                                                                                                       |
+| `↓ no reflink support — fallback: skip`                         | The filesystem cannot reflink and `fallback: skip` declined the byte copy                                                                                                 |
+| `↓ already present as … — not replaced`                         | Something is at the destination, but the wrong shape — a symlink where a directory belongs, a file where a tree belongs, a dangling link. `--force` replaces it           |
+| `↓ … is a symlink, so the destination is outside this worktree` | A directory on the way to the destination is a symlink (what `shared:` installs), so writing there would land outside the worktree entirely                               |
+| `↓ … — not copied`                                              | Containment refusal: the entry is absolute, contains `..`, or names the worktree itself                                                                                   |
+| `↓ could not be read — …`                                       | The source entry could not be read                                                                                                                                        |
+| `↓ the destination could not be read — …`                       | The destination could not be read, so nothing about it could be established                                                                                               |
+| `↓ could not be classified by git — …`                          | `check-ignore` / `ls-files` failed on the source, so the gitignore question went unanswered                                                                               |
+| `↓ the destination could not be classified by git — …`          | The same failure on the destination side                                                                                                                                  |
+| `↓ is tracked in this worktree — refusing to replace it`        | `--force` would have deleted content the **target** tracks                                                                                                                |
+| `↓ source and target are the same worktree`                     | `daft warm` was pointed at its own source                                                                                                                                 |
+| `↓ failed — …`                                                  | The copy was attempted and broke — I/O error, permissions, disk full                                                                                                      |
 
 ## Re-warming a worktree with `daft warm`
 
@@ -291,19 +302,33 @@ one instead. It targets one worktree per run — there is no fleet form, so
 spreading a fresh cache means running it per worktree or driving it with
 [`daft exec`](/worktrees/running-commands).
 
-`daft warm` does not move your shell; it only writes into the target worktree.
+`daft warm` does not move your shell — with one exception it has to make. If you
+run it with `--force` while standing _inside_ a cache it is replacing, that
+directory is unlinked out from under your shell and every later command in it
+fails with `getcwd: cannot access parent directories`. When that happens daft
+moves you to the target worktree's root (and, without the shell integration
+installed, prints the `cd` to run instead).
 
 ### What `--force` will still refuse
 
 `--force` is the only thing here that deletes, so it is the only thing that asks
 the **target** what it is about to delete:
 
+- **A wrong-shape destination IS replaced** — that is what `--force` is for, and
+  refusing it would leave the one state no other run can repair permanently
+  stuck. Without `--force` it is still reported, never silently overwritten.
 - **Content the target tracks is never replaced.** A path one branch gitignores
   can be committed content on another, and the source's opinion says nothing
   about the destination. The entry is refused with
   `is tracked in this worktree — refusing to replace it`.
 - **The bare container is refused as either end.** It has no working tree to
   copy from or into.
+- **A link that leaves the worktree is not turned into a copy.** If the
+  destination is a symlink resolving outside the worktree — daft's own shared
+  store, an external cache directory — replacing it with a private directory
+  would quietly privatize something this worktree does not own. Replacing a link
+  with a link is fine and still happens; a _dangling_ link is replaced like any
+  other wrong shape.
 - **Nothing is removed until the copy is actually going to proceed.** Every
   other refusal — containment, unreadable source, size cap — fires with the
   destination still intact, so `--force` can never report a skip over a cache it

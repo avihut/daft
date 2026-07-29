@@ -105,8 +105,11 @@ otherwise-ignored directory still disqualifies the entry. A violation is a
 per-entry warning; the worktree is still created.
 
 **Where it runs.** The copy stage sits between the `worktree-pre-create` and
-`worktree-post-create` hooks — after `shared:` symlinking, before post-create
+`worktree-post-create` hooks — before `shared:` symlinking, before post-create
 hooks fire — so a hook-driven `npm install` or `cargo build` hits a warm cache.
+Caches first and daft-managed links on top: linking creates the parent
+directories it needs, so the other order let a `shared:` path _inside_ a copied
+cache manufacture an empty scaffold the copy then skipped as `already present`.
 It is a creation-time optimization and never aborts creation: every failure
 (tracked entry, unreadable source, full disk) is a warning row, never a fatal
 error. `daft clone` does not run it — a fresh clone has no source worktree to
