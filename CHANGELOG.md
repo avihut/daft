@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.0](https://github.com/avihut/daft/compare/v1.24.0...v1.25.0) - 2026-07-29
+
+
+### Bug Fixes
+
+- **go**: Don't close a Failed rail on a cross-repo hop (#794)
+- Allow removing a fully-pushed branch without -f (#789)
+
+
+### Features
+
+- Copy build caches into new worktrees (copy: and daft warm) (#797)
 ## [1.24.0](https://github.com/avihut/daft/compare/v1.23.0...v1.24.0) - 2026-07-26
 
 
