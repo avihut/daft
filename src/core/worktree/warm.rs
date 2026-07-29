@@ -342,12 +342,20 @@ pub fn locate_project_root() -> Result<PathBuf> {
 
 /// Resolve the worktree to copy *from*.
 ///
-/// `--from` wins outright. Otherwise the current worktree is the source
+/// `--from` wins outright — an explicit source is never second-guessed.
+///
+/// Otherwise the same specificity ladder the creation journeys use
+/// ([`crate::core::copy_source`]), anchored on the commit the **target**
+/// already sits at: a worktree holding that exact commit holds exactly the
+/// tree being warmed, which beats both "wherever you happen to be standing"
+/// and "the default branch". The branch rung is vacuous here — the target's
+/// own worktree is the target, and the destination is never its own source.
+///
+/// Below the ladder, the previous behaviour is the floor: the current worktree
 /// whenever it is not itself the target — warming a sibling from where you
-/// stand is the common shape. When the target *is* the current worktree there
-/// is no such answer, so the default branch's worktree stands in: it is the
-/// one worktree every repo has, and the one whose caches are most likely to be
-/// both present and generic.
+/// stand is the common shape — and, when the target *is* the current worktree,
+/// the default branch's, the one worktree every repo has and the one whose
+/// caches are most likely to be both present and generic.
 fn resolve_source(
     params: &WarmParams,
     git: &GitCommand,
@@ -359,7 +367,36 @@ fn resolve_source(
         return resolve_named(git, name, project_root);
     }
 
-    let here = current_worktree(current)?;
+    // Best-effort: from a container root there is no "here" at all, and the
+    // ladder must still be able to run.
+    let here = current_worktree(current).ok();
+
+    if let Some(commit) = crate::core::copy_source::resolve_oid(target, "HEAD") {
+        // Warmth is scored over the *target's* declared paths. The source's
+        // own `copy:` section is what will actually be copied, but it cannot
+        // be read before the source is chosen — and the target's declaration
+        // is the best available statement of which paths matter. When there is
+        // none, warmth is uniformly zero and the tie falls to path order,
+        // which is deterministic and claims no tiebreak that did not happen.
+        let declared = crate::core::copy_paths::read_copy_config(target)
+            .map(|config| config.paths)
+            .unwrap_or_default();
+        let resolved = crate::core::copy_source::resolve(
+            git,
+            &crate::core::copy_source::CopyAnchor {
+                branch: None,
+                commit: Some(commit),
+            },
+            here.as_deref().unwrap_or(target),
+            target,
+            &declared,
+        );
+        if resolved.reason != crate::core::copy_source::CopySourceReason::Standing {
+            return Ok(resolved.path);
+        }
+    }
+
+    let here = here.map_or_else(|| current_worktree(current), Ok)?;
     if here != target {
         return Ok(here);
     }
@@ -916,6 +953,20 @@ mod resolution_tests {
             self.root.join(name)
         }
 
+        /// Move one worktree off the commit every other worktree shares.
+        ///
+        /// The fixture cuts every branch from a single commit, so without this
+        /// the identical-commit rung of the source ladder always answers first
+        /// and the default-branch fallback beneath it is unreachable. Real
+        /// branches diverge; a test about the *fallback* needs a fixture that
+        /// does too.
+        fn diverge(&self, name: &str) {
+            git_at(
+                &self.wt(name),
+                &["commit", "--allow-empty", "-q", "-m", "diverge"],
+            );
+        }
+
         fn base(&self) -> PathBuf {
             self.tmp.path().canonicalize().unwrap()
         }
@@ -1265,6 +1316,55 @@ mod resolution_tests {
         });
     }
 
+    /// A worktree holding the target's exact commit holds exactly the tree
+    /// being warmed, so it outranks the default branch — which is a guess
+    /// about which caches are *generic*, not a claim that they match.
+    #[test]
+    #[serial]
+    fn an_identical_tip_outranks_the_default_branch_fallback() {
+        each_backend(|| {
+            let layout = Layout::new(&["develop", "twin"]).with_origin_head();
+            // `main` is the default branch and moves ahead; `twin` stays where
+            // `develop` is, so the two rungs disagree and the test can tell
+            // which one answered.
+            layout.diverge("main");
+
+            let result = run(&layout, &layout.wt("develop"), params(None, None))
+                .expect("warming the current worktree resolves a source");
+            assert_eq!(
+                result.source,
+                layout.wt("twin"),
+                "the sibling at the identical commit wins over the default branch"
+            );
+
+            // An explicit source is never second-guessed by the ladder.
+            let forced = run(&layout, &layout.wt("develop"), params(None, Some("main")))
+                .expect("--from resolves");
+            assert_eq!(forced.source, layout.wt("main"));
+        });
+    }
+
+    /// Among worktrees holding the identical commit, the one the command was
+    /// run from wins — the tree you are in is the one you most recently built.
+    #[test]
+    #[serial]
+    fn an_identical_tip_tie_prefers_the_worktree_you_are_standing_in() {
+        each_backend(|| {
+            let layout = Layout::new(&["develop", "twin", "triplet"]).with_origin_head();
+            layout.diverge("main");
+
+            // `twin` and `triplet` both sit at `develop`'s commit; standing in
+            // `triplet` must decide it, even though `twin` sorts first.
+            let result = run(
+                &layout,
+                &layout.wt("triplet"),
+                params(Some("develop"), None),
+            )
+            .expect("warming a sibling resolves a source");
+            assert_eq!(result.source, layout.wt("triplet"));
+        });
+    }
+
     /// A repo with no `origin/HEAD` and no catalog entry cannot name a default
     /// branch. The user is told to pick a source rather than left with a
     /// silently wrong one.
@@ -1275,6 +1375,7 @@ mod resolution_tests {
             // No `with_origin_head()`: nothing on disk says which branch is
             // default, and the isolated state dir has no catalog row either.
             let layout = Layout::new(&["develop"]);
+            layout.diverge("develop");
 
             let err = err_of(
                 run(&layout, &layout.wt("develop"), params(None, None)),
@@ -1296,6 +1397,7 @@ mod resolution_tests {
     fn a_default_branch_without_a_worktree_asks_for_from() {
         each_backend(|| {
             let layout = Layout::new(&["develop"]);
+            layout.diverge("develop");
             let remotes = layout.root.join(".git/refs/remotes/origin");
             std::fs::create_dir_all(&remotes).unwrap();
             std::fs::write(remotes.join("HEAD"), "ref: refs/remotes/origin/trunk\n").unwrap();
@@ -1322,6 +1424,7 @@ mod resolution_tests {
             let layout = Layout::new(&["develop"])
                 .with_worktree("wt-feature", "feature/login")
                 .with_origin_head();
+            layout.diverge("develop");
 
             let bare = layout.root.join(".git");
             let uuid = uuid::Uuid::new_v4().to_string();
@@ -1464,6 +1567,7 @@ mod resolution_tests {
             // origin/HEAD resolves perfectly well — the fallback the broken
             // catalog must NOT be allowed to silently reach.
             let layout = Layout::new(&["develop"]).with_origin_head();
+            layout.diverge("main");
 
             let db = crate::store::paths::catalog_db().expect("sandboxed data dir");
             crate::catalog::Catalog::open_rw().expect("create the catalog file");
@@ -1529,6 +1633,7 @@ mod resolution_tests {
     fn the_default_branch_fallback_follows_the_configured_remote() {
         each_backend(|| {
             let layout = Layout::new(&["develop"]).with_remote_head("upstream", "main");
+            layout.diverge("develop");
 
             let result = run(
                 &layout,
