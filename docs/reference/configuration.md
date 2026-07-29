@@ -73,8 +73,15 @@ daft config unset remote-sync         # clears all three at this scope
 ```
 
 Behaviors appear at the top of `daft config list` and of the browser, above the
-categories. In the browser, `space` steps to the next state, `enter` opens the
-same editor a setting gets, and `→` drills into the member settings.
+categories. In the browser, `space` steps to the next state and `→` drills into
+the member settings, with the header naming the behavior you are inside.
+
+`enter` opens a preset selector rather than a value editor: the states are
+listed by name, the highlighted one is explained in full, and under it every
+member appears with what it reads now, where that came from, and what the state
+would write. A row whose write a higher scope would outrank says so before you
+commit to it. `unset` sits below the states, since it is not a state — it is how
+you stop having one.
 
 Three things worth knowing:
 

@@ -45,12 +45,24 @@ test_config_tui_paints_and_exits() {
 
     git config --local daft.merge.style squash
 
-    # The screen opens on a behavior, whose detail panel is its members'
-    # ladders rather than one effective line — so step onto a setting before
-    # quitting and the frames cover both shapes.
+    # Four frames, because the screen has four shapes and a unit test reaches
+    # none of them through a real terminal: the behavior it opens on (whose
+    # detail panel is its members' ladders rather than one effective line), that
+    # behavior's preset editor, and an ordinary setting's ladder after Esc puts
+    # the editor away. The editor's frame is the one that only a pty can vouch
+    # for — the window here is 24 rows, which is where the box has to shed its
+    # explanations to keep the key hints on screen.
+    #
+    # A cue has to be text the frame *rewrites*, not text that is merely on
+    # screen: ratatui sends only changed cells, so closing the box repaints the
+    # rows it covered while leaving the two columns beside it alone — which is
+    # why the cue after Esc is a list row (indented past the border) and not the
+    # detail panel's "What it sets", whose "Wh" is never resent.
     local log="$TEMP_BASE_DIR/config-tui-paint.log"
     _config_tui_daft python3 "$CONFIG_TUI_PTY_RUN" \
-        --send-after 'Daft Settings:j' \
+        --send-after 'Daft Settings:\r' \
+        --send-after 'writes to local:\x1b' \
+        --send-after 'Auto-cd into worktrees:j' \
         --send-after 'effective:q' \
         "$log" \
         daft config
@@ -68,10 +80,17 @@ test_config_tui_paints_and_exits() {
 
     # What the screen is for: a title, the scope it writes to, a value with
     # its origin, the resolved effective line — and, on the row it opens on,
-    # a behavior with the settings it stands for.
+    # a behavior with the settings it stands for. Then the editor: a preset by
+    # name, what it would write, and a way out still visible at 24 rows.
+    #
+    # "Local only —" is the state's explanation, not just its name: at 24 rows
+    # the box has to shed something, and the rule is that it sheds the `preset`
+    # label and the rule above `unset` before it sheds the one sentence that
+    # exists nowhere else. This needle is what holds that rule in place.
     local expected=(
         "Daft Settings" "writes:" "local" "effective:"
         "Behaviors" "remote-sync" "What it sets"
+        "Local only —" "writes to local" "daft.branchDelete.remote" "esc"
     )
     for needle in "${expected[@]}"; do
         if [[ "$painted" != *"$needle"* ]]; then

@@ -11,12 +11,13 @@ use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
-use super::modal::{Field, Modal, Option_};
+use super::modal::{Field, Modal, Option_, Subject};
 use super::state::{Focus, Mode, RailEntry, Row, ScreenState, StatusKind};
 use crate::commands::config::resolve::{
-    Diagnostic, Layer, Resolved, ResolvedBehavior, ResolvedSet,
+    Diagnostic, Layer, Resolved, ResolvedBehavior, ResolvedSet, values_agree,
 };
 use crate::commands::config::write::WriteScope;
+use crate::core::settings_spec::BehaviorSpec;
 
 /// Below this the rail is dropped: three columns in eighty cells leaves the
 /// values truncated, and the values are the thing people came for.
@@ -86,8 +87,70 @@ pub fn draw(frame: &mut Frame, state: &ScreenState) {
     // Last, and over everything: the editor is modal, and a box the list
     // paints through would not read as one.
     if let Some(modal) = &state.modal {
-        draw_modal(frame, area, modal);
+        draw_modal(frame, area, modal, &state.config);
     }
+}
+
+/// Word-wrap `text` into lines of at most `width` cells, indenting every line
+/// after the first by `indent`.
+///
+/// Prose on this screen is registry copy — a sentence that names three keys, or
+/// a preset's whole rationale — and truncating it cuts the end, which is where
+/// the qualification lives. "Fetch before checkout, push new branches, and
+/// delete the remote branch when removing one" reads as a licence to fetch when
+/// it stops after "push new b".
+fn wrapped(text: &str, width: usize, indent: usize) -> Vec<String> {
+    // Wrap every line to the narrower width rather than letting the first use
+    // the full one: it costs a few cells on a hanging-indent paragraph and it
+    // cannot overflow, which the other way round can.
+    let room = width.saturating_sub(indent).max(8);
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            current = word.to_string();
+        } else if current.chars().count() + 1 + word.chars().count() <= room {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current = word.to_string();
+        }
+        // A word too long for the room is split rather than pushed past the
+        // edge — a path or a key can be longer than a narrow box.
+        while current.chars().count() > room {
+            lines.push(current.chars().take(room).collect());
+            current = current.chars().skip(room).collect();
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    let pad = " ".repeat(indent);
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if index == 0 {
+                line
+            } else {
+                format!("{pad}{line}")
+            }
+        })
+        .collect()
+}
+
+/// `wrapped`, as dim lines ready to push.
+fn prose(text: &str, width: usize, indent: usize) -> Vec<Line<'static>> {
+    wrapped(text, width, indent)
+        .into_iter()
+        .map(|line| Line::from(line.dim()))
+        .collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -106,13 +169,23 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
-    let lines = modal_lines(modal);
+fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal, config: &ResolvedSet) {
+    // Wide enough for a member table and its warning column, and never wider
+    // than the frame. The content is wrapped to fit, so the width is a
+    // preference rather than an assumption.
+    let box_width = 92.min(area.width.saturating_sub(4)).max(24);
+    let content = usize::from(box_width.saturating_sub(4));
+
+    // Four rows go to chrome: the border, and the one-row margin `centered`
+    // keeps above and below. Budgeting only for the border is how the last line
+    // gets clipped anyway — by exactly the amount the margin takes.
+    let rows = usize::from(area.height.saturating_sub(4));
+    let lines = modal_lines(modal, config, content, rows);
 
     // Size the box from what goes in it. Guessing the row count is how the
     // hint line ends up clipped off the bottom by exactly one.
     let height = lines.len() as u16 + 2;
-    let box_area = centered(area, 74, height);
+    let box_area = centered(area, box_width, height);
 
     // Clear first: without it the list bleeds through the box.
     frame.render_widget(Clear, box_area);
@@ -128,18 +201,115 @@ fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn modal_lines(modal: &Modal) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line> = vec![
-        Line::from(vec![
-            modal.subject.label().bold(),
-            "  ".into(),
-            modal.subject.name().dim(),
-        ]),
-        Line::from(modal.subject.help().dim()),
-        Line::from(""),
-        scope_row(modal),
-    ];
+/// The overlay's contents, at the most detail that fits in `rows`.
+///
+/// `Paragraph` is top-aligned and the box is clamped to the frame, so anything
+/// that does not fit falls off the *bottom* — which is where the key hints live
+/// and, when a write has been refused, the reason for the refusal. An invisible
+/// refusal is worse than a missing explanation, so a short terminal sheds whole
+/// blocks in [`Detail`]'s order instead, and if even the last of those overflows
+/// it gives up on the middle rather than on the way out.
+fn modal_lines(
+    modal: &Modal,
+    config: &ResolvedSet,
+    width: usize,
+    rows: usize,
+) -> Vec<Line<'static>> {
+    let mut tightest = Vec::new();
+    for dropped in 0..=Detail::MOST {
+        let (body, tail) = modal_body(modal, config, width, Detail::at(dropped));
+        if body.len() + tail.len() <= rows {
+            return [body, tail].concat();
+        }
+        tightest = vec![body, tail];
+    }
 
+    // Nothing fits. Keep the top of the box and all of the tail; the middle is
+    // what gives way.
+    let tail = tightest.pop().unwrap_or_default();
+    let mut body = tightest.pop().unwrap_or_default();
+    body.truncate(rows.saturating_sub(tail.len()));
+    let mut lines = [body, tail].concat();
+    lines.truncate(rows);
+    lines
+}
+
+/// How much of the overlay's explanation survives.
+///
+/// Ordered by what is lost. **Decoration goes before prose**: the subject's help
+/// is duplicated in the panel behind the box and in `daft config list`, and the
+/// `preset` label and the rule above `unset` carry no information at all — so
+/// those three go before the sentence explaining the state under the cursor,
+/// which exists nowhere else and changes as the cursor moves. A classic 80×24
+/// terminal lands on that boundary exactly: shedding the label and the rule is
+/// what keeps the explanation on screen there.
+///
+/// Everything a keystroke needs — the list, the scope, the refusal, the way
+/// out — is not in this struct at all.
+#[derive(Debug, Clone, Copy)]
+struct Detail {
+    subject_help: bool,
+    heading: bool,
+    option_help: bool,
+    table: bool,
+    now: bool,
+}
+
+impl Detail {
+    /// How many blocks there are to shed.
+    const MOST: u8 = 5;
+
+    fn at(dropped: u8) -> Self {
+        Self {
+            subject_help: dropped < 1,
+            heading: dropped < 2,
+            option_help: dropped < 3,
+            table: dropped < 4,
+            now: dropped < 5,
+        }
+    }
+}
+
+/// The overlay, split into what may be trimmed and what may not.
+fn modal_body(
+    modal: &Modal,
+    config: &ResolvedSet,
+    width: usize,
+    detail: Detail,
+) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    let mut lines: Vec<Line> = vec![Line::from(vec![
+        modal.subject.label().bold(),
+        "  ".into(),
+        modal.subject.name().dim(),
+    ])];
+    if detail.subject_help {
+        lines.extend(prose(&modal.subject.help(), width, 0));
+    }
+    lines.push(Line::from(""));
+
+    match &modal.subject {
+        Subject::Behavior(spec) => {
+            behavior_body(&mut lines, modal, spec, config, width, detail);
+        }
+        Subject::Setting(_) => setting_body(&mut lines, modal, width),
+    }
+
+    let mut tail = vec![Line::from("")];
+    match &modal.error {
+        Some(error) => tail.extend(
+            wrapped(&format!("✗ {error}"), width, 2)
+                .into_iter()
+                .map(|line| Line::from(line.red())),
+        ),
+        None => tail.push(modal_hints(modal)),
+    }
+
+    (lines, tail)
+}
+
+/// A setting's editor: pick a value or type one, at the pill's scope.
+fn setting_body(lines: &mut Vec<Line<'static>>, modal: &Modal, width: usize) {
+    lines.push(scope_row(modal));
     if modal.scope_is_inert {
         lines.push(Line::from(
             "   daft reads this key from global config only".yellow(),
@@ -150,7 +320,7 @@ fn modal_lines(modal: &Modal) -> Vec<Line<'static>> {
     match &modal.field {
         Field::Options { cursor } => {
             for (index, option) in modal.options.iter().enumerate() {
-                lines.push(option_row(option, index == *cursor));
+                lines.extend(option_rows(option, index == *cursor, width));
             }
         }
         Field::Text {
@@ -168,15 +338,173 @@ fn modal_lines(modal: &Modal) -> Vec<Line<'static>> {
                 lines.push(Line::from(vec!["      ".into(), span]));
             }
             if let Some(unset) = modal.options.last() {
-                lines.push(option_row(unset, *on_unset));
+                lines.extend(option_rows(unset, *on_unset, width));
             }
         }
     }
+}
 
+/// A behavior's editor: which named state, and what that state does.
+///
+/// Four blocks, in the order the questions get asked. What is it doing now, and
+/// why is that `Custom` if it is. Where would a write go. Which state do I
+/// want. And — the one a value editor never has to answer — what does choosing
+/// that state actually set.
+fn behavior_body(
+    lines: &mut Vec<Line<'static>>,
+    modal: &Modal,
+    spec: &'static BehaviorSpec,
+    config: &ResolvedSet,
+    width: usize,
+    detail: Detail,
+) {
+    let behavior = config.behavior(spec.name).filter(|_| detail.now);
+
+    if let Some(behavior) = behavior {
+        let mut now: Vec<Span> = vec!["now    ".dim()];
+        now.push(if behavior.preset().is_some() {
+            behavior.state_label().bold()
+        } else {
+            behavior.state_label().yellow()
+        });
+        // A named state nothing sets is not the same as one someone chose, and
+        // the difference decides whether unset would change anything.
+        if behavior.preset().is_some() && !behavior.is_set(&config.settings) {
+            now.push("   nothing set — daft's default".dim());
+        }
+        lines.push(Line::from(now));
+
+        // Why it is Custom, in the one phrasing the CLI and the panel also use.
+        if let Some(note) = behavior.divergence_note(&config.settings) {
+            lines.extend(divergence_lines(&note, width, 7));
+        }
+        lines.push(Line::from(""));
+    }
+
+    lines.push(scope_row(modal));
     lines.push(Line::from(""));
-    match &modal.error {
-        Some(error) => lines.push(Line::from(format!("✗ {error}").red())),
-        None => lines.push(modal_hints(modal)),
+
+    // The list is a preset selector: the state's name leads, the word you would
+    // type for it follows in the dim column. Unset is separated by a blank
+    // line — it is not a third state, it is the way to stop having one.
+    if detail.heading {
+        lines.push(Line::from("preset".dim()));
+    }
+    for (index, option) in modal.options.iter().enumerate() {
+        let selected = matches!(modal.field, Field::Options { cursor } if cursor == index);
+        if matches!(option, Option_::Unset { .. }) && detail.heading {
+            lines.push(Line::from(""));
+        }
+        lines.extend(preset_rows(option, selected, width));
+    }
+
+    // What the highlighted row means, in full.
+    if detail.option_help {
+        lines.push(Line::from(""));
+        let help = match modal.selected_option() {
+            Some(Option_::Value { value, .. }) => spec
+                .preset(value)
+                .map(|preset| format!("{} — {}", preset.label, preset.help)),
+            Some(Option_::Unset { .. }) => Some(format!(
+                "Removes {} from {} config. What the behavior reads then is \
+                 whatever the remaining scopes and the defaults say.",
+                spec.members.join(", "),
+                modal.scope_label(modal.scope),
+            )),
+            None => None,
+        };
+        if let Some(help) = help {
+            lines.extend(prose(&help, width, 0));
+        }
+    }
+
+    // And what it sets, key by key.
+    if detail.table {
+        lines.push(Line::from(""));
+        lines.extend(member_table(modal, spec, config, width));
+    }
+}
+
+/// One row per member: what it reads now, where that came from, and what the
+/// highlighted preset would write.
+///
+/// This is the part a value editor has no equivalent of, and the reason a
+/// behavior needs its own box. A preset is only trustworthy if you can see what
+/// it stands for — and the arrow is only honest if a write that will not change
+/// what daft reads says so.
+fn member_table(
+    modal: &Modal,
+    spec: &'static BehaviorSpec,
+    config: &ResolvedSet,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let Some(behavior) = config.behavior(spec.name) else {
+        return Vec::new();
+    };
+
+    let clearing = matches!(modal.selected_option(), Some(Option_::Unset { .. }));
+    let preset = match modal.selected_option() {
+        Some(Option_::Value { value, .. }) => spec.preset(value),
+        _ => None,
+    };
+    if !clearing && preset.is_none() {
+        return Vec::new();
+    }
+
+    let scope = modal.scope_label(modal.scope);
+    let mut lines = vec![Line::from(
+        if clearing {
+            format!("clears from {scope}")
+        } else {
+            format!("writes to {scope}")
+        }
+        .dim(),
+    )];
+
+    let key_width = behavior
+        .members
+        .iter()
+        .map(|index| config.settings[*index].spec.key.chars().count())
+        .max()
+        .unwrap_or(24)
+        .min(width.saturating_sub(28));
+
+    for index in &behavior.members {
+        let member = &config.settings[*index];
+        let now = member.effective_display().to_string();
+
+        // What lands, and whether it is a change at all. Compared through the
+        // member's own type, so a hand-typed `yes` counts as `true`.
+        let target = preset.and_then(|preset| preset.value_for(&member.spec.key));
+        let changes = if clearing {
+            member.value_written_at(&member.spec, modal.scope).is_some()
+        } else {
+            !values_agree(&member.spec.ty, member.effective.as_deref(), target)
+        };
+
+        let target_span: Span = match (clearing, target) {
+            (true, _) if changes => "unset".bold(),
+            (true, _) => "—".dim(),
+            (false, Some(value)) if changes => value.to_string().bold(),
+            (false, Some(value)) => value.to_string().dim(),
+            (false, None) => "—".dim(),
+        };
+
+        let mut spans = vec![
+            "  ".into(),
+            Span::from(pad(&truncate(&member.spec.key, key_width), key_width)),
+            "  ".into(),
+            Span::from(pad(&now, 6)),
+            "  ".into(),
+            pad(&member.origin.label(), 8).dim(),
+            "→  ".dim(),
+            target_span,
+        ];
+        // The qualification, only where it would otherwise be a false promise.
+        if changes && let Some(layer) = member.masked_above(&member.spec, modal.scope) {
+            spans.push(format!("  outranked by {}", layer.label()).yellow());
+        }
+        lines.push(Line::from(spans));
     }
 
     lines
@@ -202,28 +530,55 @@ fn scope_row(modal: &Modal) -> Line<'static> {
     Line::from(spans)
 }
 
-fn option_row(option: &Option_, selected: bool) -> Line<'static> {
+/// The column a radio row's gloss starts in, and so the hanging indent a
+/// wrapped gloss lines up under.
+const GLOSS_COLUMN: usize = 5 + 18 + 2;
+
+/// A value row: the value, then what the registry says it means.
+fn option_rows(option: &Option_, selected: bool, width: usize) -> Vec<Line<'static>> {
+    let (value, gloss) = match option {
+        Option_::Value { value, gloss } => (value.clone(), gloss.clone()),
+        // Unset always names what it would reveal — otherwise it reads as
+        // "delete" rather than "fall back to".
+        Option_::Unset { reveals } => ("unset".to_string(), format!("inherit: {reveals}")),
+    };
+    radio(&value, &gloss, selected, width)
+}
+
+/// A preset row: the state's name, then the word you would type for it.
+///
+/// The other way round from a value row, and deliberately: the thing being
+/// chosen is the state, and `off` / `on` in the primary column is what made a
+/// preset selector read as a boolean's editor.
+fn preset_rows(option: &Option_, selected: bool, width: usize) -> Vec<Line<'static>> {
+    match option {
+        Option_::Value { value, gloss } => radio(gloss, value, selected, width),
+        Option_::Unset { reveals } => radio("unset", reveals, selected, width),
+    }
+}
+
+fn radio(label: &str, gloss: &str, selected: bool, width: usize) -> Vec<Line<'static>> {
     let marker: Span = if selected {
         " (•) ".cyan()
     } else {
         " ( ) ".into()
     };
-    match option {
-        Option_::Value { value, gloss } => Line::from(vec![
-            marker,
-            Span::from(pad(value, 18)),
-            "  ".into(),
-            gloss.clone().dim(),
-        ]),
-        // Unset always names what it would reveal — otherwise it reads as
-        // "delete" rather than "fall back to".
-        Option_::Unset { reveals } => Line::from(vec![
-            marker,
-            Span::from(pad("unset", 18)),
-            "  ".into(),
-            format!("inherit: {reveals}").dim(),
-        ]),
-    }
+    let label: Span = if selected {
+        pad(label, 18).bold()
+    } else {
+        Span::from(pad(label, 18))
+    };
+
+    let mut wrapped_gloss = wrapped(gloss, width.saturating_sub(GLOSS_COLUMN), 0).into_iter();
+    let first = wrapped_gloss.next().unwrap_or_default();
+
+    let mut lines = vec![Line::from(vec![marker, label, "  ".into(), first.dim()])];
+    // A gloss longer than its column continues under itself rather than off the
+    // edge of the box.
+    lines.extend(
+        wrapped_gloss.map(|line| Line::from(vec![" ".repeat(GLOSS_COLUMN).into(), line.dim()])),
+    );
+    lines
 }
 
 fn text_row(buffer: &str, caret: usize, focused: bool) -> Line<'static> {
@@ -292,6 +647,18 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &ScreenState, show_rail: bo
         None => state.write_scope.label(),
     };
     spans.push(format!(" {scope} ").bold().on_dark_gray());
+
+    // Drilled into a behavior's members, the list is three rows out of eighty
+    // with nothing to say which three. The header is where "where am I" belongs,
+    // and without it the only clue is the footer's way out.
+    if let Some(behavior) = state
+        .member_focus()
+        .and_then(|name| state.config.behavior(name))
+    {
+        spans.push("   ".into());
+        spans.push("inside ".dim());
+        spans.push(behavior.spec.label.bold());
+    }
 
     if state.issue_count() > 0 && show_rail {
         spans.push("   ".into());
@@ -628,9 +995,13 @@ fn draw_detail(frame: &mut Frame, area: Rect, state: &ScreenState) {
             "  ".into(),
             resolved.spec.key.to_string().dim(),
         ]),
-        Line::from(resolved.spec.help.to_string()),
-        Line::from(""),
     ];
+    lines.extend(
+        wrapped(&resolved.spec.help, usize::from(area.width), 0)
+            .into_iter()
+            .map(Line::from),
+    );
+    lines.push(Line::from(""));
 
     // The ladder: every layer's answer, and which one daft reads.
     let reads_from = resolved.reads_from();
@@ -665,7 +1036,7 @@ fn draw_detail(frame: &mut Frame, area: Rect, state: &ScreenState) {
     ]));
 
     for diagnostic in &resolved.diagnostics {
-        lines.push(diagnostic_line(diagnostic));
+        lines.extend(diagnostic_lines(diagnostic, usize::from(area.width)));
     }
 
     // Values-format hint, when there is nothing to pick from a list.
@@ -692,13 +1063,21 @@ fn stray_detail(entry: &crate::git::ConfigEntry, width: u16) -> Vec<Line<'static
             "  ".into(),
             "not a daft setting".yellow(),
         ]),
-        Line::from(
-            "Set in your config, read by nothing. daft ignores keys it does not know.".to_string(),
-        ),
+    ];
+    lines.extend(
+        wrapped(
+            "Set in your config, read by nothing. daft ignores keys it does not know.",
+            usize::from(width),
+            0,
+        )
+        .into_iter()
+        .map(Line::from),
+    );
+    lines.extend([
         Line::from(""),
         Line::from(vec!["   value:  ".dim(), entry.value.clone().into()]),
         Line::from(vec!["   scope:  ".dim(), entry.scope.label().into()]),
-    ];
+    ]);
 
     if let Some(path) = &entry.origin_path {
         lines.push(Line::from(vec![
@@ -717,43 +1096,58 @@ fn stray_detail(entry: &crate::git::ConfigEntry, width: u16) -> Vec<Line<'static
         .into_iter()
         .map(|spec| spec.key.to_string())
         .collect();
-    match crate::suggest::find_similar(&entry.key, &keys, 1).first() {
-        Some(near) => lines.push(Line::from(vec![
-            "   ! ".yellow(),
-            format!("did you mean {near}?").yellow(),
-        ])),
-        None => lines.push(Line::from(vec![
-            "   ! ".yellow(),
-            "remove it, or check the spelling against `daft config list`".yellow(),
-        ])),
-    }
+    let advice = match crate::suggest::find_similar(&entry.key, &keys, 1).first() {
+        Some(near) => format!("did you mean {near}?"),
+        None => "remove it, or check the spelling against `daft config list`".to_string(),
+    };
+    let mut wrapped_advice = wrapped(&advice, usize::from(width).saturating_sub(5), 0).into_iter();
+    lines.push(Line::from(vec![
+        "   ! ".yellow(),
+        wrapped_advice.next().unwrap_or_default().yellow(),
+    ]));
+    lines.extend(wrapped_advice.map(|line| Line::from(vec!["     ".into(), line.yellow()])));
 
     lines
 }
 
-fn diagnostic_line(diagnostic: &Diagnostic) -> Line<'static> {
-    match diagnostic {
-        Diagnostic::Invalid { layer, value, .. } => Line::from(vec![
+/// A diagnostic, wrapped under its marker.
+///
+/// One of these carries a stored value verbatim (`the local value "…" is not
+/// valid`), so its length is up to whoever typed it — the one line on this panel
+/// that a user can make arbitrarily long.
+fn diagnostic_lines(diagnostic: &Diagnostic, width: usize) -> Vec<Line<'static>> {
+    const MARKER: usize = 5;
+
+    let (marker, text) = match diagnostic {
+        Diagnostic::Invalid { layer, value, .. } => (
             "   ✗ ".red(),
-            format!("the {} value {value:?} is not valid", layer.label()).red(),
-        ]),
-        Diagnostic::Deprecated { alias, replacement } => Line::from(vec![
+            format!("the {} value {value:?} is not valid", layer.label()),
+        ),
+        Diagnostic::Deprecated { alias, replacement } => (
             "   ! ".yellow(),
-            format!("{alias} is retired — move the value to {replacement}").yellow(),
-        ]),
-        Diagnostic::Inert { scope, .. } => Line::from(vec![
+            format!("{alias} is retired — move the value to {replacement}"),
+        ),
+        Diagnostic::Inert { scope, .. } => (
             "   ! ".yellow(),
-            format!("the {} value is set but never read", scope.label()).yellow(),
-        ]),
-        Diagnostic::EnvShadow { layer, .. } => Line::from(vec![
+            format!("the {} value is set but never read", scope.label()),
+        ),
+        Diagnostic::EnvShadow { layer, .. } => (
             "   ! ".yellow(),
             match layer {
                 Layer::Env(var) => format!("${var} outranks every config file"),
                 _ => "a process-scoped value outranks every config file".to_string(),
-            }
-            .yellow(),
-        ]),
-    }
+            },
+        ),
+    };
+    let colour = marker.style;
+
+    let mut spans = wrapped(&text, width.saturating_sub(MARKER), 0).into_iter();
+    let first = spans.next().unwrap_or_default();
+    let mut lines = vec![Line::from(vec![marker, Span::styled(first, colour)])];
+    lines.extend(
+        spans.map(|line| Line::from(vec![" ".repeat(MARKER).into(), Span::styled(line, colour)])),
+    );
+    lines
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -779,10 +1173,16 @@ fn behavior_detail(
             "  ".into(),
             behavior.spec.name.to_string().dim(),
         ]),
-        Line::from(behavior.spec.help.to_string()),
-        Line::from(""),
-        Line::from("What it sets".dim().underlined()),
     ];
+    // Wrapped, not clipped: this sentence exists to name what the behavior
+    // changes underneath, and the members are at the end of it.
+    lines.extend(
+        wrapped(behavior.spec.help, usize::from(width), 0)
+            .into_iter()
+            .map(Line::from),
+    );
+    lines.push(Line::from(""));
+    lines.push(Line::from("What it sets".dim().underlined()));
 
     for index in &behavior.members {
         let member = &config.settings[*index];
@@ -804,11 +1204,27 @@ fn behavior_detail(
     };
     lines.push(Line::from(vec!["  → ".into(), state_span]));
 
+    // The longest dynamic line on the screen — it names every member that is
+    // out of step — and the answer to "why does this say Custom", so it wraps
+    // rather than losing the members at the end of it.
     if let Some(note) = behavior.divergence_note(&config.settings) {
-        lines.push(Line::from(vec!["    ".into(), note.dim()]));
+        lines.extend(divergence_lines(&note, usize::from(width), 4));
     }
 
     lines
+}
+
+/// The Custom explanation, wrapped, at a given indent.
+///
+/// Dim rather than yellow, in both of the places it is drawn: the *state* is
+/// what carries the warning colour, and repeating it on the sentence underneath
+/// would be two accents for one fact.
+fn divergence_lines(note: &str, width: usize, indent: usize) -> Vec<Line<'static>> {
+    let pad = " ".repeat(indent);
+    wrapped(note, width.saturating_sub(indent), 0)
+        .into_iter()
+        .map(|line| Line::from(vec![pad.clone().into(), line.dim()]))
+        .collect()
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, state: &ScreenState, show_rail: bool) {
@@ -852,6 +1268,15 @@ fn footer_hints(state: &ScreenState, show_rail: bool, width: usize) -> Line<'sta
         }
         wanted.push(("j/k", "move".to_string()));
         wanted.push(("enter", "edit".to_string()));
+        // A behavior stands for several settings, and the way to reach them is
+        // worth advertising while the cursor is on one — otherwise the only
+        // route to a member is scrolling to its own category and knowing which
+        // keys to look for.
+        if state.member_focus().is_some() {
+            wanted.push(("h", "leave".to_string()));
+        } else if state.selected_behavior().is_some() {
+            wanted.push(("l", "settings".to_string()));
+        }
         wanted.push(("/", "filter".to_string()));
         wanted.push(("[/]", "section".to_string()));
         wanted.push(("space", "toggle".to_string()));
@@ -1050,17 +1475,219 @@ mod tests {
         );
     }
 
+    /// The editor for a behavior is a *preset* selector: the state's name is
+    /// what you pick, and the values it stands for are shown rather than
+    /// offered. Presenting `off` / `on` / `unset` as the choices is presenting a
+    /// boolean's editor for something that is not a boolean.
     #[test]
-    fn the_editor_on_a_behavior_offers_its_states_not_true_and_false() {
+    fn the_editor_on_a_behavior_selects_a_preset_and_shows_what_it_writes() {
         let mut state = state_as_opened(vec![]);
         state.open_modal();
         let text = render(&state, 120, 40);
 
-        assert!(text.contains("Full sync"), "{text}");
-        assert!(text.contains("Local only"), "{text}");
+        // The states, by name, in the column the cursor moves down.
+        assert!(text.contains("(•) Local only"), "{text}");
+        assert!(text.contains("( ) Full sync"), "{text}");
         assert!(
             !text.contains("(•) true") && !text.contains("( ) true"),
             "a behavior takes states, not booleans: {text}"
+        );
+        // The word you would type for the highlighted state is still there —
+        // the screen is where people learn the CLI's vocabulary.
+        assert!(text.contains("off"), "the preset's own name: {text}");
+
+        // And what the state stands for, key by key, with what each one reads
+        // now: this is the part a value editor has no equivalent of.
+        assert!(text.contains("writes to local"), "{text}");
+        for member in state.config.behaviors[0].spec.members {
+            assert!(text.contains(member), "member {member} is spelled out");
+        }
+        assert!(text.contains("→"), "each member's new value: {text}");
+    }
+
+    /// Custom is not a state you chose, so the editor has to say what put it
+    /// there — and open on the preset that would resolve it.
+    #[test]
+    fn the_editor_says_why_a_behavior_reads_custom() {
+        let mut state = state_as_opened(vec![
+            entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Local),
+            entry(keys::BRANCH_DELETE_REMOTE, "true", ConfigScope::Local),
+        ]);
+        state.open_modal();
+        let text = render(&state, 120, 40);
+
+        assert!(text.contains("now"), "the state it is in now: {text}");
+        assert!(text.contains("Custom"), "{text}");
+        assert!(
+            text.contains("closest to Full sync"),
+            "and what it is closest to: {text}"
+        );
+        assert!(
+            text.contains(&format!("{} is false", keys::CHECKOUT_PUSH)),
+            "and the member that put it there, with its value: {text}"
+        );
+        assert!(
+            text.contains("(•) Full sync"),
+            "opening on the preset one keystroke away, not on the top of the \
+             list, which would revert two deliberate settings: {text}"
+        );
+    }
+
+    /// The whole reason the box was rebuilt: registry prose ends in the part
+    /// that qualifies it, and truncation always takes the end.
+    #[test]
+    fn the_editor_never_truncates_its_explanations() {
+        for width in [80, 120, 200] {
+            let mut state = state_as_opened(vec![]);
+            state.open_modal();
+            let text = render(&state, width, 44);
+
+            assert!(
+                text.contains("along with the local one."),
+                "the behavior's help is cut off at {width} columns: {text}"
+            );
+            assert!(
+                text.contains("safe to run offline."),
+                "the chosen state's help is cut off at {width} columns: {text}"
+            );
+        }
+    }
+
+    /// A classic terminal is where the shedding order earns its keep. The
+    /// selected state's help exists nowhere else and changes as the cursor
+    /// moves, so it outlives the `preset` label and the rule above `unset`,
+    /// which say nothing.
+    #[test]
+    fn the_explanation_that_only_the_editor_has_outlives_its_decoration() {
+        let mut state = state_as_opened(vec![]);
+        state.open_modal();
+        let text = render(&state, 80, 24);
+
+        assert!(
+            text.contains("safe to run offline."),
+            "the chosen state's explanation is gone at 80x24: {text}"
+        );
+        assert!(
+            text.contains("Local only") && text.contains("Full sync"),
+            "and every state is still on the list: {text}"
+        );
+        assert!(text.contains("esc"), "and the way out: {text}");
+    }
+
+    /// A refusal that scrolled off the bottom is a keystroke that did nothing
+    /// for no visible reason. The box sheds explanation before it sheds this.
+    #[test]
+    fn a_refusal_and_the_way_out_survive_a_short_terminal() {
+        for (width, height) in [(80, 24), (80, 20), (100, 16)] {
+            let mut state = state_as_opened(vec![]);
+            state.open_modal();
+            if let Some(modal) = state.modal.as_mut() {
+                modal.error = Some("refused for a reason".to_string());
+            }
+            let text = render(&state, width, height);
+
+            assert!(
+                text.contains("refused for a reason"),
+                "the refusal is off the bottom at {width}x{height}: {text}"
+            );
+        }
+
+        // Without an error the hints take that line, and they matter as much:
+        // a modal with no visible way out is a trap.
+        for (width, height) in [(80, 24), (80, 20), (100, 16)] {
+            let mut state = state_as_opened(vec![]);
+            state.open_modal();
+            let text = render(&state, width, height);
+            assert!(
+                text.contains("esc"),
+                "no way out shown at {width}x{height}: {text}"
+            );
+        }
+    }
+
+    /// The arrow promises what the value will be. When the scope being written
+    /// is outranked, that promise needs its qualification next to it.
+    #[test]
+    fn a_write_something_above_would_outrank_says_so() {
+        let mut state =
+            state_as_opened(vec![entry(keys::CHECKOUT_PUSH, "true", ConfigScope::Local)]);
+        state.open_modal();
+        if let Some(modal) = state.modal.as_mut() {
+            modal.set_scope(WriteScope::Global);
+        }
+        let text = render(&state, 120, 40);
+
+        assert!(text.contains("writes to global"), "{text}");
+        assert!(
+            text.contains("outranked by local"),
+            "a global write under a local value changes nothing daft reads, and \
+             the row has to say so: {text}"
+        );
+    }
+
+    /// The members are reachable from the behavior's row, and a route nothing
+    /// mentions is a route nobody takes.
+    #[test]
+    fn the_footer_offers_the_way_into_a_behaviors_settings_and_back_out() {
+        // The footer only — "settings" also appears in a behavior row's third
+        // column, and the question here is what the key hints advertise.
+        let footer = |state: &ScreenState| {
+            painted(state, 120, 40)
+                .last()
+                .cloned()
+                .expect("a footer row")
+        };
+
+        let mut state = state_as_opened(vec![]);
+        let on_behavior = footer(&state);
+        assert!(on_behavior.contains(" l "), "{on_behavior}");
+        assert!(on_behavior.contains("settings"), "{on_behavior}");
+
+        let behavior = state.selected_behavior().cloned().expect("a behavior row");
+        state.focus_members(&behavior);
+        let drilled_in = footer(&state);
+        assert!(
+            drilled_in.contains("leave"),
+            "the way back out: {drilled_in}"
+        );
+
+        // And the header says which behavior's settings these are — three rows
+        // out of eighty, with nothing else to identify them.
+        let header = painted(&state, 120, 40)[0].clone();
+        assert!(
+            header.contains("inside Remote sync"),
+            "no orientation while drilled in: {header}"
+        );
+
+        let on_setting = footer(&state_with(vec![]));
+        assert!(
+            !on_setting.contains("settings") && !on_setting.contains("leave"),
+            "a setting has no members to drill into: {on_setting}"
+        );
+    }
+
+    /// Unset is not a third state — it is the way to stop having one, and what
+    /// it removes is worth seeing before pressing Enter.
+    #[test]
+    fn the_unset_row_shows_what_it_would_clear() {
+        let mut state = state_as_opened(vec![entry(
+            keys::CHECKOUT_FETCH,
+            "true",
+            ConfigScope::Local,
+        )]);
+        state.open_modal();
+        if let Some(modal) = state.modal.as_mut() {
+            for _ in 0..5 {
+                modal.move_down();
+            }
+        }
+        let text = render(&state, 120, 40);
+
+        assert!(text.contains("(•) unset"), "{text}");
+        assert!(text.contains("clears from local"), "{text}");
+        assert!(
+            text.contains(keys::CHECKOUT_FETCH),
+            "the members it would remove: {text}"
         );
     }
 
@@ -1205,6 +1832,54 @@ mod tests {
         let all = painted(&state, 120, 40).join("\n");
         assert!(all.contains("matching"), "{all}");
         assert!(all.contains("clear filter"), "the footer switches hints");
+    }
+
+    // ── Wrapping ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn prose_wraps_inside_its_width_and_keeps_every_word() {
+        let text = "Whether worktree commands reach the remote: fetching before \
+                    checkout, pushing branches as they are created.";
+        for width in [12, 24, 40, 80, 200] {
+            let lines = wrapped(text, width, 0);
+            for line in &lines {
+                assert!(
+                    line.chars().count() <= width.max(8),
+                    "{line:?} overflows {width}"
+                );
+            }
+            assert_eq!(
+                lines.join(" ").split_whitespace().collect::<Vec<_>>(),
+                text.split_whitespace().collect::<Vec<_>>(),
+                "wrapping at {width} lost or reordered a word"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hanging_indent_applies_to_continuations_only() {
+        let lines = wrapped("one two three four five six seven", 20, 4);
+        assert!(lines.len() > 1, "{lines:?}");
+        assert!(!lines[0].starts_with(' '), "the first line is not indented");
+        for line in &lines[1..] {
+            assert!(line.starts_with("    "), "{line:?} is not indented");
+            assert!(line.chars().count() <= 20, "{line:?} overflows");
+        }
+    }
+
+    #[test]
+    fn a_word_longer_than_the_box_is_split_rather_than_clipped() {
+        // A key or a path can be longer than a narrow overlay, and dropping the
+        // tail of one is how a "did you mean" suggestion becomes unreadable.
+        let lines = wrapped("short daft.checkoutBranch.carryUntrackedChanges end", 16, 0);
+        for line in &lines {
+            assert!(line.chars().count() <= 16, "{line:?} overflows");
+        }
+        let rejoined: String = lines.concat();
+        assert!(
+            rejoined.contains("carryUntrackedChanges"),
+            "the long word survived in pieces: {lines:?}"
+        );
     }
 
     #[test]

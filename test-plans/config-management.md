@@ -135,10 +135,24 @@ cd $(mktemp -d) && git init -q . && daft config
       names which member is out of step
 - [ ] `space` on the behavior row steps to the state the panel says it is
       closest to
-- [ ] `→` narrows the list to the three member settings; `←` and `esc` each come
-      back, and a write while narrowed keeps the narrowed list
-- [ ] `enter` opens the same editor a setting gets, offering the states rather
-      than `true`/`false`
+- [ ] `→` narrows the list to the three member settings; the header says which
+      behavior they belong to; `←` and `esc` each come back, and a write while
+      narrowed keeps the narrowed list
+- [ ] `enter` opens a preset selector, not a value editor: the states are listed
+      by name (`Local only`, `Full sync`), with the word you would type for each
+      beside it and `unset` set apart below them
+- [ ] The editor names the state the behavior is in now, and when that is
+      `Custom` says what it is closest to and which member differs
+- [ ] Moving between presets updates the table under it: every member, what it
+      reads now and where from, and what the highlighted preset would write —
+      `unset` shows what it would clear instead
+- [ ] Nothing in the editor is cut off mid-sentence at 80 columns, and at 24
+      rows it drops explanation rather than the key hints or a refusal
+- [ ] Opening the editor on a `Custom` behavior starts on the preset the panel
+      says it is closest to, so `enter` resolves the disagreement rather than
+      reverting the members that were set deliberately
+- [ ] With a member set locally, `tab` to global marks that member's row as
+      outranked by local — and the write is still allowed
 - [ ] `daft config unset remote-sync` at local scope reports the state the
       global values reveal, not just the removal
 - [ ] `daft config set remote-sync custom` is refused and names the real states

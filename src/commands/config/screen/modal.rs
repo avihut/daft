@@ -10,11 +10,16 @@
 //! for the tri-state settings it is a third meaningful answer, not a way to
 //! give up.
 //!
+//! A behavior is the exception to the first paragraph, and has to be: it has no
+//! value, so there is nothing to pick from a list of values. Its box is a preset
+//! selector with the state's members drawn out underneath — same keys, different
+//! shape. See [`Subject`].
+//!
 //! The editor decides *what to write* and hands it back as an [`Apply`]. It
 //! never writes: that keeps the whole thing testable without a repository, and
 //! keeps the one place that touches git in `write.rs` where the CLI shares it.
 
-use crate::commands::config::resolve::{Resolved, ResolvedBehavior};
+use crate::commands::config::resolve::{BehaviorState, Resolved, ResolvedBehavior};
 use crate::commands::config::write::{WriteScope, canonical_value};
 use crate::core::settings_spec::{BehaviorSpec, SettingSpec, ValueType};
 use crate::git::ConfigScope;
@@ -46,9 +51,11 @@ pub enum Apply {
 
 /// What the editor is editing.
 ///
-/// One overlay for both, because they are the same interaction: a scope, a
-/// list of choices, and unset. Only the labels and what an apply produces
-/// differ.
+/// One overlay and one set of keys for both — j/k to choose, tab for scope,
+/// enter to apply — but not one layout. A setting has a value to pick; a
+/// behavior has a state to pick and three keys to account for, and drawing the
+/// second as the first is what made a preset list read as a boolean's on / off /
+/// unset. The shapes part company in `render`; the keys never do.
 #[derive(Debug, Clone)]
 pub enum Subject {
     // Boxed: a `SettingSpec` is ~250 bytes against the behavior's one
@@ -212,10 +219,13 @@ impl Modal {
 
     /// Open the editor for a behavior.
     ///
-    /// Structurally the same box a closed-vocabulary setting gets: the presets
-    /// are the options, and unset is last. What it cannot show is a single
-    /// current value — the state comes from the members' effective values, and
-    /// the row behind the overlay is where that is spelled out.
+    /// Not the same box a boolean gets. A behavior has no value of its own to
+    /// edit, so the list is a *preset* selector: each row is a named recipe,
+    /// and what it stands for underneath is drawn out in full — the state the
+    /// behavior is in now, why that is `Custom` when it is, and exactly what
+    /// each member would be set to. The options carry the preset's name and
+    /// label; the prose comes off the registry at render time, so nothing here
+    /// is pre-formatted into a width.
     pub fn open_behavior(behavior: &ResolvedBehavior, scope: ConfigScope, in_repo: bool) -> Self {
         let spec = behavior.spec;
 
@@ -230,12 +240,15 @@ impl Modal {
             _ => WriteScope::Global,
         };
 
+        // The gloss is the preset's label — the name of the state, not a
+        // sentence about it. A row is one line and a state's help is three, so
+        // pre-formatting the two together is what truncated the explanation.
         let mut options: Vec<Option_> = spec
             .presets
             .iter()
             .map(|preset| Option_::Value {
                 value: preset.name.to_string(),
-                gloss: format!("{} — {}", preset.label, preset.help),
+                gloss: preset.label.to_string(),
             })
             .collect();
         options.push(Option_::Unset {
@@ -243,15 +256,13 @@ impl Modal {
         });
 
         // Start on the state the behavior is in, so Enter without moving is a
-        // no-op. Custom starts at the top, since there is no preset to point
-        // at and the first one is the untouched state.
-        let cursor = match behavior.preset() {
-            Some(current) => spec
-                .presets
-                .iter()
-                .position(|preset| preset.name == current.name)
-                .unwrap_or(0),
-            None => 0,
+        // no-op. Custom starts on its *nearest* preset — the one keystroke
+        // that resolves the disagreement — rather than the top of the list,
+        // which for a configuration two changes into the other pole would mean
+        // Enter quietly reverts the lot.
+        let cursor = match &behavior.state {
+            BehaviorState::Preset(index) => *index,
+            BehaviorState::Custom { nearest, .. } => *nearest,
         };
 
         let mut modal = Self {
@@ -660,6 +671,72 @@ mod tests {
         modal.cycle_scope();
         assert!(!modal.scope_is_inert);
         assert!(modal.apply().is_ok());
+    }
+
+    // ── Behaviors ────────────────────────────────────────────────────────
+
+    fn open_behavior(entries: Vec<ConfigEntry>) -> Modal {
+        let set = resolve_all(&Snapshot {
+            entries,
+            in_repo: true,
+            ..Default::default()
+        });
+        let behavior = set.behavior("remote-sync").expect("registry behavior");
+        Modal::open_behavior(behavior, ConfigScope::Local, true)
+    }
+
+    #[test]
+    fn a_behavior_offers_its_presets_by_name_and_by_label() {
+        let modal = open_behavior(vec![]);
+        assert_eq!(
+            modal.options[..2],
+            [
+                Option_::Value {
+                    value: "off".to_string(),
+                    gloss: "Local only".to_string(),
+                },
+                Option_::Value {
+                    value: "on".to_string(),
+                    gloss: "Full sync".to_string(),
+                },
+            ],
+            "the row carries the state's name and its label — the sentence \
+             explaining it is too long for a row and is drawn separately"
+        );
+        assert!(matches!(modal.options.last(), Some(Option_::Unset { .. })));
+    }
+
+    /// Custom means the members disagree. The one keystroke that resolves it is
+    /// the *nearest* preset — opening at the top of the list instead would make
+    /// Enter revert every member that had been set deliberately.
+    #[test]
+    fn a_custom_behavior_opens_on_the_preset_that_would_resolve_it() {
+        let modal = open_behavior(vec![
+            entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Local),
+            entry(keys::BRANCH_DELETE_REMOTE, "true", ConfigScope::Local),
+        ]);
+        assert_eq!(
+            modal.apply(),
+            Ok(Apply::SetBehavior {
+                name: "remote-sync",
+                preset: "on",
+                scope: WriteScope::Local,
+            }),
+            "two of three members already agree with Full sync"
+        );
+    }
+
+    #[test]
+    fn a_behavior_in_a_preset_opens_on_that_preset() {
+        let modal = open_behavior(vec![
+            entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Local),
+            entry(keys::CHECKOUT_PUSH, "true", ConfigScope::Local),
+            entry(keys::BRANCH_DELETE_REMOTE, "true", ConfigScope::Local),
+        ]);
+        match modal.apply().unwrap() {
+            Apply::SetBehavior { preset, .. } => assert_eq!(preset, "on"),
+            other => panic!("expected a behavior write, got {other:?}"),
+        }
     }
 
     // ── Text entry ───────────────────────────────────────────────────────

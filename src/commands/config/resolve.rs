@@ -508,6 +508,12 @@ impl Resolved {
     /// Both other backends have exactly two writable rungs, which is what
     /// makes the mapping total.
     pub fn value_written_at(&self, spec: &SettingSpec, scope: WriteScope) -> Option<&str> {
+        self.write_rung(spec, scope)
+            .and_then(|index| self.rungs[index].value.as_deref())
+    }
+
+    /// The rung a write at `scope` would land in.
+    fn write_rung(&self, spec: &SettingSpec, scope: WriteScope) -> Option<usize> {
         // `overlay` rather than `tracked`: tracked says whether the *main*
         // config is committed, which is false for a visitor's own daft.yml —
         // and then the committed-position file and the overlay are both
@@ -528,10 +534,32 @@ impl Resolved {
             }
         };
 
+        self.rungs.iter().position(wanted)
+    }
+
+    /// The layer that would keep this setting from reading what a write at
+    /// `scope` puts there — `None` when the write would take effect.
+    ///
+    /// A write to a scope something above already sets is legal and sometimes
+    /// exactly what you meant (seeding a global default under a local
+    /// override), so this is an annotation and never a refusal. But an editor
+    /// that promises `false → true` when nothing observable will change has
+    /// lied, and this is the cheapest way not to: rungs run lowest-precedence
+    /// first, so anything above the write target with a value of its own is
+    /// what daft keeps reading.
+    ///
+    /// Inert rungs are skipped — they are by definition not read — and an
+    /// *invalid* value above is deliberately not: the loaders fold it into the
+    /// default rather than falling through, so the write is masked either way.
+    /// Hence "outranked by", which is true whether the layer above is read or
+    /// merely in the way.
+    pub fn masked_above(&self, spec: &SettingSpec, scope: WriteScope) -> Option<&Layer> {
+        let index = self.write_rung(spec, scope)?;
         self.rungs
             .iter()
-            .find(|rung| wanted(rung))
-            .and_then(|rung| rung.value.as_deref())
+            .skip(index + 1)
+            .rfind(|rung| rung.inert.is_none() && rung.value.is_some())
+            .map(|rung| &rung.layer)
     }
 }
 
@@ -703,7 +731,7 @@ fn pick_nearest(candidates: Vec<Vec<String>>) -> (usize, Vec<String>) {
 /// typed `git config daft.checkout.fetch yes` by hand is in Full sync, and a
 /// raw string comparison would call that Custom and be wrong about what daft
 /// does.
-fn values_agree(ty: &ValueType, effective: Option<&str>, wanted: Option<&str>) -> bool {
+pub(super) fn values_agree(ty: &ValueType, effective: Option<&str>, wanted: Option<&str>) -> bool {
     match (effective, wanted) {
         (Some(have), Some(want)) => {
             super::write::canonical_value(ty, have) == super::write::canonical_value(ty, want)
@@ -1338,6 +1366,50 @@ mod tests {
         assert_eq!(
             behavior.spec.presets[*nearest].name, "on",
             "two of three members are in Full sync"
+        );
+    }
+
+    /// The editor draws `now → new` for every key a preset would write, and
+    /// that arrow is a promise. A scope something above already sets cannot keep
+    /// it, and saying so is the difference between an annotation and a lie.
+    #[test]
+    fn a_write_is_reported_as_masked_only_when_something_above_sets_it() {
+        let set = resolve_all(&Snapshot {
+            entries: vec![entry(keys::CHECKOUT_PUSH, "true", ConfigScope::Local)],
+            in_repo: true,
+            ..Default::default()
+        });
+        let resolved = set.get(keys::CHECKOUT_PUSH).expect("registry row");
+        let spec = resolved.spec.clone();
+
+        assert_eq!(
+            resolved.masked_above(&spec, WriteScope::Global),
+            Some(&Layer::Git(ConfigScope::Local)),
+            "local outranks global, so a global write changes nothing daft reads"
+        );
+        assert_eq!(
+            resolved.masked_above(&spec, WriteScope::Local),
+            None,
+            "nothing above local sets it, so a local write takes effect"
+        );
+
+        // And a scope that is set but never read for this key does not count as
+        // being in the way — it is not read either.
+        let set = resolve_all(&Snapshot {
+            entries: vec![entry(keys::UPDATE_CHECK, "false", ConfigScope::Local)],
+            in_repo: true,
+            ..Default::default()
+        });
+        let resolved = set.get(keys::UPDATE_CHECK).expect("registry row");
+        let spec = resolved.spec.clone();
+        assert!(
+            spec.global_only,
+            "the fixture depends on this key being global-only"
+        );
+        assert_eq!(
+            resolved.masked_above(&spec, WriteScope::Global),
+            None,
+            "the inert local value is not read, so it masks nothing"
         );
     }
 
