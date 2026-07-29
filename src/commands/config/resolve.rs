@@ -31,6 +31,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use super::write::WriteScope;
 use crate::core::layout::resolver::LayoutSource;
 use crate::core::settings_spec::{Backend, SettingLookup, SettingSpec, all_specs, find};
 use crate::git::{ConfigEntry, ConfigScope};
@@ -163,15 +164,27 @@ pub struct YamlLayer {
     pub tracked: bool,
 }
 
-/// The committed config and the local overlay that outranks it.
+/// The committed config, anything it pulls in, and the overlay above them all.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct YamlLayers {
     pub main: Option<YamlLayer>,
+    /// The `extends:` files, in the order the loader merges them.
+    ///
+    /// Reading only `daft.yml` and its overlay would make this screen lie
+    /// about any repository that factors its config out: the loader merges
+    /// each of these *over* the main file, so a value the user sees nowhere
+    /// is the value daft actually runs on.
+    pub extends: Vec<YamlLayer>,
     pub local: Option<YamlLayer>,
 }
 
 impl YamlLayers {
-    /// Read both files from the current worktree.
+    /// Read the whole file chain from the current worktree.
+    ///
+    /// Deliberately re-walked here as separate documents rather than taken
+    /// from `load_merged_config`: that returns one merged config, and a merge
+    /// cannot say which file a value came from — which is the only question
+    /// the ladder exists to answer.
     pub fn capture() -> Option<Self> {
         use crate::hooks::yaml_config_loader;
 
@@ -187,7 +200,26 @@ impl YamlLayers {
             yaml_config_loader::classify_main_config(&worktree),
             yaml_config_loader::ConfigStatus::Tracked
         );
-        let main = read(&main_path).map(|doc| YamlLayer {
+        let main_doc = read(&main_path);
+
+        // Relative to the config file's own directory, and one level deep —
+        // the loader does not recurse, so neither does the ladder.
+        let directory = main_path.parent().unwrap_or(&worktree).to_path_buf();
+        let extends = main_doc
+            .as_ref()
+            .and_then(|doc| doc.get("extends"))
+            .and_then(|list| list.as_sequence())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|entry| entry.as_str())
+                    .map(|name| directory.join(name))
+                    .filter(|path| path.is_file())
+                    .filter_map(|path| read(&path).map(|doc| YamlLayer { path, doc, tracked }))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let main = main_doc.map(|doc| YamlLayer {
             path: main_path.clone(),
             doc,
             tracked,
@@ -200,7 +232,11 @@ impl YamlLayers {
             })
         });
 
-        Some(Self { main, local })
+        Some(Self {
+            main,
+            extends,
+            local,
+        })
     }
 }
 
@@ -445,6 +481,43 @@ impl Resolved {
         self.rungs
             .iter()
             .find(|rung| rung.layer == Layer::Git(scope))
+            .and_then(|rung| rung.value.as_deref())
+    }
+
+    /// What a write at `scope` would be replacing.
+    ///
+    /// [`value_at`](Self::value_at) answers this for the 77 git-config rows
+    /// and only those — it looks for a `Layer::Git` rung, and a `daft.yml` or
+    /// layout row has none, so it reports every one of them as unset. That is
+    /// the wrong answer to give an editor: it opens on an empty field for a
+    /// setting that plainly has a value, and the user has to retype the whole
+    /// thing to change one character of it.
+    ///
+    /// Both other backends have exactly two writable rungs, which is what
+    /// makes the mapping total.
+    pub fn value_written_at(&self, spec: &SettingSpec, scope: WriteScope) -> Option<&str> {
+        let wanted = |rung: &Rung| match (spec.backend, scope) {
+            (Backend::GitConfig, _) => rung.layer == Layer::Git(scope.as_config_scope()),
+            (Backend::LayoutChain, WriteScope::Global) => {
+                rung.layer == Layer::Layout(LayoutSource::GlobalConfig)
+            }
+            (Backend::LayoutChain, WriteScope::Local) => {
+                rung.layer == Layer::Layout(LayoutSource::RepoStore)
+            }
+            // The overlay is the only untracked file in the chain, and the
+            // committed one is the only writable tracked file — an extends
+            // rung is tracked but was marked unwritable when it was built.
+            (Backend::DaftYml { .. }, WriteScope::Local) => {
+                matches!(rung.layer, Layer::Yaml { tracked: false, .. })
+            }
+            (Backend::DaftYml { .. }, WriteScope::Global) => {
+                matches!(rung.layer, Layer::Yaml { tracked: true, .. }) && rung.writable
+            }
+        };
+
+        self.rungs
+            .iter()
+            .find(|rung| wanted(rung))
             .and_then(|rung| rung.value.as_deref())
     }
 }
@@ -719,7 +792,25 @@ fn resolve_one(spec: &SettingSpec, snapshot: &Snapshot, inherited: Option<String
     if let Backend::DaftYml { path, .. } = spec.backend
         && let Some(files) = &snapshot.yaml
     {
-        for (layer, file) in [(&files.main, "daft.yml"), (&files.local, "daft.local.yml")] {
+        // Lowest first, in the loader's own merge order: the committed file,
+        // whatever it extends, then the overlay. Only the two ends are write
+        // targets — `set` edits the main file or the overlay, so an extends
+        // rung that advertised itself as writable would point at a file no
+        // scope can reach.
+        let chain = std::iter::once((files.main.as_ref(), "daft.yml", true))
+            .chain(
+                files
+                    .extends
+                    .iter()
+                    .map(|layer| (Some(layer), "daft.yml", false)),
+            )
+            .chain(std::iter::once((
+                files.local.as_ref(),
+                "daft.local.yml",
+                true,
+            )));
+
+        for (layer, file, writable) in chain {
             let Some(layer) = layer else { continue };
             rungs.push(Rung {
                 layer: Layer::Yaml {
@@ -732,7 +823,7 @@ fn resolve_one(spec: &SettingSpec, snapshot: &Snapshot, inherited: Option<String
                 },
                 value: scalar_at(&layer.doc, path),
                 origin_path: Some(layer.path.clone()),
-                writable: spec.is_writable(),
+                writable: writable && spec.is_writable(),
                 inert: None,
             });
         }
@@ -1538,6 +1629,144 @@ mod tests {
             rc.effective_display(),
             "—",
             "the em dash is a display concern, not a value"
+        );
+    }
+
+    // ── The whole daft.yml chain ─────────────────────────────────────────
+
+    fn yaml_layer(name: &str, text: &str, tracked: bool) -> YamlLayer {
+        YamlLayer {
+            path: PathBuf::from(name),
+            doc: serde_yaml::from_str(text).unwrap(),
+            tracked,
+        }
+    }
+
+    fn yaml_snapshot(files: YamlLayers) -> Snapshot {
+        Snapshot {
+            in_repo: true,
+            yaml: Some(files),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_value_only_an_extends_file_sets_is_still_reported() {
+        // The loader merges each extends file over the main config, so this
+        // is the value daft runs on. Reading only daft.yml and its overlay
+        // would have this screen answer "7d, default" while the daemon prunes
+        // at 30d — the one failure a provenance browser cannot have.
+        let set = resolve_all(&yaml_snapshot(YamlLayers {
+            main: Some(yaml_layer("daft.yml", "extends:\n  - base.yml\n", true)),
+            extends: vec![yaml_layer("base.yml", "log:\n  retention: 30d\n", true)],
+            local: None,
+        }));
+
+        let retention = set.get("log.retention").unwrap();
+        assert_eq!(retention.effective.as_deref(), Some("30d"));
+        assert!(
+            retention
+                .rungs
+                .iter()
+                .any(|rung| rung.layer.label().contains("base.yml")),
+            "the ladder has to name the file it came from: {:?}",
+            retention
+                .rungs
+                .iter()
+                .map(|r| r.layer.label())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_overlay_still_outranks_what_the_main_file_extends() {
+        let set = resolve_all(&yaml_snapshot(YamlLayers {
+            main: Some(yaml_layer("daft.yml", "extends:\n  - base.yml\n", true)),
+            extends: vec![yaml_layer("base.yml", "log:\n  retention: 30d\n", true)],
+            local: Some(yaml_layer(
+                "daft.local.yml",
+                "log:\n  retention: 90d\n",
+                false,
+            )),
+        }));
+
+        assert_eq!(
+            set.get("log.retention").unwrap().effective.as_deref(),
+            Some("90d"),
+            "the loader merges the overlay last, so it wins"
+        );
+    }
+
+    #[test]
+    fn an_extends_file_is_shown_but_never_offered_as_a_write_target() {
+        // `set` writes the main file or the overlay. A rung claiming to be
+        // writable would point the editor at a file no scope can reach.
+        let set = resolve_all(&yaml_snapshot(YamlLayers {
+            main: Some(yaml_layer("daft.yml", "extends:\n  - base.yml\n", true)),
+            extends: vec![yaml_layer("base.yml", "log:\n  retention: 30d\n", true)],
+            local: None,
+        }));
+
+        let retention = set.get("log.retention").unwrap();
+        let extends_rung = retention
+            .rungs
+            .iter()
+            .find(|rung| rung.layer.label().contains("base.yml"))
+            .expect("the extends rung is on the ladder");
+        assert!(!extends_rung.writable);
+    }
+
+    #[test]
+    fn the_editor_opens_on_the_value_the_chosen_scope_holds() {
+        // `value_at` looks for a git rung, and a daft.yml row has none — so
+        // it called every one of them unset and the editor opened blank on a
+        // setting that plainly had a value.
+        let set = resolve_all(&yaml_snapshot(YamlLayers {
+            main: Some(yaml_layer("daft.yml", "log:\n  retention: 30d\n", true)),
+            extends: vec![],
+            local: Some(yaml_layer(
+                "daft.local.yml",
+                "log:\n  retention: 90d\n",
+                false,
+            )),
+        }));
+
+        let retention = set.get("log.retention").unwrap();
+        let spec = find("log.retention").unwrap();
+        assert_eq!(
+            retention.value_written_at(&spec, WriteScope::Global),
+            Some("30d")
+        );
+        assert_eq!(
+            retention.value_written_at(&spec, WriteScope::Local),
+            Some("90d")
+        );
+        assert_eq!(
+            retention.value_at(ConfigScope::Local),
+            None,
+            "the git-only lookup is blind here — that was the bug"
+        );
+    }
+
+    #[test]
+    fn the_editor_opens_on_the_layout_the_chosen_store_holds() {
+        let set = resolve_all(&layout_snapshot(LayoutRungs {
+            global: Some("sibling".to_string()),
+            repo_store: Some("nested".to_string()),
+            effective: "nested".to_string(),
+            source: LayoutSource::RepoStore,
+            ..Default::default()
+        }));
+
+        let layout = set.get("layout").unwrap();
+        let spec = find("layout").unwrap();
+        assert_eq!(
+            layout.value_written_at(&spec, WriteScope::Global),
+            Some("sibling")
+        );
+        assert_eq!(
+            layout.value_written_at(&spec, WriteScope::Local),
+            Some("nested")
         );
     }
 }

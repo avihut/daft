@@ -122,7 +122,7 @@ impl Modal {
             Some(_) => {
                 // Start on whatever is set at this scope, so Enter without
                 // moving is a no-op rather than a surprise.
-                let current = resolved.value_at(scope.as_config_scope());
+                let current = resolved.value_written_at(&spec, scope);
                 let cursor = current
                     .and_then(|value| {
                         options.iter().position(|row| match row {
@@ -135,7 +135,7 @@ impl Modal {
             }
             None => {
                 let buffer = resolved
-                    .value_at(scope.as_config_scope())
+                    .value_written_at(&spec, scope)
                     .unwrap_or_default()
                     .to_string();
                 let caret = buffer.chars().count();
