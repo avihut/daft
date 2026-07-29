@@ -122,9 +122,14 @@ never keeps an identity ink.
   a real file in the way gets the `daft shared link` remedy. The section never
   silently ignores a declaration it could not honor.
 - [Copied paths](/worktrees/copying-caches) get the same treatment under a
-  `├─ copied paths` anchor, immediately after the shared-files section — one row
-  per declared **entry**, never per expanded glob match, so a `**/dist/`
-  declaration stays one row and reports its fan-out in the annotation
+  `├─ copied paths from 'master'` anchor, immediately after the shared-files
+  section. The anchor names the worktree the caches came from, because that is a
+  ranked decision rather than something the command line shows — the base
+  branch's worktree when it has one, otherwise any worktree at the identical
+  commit (`· same commit`, plus `, where you are` or `, warmest` when a tie had
+  to be broken), otherwise where you ran the command. Below it, one row per
+  declared **entry**, never per expanded glob match, so a `**/dist/` declaration
+  stays one row and reports its fan-out in the annotation
   (`3 paths · 1.2 GB · reflinked · 0.3s`; `part reflinked` when only some
   matches cloned, `· 2 unreadable` when the expansion could not read
   everywhere). Exactly three skips are dim, because they are the stage working

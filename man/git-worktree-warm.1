@@ -15,10 +15,12 @@ This is the manual re\-run of the copy stage that worktree creation performs
 automatically. Use it for a worktree created before `copy:` was declared, or
 to re\-seed a cache that has since been rebuilt in the source worktree.
 .PP
-By default the worktree you are standing in is warmed from the default
-branch\*(Aqs worktree; naming a worktree warms that one from where you stand.
-Both the target and \-\-from accept a worktree directory name, a branch name,
-or a path under the project root.
+Naming no worktree warms the one you are standing in; naming one warms that
+one. \-\-from names the source outright and is never second\-guessed. Without
+it the source is ranked against what the target already holds: a worktree
+sitting at the target\*(Aqs exact commit first, then the worktree you are
+standing in, then the default branch\*(Aqs. Both the target and \-\-from accept a
+worktree directory name, a branch name, or a path under the project root.
 .PP
 Entries that already exist in the target are left alone, which makes repeat
 runs a no\-op; pass \-\-force to replace them. On a filesystem that supports
@@ -30,7 +32,7 @@ large for its max_size, or unreadable is reported and the rest still copy.
 .SH OPTIONS
 .TP
 \fB\-\-from\fR \fI<worktree>\fR
-Worktree to copy from, by directory name, branch name, or path (default: the current worktree, or the default branch\*(Aqs worktree when it is the target)
+Worktree to copy from, by directory name, branch name, or path (default: ranked — a worktree at the target\*(Aqs exact commit, then the current worktree, then the default branch\*(Aqs)
 .TP
 \fB\-f\fR, \fB\-\-force\fR
 Replace entries that already exist in the target worktree

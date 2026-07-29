@@ -187,7 +187,19 @@ pub fn execute(
         git,
         &crate::core::copy_source::CopyAnchor {
             branch: Some(base_branch.clone()),
-            commit: crate::core::copy_source::resolve_oid(&source_worktree, &base_branch),
+            // A base that exists only on the remote resolves through its
+            // tracking ref — `daft start feat release` is a perfectly ordinary
+            // thing to type, and without this the identical-commit rung would
+            // have nothing to rank against on exactly the runs where the base
+            // has no worktree of its own to take rank 1.
+            commit: crate::core::copy_source::resolve_oid(&source_worktree, &base_branch).or_else(
+                || {
+                    crate::core::copy_source::resolve_oid(
+                        &source_worktree,
+                        &format!("{}/{}", params.remote_name, base_branch),
+                    )
+                },
+            ),
         },
         &source_worktree,
         &worktree_path,

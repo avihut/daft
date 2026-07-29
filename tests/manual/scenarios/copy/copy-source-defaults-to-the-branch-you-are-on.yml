@@ -1,22 +1,27 @@
-name: Creation copies from the worktree you ran from, not the default branch
+name:
+  A base nobody named is the branch you are on, and its cache is the one copied
 description: >
-  Which worktree the cache comes from is a decision the creation stage makes
-  silently, and every other creation scenario is run from the default-branch
-  worktree — where "the worktree you ran from" and "the default branch's
-  worktree" are the same directory, so no assertion in the suite could tell the
-  two apart (#387). `daft warm` is the surface where they visibly differ: its
-  default source is the DEFAULT BRANCH's worktree, and `warm-from` pins that.
-  Creation's rule is the other one — the source is wherever you stand — and it
+  `daft start feat` with no base branches from the branch you are on, so the
+  base rung of the source ladder resolves to the worktree you are standing in
+  and its caches are the ones copied (#387). That is the common shape, and it
   matters most to the person who works out of a long-lived feature worktree and
-  branches off it all day. Its caches are the warm ones; main's may be months
-  stale or absent.
+  branches off it all day: its caches are the warm ones, and main's may be
+  months stale or absent.
 
-  So the fixture makes the two answers distinguishable: main and develop hold
-  the same declared entry with different contents, and a branch is started from
+  The outcome looks like the old "source is wherever you stand" rule and is
+  reached for a different reason, which is exactly why it needs pinning
+  separately from `copy-source-prefers-the-named-base`: that scenario proves a
+  NAMED base wins over cwd, and this one proves the default base does not
+  accidentally become the default branch on the way. Every other creation
+  scenario runs from the default-branch worktree, where the two answers are the
+  same directory and no assertion could tell them apart.
+
+  So the fixture makes the answers distinguishable: main and develop hold the
+  same declared entry with different contents, and a branch is started from
   inside develop. The copied cache identifies its origin. It also pins the
-  config's origin, which travels with the same decision: the section is read
-  from the source worktree, so a `copy:` regression that re-rooted either the
-  read or the copy at the default branch fails here and nowhere else.
+  config's origin, which travels with the standing worktree rather than the
+  resolved source — a regression that re-rooted the read at the default branch
+  fails here and nowhere else.
 
 repos:
   - name: copy-origin

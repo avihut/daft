@@ -28,14 +28,41 @@ worktree, copies both directories in, and only then runs the
 `worktree-post-create` hooks — so the `npm install` in your hooks reconciles a
 warm tree instead of building one from nothing.
 
-**The source worktree is the one you ran the command from.** Create a worktree
-while standing in `feature-a` and its caches are what gets copied; only when you
-run from the bare container root — outside any worktree — does daft fall back to
-a resident worktree, preferring the base branch's if you named one and the
-default branch's otherwise. Two consequences worth internalizing: you inherit
-the warmth of wherever you were standing, and the `copy:` configuration is read
-from that same source worktree — so if its merged config has no `copy:` key,
-nothing is planned, whatever the branch you are creating would have said.
+## Where the caches come from
+
+daft copies from whichever existing worktree best matches **what the new
+worktree will contain**, ranked in that order:
+
+1. **The base branch's own worktree.** `daft start feature-b master` takes
+   master's content, so master's caches are the ones that match — from wherever
+   you typed the command. With no base named, the base is the branch you are on,
+   which is why branching off a long-lived feature worktree keeps using its
+   caches.
+2. **Any worktree sitting at the identical commit.** A base that is just a ref,
+   a tag, a `HEAD~2` — none of them has a worktree, but another worktree may
+   already hold that exact commit, and then it holds exactly the tree being
+   created. Detached sandboxes and forks count: content identity is the whole
+   criterion.
+3. **The worktree you ran from.** The floor, when nothing more specific exists.
+
+Ties on rank 2 — several worktrees at the same commit — go to the one you are
+standing in, and failing that to the warmest, judged by which declared entries
+exist and how recently they were touched.
+
+**The rail says which one it picked**, on the section anchor:
+
+```
+copied paths from 'master'                    # the base branch's worktree
+copied paths from 'release' · same commit     # no worktree for the base
+copied paths from 'sandbox-3' · same commit, warmest
+```
+
+Two consequences worth internalizing. The commit is what is matched, not the
+branch name, so a worktree parked at the right commit is as good a source as the
+branch itself. And the `copy:` **configuration** is read from the worktree you
+are standing in, not from the resolved source — a visitor's untracked
+`daft.local.yml` lives where they are — so if your merged config has no `copy:`
+key, nothing is planned, whatever the branch you are creating would have said.
 
 ## The four ways content reaches a new worktree
 
@@ -238,9 +265,13 @@ daft warm --force         # replace entries that already exist in the target
 daft warm -v              # add the engine's per-entry narration
 ```
 
-Standing still and naming nothing warms **you**, from the default branch's
-worktree; naming a target warms **it**, from where you stand. `--from` overrides
-the source either way, and all three slots accept a worktree directory name, a
+`--from` names the source outright and is never second-guessed. Without it,
+`daft warm` runs the same ladder as creation, anchored on the commit the
+**target** already sits at: a worktree holding that exact commit is preferred
+over both where you are standing and the default branch's worktree, which is
+only a guess about which caches are generic. Below the ladder the old rule is
+the floor — the worktree you are in when it is not itself the target, and the
+default branch's when it is. All three slots accept a worktree directory name, a
 branch name, or a path under the project root.
 
 Whichever pair it resolves, the result line names both ends —
