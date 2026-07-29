@@ -3,11 +3,14 @@ use super::oxide;
 use anyhow::{Context, Result};
 use std::process::Command;
 
-/// `git config --unset`'s exit code for "that option was not set".
+/// `git config --unset`'s exit code for "I did not remove anything".
 ///
-/// Not an error for daft's purposes: unsetting an absent key leaves the
-/// caller exactly where it wanted to be.
-const EXIT_NOTHING_TO_UNSET: i32 = 5;
+/// Deliberately not named for one cause: git spends this code on two, and
+/// they want opposite handling. The key was not set — harmless, the caller is
+/// already where it wanted to be — or the key holds *several* values and git
+/// refuses to guess which to drop. Only [`unset_outcome`] may interpret it,
+/// and only after asking which case this is.
+const EXIT_REMOVED_NOTHING: i32 = 5;
 
 /// A `git config` command rooted at the process's working directory, with the
 /// ambient `GIT_*` variables scrubbed.
@@ -26,15 +29,49 @@ fn config_command() -> Result<Command> {
 }
 
 /// Interpret a `git config --unset` exit status.
-fn unset_outcome(output: &std::process::Output, context: &str) -> Result<bool> {
+///
+/// `scope` is the flag that selected the file git just tried to edit, so the
+/// tie-breaking read below asks about that same file rather than the merged
+/// view — a key set globally must not make a local unset look refused.
+fn unset_outcome(
+    output: &std::process::Output,
+    context: &str,
+    scope: &[&str],
+    key: &str,
+) -> Result<bool> {
     if output.status.success() {
         return Ok(true);
     }
-    if output.status.code() == Some(EXIT_NOTHING_TO_UNSET) {
-        return Ok(false);
+    if output.status.code() == Some(EXIT_REMOVED_NOTHING) {
+        // Ask git which of the two meanings this was, rather than reading its
+        // stderr — that text is not a stable interface, and a translated or
+        // reworded warning would silently turn a refusal back into a success.
+        if !still_set(scope, key)? {
+            return Ok(false);
+        }
+        anyhow::bail!(
+            "{context}: {key} is set more than once here, and git will not remove \
+             one of several values.\nRemove them all with `git config {}--unset-all {key}`, \
+             or edit the file directly.",
+            scope.iter().map(|f| format!("{f} ")).collect::<String>()
+        );
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     anyhow::bail!("{context}: {stderr}");
+}
+
+/// Whether `key` still has a value in the file `scope` names.
+fn still_set(scope: &[&str], key: &str) -> Result<bool> {
+    let output = config_command()?
+        .args(scope)
+        .args(["--get-all", key])
+        .output()
+        .context("Failed to execute git config --get-all command")?;
+
+    // Exit 1 is "no such key", which is the answer we are looking for; any
+    // other failure leaves the question open, and reporting "still set" keeps
+    // the caller on the loud path rather than inventing a success.
+    Ok(!output.stdout.is_empty())
 }
 
 /// Which config file a value came from, in git's own precedence order.
@@ -151,7 +188,7 @@ impl GitCommand {
             .output()
             .context("Failed to execute git config --unset command")?;
 
-        unset_outcome(&output, "Git config --unset failed")
+        unset_outcome(&output, "Git config --unset failed", &["--local"], key)
     }
 
     /// Get a git config value from the current repository (respects local + global config).
@@ -188,7 +225,12 @@ impl GitCommand {
             .output()
             .context("Failed to execute git config --global --unset command")?;
 
-        unset_outcome(&output, "Git config --global --unset failed")
+        unset_outcome(
+            &output,
+            "Git config --global --unset failed",
+            &["--global"],
+            key,
+        )
     }
 
     /// Get a git config value from global config only.
@@ -423,6 +465,62 @@ mod tests {
         assert!(removed, "the key was set, so it was removed");
         assert!(!again, "the second unset had nothing to remove");
         assert_eq!(local_value(&path, "daft.remote"), None);
+    }
+
+    /// Regression: git spends exit code 5 on two opposite outcomes, and
+    /// reading it as one turns a refusal into a success.
+    ///
+    /// A key set twice in the same file makes `--unset` decline to guess which
+    /// line to drop: it warns, removes nothing, and exits 5 — the same code as
+    /// "that key was not set". Reporting `Ok(false)` for both told the user
+    /// "was not set" about a value that is still there and still in force.
+    #[test]
+    #[serial]
+    fn a_key_git_refuses_to_unset_is_not_reported_as_absent() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().canonicalize().unwrap();
+        git_at(&path)
+            .args(["init", "-q"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+
+        // Two values for one key, which is what makes `--unset` ambiguous.
+        for value in ["squash", "rebase-merge"] {
+            git_at(&path)
+                .args(["config", "--add", "daft.merge.style", value])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+        }
+
+        let original_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(&path).unwrap();
+
+        let git = GitCommand::new(true);
+        let outcome = git.config_unset("daft.merge.style");
+
+        if let Some(cwd) = original_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+
+        let error = outcome.expect_err("git refused to unset it, so this cannot be a success");
+        let message = error.to_string();
+        assert!(
+            message.contains("daft.merge.style"),
+            "the message must name the key: {message}"
+        );
+        assert!(
+            message.contains("--unset-all"),
+            "and the way out of it: {message}"
+        );
+        assert_eq!(
+            local_value(&path, "daft.merge.style").as_deref(),
+            Some("rebase-merge"),
+            "nothing was removed, which is precisely why this must not read as success"
+        );
     }
 
     /// Regression: inside a git hook, an inherited `GIT_DIR` must not retarget
