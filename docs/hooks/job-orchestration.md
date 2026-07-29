@@ -207,20 +207,23 @@ is an **inclusion** filter (run only the named jobs, re-running against an
 already-set-up worktree); `--skip-hooks` is the **exclusion** side and carries
 the dependents with it.
 
-## OS and architecture gating
+## Architecture gating
 
-Individual jobs can declare `os:` and `arch:` constraints. A job with
-`os: macos` only runs on macOS; a job with `arch: aarch64` only runs on ARM
-machines. Both fields accept a single value or a list, and both are evaluated at
-runtime — a job whose OS or architecture does not match is silently skipped.
+A job can declare an `arch:` constraint: `arch: aarch64` runs only on ARM
+machines. It accepts a single value or a list, and is evaluated at runtime — a
+job whose architecture does not match is silently skipped.
+
+There is no `os:` field. Gate on the operating system with a `skip:` command,
+which is evaluated the same way and reports the same "skipped" reason:
 
 ```yaml
 - name: install-brew
-  os: macos
   run:
     /bin/bash -c "$(curl -fsSL
     https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
   skip:
+    - run: '[ "$(uname)" != Darwin ]'
+      desc: Not macOS
     - run: "command -v brew"
       desc: Brew is already installed
 ```

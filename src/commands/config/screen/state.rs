@@ -7,7 +7,7 @@
 //! does versus what it filters) is exactly the part a screenshot cannot check.
 
 use super::modal::Modal;
-use crate::commands::config::resolve::{Resolved, ResolvedSet};
+use crate::commands::config::resolve::{Resolved, ResolvedBehavior, ResolvedSet};
 use crate::core::settings_spec::Category;
 use crate::git::ConfigScope;
 
@@ -41,6 +41,9 @@ impl Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RailEntry {
     Mode(Mode),
+    /// The named recipes, which sort above every category — "turn remote sync
+    /// off" is what people arrive wanting, and the keys underneath are detail.
+    Behaviors,
     Category(Category),
 }
 
@@ -49,6 +52,16 @@ pub enum RailEntry {
 pub enum Row {
     Header(Category),
     Setting(usize),
+    /// The heading above the behavior rows.
+    BehaviorHeader,
+    /// A named recipe over several settings. Index into
+    /// `ResolvedSet::behaviors`.
+    ///
+    /// A row of its own rather than a category of settings, because it has no
+    /// value or origin of its own to put in those columns — its state is
+    /// derived from the members, which keep their own ordinary rows further
+    /// down the list.
+    Behavior(usize),
     /// The blank line above a heading. Carries nothing.
     ///
     /// It is a row rather than something the renderer inserts because the
@@ -74,7 +87,7 @@ pub enum Focus {
 
 /// Whether the cursor may rest on a row. Headings are signposts, not stops.
 fn is_landable(row: &Row) -> bool {
-    matches!(row, Row::Setting(_) | Row::Stray(_))
+    matches!(row, Row::Setting(_) | Row::Stray(_) | Row::Behavior(_))
 }
 
 /// Put a blank line above the heading about to be pushed.
@@ -130,6 +143,12 @@ pub struct ScreenState {
 
     /// The last thing that happened, narrated.
     pub status: Option<Status>,
+
+    /// The behavior whose members the list is narrowed to, if any.
+    ///
+    /// Not a `Mode`: it is a transient drill-down reached from one row, and
+    /// the modes are the three standing questions the rail asks.
+    member_focus: Option<&'static str>,
 }
 
 /// A one-line report of the last action.
@@ -174,6 +193,7 @@ impl ScreenState {
             rail_visible: true,
             modal: None,
             status: None,
+            member_focus: None,
         };
         state.rebuild();
         state
@@ -201,6 +221,14 @@ impl ScreenState {
     pub fn selected(&self) -> Option<&Resolved> {
         match self.rows.get(self.cursor) {
             Some(Row::Setting(index)) => self.config.settings.get(*index),
+            _ => None,
+        }
+    }
+
+    /// The behavior under the cursor, if one is.
+    pub fn selected_behavior(&self) -> Option<&ResolvedBehavior> {
+        match self.rows.get(self.cursor) {
+            Some(Row::Behavior(index)) => self.config.behaviors.get(*index),
             _ => None,
         }
     }
@@ -235,9 +263,26 @@ impl ScreenState {
     /// usable: typing narrows the list under a cursor that stays put rather
     /// than snapping to the top on every character.
     pub fn rebuild(&mut self) {
-        let held = self.selected().map(|r| r.spec.key.to_string());
+        // Keys always contain a dot and behavior names never do, so one string
+        // identifies whichever kind of row the cursor was on.
+        let held = self
+            .selected()
+            .map(|r| r.spec.key.to_string())
+            .or_else(|| self.selected_behavior().map(|b| b.spec.name.to_string()));
 
         self.rows.clear();
+
+        let behaviors: Vec<usize> = (0..self.config.behaviors.len())
+            .filter(|index| {
+                let behavior = &self.config.behaviors[*index];
+                self.matches_mode_behavior(behavior) && self.matches_filter_behavior(behavior)
+            })
+            .collect();
+        if !behaviors.is_empty() {
+            self.rows.push(Row::BehaviorHeader);
+            self.rows.extend(behaviors.into_iter().map(Row::Behavior));
+        }
+
         let mut current: Option<Category> = None;
 
         for (index, resolved) in self.config.settings.iter().enumerate() {
@@ -286,6 +331,31 @@ impl ScreenState {
         }
     }
 
+    /// A behavior has no diagnostics of its own — every problem it could have
+    /// belongs to one of its members, which carry it in their own rows. So it
+    /// never appears under Issues, and appearing there with nothing to say
+    /// would be worse than absent.
+    fn matches_mode_behavior(&self, behavior: &ResolvedBehavior) -> bool {
+        match self.mode {
+            Mode::All => true,
+            Mode::Modified => behavior.is_set(&self.config.settings),
+            Mode::Issues => false,
+        }
+    }
+
+    fn matches_filter_behavior(&self, behavior: &ResolvedBehavior) -> bool {
+        let Some(needle) = self.filter.as_deref() else {
+            return true;
+        };
+        if needle.is_empty() {
+            return true;
+        }
+        let needle = needle.to_lowercase();
+        behavior.spec.name.to_lowercase().contains(&needle)
+            || behavior.spec.label.to_lowercase().contains(&needle)
+            || behavior.spec.help.to_lowercase().contains(&needle)
+    }
+
     /// Whether a single piece of text survives the filter — for rows that
     /// have nothing but a key.
     fn matches_filter_text(&self, text: &str) -> bool {
@@ -318,6 +388,9 @@ impl ScreenState {
         if self.issue_count() > 0 {
             rail.push(RailEntry::Mode(Mode::Issues));
         }
+        if self.rows.contains(&Row::BehaviorHeader) {
+            rail.push(RailEntry::Behaviors);
+        }
         for category in Category::all() {
             if self
                 .rows
@@ -337,7 +410,16 @@ impl ScreenState {
                 .settings
                 .get(*index)
                 .is_some_and(|r| r.spec.key == key),
-            Row::Header(_) | Row::Spacer | Row::StrayHeader | Row::Stray(_) => false,
+            Row::Behavior(index) => self
+                .config
+                .behaviors
+                .get(*index)
+                .is_some_and(|b| b.spec.name == key),
+            Row::Header(_)
+            | Row::Spacer
+            | Row::StrayHeader
+            | Row::Stray(_)
+            | Row::BehaviorHeader => false,
         })
     }
 
@@ -349,6 +431,11 @@ impl ScreenState {
                 self.config.settings.iter().filter(|r| r.is_set()).count()
             }
             RailEntry::Mode(Mode::Issues) => self.issue_count(),
+            RailEntry::Behaviors => self
+                .rows
+                .iter()
+                .filter(|row| matches!(row, Row::Behavior(_)))
+                .count(),
             RailEntry::Category(category) => self
                 .rows
                 .iter()
@@ -358,7 +445,12 @@ impl ScreenState {
                         .settings
                         .get(*index)
                         .is_some_and(|r| r.spec.category == category),
-                    Row::Header(_) | Row::Spacer | Row::StrayHeader | Row::Stray(_) => false,
+                    Row::Header(_)
+                    | Row::Spacer
+                    | Row::StrayHeader
+                    | Row::Stray(_)
+                    | Row::BehaviorHeader
+                    | Row::Behavior(_) => false,
                 })
                 .count(),
         }
@@ -415,7 +507,9 @@ impl ScreenState {
         self.rows
             .iter()
             .enumerate()
-            .filter(|(_, row)| matches!(row, Row::Header(_) | Row::StrayHeader))
+            .filter(|(_, row)| {
+                matches!(row, Row::Header(_) | Row::StrayHeader | Row::BehaviorHeader)
+            })
             .filter_map(|(index, _)| {
                 self.rows[index + 1..]
                     .iter()
@@ -583,9 +677,69 @@ impl ScreenState {
                 self.rebuild();
             }
             Some(RailEntry::Mode(_)) => {}
+            Some(RailEntry::Behaviors) => self.jump_to_behaviors(),
             Some(RailEntry::Category(category)) => self.jump_to(category),
             None => {}
         }
+    }
+
+    /// Put the cursor on the first behavior.
+    pub fn jump_to_behaviors(&mut self) {
+        if let Some(index) = self
+            .rows
+            .iter()
+            .position(|row| matches!(row, Row::Behavior(_)))
+        {
+            self.cursor = index;
+            self.clamp();
+        }
+    }
+
+    /// Narrow the list to one behavior's member settings.
+    ///
+    /// What "Custom" points at. The members sit in two different categories,
+    /// so a category jump would land on some of them — a filter is the only
+    /// thing that shows exactly the set the behavior is made of.
+    pub fn focus_members(&mut self, behavior: &ResolvedBehavior) {
+        let keys: Vec<String> = behavior
+            .members
+            .iter()
+            .map(|index| self.config.settings[*index].spec.key.to_string())
+            .collect();
+
+        self.mode = Mode::All;
+        self.filter = None;
+        self.rows.clear();
+        for key in &keys {
+            if let Some(index) = self
+                .config
+                .settings
+                .iter()
+                .position(|r| r.spec.key == key.as_str())
+            {
+                self.rows.push(Row::Setting(index));
+            }
+        }
+        self.member_focus = Some(behavior.spec.name);
+        self.rail = self.build_rail();
+        self.rail_cursor = 0;
+        self.cursor = 0;
+        self.settle_forward();
+        self.clamp();
+    }
+
+    /// Leave the member view, if in one. Returns whether it did.
+    pub fn clear_member_focus(&mut self) -> bool {
+        if self.member_focus.take().is_none() {
+            return false;
+        }
+        self.rebuild();
+        true
+    }
+
+    /// The behavior whose members are being shown, if any.
+    pub fn member_focus(&self) -> Option<&'static str> {
+        self.member_focus
     }
 
     /// Put the cursor on a category's first setting.
@@ -596,7 +750,12 @@ impl ScreenState {
                 .settings
                 .get(*index)
                 .is_some_and(|r| r.spec.category == category),
-            Row::Header(_) | Row::Spacer | Row::StrayHeader | Row::Stray(_) => false,
+            Row::Header(_)
+            | Row::Spacer
+            | Row::StrayHeader
+            | Row::Stray(_)
+            | Row::BehaviorHeader
+            | Row::Behavior(_) => false,
         }) {
             self.cursor = index;
             self.clamp();
@@ -687,6 +846,15 @@ impl ScreenState {
     /// is that Enter changes the value, and a box that can only refuse breaks
     /// it. The status line points at the command that can.
     pub fn open_modal(&mut self) {
+        if let Some(behavior) = self.selected_behavior() {
+            self.modal = Some(Modal::open_behavior(
+                behavior,
+                self.write_scope,
+                self.in_repo,
+            ));
+            self.status = None;
+            return;
+        }
         if let Some(stray) = self.selected_stray() {
             let key = stray.key.clone();
             self.set_status(
@@ -759,13 +927,207 @@ mod tests {
     }
 
     fn state() -> ScreenState {
+        let mut state = state_with(vec![]);
+        to_first_setting(&mut state);
+        state
+    }
+
+    /// The screen exactly as it opens. The cursor is on the first row, which
+    /// is a behavior — most tests here are about settings and start from
+    /// [`state`] instead.
+    fn state_as_opened() -> ScreenState {
         state_with(vec![])
     }
 
+    /// Walk down to the first ordinary setting.
+    fn to_first_setting(state: &mut ScreenState) {
+        for _ in 0..40 {
+            if state.selected().is_some() {
+                return;
+            }
+            state.move_down();
+        }
+        panic!("no setting row found");
+    }
+
+    /// Whether the cursor is on a row at all, of any kind.
+    fn landed(state: &ScreenState) -> bool {
+        state.selected().is_some()
+            || state.selected_behavior().is_some()
+            || state.selected_stray().is_some()
+    }
+
+    /// The screen opens on the behaviors block, and on a row rather than its
+    /// heading. Behaviors come first because "turn remote sync off" is what
+    /// people arrive wanting; the keys underneath are the detail.
     #[test]
-    fn the_cursor_starts_on_a_setting_not_a_heading() {
+    fn the_cursor_starts_on_a_row_not_a_heading() {
+        let state = state_as_opened();
+        assert_eq!(state.rows()[0], Row::BehaviorHeader);
+        assert!(landed(&state), "never on a heading");
+        assert!(state.selected_behavior().is_some());
+    }
+
+    /// And the settings still start under their own category heading, below.
+    // ── Behaviors ────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_behaviors_block_leads_the_list_and_the_rail() {
+        let state = state_as_opened();
+
+        assert_eq!(state.rows()[0], Row::BehaviorHeader);
+        assert!(matches!(state.rows()[1], Row::Behavior(_)));
+        assert!(
+            state.rail().contains(&RailEntry::Behaviors),
+            "and the rail can reach it: {:?}",
+            state.rail()
+        );
+
+        // Above every category.
+        let behaviors = state
+            .rail()
+            .iter()
+            .position(|entry| *entry == RailEntry::Behaviors)
+            .unwrap();
+        let first_category = state
+            .rail()
+            .iter()
+            .position(|entry| matches!(entry, RailEntry::Category(_)))
+            .unwrap();
+        assert!(behaviors < first_category);
+    }
+
+    #[test]
+    fn the_rail_counts_the_behaviors_it_stands_for() {
+        let state = state_as_opened();
+        assert_eq!(
+            state.rail_count(RailEntry::Behaviors),
+            state.config.behaviors.len()
+        );
+    }
+
+    /// A behavior has no diagnostics of its own — every problem it could have
+    /// belongs to a member, which carries it in its own row.
+    #[test]
+    fn behaviors_stay_out_of_the_issues_mode() {
+        let mut state = state_with(vec![ConfigEntry {
+            key: keys::CHECKOUT_FETCH.to_string(),
+            value: "not-a-bool".to_string(),
+            scope: ConfigScope::Local,
+            origin_path: None,
+        }]);
+        state.mode = Mode::Issues;
+        state.rebuild();
+
+        assert!(
+            !state
+                .rows()
+                .iter()
+                .any(|row| matches!(row, Row::Behavior(_))),
+            "the member carries the diagnostic, not the behavior"
+        );
+    }
+
+    #[test]
+    fn a_behavior_is_modified_only_once_a_member_is() {
+        let mut clean = state_as_opened();
+        clean.mode = Mode::Modified;
+        clean.rebuild();
+        assert!(
+            !clean
+                .rows()
+                .iter()
+                .any(|row| matches!(row, Row::Behavior(_)))
+        );
+
+        let mut touched = state_with(vec![ConfigEntry {
+            key: keys::CHECKOUT_FETCH.to_string(),
+            value: "true".to_string(),
+            scope: ConfigScope::Local,
+            origin_path: None,
+        }]);
+        touched.mode = Mode::Modified;
+        touched.rebuild();
+        assert!(
+            touched
+                .rows()
+                .iter()
+                .any(|row| matches!(row, Row::Behavior(_)))
+        );
+    }
+
+    #[test]
+    fn the_filter_reaches_a_behavior_by_name_and_by_help() {
+        for needle in ["remote-sync", "Remote sync", "fetching before checkout"] {
+            let mut state = state_as_opened();
+            state.start_filter();
+            for ch in needle.chars() {
+                state.filter_push(ch);
+            }
+            assert!(
+                state
+                    .rows()
+                    .iter()
+                    .any(|row| matches!(row, Row::Behavior(_))),
+                "{needle:?} should find the behavior"
+            );
+        }
+    }
+
+    /// The drill-down "Custom" points at. The members live in two different
+    /// categories, so nothing but a filter shows exactly the set.
+    #[test]
+    fn drilling_into_a_behavior_shows_its_members_and_nothing_else() {
+        let mut state = state_as_opened();
+        let behavior = state.selected_behavior().unwrap().clone();
+        state.focus_members(&behavior);
+
+        let shown: Vec<String> = state
+            .rows()
+            .iter()
+            .filter_map(|row| match row {
+                Row::Setting(index) => Some(state.config.settings[*index].spec.key.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shown, behavior.spec.members);
+        assert_eq!(state.member_focus(), Some("remote-sync"));
+        assert!(state.selected().is_some(), "the cursor lands on a member");
+
+        // And the way back restores the whole list.
+        assert!(state.clear_member_focus());
+        assert!(state.member_focus().is_none());
+        assert!(state.rows().len() > behavior.spec.members.len());
+        assert!(!state.clear_member_focus(), "already out");
+    }
+
+    #[test]
+    fn opening_the_editor_on_a_behavior_offers_its_presets() {
+        let mut state = state_as_opened();
+        state.open_modal();
+
+        let modal = state.modal.as_ref().expect("a behavior opens the editor");
+        assert!(modal.setting().is_none(), "the subject is a behavior");
+        assert_eq!(modal.subject.name(), "remote-sync");
+
+        let offered: Vec<String> = modal
+            .options
+            .iter()
+            .filter_map(|option| match option {
+                crate::commands::config::screen::modal::Option_::Value { value, .. } => {
+                    Some(value.clone())
+                }
+                crate::commands::config::screen::modal::Option_::Unset { .. } => None,
+            })
+            .collect();
+        assert_eq!(offered, vec!["off", "on"]);
+    }
+
+    #[test]
+    fn the_categories_still_open_with_a_heading() {
         let state = state();
-        assert!(matches!(state.rows()[0], Row::Header(_)));
+        let cursor = state.cursor();
+        assert!(matches!(state.rows()[cursor - 1], Row::Header(_)));
         assert!(state.selected().is_some());
     }
 
@@ -871,7 +1233,7 @@ mod tests {
         let mut state = state();
         for _ in 0..40 {
             state.jump_section(true);
-            assert!(state.selected().is_some());
+            assert!(landed(&state));
         }
         let last = state.cursor();
         state.jump_section(true);
@@ -879,9 +1241,13 @@ mod tests {
 
         for _ in 0..40 {
             state.jump_section(false);
-            assert!(state.selected().is_some());
+            assert!(landed(&state));
         }
-        assert_eq!(state.cursor(), 1, "the first section's first row");
+        assert_eq!(
+            state.cursor(),
+            1,
+            "the first section is Behaviors, and its first row sits under the heading"
+        );
     }
 
     #[test]
@@ -928,12 +1294,23 @@ mod tests {
     }
 
     #[test]
-    fn moving_up_from_the_first_setting_stays_put() {
+    fn moving_up_from_the_top_row_stays_put() {
+        let mut state = state_as_opened();
+        let first = state.cursor();
+        state.move_up();
+        state.move_up();
+        assert_eq!(state.cursor(), first);
+        assert!(state.selected_behavior().is_some());
+    }
+
+    /// Moving up off the first setting reaches the behaviors above it rather
+    /// than stopping — they are rows, not chrome.
+    #[test]
+    fn moving_up_from_the_first_setting_reaches_the_behaviors() {
         let mut state = state();
-        let first = state.selected().unwrap().spec.key.to_string();
+        assert!(state.selected().is_some());
         state.move_up();
-        state.move_up();
-        assert_eq!(state.selected().unwrap().spec.key, first);
+        assert!(state.selected_behavior().is_some());
     }
 
     #[test]
@@ -1278,11 +1655,11 @@ mod tests {
         let mut state = state();
         for _ in 0..5 {
             state.page(1, 12);
-            assert!(state.selected().is_some());
+            assert!(landed(&state));
         }
         for _ in 0..8 {
             state.page(-1, 12);
-            assert!(state.selected().is_some());
+            assert!(landed(&state));
         }
     }
 

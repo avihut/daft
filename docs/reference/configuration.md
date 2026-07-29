@@ -58,6 +58,40 @@ git config daft.autocd false
 git config --global daft.autocd false
 ```
 
+## Behaviors
+
+Some settings only make sense together. Turning remote sync on means three
+booleans; making `daft merge` squash and clean up means three enums, two of
+which daft refuses to let you set into a contradictory pair. A **behavior** is a
+name for such a group and for the states it can be in, so you can say what you
+want once instead of getting three keys right in the right order.
+
+```bash
+daft config get remote-sync           # on, off, or custom
+daft config set remote-sync on        # writes all three
+daft config unset remote-sync         # clears all three at this scope
+```
+
+Behaviors appear at the top of `daft config list` and of the browser, above the
+categories. In the browser, `space` steps to the next state, `enter` opens the
+same editor a setting gets, and `→` drills into the member settings.
+
+Three things worth knowing:
+
+- **A behavior is a view, not a store.** It has no key and no value of its own;
+  its state is worked out from what its settings currently resolve to. Setting
+  one of them directly is always allowed — the behavior then reads `custom` and
+  names which one is out of step.
+- **It reads what daft actually does.** The state comes from the effective
+  values across every scope, not from one of them. A behavior can read `on` from
+  inside a repository that sets nothing, because the values are global.
+- **A write goes to one scope; the state may not follow.** `set --global` when a
+  local value disagrees is written, but the local value still wins — so the
+  command says where the behavior actually landed, not just what it wrote.
+
+`custom` is a state you can read, never one you can ask for. To leave it, pick a
+real state or change the individual settings until they agree.
+
 ## General Settings
 
 | Key                     | Default    | Description                                                                                                                    |
@@ -114,8 +148,9 @@ layout: contained
 ## Remote Sync Settings
 
 By default, daft does not contact the remote during worktree management. All
-remote operations are opt-in. Use `daft config remote-sync` to toggle these
-settings interactively, or set them directly with `git config`.
+remote operations are opt-in. The three keys below travel together as the
+`remote-sync` [behavior](#behaviors), so you can move all of them with one
+command instead of remembering which three.
 
 | Key                        | Default           | Description                                                                                                                                  |
 | -------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -127,12 +162,13 @@ settings interactively, or set them directly with `git config`.
 
 ### Enabling Remote Sync
 
-`remote-sync` toggles all three at once:
+`remote-sync` moves all three at once:
 
 ```bash
-daft config remote-sync --on      # Enable all remote sync operations
-daft config remote-sync --off     # Disable all remote sync operations
-daft config remote-sync --status  # Show current settings
+daft config set remote-sync on           # Full sync: fetch, push, delete
+daft config set remote-sync off          # Local only, daft's default
+daft config get remote-sync              # on, off, or custom
+daft config get remote-sync --origin     # each setting, and where its value came from
 ```
 
 Or set them one at a time, from the browser or the command line:
@@ -141,14 +177,10 @@ Or set them one at a time, from the browser or the command line:
 daft config set daft.checkout.fetch true
 ```
 
-You can also set values directly:
-
-```bash
-# Enable all remote sync (opt in to old behavior)
-git config daft.checkout.fetch true
-git config daft.checkout.push true
-git config daft.branchDelete.remote true
-```
+Setting a member on its own is always allowed; the behavior then reads `custom`
+and names which setting is out of step. `daft config unset remote-sync` clears
+all three at the chosen scope, and says what that revealed — clearing local
+values can uncover global ones.
 
 Per-command overrides are available via `--local` (skip remote operations) and
 `--remote` (delete remote branch only, without removing local worktree or

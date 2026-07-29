@@ -820,7 +820,7 @@ _daft() {
     # `daft config<TAB>` would stop completing the verb it is spelling.
     if [[ "${words[1]}" == "config" && $cword -ge 2 ]]; then
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=( $(compgen -W "get list remote-sync set unset" -- "$cur") )
+            COMPREPLY=( $(compgen -W "get list set unset" -- "$cur") )
             return 0
         fi
         local config_sub="${words[2]}"
@@ -857,12 +857,6 @@ _daft() {
             list)
                 if [[ "$cur" == -* ]]; then
                     COMPREPLY=( $(compgen -W "--modified --category --format --template --no-headers -h --help" -- "$cur") )
-                fi
-                return 0
-                ;;
-            remote-sync)
-                if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "--on --off --status --global -h --help" -- "$cur") )
                 fi
                 return 0
                 ;;

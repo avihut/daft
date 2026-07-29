@@ -1,0 +1,160 @@
+name: config treats remote-sync as one behavior over three settings
+description:
+  Verify `daft config get/set/unset remote-sync` moves all three keys together,
+  reports Custom when they disagree, and always says where the behavior actually
+  landed rather than where the write was aimed
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone a repository that sets none of the three
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      test -z "$(git config --local --get daft.checkout.fetch)"
+    expect:
+      exit_code: 0
+
+  - name: an untouched repository sits in the default state, not Custom
+    run: |
+      daft config get remote-sync
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      # The rule that keeps Custom meaningful: the default is a named state,
+      # so it is what most people read.
+      output_contains:
+        - "off"
+
+  - name: one command writes all three keys
+    run: |
+      daft config set remote-sync on
+      test "$(git config --local --get daft.checkout.fetch)" = "true"
+      test "$(git config --local --get daft.checkout.push)" = "true"
+      test "$(git config --local --get daft.branchDelete.remote)" = "true"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Full sync"
+        - "3 keys"
+        - "now reads Full sync"
+
+  - name: get reports the state a script can act on
+    run: |
+      test "$(daft config get remote-sync)" = "on"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: changing one member on its own is allowed, and reads as Custom
+    run: |
+      daft config set daft.checkout.push false
+      test "$(daft config get remote-sync)" = "custom"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: and Custom names the setting that is out of step
+    run: |
+      daft config get remote-sync --origin
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      # A bare "Custom" restates the problem politely; the row has to say
+      # which member disagrees and what it is closest to.
+      output_contains:
+        - "Custom"
+        - "closest to Full sync"
+        - "daft.checkout.push"
+
+  - name: --origin shows every member with its own origin, not one scope
+    run: |
+      daft config get remote-sync --origin
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "What it sets"
+        - "daft.checkout.fetch"
+        - "daft.branchDelete.remote"
+
+  - name: custom cannot be asked for, and the refusal names the real states
+    run: |
+      daft config set remote-sync custom
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not a state you can ask for"
+        - "off or on"
+
+  - name: nor can a state that does not exist
+    run: |
+      daft config set remote-sync sometimes
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "expected off or on"
+
+  - name: a behavior name completes and suggests like a key
+    run: |
+      daft config set remotesync on
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "remote-sync"
+
+  - name: unset clears every member at the chosen scope
+    run: |
+      daft config unset remote-sync
+      test -z "$(git config --local --get daft.checkout.fetch)"
+      test -z "$(git config --local --get daft.checkout.push)"
+      test -z "$(git config --local --get daft.branchDelete.remote)"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Unset remote-sync"
+        - "now reads"
+
+  - name: unsetting what was never set is a statement, not an error
+    run: |
+      daft config unset remote-sync
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "was not set"
+
+  - name: the behavior leads the list, above the categories
+    run: |
+      daft config list | head -5
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Behaviors"
+        - "remote-sync"
+
+  - name: and carries a discriminator in the machine-readable form
+    run: |
+      daft config list --format json > /tmp/daft-behaviors.json
+      grep -q '"kind": *"behavior"' /tmp/daft-behaviors.json
+      grep -q '"members": *"daft.checkout.fetch,daft.checkout.push,daft.branchDelete.remote"' /tmp/daft-behaviors.json
+      grep -q '"kind": *"setting"' /tmp/daft-behaviors.json
+      rm -f /tmp/daft-behaviors.json
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: the retired subcommand is gone rather than quietly still working
+    run: |
+      daft config remote-sync --on
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 2

@@ -102,22 +102,49 @@ fn event_loop(
 /// the value that caused it — closing would throw away what the user typed at
 /// the moment they need to fix it.
 fn perform(state: &mut ScreenState, apply: Apply) {
-    let outcome = match &apply {
+    // A behavior write has to re-read before it can narrate — clearing three
+    // local keys can reveal a global value, and "unset" that does not say
+    // where it landed is the single-scope claim this screen exists to avoid.
+    // It hands the fresh resolution back so the screen does not pay twice.
+    let outcome: Result<(String, Option<resolve::ResolvedSet>)> = match &apply {
         Apply::Set { key, scope, value } => resolve::lookup(key)
             .map_err(anyhow::Error::msg)
-            .and_then(|spec| write::set(&spec, *scope, value, &state.config)),
+            .and_then(|spec| write::set(&spec, *scope, value, &state.config))
+            .map(|narration| (narration, None)),
         Apply::Unset { key, scope } => resolve::lookup(key)
             .map_err(anyhow::Error::msg)
-            .and_then(|spec| write::unset(&spec, *scope)),
+            .and_then(|spec| write::unset(&spec, *scope))
+            .map(|narration| (narration, None)),
+        Apply::SetBehavior {
+            name,
+            preset,
+            scope,
+        } => behavior_and_preset(name, preset).and_then(|(behavior, preset)| {
+            write::set_behavior(behavior, preset, *scope, &state.config, || {
+                resolve_fresh(state, true)
+            })
+            .map(|written| (written.message, Some(written.config)))
+        }),
+        Apply::UnsetBehavior { name, scope } => behavior_for(name).and_then(|behavior| {
+            write::unset_behavior(behavior, *scope, || resolve_fresh(state, true))
+                .map(|written| (written.message, Some(written.config)))
+        }),
     };
 
     match outcome {
-        Ok(narration) => {
+        Ok((narration, fresh)) => {
             state.close_modal();
             // Re-read rather than patching the row in place: a write can move
             // which layer wins for *other* settings too, and a stale ladder is
             // the one thing this screen cannot afford to show.
-            match reload(state, &apply) {
+            let reloaded = match fresh {
+                Some(config) => {
+                    state.reload(config);
+                    Ok(())
+                }
+                None => reload(state, &apply),
+            };
+            match reloaded {
                 Ok(()) => state.set_status(narration, StatusKind::Success),
                 Err(error) => state.set_status(
                     format!("{narration}, but re-reading the config failed: {error}"),
@@ -136,32 +163,67 @@ fn perform(state: &mut ScreenState, apply: Apply) {
 }
 
 fn reload(state: &mut ScreenState, applied: &Apply) -> Result<()> {
+    let config = resolve_fresh(state, !touches_layout(applied))?;
+    state.reload(config);
+    Ok(())
+}
+
+/// Re-read everything.
+///
+/// Capturing the layout chain walks the filesystem to detect where worktrees
+/// are. Only a layout write can change what it says, so `keep_layout` lets
+/// every other write — a `space` toggle included — reuse the chain it already
+/// had rather than paying for a walk that cannot return anything new.
+fn resolve_fresh(state: &ScreenState, keep_layout: bool) -> Result<resolve::ResolvedSet> {
     let mut snapshot = if state.in_repo {
         Snapshot::capture(&GitCommand::new(false))?
     } else {
         Snapshot::capture_global_only()?
     };
 
-    // Capturing the layout chain walks the filesystem to detect where
-    // worktrees are. Only a layout write can change what it says, so every
-    // other write — a `space` toggle included — keeps the chain it already
-    // had rather than paying for a walk that cannot return anything new.
-    if !touches_layout(applied)
-        && let Some(previous) = previous_layout(state)
-    {
+    if keep_layout && let Some(previous) = previous_layout(state) {
         snapshot.layout = Some(previous);
     }
 
-    state.reload(resolve::resolve_all(&snapshot));
-    Ok(())
+    Ok(resolve::resolve_all(&snapshot))
+}
+
+fn behavior_for(name: &str) -> Result<&'static crate::core::settings_spec::BehaviorSpec> {
+    crate::core::settings_spec::find_behavior(name)
+        .ok_or_else(|| anyhow::anyhow!("unknown behavior: {name}"))
+}
+
+fn behavior_and_preset(
+    name: &str,
+    preset: &str,
+) -> Result<(
+    &'static crate::core::settings_spec::BehaviorSpec,
+    &'static crate::core::settings_spec::Preset,
+)> {
+    let behavior = behavior_for(name)?;
+    let preset = behavior
+        .preset(preset)
+        .ok_or_else(|| anyhow::anyhow!("{preset} is not a state of {name}"))?;
+    Ok((behavior, preset))
 }
 
 fn touches_layout(applied: &Apply) -> bool {
+    use crate::core::settings_spec::Backend;
+
     let key = match applied {
         Apply::Set { key, .. } | Apply::Unset { key, .. } => key,
+        // A behavior touches the chain only if one of its members lives on
+        // it. None do today; asking rather than assuming keeps that true.
+        Apply::SetBehavior { name, .. } | Apply::UnsetBehavior { name, .. } => {
+            return behavior_for(name).is_ok_and(|behavior| {
+                behavior.members.iter().any(|member| {
+                    resolve::lookup(member).is_ok_and(|spec| spec.backend == Backend::LayoutChain)
+                })
+            });
+        }
     };
     resolve::lookup(key)
-        .map(|spec| spec.backend == crate::core::settings_spec::Backend::LayoutChain)
+        .map(|spec| spec.backend == Backend::LayoutChain)
         .unwrap_or(true)
 }
 

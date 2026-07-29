@@ -420,7 +420,10 @@ pub fn check_remote_sync_config(_ctx: &RepoContext) -> CheckResult {
             "Remote sync",
             "Remote sync defaults have changed \u{2014} daft no longer fetches, pushes, or deletes remote branches by default",
         )
-        .with_suggestion("Run `daft config remote-sync` to configure your preference.")
+        .with_suggestion(
+            "Run `daft config set remote-sync on` to opt back in, or `daft config get \
+             remote-sync --origin` to see what the three settings are doing.",
+        )
     }
 }
 

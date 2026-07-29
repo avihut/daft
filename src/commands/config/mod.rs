@@ -10,7 +10,6 @@
 //! the bare command opens the full-screen browser. Agents and scripts use the
 //! verbs; the screen is for people.
 
-pub mod remote_sync;
 pub mod resolve;
 pub mod screen;
 pub mod write;
@@ -18,11 +17,11 @@ pub mod write;
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
 
-use crate::core::settings_spec::{Backend, Category, ValueType};
+use crate::core::settings_spec::{Backend, BehaviorSpec, Category, Preset, ValueType};
 use crate::git::GitCommand;
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
 use crate::styles::{bold, dim, dim_underline};
-use resolve::{Diagnostic, Origin, Resolved, ResolvedSet, Snapshot};
+use resolve::{Diagnostic, Origin, Resolved, ResolvedBehavior, ResolvedSet, Snapshot};
 use write::WriteScope;
 
 #[derive(Parser)]
@@ -64,8 +63,6 @@ enum ConfigCommand {
     Set(SetArgs),
     /// Remove a setting, revealing whatever it was masking
     Unset(UnsetArgs),
-    /// Configure remote sync behavior
-    RemoteSync(remote_sync::Args),
 }
 
 #[derive(Args)]
@@ -143,7 +140,6 @@ pub fn run() -> Result<()> {
         Some(ConfigCommand::Get(args)) => cmd_get(&args),
         Some(ConfigCommand::Set(args)) => cmd_set(&args),
         Some(ConfigCommand::Unset(args)) => cmd_unset(&args),
-        Some(ConfigCommand::RemoteSync(args)) => remote_sync::run(&args),
         None => cmd_default(),
     }
 }
@@ -234,25 +230,67 @@ fn cmd_list(args: &ListArgs) -> Result<()> {
         .filter(|r| category.is_none_or(|c| r.spec.category == c))
         .collect();
 
+    // Behaviors are the entry point — "turn remote sync off" is what someone
+    // arrives wanting, and the three keys underneath are the detail. A
+    // category filter is asking about settings, so they drop out of it.
+    let behaviors: Vec<&ResolvedBehavior> = if category.is_some() {
+        Vec::new()
+    } else {
+        set.behaviors
+            .iter()
+            .filter(|b| !args.modified || b.is_set(&set.settings))
+            .collect()
+    };
+
     if args.emit.is_structured() {
         return emit::emit_and_handle(
             "config list",
-            EmitPayload::Tabular(build_table(&rows)),
+            EmitPayload::Tabular(build_table(&rows, &behaviors, &set.settings)),
             &args.emit,
             &mut std::io::stdout(),
         )
         .map_err(|e| anyhow::anyhow!("{e}"));
     }
 
-    if rows.is_empty() {
-        println!(
-            "{}",
-            if args.modified {
-                "Nothing is set — every setting is running on its default."
+    if !behaviors.is_empty() {
+        println!("{}", dim_underline("Behaviors"));
+        let name_width = behaviors
+            .iter()
+            .map(|b| b.spec.name.chars().count())
+            .max()
+            .unwrap_or(0);
+        for behavior in &behaviors {
+            let state = behavior.state_label();
+            let shown = if behavior.is_set(&set.settings) {
+                bold(state)
             } else {
-                "No settings matched."
+                state.to_string()
+            };
+            println!(
+                "  {:name_width$}  {shown}  {}",
+                behavior.spec.name,
+                dim(&format!("{} settings", behavior.members.len())),
+            );
+            if let Some(note) = behavior.divergence_note(&set.settings) {
+                println!("  {:name_width$}  {}", "", dim(&note));
             }
-        );
+        }
+        if !rows.is_empty() {
+            println!();
+        }
+    }
+
+    if rows.is_empty() {
+        if behaviors.is_empty() {
+            println!(
+                "{}",
+                if args.modified {
+                    "Nothing is set — every setting is running on its default."
+                } else {
+                    "No settings matched."
+                }
+            );
+        }
         return Ok(());
     }
 
@@ -351,13 +389,38 @@ fn parse_category(name: &str) -> Result<Category> {
         })
 }
 
-fn build_table(rows: &[&Resolved]) -> Table {
+/// One table for both kinds of row, told apart by `kind`.
+///
+/// A behavior has no single store and no single origin — its value is derived
+/// from the settings named in `members`. Rather than leave a consumer to infer
+/// that from empty cells, `kind` says which shape a row is and `backend` says
+/// `derived` outright.
+fn build_table(rows: &[&Resolved], behaviors: &[&ResolvedBehavior], all: &[Resolved]) -> Table {
     let mut table = Table::new([
-        "key", "label", "category", "value", "origin", "is_set", "type", "default", "backend",
-        "help",
+        "kind", "key", "label", "category", "value", "origin", "is_set", "type", "default",
+        "backend", "members", "help",
     ]);
+
+    for behavior in behaviors {
+        table = table.row([
+            Cell::str("behavior"),
+            Cell::str(behavior.spec.name),
+            Cell::str(behavior.spec.label),
+            Cell::str("Behaviors"),
+            Cell::str(behavior.state_name()),
+            Cell::str("derived"),
+            Cell::bool(behavior.is_set(all)),
+            Cell::str("preset"),
+            Cell::str(behavior.spec.presets[0].name),
+            Cell::str("derived"),
+            Cell::str(behavior.spec.members.join(",")),
+            Cell::str(behavior.spec.help),
+        ]);
+    }
+
     for row in rows {
         table = table.row([
+            Cell::str("setting"),
             Cell::str(row.spec.key.as_ref()),
             Cell::str(row.spec.label.as_ref()),
             Cell::str(row.spec.category.label()),
@@ -367,9 +430,11 @@ fn build_table(rows: &[&Resolved]) -> Table {
             Cell::str(type_name(&row.spec.ty)),
             Cell::str(row.spec.default.value().unwrap_or("")),
             Cell::str(backend_name(&row.spec.backend)),
+            Cell::str(""),
             Cell::str(row.spec.help.as_ref()),
         ]);
     }
+
     table
 }
 
@@ -404,7 +469,10 @@ fn backend_name(backend: &Backend) -> &'static str {
 // ─────────────────────────────────────────────────────────────────────────
 
 fn cmd_get(args: &GetArgs) -> Result<()> {
-    let spec = resolve::lookup(&args.key).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let spec = match resolve::lookup_target(&args.key).map_err(|e| anyhow::anyhow!("{e}"))? {
+        resolve::Target::Behavior(behavior) => return get_behavior(behavior, args.origin),
+        resolve::Target::Setting(spec) => spec,
+    };
     let set = resolved()?;
     let Some(row) = set.get(&spec.key) else {
         bail!("{} did not resolve", spec.key);
@@ -424,6 +492,67 @@ fn cmd_get(args: &GetArgs) -> Result<()> {
     }
 
     print_detail(row);
+    Ok(())
+}
+
+/// `get` for a behavior.
+///
+/// Unlike a setting, this never exits 1: a behavior always has a state, even
+/// when nothing sets a single member — that state is its default preset. The
+/// one value it prints that cannot be set back is `custom`, which is what
+/// "someone has been setting members individually" is called.
+fn get_behavior(behavior: &'static BehaviorSpec, origin: bool) -> Result<()> {
+    let set = resolved()?;
+    let Some(resolved) = set.behavior(behavior.name) else {
+        bail!("{} did not resolve", behavior.name);
+    };
+
+    if !origin {
+        println!("{}", resolved.state_name());
+        return Ok(());
+    }
+
+    println!("{}  {}", bold(behavior.label), dim(behavior.name));
+    println!("{}", behavior.help);
+    println!();
+
+    println!("{}", dim_underline("States"));
+    let width = behavior
+        .presets
+        .iter()
+        .map(|preset| preset.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    for preset in behavior.presets {
+        println!(
+            "  {:width$}  {}  {}",
+            preset.name,
+            preset.label,
+            dim(preset.help)
+        );
+    }
+    println!();
+
+    // The members with their own ladders. A behavior has no rung of its own,
+    // so this *is* its provenance — flattening it to one line would be the
+    // single-scope answer this command exists to stop giving.
+    println!("{}", dim_underline("What it sets"));
+    for index in &resolved.members {
+        let member = &set.settings[*index];
+        println!(
+            "  {:32}  {:8}  {}",
+            member.spec.key,
+            bold(member.effective_display()),
+            dim(&member.origin.label())
+        );
+    }
+
+    println!();
+    println!("  → {}", bold(resolved.state_label()));
+    if let Some(note) = resolved.divergence_note(&set.settings) {
+        println!("    {}", dim(&note));
+    }
+
     Ok(())
 }
 
@@ -517,22 +646,61 @@ pub fn describe(diagnostic: &Diagnostic) -> String {
 // ─────────────────────────────────────────────────────────────────────────
 
 fn cmd_set(args: &SetArgs) -> Result<()> {
-    let spec = resolve::lookup(&args.key).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let target = resolve::lookup_target(&args.key).map_err(|e| anyhow::anyhow!("{e}"))?;
     let scope = scope_from_flag(args.global);
     require_repo_for_local(scope)?;
 
     let set = resolved()?;
-    println!("{}", write::set(&spec, scope, &args.value, &set)?);
+    let message = match target {
+        resolve::Target::Behavior(behavior) => {
+            let preset = pick_preset(behavior, &args.value)?;
+            write::set_behavior(behavior, preset, scope, &set, resolved)?.message
+        }
+        resolve::Target::Setting(spec) => write::set(&spec, scope, &args.value, &set)?,
+    };
+
+    println!("{message}");
     Ok(())
 }
 
 fn cmd_unset(args: &UnsetArgs) -> Result<()> {
-    let spec = resolve::lookup(&args.key).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let target = resolve::lookup_target(&args.key).map_err(|e| anyhow::anyhow!("{e}"))?;
     let scope = scope_from_flag(args.global);
     require_repo_for_local(scope)?;
 
-    println!("{}", write::unset(&spec, scope)?);
+    let message = match target {
+        resolve::Target::Behavior(behavior) => {
+            write::unset_behavior(behavior, scope, resolved)?.message
+        }
+        resolve::Target::Setting(spec) => write::unset(&spec, scope)?,
+    };
+
+    println!("{message}");
     Ok(())
+}
+
+/// The preset a user named, or a refusal that lists the real ones.
+fn pick_preset(behavior: &'static BehaviorSpec, value: &str) -> Result<&'static Preset> {
+    if let Some(preset) = behavior.preset(value) {
+        return Ok(preset);
+    }
+
+    // `custom` is the one value `get` prints that `set` cannot take back, so
+    // it earns its own sentence rather than falling into "expected one of".
+    if value.trim().eq_ignore_ascii_case("custom") {
+        bail!(
+            "custom is what {} reads when its settings disagree, not a state you can \
+             ask for.\nSet {} instead, or change the individual settings.",
+            behavior.name,
+            behavior.preset_names().join(" or ")
+        );
+    }
+
+    bail!(
+        "{value:?} is not a state of {} — expected {}.",
+        behavior.name,
+        behavior.preset_names().join(" or ")
+    )
 }
 
 fn require_repo_for_local(scope: WriteScope) -> Result<()> {
@@ -576,16 +744,67 @@ mod tests {
         }
     }
 
+    /// `remote-sync` is no longer a verb of its own — it is a behavior, and it
+    /// goes through the same four commands every other setting does.
     #[test]
-    fn remote_sync_keeps_its_flags() {
-        let parsed = ConfigArgs::parse_from(["config", "remote-sync", "--on", "--global"]);
+    fn remote_sync_is_reached_through_the_quartet() {
+        let command = ConfigArgs::command();
+        let verbs: Vec<&str> = command
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .collect();
+        assert!(
+            !verbs.contains(&"remote-sync"),
+            "the subverb was folded into set/get/unset: {verbs:?}"
+        );
+
+        let parsed = ConfigArgs::parse_from(["config", "set", "--global", "remote-sync", "on"]);
         match parsed.command {
-            Some(ConfigCommand::RemoteSync(args)) => {
-                assert!(args.on);
+            Some(ConfigCommand::Set(args)) => {
+                assert_eq!(args.key, "remote-sync");
+                assert_eq!(args.value, "on");
                 assert!(args.global);
             }
-            _ => panic!("expected remote-sync"),
+            _ => panic!("expected set"),
         }
+    }
+
+    #[test]
+    fn a_behavior_name_resolves_to_a_behavior_and_a_key_does_not() {
+        assert!(matches!(
+            resolve::lookup_target("remote-sync"),
+            Ok(resolve::Target::Behavior(_))
+        ));
+        assert!(matches!(
+            resolve::lookup_target(crate::core::settings::keys::CHECKOUT_FETCH),
+            Ok(resolve::Target::Setting(_))
+        ));
+    }
+
+    #[test]
+    fn a_misspelt_behavior_is_suggested_rather_than_lost_among_keys() {
+        let err = resolve::lookup_target("remotesync").unwrap_err();
+        assert!(
+            err.contains("remote-sync"),
+            "behavior names belong in the did-you-mean: {err}"
+        );
+    }
+
+    #[test]
+    fn custom_is_refused_as_a_state_to_ask_for() {
+        let behavior = crate::core::settings_spec::find_behavior("remote-sync").unwrap();
+
+        let err = pick_preset(behavior, "custom").unwrap_err().to_string();
+        assert!(
+            err.contains("not a state you can ask for"),
+            "custom deserves its own sentence: {err}"
+        );
+        assert!(err.contains("off or on"), "and the real states: {err}");
+
+        let err = pick_preset(behavior, "sometimes").unwrap_err().to_string();
+        assert!(err.contains("expected off or on"), "{err}");
+
+        assert_eq!(pick_preset(behavior, "ON").unwrap().name, "on");
     }
 
     /// The suggestion list and the completions scripts both key off

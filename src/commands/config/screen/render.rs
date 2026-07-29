@@ -13,7 +13,9 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 
 use super::modal::{Field, Modal, Option_};
 use super::state::{Focus, Mode, RailEntry, Row, ScreenState, StatusKind};
-use crate::commands::config::resolve::{Diagnostic, Layer, Resolved};
+use crate::commands::config::resolve::{
+    Diagnostic, Layer, Resolved, ResolvedBehavior, ResolvedSet,
+};
 use crate::commands::config::write::WriteScope;
 
 /// Below this the rail is dropped: three columns in eighty cells leaves the
@@ -129,11 +131,11 @@ fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
 fn modal_lines(modal: &Modal) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
-            modal.spec.label.to_string().bold(),
+            modal.subject.label().bold(),
             "  ".into(),
-            modal.spec.key.to_string().dim(),
+            modal.subject.name().dim(),
         ]),
-        Line::from(modal.spec.help.to_string().dim()),
+        Line::from(modal.subject.help().dim()),
         Line::from(""),
         scope_row(modal),
     ];
@@ -190,7 +192,7 @@ fn scope_row(modal: &Modal) -> Line<'static> {
         } else {
             "  ( ) ".dim()
         });
-        let label = scope.label_for(&modal.spec);
+        let label = modal.scope_label(*scope);
         spans.push(if chosen {
             label.bold()
         } else {
@@ -331,21 +333,22 @@ fn draw_rail(frame: &mut Frame, area: Rect, state: &ScreenState) {
         let selected = focused && index == state.rail_cursor();
         let active = match entry {
             RailEntry::Mode(mode) => *mode == state.mode,
+            RailEntry::Behaviors => state.selected_behavior().is_some(),
             RailEntry::Category(category) => state
                 .selected()
                 .is_some_and(|r| r.spec.category == *category),
         };
 
-        let (label, count) = match entry {
-            RailEntry::Mode(mode) => (mode.label().to_string(), state.rail_count(*entry)),
-            RailEntry::Category(category) => {
-                (category.label().to_string(), state.rail_count(*entry))
-            }
+        let label = match entry {
+            RailEntry::Mode(mode) => mode.label().to_string(),
+            RailEntry::Behaviors => "Behaviors".to_string(),
+            RailEntry::Category(category) => category.label().to_string(),
         };
+        let count = state.rail_count(*entry);
 
-        // A blank line before the categories: the two halves of the rail do
-        // different things, and the gap is cheaper than a heading.
-        if matches!(entry, RailEntry::Category(_))
+        // A blank line before the rest: the halves of the rail do different
+        // things, and the gap is cheaper than a heading.
+        if matches!(entry, RailEntry::Category(_) | RailEntry::Behaviors)
             && index > 0
             && matches!(state.rail()[index - 1], RailEntry::Mode(_))
         {
@@ -419,6 +422,19 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &ScreenState) {
                     continue;
                 };
                 let spans = setting_spans(resolved, label_width, value_width);
+                lines.push(list_row(spans, current, focused, width));
+            }
+            Row::BehaviorHeader => {
+                lines.push(Line::from(vec![
+                    "  ".into(),
+                    "Behaviors".dim().underlined(),
+                ]));
+            }
+            Row::Behavior(behavior) => {
+                let Some(resolved) = state.config.behaviors.get(*behavior) else {
+                    continue;
+                };
+                let spans = behavior_spans(resolved, &state.config, label_width, value_width);
                 lines.push(list_row(spans, current, focused, width));
             }
             Row::StrayHeader => {
@@ -513,6 +529,43 @@ fn setting_spans(
     ]
 }
 
+/// A behavior's row: its label, the state it is in, and what it stands for.
+///
+/// The third column holds the member count rather than an origin. A behavior
+/// has no origin — it is derived — and putting a scope name there would be the
+/// single-scope claim this row exists to stop making.
+fn behavior_spans(
+    behavior: &ResolvedBehavior,
+    config: &ResolvedSet,
+    label_width: usize,
+    value_width: usize,
+) -> Vec<Span<'static>> {
+    let label = truncate(behavior.spec.label, label_width);
+    let state = truncate(behavior.state_label(), value_width);
+
+    // Custom is the one state worth an accent: it means the members disagree,
+    // which is the only thing about a behavior a user might need to act on.
+    let state_span = if behavior.preset().is_some() {
+        if behavior.is_set(&config.settings) {
+            state.clone().bold()
+        } else {
+            Span::from(state.clone())
+        }
+    } else {
+        state.clone().yellow()
+    };
+
+    vec![
+        Span::from(pad(&label, label_width)),
+        "  ".into(),
+        state_span,
+        " ".repeat(value_width.saturating_sub(state.chars().count()))
+            .into(),
+        "  ".into(),
+        format!("{} settings", behavior.members.len()).dim(),
+    ]
+}
+
 /// What a row's worst diagnostic is, if any.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Severity {
@@ -553,6 +606,14 @@ fn draw_detail(frame: &mut Frame, area: Rect, state: &ScreenState) {
 
     if let Some(stray) = state.selected_stray() {
         frame.render_widget(Paragraph::new(stray_detail(stray, area.width)), inner);
+        return;
+    }
+
+    if let Some(behavior) = state.selected_behavior() {
+        frame.render_widget(
+            Paragraph::new(behavior_detail(behavior, &state.config, area.width)),
+            inner,
+        );
         return;
     }
 
@@ -699,6 +760,57 @@ fn diagnostic_line(diagnostic: &Diagnostic) -> Line<'static> {
 // Footer
 // ─────────────────────────────────────────────────────────────────────────
 
+/// A behavior's detail: what it sets, where each member's value comes from,
+/// and which state that adds up to.
+///
+/// This *is* its provenance. A behavior has no rung of its own, so the only
+/// honest ladder is its members' — one line each, with the scope that decided
+/// it. Collapsing that to a single origin is what the old `--status` did, and
+/// it is how a global value could hide behind a local-looking answer.
+fn behavior_detail(
+    behavior: &ResolvedBehavior,
+    config: &ResolvedSet,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = vec![
+        Line::from("─".repeat(width as usize).dim()),
+        Line::from(vec![
+            behavior.spec.label.to_string().bold(),
+            "  ".into(),
+            behavior.spec.name.to_string().dim(),
+        ]),
+        Line::from(behavior.spec.help.to_string()),
+        Line::from(""),
+        Line::from("What it sets".dim().underlined()),
+    ];
+
+    for index in &behavior.members {
+        let member = &config.settings[*index];
+        lines.push(Line::from(vec![
+            "  ".into(),
+            Span::from(pad(&member.spec.key, 34)),
+            "  ".into(),
+            Span::from(pad(member.effective_display(), 10)).bold(),
+            "  ".into(),
+            member.origin.label().dim(),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    let state_span = if behavior.preset().is_some() {
+        behavior.state_label().bold()
+    } else {
+        behavior.state_label().yellow()
+    };
+    lines.push(Line::from(vec!["  → ".into(), state_span]));
+
+    if let Some(note) = behavior.divergence_note(&config.settings) {
+        lines.push(Line::from(vec!["    ".into(), note.dim()]));
+    }
+
+    lines
+}
+
 fn draw_footer(frame: &mut Frame, area: Rect, state: &ScreenState, show_rail: bool) {
     // The status line takes the footer when there is something to report: the
     // result of what you just did matters more than the key hints you already
@@ -835,6 +947,20 @@ mod tests {
     }
 
     fn state_with(entries: Vec<ConfigEntry>) -> ScreenState {
+        let mut state = state_as_opened(entries);
+        // The screen opens on a behavior row; these tests are about how a
+        // setting draws, so step past it.
+        for _ in 0..40 {
+            if state.selected().is_some() {
+                return state;
+            }
+            state.move_down();
+        }
+        panic!("no setting row found");
+    }
+
+    /// The screen exactly as it opens, cursor on the first behavior.
+    fn state_as_opened(entries: Vec<ConfigEntry>) -> ScreenState {
         let config = resolve_all(&Snapshot {
             entries,
             in_repo: true,
@@ -865,6 +991,11 @@ mod tests {
             .collect()
     }
 
+    /// The whole frame as one string, for "does this word appear" checks.
+    fn render(state: &ScreenState, width: u16, height: u16) -> String {
+        painted(state, width, height).join("\n")
+    }
+
     /// Render once and return the frame as plain text, line by line.
     fn painted(state: &ScreenState, width: u16, height: u16) -> Vec<String> {
         let buffer = frame_of(state, width, height);
@@ -877,6 +1008,60 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    // ── Behaviors ────────────────────────────────────────────────────────
+
+    /// A behavior's detail panel *is* its provenance: it has no rung of its
+    /// own, so the only honest ladder is its members' — each with the scope
+    /// that decided it.
+    #[test]
+    fn a_behavior_shows_every_member_and_where_its_value_came_from() {
+        let state = state_as_opened(vec![]);
+        let text = render(&state, 120, 40);
+
+        assert!(text.contains("Behaviors"), "the heading: {text}");
+        assert!(text.contains("Remote sync"), "the row label");
+        assert!(text.contains("Local only"), "the state it is in");
+        assert!(text.contains("What it sets"), "the member ladder");
+        for member in state.config.behaviors[0].spec.members {
+            assert!(text.contains(member), "member {member} is listed");
+        }
+    }
+
+    /// Custom is the one state worth an accent, and it has to name what is out
+    /// of step — a bare "Custom" restates the problem politely.
+    #[test]
+    fn a_behavior_in_disagreement_names_what_diverges() {
+        let state = state_as_opened(vec![
+            entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Local),
+            entry(keys::BRANCH_DELETE_REMOTE, "true", ConfigScope::Local),
+        ]);
+        let text = render(&state, 120, 40);
+
+        assert!(text.contains("Custom"), "{text}");
+        assert!(
+            text.contains("closest to Full sync"),
+            "and which state it is closest to: {text}"
+        );
+        assert!(
+            text.contains(keys::CHECKOUT_PUSH),
+            "and the member that differs: {text}"
+        );
+    }
+
+    #[test]
+    fn the_editor_on_a_behavior_offers_its_states_not_true_and_false() {
+        let mut state = state_as_opened(vec![]);
+        state.open_modal();
+        let text = render(&state, 120, 40);
+
+        assert!(text.contains("Full sync"), "{text}");
+        assert!(text.contains("Local only"), "{text}");
+        assert!(
+            !text.contains("(•) true") && !text.contains("( ) true"),
+            "a behavior takes states, not booleans: {text}"
+        );
     }
 
     #[test]

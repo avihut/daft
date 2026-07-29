@@ -116,23 +116,6 @@ daft config unset [OPTIONS] <KEY>
 |--------|-------------|----------|
 | `--global` | Remove at the shared scope rather than this worktree's own |  |
 
-### remote-sync
-
-Configure remote sync behavior
-
-```
-daft config remote-sync [OPTIONS]
-```
-
-#### Options
-
-| Option | Description | Default |
-|--------|-------------|----------|
-| `--on` | Enable all remote sync operations |  |
-| `--off` | Disable all remote sync operations |  |
-| `--status` | Show current remote sync settings |  |
-| `--global` | Write to global git config instead of local |  |
-
 ## Global Options
 
 | Option | Description |

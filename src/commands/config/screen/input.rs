@@ -58,8 +58,13 @@ pub fn handle_key(state: &mut ScreenState, key: KeyEvent, page: usize) -> Action
         // second. Quitting straight out of a filtered view would throw away
         // context the user is still using.
         (KeyCode::Esc, _) => {
+            // Unwinds one level at a time: the filter, then the behavior
+            // drill-down, then the screen. Quitting straight out of a
+            // drill-down would lose the place a user is halfway through.
             if state.is_filtering() {
                 state.clear_filter();
+                Action::Continue
+            } else if state.clear_member_focus() {
                 Action::Continue
             } else {
                 Action::Quit
@@ -77,13 +82,25 @@ pub fn handle_key(state: &mut ScreenState, key: KeyEvent, page: usize) -> Action
         // h/l cross between the panes rather than walking anything: the rail
         // is to the left of the list, so left goes to it and right comes back.
         (KeyCode::Left, _) | (KeyCode::Char('h'), _) => {
-            if state.rail_visible {
+            // Out of a behavior's members first — left is the way back in,
+            // and the rail is one more press away.
+            if !state.clear_member_focus() && state.rail_visible {
                 state.focus_rail();
             }
             Action::Continue
         }
         (KeyCode::Right, _) | (KeyCode::Char('l'), _) => {
-            state.focus_list();
+            // Right goes deeper. On a behavior that means its member settings
+            // — which is what "Custom" points at, and the only view that shows
+            // exactly the set it is made of, since the members sit in
+            // different categories.
+            match state.selected_behavior() {
+                Some(behavior) => {
+                    let behavior = behavior.clone();
+                    state.focus_members(&behavior);
+                }
+                None => state.focus_list(),
+            }
             Action::Continue
         }
         (KeyCode::Tab, _) | (KeyCode::BackTab, _) => {
@@ -145,6 +162,26 @@ pub fn handle_key(state: &mut ScreenState, key: KeyEvent, page: usize) -> Action
 
 /// `space`: flip a two-state setting at the pill scope.
 fn quick_toggle(state: &mut ScreenState) -> Action {
+    // On a behavior, the same key steps to the next preset — the two-state
+    // case reads as a toggle, and a longer preset list cycles.
+    if let Some(behavior) = state.selected_behavior() {
+        let presets = behavior.spec.presets;
+        let next = match behavior.preset() {
+            Some(current) => presets
+                .iter()
+                .position(|preset| preset.name == current.name)
+                .map_or(0, |at| (at + 1) % presets.len()),
+            // From Custom, the first press picks a coherent state rather than
+            // guessing which way the user meant to resolve the disagreement.
+            None => 0,
+        };
+        return Action::Write(Apply::SetBehavior {
+            name: behavior.spec.name,
+            preset: presets[next].name,
+            scope: write_scope(state),
+        });
+    }
+
     let Some(resolved) = state.selected() else {
         return Action::Continue;
     };
@@ -177,6 +214,13 @@ fn quick_toggle(state: &mut ScreenState) -> Action {
 
 /// `u`: clear the value at the pill scope.
 fn quick_unset(state: &mut ScreenState) -> Action {
+    if let Some(behavior) = state.selected_behavior() {
+        return Action::Write(Apply::UnsetBehavior {
+            name: behavior.spec.name,
+            scope: write_scope(state),
+        });
+    }
+
     let Some(resolved) = state.selected() else {
         return Action::Continue;
     };
@@ -325,6 +369,20 @@ mod tests {
     use crate::git::ConfigScope;
 
     fn state() -> ScreenState {
+        let mut state = state_as_opened();
+        // These tests are about editing settings; the screen opens on a
+        // behavior row, so step past it first.
+        for _ in 0..40 {
+            if state.selected().is_some() {
+                return state;
+            }
+            state.move_down();
+        }
+        panic!("no setting row found");
+    }
+
+    /// The screen exactly as it opens, cursor on the first behavior.
+    fn state_as_opened() -> ScreenState {
         let config = resolve_all(&Snapshot {
             in_repo: true,
             ..Default::default()
@@ -508,6 +566,94 @@ mod tests {
         assert_eq!(state.write_scope, ConfigScope::Global);
     }
 
+    // ── Behaviors ────────────────────────────────────────────────────────
+
+    #[test]
+    fn space_on_a_behavior_steps_to_the_next_preset() {
+        let mut state = state_as_opened();
+        assert_eq!(state.selected_behavior().unwrap().state_name(), "off");
+
+        match press(&mut state, KeyCode::Char(' ')) {
+            Action::Write(Apply::SetBehavior {
+                name,
+                preset,
+                scope,
+            }) => {
+                assert_eq!(name, "remote-sync");
+                assert_eq!(preset, "on", "the next state, not a value");
+                assert_eq!(scope, WriteScope::Local);
+            }
+            other => panic!("expected a behavior write, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn u_on_a_behavior_clears_every_member() {
+        let mut state = state_as_opened();
+        match press(&mut state, KeyCode::Char('u')) {
+            Action::Write(Apply::UnsetBehavior { name, scope }) => {
+                assert_eq!(name, "remote-sync");
+                assert_eq!(scope, WriteScope::Local);
+            }
+            other => panic!("expected a behavior unset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_on_a_behavior_applies_the_chosen_preset() {
+        let mut state = state_as_opened();
+        press(&mut state, KeyCode::Enter);
+        assert!(state.modal.is_some());
+
+        // Move off the state it is already in, then commit.
+        press(&mut state, KeyCode::Char('j'));
+        match press(&mut state, KeyCode::Enter) {
+            Action::Write(Apply::SetBehavior { name, preset, .. }) => {
+                assert_eq!(name, "remote-sync");
+                assert_eq!(preset, "on");
+            }
+            other => panic!("expected a behavior write, got {other:?}"),
+        }
+    }
+
+    /// The unset row of a behavior's editor removes the members rather than
+    /// writing a preset — the two are genuinely different, since unsetting can
+    /// reveal a value from the scope below.
+    #[test]
+    fn the_editors_unset_row_clears_a_behaviors_members() {
+        let mut state = state_as_opened();
+        press(&mut state, KeyCode::Enter);
+        for _ in 0..5 {
+            press(&mut state, KeyCode::Char('j'));
+        }
+        match press(&mut state, KeyCode::Enter) {
+            Action::Write(Apply::UnsetBehavior { name, .. }) => assert_eq!(name, "remote-sync"),
+            other => panic!("expected a behavior unset, got {other:?}"),
+        }
+    }
+
+    /// Right goes deeper, and both ways back come out — the drill-down is one
+    /// level of a stack, not a mode you can get stuck in.
+    #[test]
+    fn right_drills_into_the_members_and_left_or_esc_comes_back() {
+        for way_back in [KeyCode::Char('h'), KeyCode::Esc] {
+            let mut state = state_as_opened();
+            press(&mut state, KeyCode::Char('l'));
+            assert_eq!(state.member_focus(), Some("remote-sync"), "{way_back:?}");
+            assert!(state.selected().is_some());
+
+            assert_eq!(press(&mut state, way_back), Action::Continue);
+            assert!(state.member_focus().is_none(), "{way_back:?}");
+        }
+    }
+
+    /// Esc still leaves the screen once there is nothing left to unwind.
+    #[test]
+    fn esc_from_the_top_level_still_quits() {
+        let mut state = state_as_opened();
+        assert_eq!(press(&mut state, KeyCode::Esc), Action::Quit);
+    }
+
     #[test]
     fn g_and_shift_g_reach_both_ends() {
         let mut state = state();
@@ -515,7 +661,8 @@ mod tests {
         let bottom = state.cursor();
         press(&mut state, KeyCode::Char('g'));
         assert!(state.cursor() < bottom);
-        assert!(state.selected().is_some());
+        // The top of the list is a behavior row, not a setting.
+        assert!(state.selected_behavior().is_some());
     }
 
     #[test]

@@ -33,7 +33,10 @@ use std::path::PathBuf;
 
 use super::write::WriteScope;
 use crate::core::layout::resolver::LayoutSource;
-use crate::core::settings_spec::{Backend, SettingLookup, SettingSpec, all_specs, find};
+use crate::core::settings_spec::{
+    BEHAVIORS, Backend, BehaviorSpec, Preset, SettingLookup, SettingSpec, ValueType, all_specs,
+    find,
+};
 use crate::git::{ConfigEntry, ConfigScope};
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -532,10 +535,190 @@ impl Resolved {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Behaviors
+// ─────────────────────────────────────────────────────────────────────────
+
+/// A [`BehaviorSpec`] with its current state worked out.
+///
+/// The state is derived from its members' **effective** values, not from any
+/// one scope. That distinction is the whole reason this replaced the old
+/// `remote-sync --status`, which read a single scope and so could report
+/// "Local only" while daft was in fact fetching, because the other scope set
+/// it. What a behavior reads is what daft does.
+#[derive(Debug, Clone)]
+pub struct ResolvedBehavior {
+    pub spec: &'static BehaviorSpec,
+    /// Indices into [`ResolvedSet::settings`], in `spec.members` order.
+    pub members: Vec<usize>,
+    pub state: BehaviorState,
+}
+
+/// Which named state a behavior is in, if any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BehaviorState {
+    /// Every member agrees with this preset. Index into `spec.presets`.
+    Preset(usize),
+    /// No preset matches — someone has been setting members individually,
+    /// which is always legal.
+    Custom {
+        /// The preset with the fewest divergences. Ties go to the earliest,
+        /// which the registry guarantees is the untouched state.
+        nearest: usize,
+        /// The member keys that differ from `nearest`, in member order.
+        ///
+        /// Naming them is what makes the row worth having. A bare "Custom"
+        /// restates the problem politely and leaves the user to diff three
+        /// keys by hand.
+        diverging: Vec<String>,
+    },
+}
+
+impl ResolvedBehavior {
+    /// The preset this is in, when it is in one.
+    pub fn preset(&self) -> Option<&'static Preset> {
+        match self.state {
+            BehaviorState::Preset(index) => Some(&self.spec.presets[index]),
+            BehaviorState::Custom { .. } => None,
+        }
+    }
+
+    /// The name a script gets from `daft config get` — a preset name, or
+    /// `custom`, which is a state and never something you can set.
+    pub fn state_name(&self) -> &'static str {
+        self.preset().map_or("custom", |preset| preset.name)
+    }
+
+    /// The state as a row renders it.
+    pub fn state_label(&self) -> &'static str {
+        self.preset().map_or("Custom", |preset| preset.label)
+    }
+
+    /// Whether anything sets any member, for the "Modified" filter. A behavior
+    /// sitting on its members' defaults is no more modified than they are.
+    pub fn is_set(&self, settings: &[Resolved]) -> bool {
+        self.members.iter().any(|index| settings[*index].is_set())
+    }
+
+    /// What stands between this configuration and its nearest preset, as a
+    /// line to print or draw.
+    ///
+    /// One phrasing, one place: the CLI's `get`, the list row, and the modal
+    /// all render this, and three hand-written versions would drift.
+    pub fn divergence_note(&self, settings: &[Resolved]) -> Option<String> {
+        let BehaviorState::Custom { nearest, diverging } = &self.state else {
+            return None;
+        };
+
+        let differences: Vec<String> = diverging
+            .iter()
+            .map(|key| {
+                let value = self
+                    .members
+                    .iter()
+                    .map(|index| &settings[*index])
+                    .find(|resolved| resolved.spec.key == *key)
+                    .map_or("—", Resolved::effective_display);
+                format!("{key} is {value}")
+            })
+            .collect();
+
+        Some(format!(
+            "closest to {} — {}",
+            self.spec.presets[*nearest].label,
+            differences.join(", ")
+        ))
+    }
+}
+
+/// Work out every behavior's state from already-resolved settings.
+fn resolve_behaviors(settings: &[Resolved]) -> Vec<ResolvedBehavior> {
+    BEHAVIORS
+        .iter()
+        .filter_map(|spec| {
+            // A behavior whose members are not all in the registry cannot be
+            // resolved. The registry test makes that unreachable; skipping
+            // rather than panicking keeps a future mistake out of the user's
+            // way.
+            let members: Vec<usize> = spec
+                .members
+                .iter()
+                .filter_map(|key| settings.iter().position(|r| r.spec.key == *key))
+                .collect();
+            if members.len() != spec.members.len() {
+                return None;
+            }
+
+            // How far each preset is from what daft actually does.
+            let divergences = |preset: &Preset| -> Vec<String> {
+                members
+                    .iter()
+                    .map(|index| &settings[*index])
+                    .filter(|resolved| {
+                        let wanted = preset.value_for(&resolved.spec.key);
+                        !values_agree(&resolved.spec.ty, resolved.effective.as_deref(), wanted)
+                    })
+                    .map(|resolved| resolved.spec.key.to_string())
+                    .collect()
+            };
+
+            let (nearest, diverging) = pick_nearest(spec.presets.iter().map(divergences).collect());
+
+            let state = if diverging.is_empty() {
+                BehaviorState::Preset(nearest)
+            } else {
+                BehaviorState::Custom { nearest, diverging }
+            };
+
+            Some(ResolvedBehavior {
+                spec,
+                members,
+                state,
+            })
+        })
+        .collect()
+}
+
+/// The preset with the fewest divergences, given one divergence list per
+/// preset in registry order.
+///
+/// Ties go to the earliest, which the registry pins as the untouched state —
+/// so a configuration equidistant from two presets reads as a departure from
+/// the default rather than from whichever preset happened to be declared last.
+///
+/// Whether a tie is even reachable depends on the behavior: two opposite
+/// presets over an odd number of members can never produce one, since every
+/// member diverges from exactly one pole. A four-member behavior can.
+fn pick_nearest(candidates: Vec<Vec<String>>) -> (usize, Vec<String>) {
+    candidates
+        .into_iter()
+        .enumerate()
+        .min_by_key(|(_, diverging)| diverging.len())
+        .expect("a behavior has at least two presets")
+}
+
+/// Whether a stored value means the same thing as a preset's.
+///
+/// Compared through the member's own type rather than as text: someone who
+/// typed `git config daft.checkout.fetch yes` by hand is in Full sync, and a
+/// raw string comparison would call that Custom and be wrong about what daft
+/// does.
+fn values_agree(ty: &ValueType, effective: Option<&str>, wanted: Option<&str>) -> bool {
+    match (effective, wanted) {
+        (Some(have), Some(want)) => {
+            super::write::canonical_value(ty, have) == super::write::canonical_value(ty, want)
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// Every setting resolved together, plus what did not resolve to anything.
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedSet {
     pub settings: Vec<Resolved>,
+    /// The named recipes over those settings, in registry order.
+    pub behaviors: Vec<ResolvedBehavior>,
     /// `daft.*` entries in the config that match no registry row — typos, or
     /// keys from a newer daft. Inert either way, and worth saying so: a
     /// mis-cased subsection is a different key to git and silently does
@@ -551,6 +734,13 @@ impl ResolvedSet {
     /// Look a setting up by its canonical key.
     pub fn get(&self, key: &str) -> Option<&Resolved> {
         self.settings.iter().find(|r| r.spec.key == key)
+    }
+
+    /// Look a behavior up by name.
+    pub fn behavior(&self, name: &str) -> Option<&ResolvedBehavior> {
+        self.behaviors
+            .iter()
+            .find(|behavior| behavior.spec.name == name)
     }
 
     /// Every diagnostic across every setting, plus the unrecognized keys.
@@ -653,7 +843,13 @@ pub fn lookup(input: &str) -> Result<SettingSpec, String> {
         ));
     }
 
-    let keys: Vec<String> = specs.iter().map(|spec| spec.key.to_string()).collect();
+    // Behavior names are offered alongside keys, so `remotesync` finds
+    // `remote-sync` rather than three unrelated settings.
+    let keys: Vec<String> = specs
+        .iter()
+        .map(|spec| spec.key.to_string())
+        .chain(BEHAVIORS.iter().map(|behavior| behavior.name.to_string()))
+        .collect();
     let similar = crate::suggest::find_similar(input, &keys, 3);
 
     Err(match similar.len() {
@@ -668,6 +864,27 @@ pub fn lookup(input: &str) -> Result<SettingSpec, String> {
                 .join("\n")
         ),
     })
+}
+
+/// What a name on the command line refers to.
+///
+/// The two namespaces are told apart by shape rather than by search order:
+/// every setting key contains a dot and every behavior name does not, so
+/// neither can shadow the other however they are spelled.
+#[derive(Debug)]
+pub enum Target {
+    // Boxed for the same reason [`Modal`]'s subject is: a `SettingSpec` is
+    // ~250 bytes against the behavior's single reference.
+    Setting(Box<SettingSpec>),
+    Behavior(&'static BehaviorSpec),
+}
+
+/// Find the setting *or* behavior a user-typed name refers to.
+pub fn lookup_target(input: &str) -> Result<Target, String> {
+    match crate::core::settings_spec::find_behavior(input) {
+        Some(behavior) => Ok(Target::Behavior(behavior)),
+        None => lookup(input).map(|spec| Target::Setting(Box::new(spec))),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -705,6 +922,7 @@ pub fn resolve_all(snapshot: &Snapshot) -> ResolvedSet {
     ResolvedSet {
         unrecognized: unrecognized_entries(snapshot, &specs),
         layout_rungs: snapshot.layout.clone(),
+        behaviors: resolve_behaviors(&settings),
         settings,
     }
 }
@@ -1014,6 +1232,150 @@ mod tests {
 
     fn resolve(key: &str, entries: Vec<ConfigEntry>) -> Resolved {
         resolve_key(key, &snapshot(entries)).expect("registry row exists")
+    }
+
+    // ── Behaviors ────────────────────────────────────────────────────────
+
+    fn remote_sync(entries: Vec<ConfigEntry>) -> (ResolvedSet, ResolvedBehavior) {
+        let set = resolve_all(&snapshot(entries));
+        let behavior = set.behavior("remote-sync").expect("registry row").clone();
+        (set, behavior)
+    }
+
+    fn all_three(value: &str, scope: ConfigScope) -> Vec<ConfigEntry> {
+        vec![
+            entry(keys::CHECKOUT_FETCH, value, scope),
+            entry(keys::CHECKOUT_PUSH, value, scope),
+            entry(keys::BRANCH_DELETE_REMOTE, value, scope),
+        ]
+    }
+
+    #[test]
+    fn a_configuration_that_sets_nothing_sits_in_the_default_preset() {
+        let (_, behavior) = remote_sync(vec![]);
+
+        assert_eq!(behavior.state, BehaviorState::Preset(0));
+        assert_eq!(behavior.state_name(), "off");
+        assert_eq!(behavior.state_label(), "Local only");
+    }
+
+    #[test]
+    fn setting_every_member_reaches_the_other_preset() {
+        let (_, behavior) = remote_sync(all_three("true", ConfigScope::Local));
+
+        assert_eq!(behavior.state_name(), "on");
+        assert_eq!(behavior.state_label(), "Full sync");
+    }
+
+    /// The bug that made this worth folding in. The old `remote-sync --status`
+    /// loaded a single scope, so a global Full sync read as "Local only" from
+    /// inside a repository that set nothing — a report about the wrong
+    /// question. A behavior reads what daft actually does.
+    #[test]
+    fn a_behavior_reads_across_scopes_rather_than_within_one() {
+        let (_, behavior) = remote_sync(all_three("true", ConfigScope::Global));
+
+        assert_eq!(behavior.state_name(), "on");
+    }
+
+    /// A member set in one scope and the rest in another is still a coherent
+    /// state, and the scope split is not what decides it.
+    #[test]
+    fn members_split_across_scopes_still_resolve_to_a_preset() {
+        let (_, behavior) = remote_sync(vec![
+            entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Global),
+            entry(keys::CHECKOUT_PUSH, "true", ConfigScope::Local),
+            entry(keys::BRANCH_DELETE_REMOTE, "true", ConfigScope::Global),
+        ]);
+
+        assert_eq!(behavior.state_name(), "on");
+    }
+
+    #[test]
+    fn one_member_out_of_step_is_custom_and_the_note_names_it() {
+        let (set, behavior) = remote_sync(vec![
+            entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Local),
+            entry(keys::CHECKOUT_PUSH, "false", ConfigScope::Local),
+            entry(keys::BRANCH_DELETE_REMOTE, "true", ConfigScope::Local),
+        ]);
+
+        assert_eq!(behavior.state_name(), "custom");
+        let BehaviorState::Custom { nearest, diverging } = &behavior.state else {
+            panic!("expected Custom, got {:?}", behavior.state);
+        };
+        assert_eq!(behavior.spec.presets[*nearest].name, "on");
+        assert_eq!(diverging, &[keys::CHECKOUT_PUSH.to_string()]);
+
+        let note = behavior.divergence_note(&set.settings).unwrap();
+        assert_eq!(note, "closest to Full sync — daft.checkout.push is false");
+    }
+
+    /// git accepts six spellings for a boolean and people type all of them by
+    /// hand. Comparing preset values as raw text would report a working Full
+    /// sync as Custom.
+    #[test]
+    fn a_hand_typed_git_boolean_still_matches_its_preset() {
+        for spelling in ["yes", "on", "1", "TRUE"] {
+            let (_, behavior) = remote_sync(all_three(spelling, ConfigScope::Local));
+            assert_eq!(
+                behavior.state_name(),
+                "on",
+                "{spelling:?} means true to git, so it means Full sync here"
+            );
+        }
+    }
+
+    #[test]
+    fn the_nearest_preset_is_the_one_fewest_members_disagree_with() {
+        let (_, behavior) = remote_sync(vec![
+            entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Local),
+            entry(keys::BRANCH_DELETE_REMOTE, "true", ConfigScope::Local),
+        ]);
+
+        let BehaviorState::Custom { nearest, .. } = &behavior.state else {
+            panic!("expected Custom, got {:?}", behavior.state);
+        };
+        assert_eq!(
+            behavior.spec.presets[*nearest].name, "on",
+            "two of three members are in Full sync"
+        );
+    }
+
+    /// Tested directly rather than through `remote-sync`, which cannot produce
+    /// a tie: two opposite presets over three members always split 3-0, 2-1,
+    /// 1-2 or 0-3. A four-member behavior — the merge recipe, when it lands —
+    /// can split 2-2, and then this rule is what decides.
+    #[test]
+    fn a_tie_is_measured_from_the_default_preset() {
+        let (nearest, diverging) = pick_nearest(vec![
+            vec!["a".to_string(), "b".to_string()],
+            vec!["c".to_string(), "d".to_string()],
+        ]);
+
+        assert_eq!(nearest, 0, "the earliest preset is the untouched state");
+        assert_eq!(diverging, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn a_behavior_is_modified_only_when_a_member_is() {
+        let (set, behavior) = remote_sync(vec![]);
+        assert!(!behavior.is_set(&set.settings));
+
+        let (set, behavior) = remote_sync(vec![entry(
+            keys::CHECKOUT_FETCH,
+            "false",
+            ConfigScope::Local,
+        )]);
+        assert!(
+            behavior.is_set(&set.settings),
+            "explicitly writing a member's default still counts as setting it"
+        );
+    }
+
+    #[test]
+    fn a_preset_state_has_no_divergence_note() {
+        let (set, behavior) = remote_sync(all_three("true", ConfigScope::Local));
+        assert!(behavior.divergence_note(&set.settings).is_none());
     }
 
     // ── What the ladder marks ────────────────────────────────────────────

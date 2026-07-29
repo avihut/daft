@@ -653,6 +653,149 @@ pub fn find(key: &str) -> Option<SettingSpec> {
     all_specs().into_iter().find(|s| s.key == key)
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Behaviors
+// ─────────────────────────────────────────────────────────────────────────
+
+/// A named recipe over several settings that only make sense together.
+///
+/// Some of daft's settings are not independent. "Remote sync" is three
+/// booleans; making `daft merge` squash and clean up is three enums, two of
+/// which [`merge_pair_ok`] already refuses to let you set into a contradictory
+/// pair. Setting those one at a time is both tedious and a way to walk into a
+/// state daft rejects — so they get a row that writes the whole assignment at
+/// once, and the contradictory combinations become unreachable for anyone who
+/// does not go key by key.
+///
+/// A behavior is a **view, never a store.** It has no key and no rung of its
+/// own; its state is derived from what its members *effectively* resolve to,
+/// and its members stay ordinary rows in their own categories. Setting one of
+/// them directly is always legal and simply moves the behavior to `Custom`.
+/// The alternative — a stored `daft.remoteSync = on|off` — would pose a
+/// question with no good answer: what wins when it says `off` and
+/// `daft.checkout.fetch` says `true`?
+///
+/// The cost of that choice, stated plainly: a behavior that grows a fourth
+/// member later will read `Custom` for people who had adopted a preset, rather
+/// than silently governing a key they never opted into. That is the intended
+/// trade — visible and actionable beats silent.
+#[derive(Debug)]
+pub struct BehaviorSpec {
+    /// What a user types: `remote-sync`. Dash-case and unprefixed, so a
+    /// behavior name can never be mistaken for — or collide with — a `daft.*`
+    /// key.
+    pub name: &'static str,
+    /// The row label.
+    pub label: &'static str,
+    /// One sentence naming what it changes underneath. The whole reason the
+    /// row exists is that its members are not obvious from its name, so this
+    /// has to say them.
+    pub help: &'static str,
+    /// The keys it writes, in reading order. Always `keys::` consts, so a
+    /// rename breaks the build here rather than orphaning a member.
+    pub members: &'static [&'static str],
+    /// The named states.
+    ///
+    /// **The default state must be one of them**, and by convention it is
+    /// first. A behavior that names only the interesting recipe reads `Custom`
+    /// for everyone who has not adopted it, and a row that says `Custom` to
+    /// most people is noise rather than information. Naming both poles is what
+    /// makes `Custom` mean something: someone is part-way between two coherent
+    /// intents. Enforced by test.
+    pub presets: &'static [Preset],
+}
+
+/// One named state of a behavior: a total assignment over its members.
+#[derive(Debug)]
+pub struct Preset {
+    /// What a user types: `daft config set remote-sync off`.
+    pub name: &'static str,
+    /// How the state reads in a list or a radio row.
+    pub label: &'static str,
+    /// What choosing it means, in one sentence.
+    pub help: &'static str,
+    /// `(key, value)` for every member.
+    ///
+    /// Totality is enforced by test. A partial preset would leave the
+    /// unmentioned member at whatever it happened to be, which is precisely
+    /// the half-applied state behaviors exist to prevent.
+    pub values: &'static [(&'static str, &'static str)],
+}
+
+impl Preset {
+    /// The value this preset assigns to `key`.
+    pub fn value_for(&self, key: &str) -> Option<&'static str> {
+        self.values
+            .iter()
+            .find(|(member, _)| *member == key)
+            .map(|(_, value)| *value)
+    }
+}
+
+impl BehaviorSpec {
+    /// The preset a user named, matched case-insensitively like a value.
+    pub fn preset(&self, name: &str) -> Option<&'static Preset> {
+        self.presets
+            .iter()
+            .find(|preset| preset.name.eq_ignore_ascii_case(name.trim()))
+    }
+
+    /// Every preset name, for completion and for a refusal's "expected one of".
+    pub fn preset_names(&self) -> Vec<&'static str> {
+        self.presets.iter().map(|preset| preset.name).collect()
+    }
+}
+
+/// Every behavior daft has, in display order.
+///
+/// Deliberately short. A grouping earns a row here only when its members
+/// interact — when setting them one at a time is cumbersome enough to get
+/// wrong. A set of keys that merely share a theme is a [`Category`], not a
+/// behavior, and belongs in the list under its own heading.
+pub const BEHAVIORS: &[BehaviorSpec] = &[BehaviorSpec {
+    name: "remote-sync",
+    label: "Remote sync",
+    help: "Whether worktree commands reach the remote: fetching before checkout, \
+           pushing branches as they are created, and deleting the remote branch \
+           along with the local one.",
+    members: &[
+        keys::CHECKOUT_FETCH,
+        keys::CHECKOUT_PUSH,
+        keys::BRANCH_DELETE_REMOTE,
+    ],
+    presets: &[
+        Preset {
+            name: "off",
+            label: "Local only",
+            help: "Nothing reaches the remote on its own. daft's default, and \
+                   what makes worktree commands safe to run offline.",
+            values: &[
+                (keys::CHECKOUT_FETCH, "false"),
+                (keys::CHECKOUT_PUSH, "false"),
+                (keys::BRANCH_DELETE_REMOTE, "false"),
+            ],
+        },
+        Preset {
+            name: "on",
+            label: "Full sync",
+            help: "Fetch before checkout, push new branches, and delete the \
+                   remote branch when removing one.",
+            values: &[
+                (keys::CHECKOUT_FETCH, "true"),
+                (keys::CHECKOUT_PUSH, "true"),
+                (keys::BRANCH_DELETE_REMOTE, "true"),
+            ],
+        },
+    ],
+}];
+
+/// The behavior a user named, matched case-insensitively.
+pub fn find_behavior(name: &str) -> Option<&'static BehaviorSpec> {
+    BEHAVIORS
+        .iter()
+        .find(|behavior| behavior.name.eq_ignore_ascii_case(name.trim()))
+}
+
 fn git_specs() -> Vec<SettingSpec> {
     use Category::*;
     use DefaultDesc::{Computed, Fixed, Unset};
@@ -1745,6 +1888,171 @@ mod tests {
         // Nothing set: merge.commit defaults to true, so cleanup is free.
         let empty = FakeConfig::new(&[]);
         assert!(validate(&empty, "remove-branch").is_ok());
+    }
+
+    // ── Behaviors ────────────────────────────────────────────────────────
+
+    #[test]
+    fn every_preset_assigns_every_member_exactly_once() {
+        for behavior in BEHAVIORS {
+            for preset in behavior.presets {
+                let assigned: Vec<&str> = preset.values.iter().map(|(key, _)| *key).collect();
+                for member in behavior.members {
+                    let times = assigned.iter().filter(|key| *key == member).count();
+                    assert_eq!(
+                        times, 1,
+                        "{}/{}: member {member} is assigned {times} times — a preset \
+                         must be a total assignment, or applying it leaves that key \
+                         at whatever it happened to be",
+                        behavior.name, preset.name
+                    );
+                }
+                assert_eq!(
+                    assigned.len(),
+                    behavior.members.len(),
+                    "{}/{}: assigns a key that is not a member",
+                    behavior.name,
+                    preset.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_member_is_a_real_writable_setting() {
+        let specs = all_specs();
+        for behavior in BEHAVIORS {
+            for member in behavior.members {
+                let spec = specs
+                    .iter()
+                    .find(|s| s.key == *member)
+                    .unwrap_or_else(|| panic!("{}: unknown member {member}", behavior.name));
+                assert!(
+                    spec.is_writable(),
+                    "{}: member {member} is managed by another command, so a preset \
+                     could never apply it",
+                    behavior.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_preset_value_would_survive_its_own_write() {
+        let specs = all_specs();
+        for behavior in BEHAVIORS {
+            for preset in behavior.presets {
+                for (key, value) in preset.values {
+                    let spec = specs.iter().find(|s| s.key == *key).unwrap();
+                    assert!(
+                        spec.ty.validate(value).is_ok(),
+                        "{}/{}: {key} = {value:?} does not validate under its own type",
+                        behavior.name,
+                        preset.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// The rule that keeps `Custom` meaningful. A behavior naming only the
+    /// interesting recipe reads `Custom` for everyone who has not adopted it,
+    /// and a row that says `Custom` to most people is noise.
+    #[test]
+    fn one_preset_is_the_state_of_a_configuration_that_sets_nothing() {
+        let specs = all_specs();
+        for behavior in BEHAVIORS {
+            let defaults: Vec<(&str, Option<&str>)> = behavior
+                .members
+                .iter()
+                .map(|member| {
+                    let spec = specs.iter().find(|s| s.key == *member).unwrap();
+                    (*member, spec.default.value())
+                })
+                .collect();
+
+            let matching = behavior.presets.iter().filter(|preset| {
+                defaults
+                    .iter()
+                    .all(|(key, default)| preset.value_for(key) == *default)
+            });
+
+            assert_eq!(
+                matching.count(),
+                1,
+                "{}: exactly one preset must describe the untouched configuration \
+                 (defaults: {defaults:?})",
+                behavior.name
+            );
+        }
+    }
+
+    /// The default state is `presets[0]`, which is what a tie in the
+    /// nearest-preset search falls back to.
+    #[test]
+    fn the_default_preset_is_listed_first() {
+        let specs = all_specs();
+        for behavior in BEHAVIORS {
+            let first = &behavior.presets[0];
+            for member in behavior.members {
+                let spec = specs.iter().find(|s| s.key == *member).unwrap();
+                assert_eq!(
+                    first.value_for(member),
+                    spec.default.value(),
+                    "{}: presets[0] ({}) should be the untouched state",
+                    behavior.name,
+                    first.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn behavior_and_preset_names_are_unambiguous() {
+        let mut seen = HashSet::new();
+        for behavior in BEHAVIORS {
+            assert!(
+                seen.insert(behavior.name),
+                "duplicate behavior name {}",
+                behavior.name
+            );
+            // A name that could be read as a key would make `daft config set`
+            // ambiguous about which namespace the user meant.
+            assert!(
+                !behavior.name.starts_with("daft."),
+                "{}: behavior names are unprefixed so they cannot collide with keys",
+                behavior.name
+            );
+            assert!(
+                behavior.presets.len() >= 2,
+                "{}: a behavior with one state is not a choice",
+                behavior.name
+            );
+
+            let mut preset_names = HashSet::new();
+            for preset in behavior.presets {
+                assert!(
+                    preset_names.insert(preset.name.to_ascii_lowercase()),
+                    "{}: duplicate preset name {}",
+                    behavior.name,
+                    preset.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_behavior_is_found_the_way_a_user_types_it() {
+        assert!(find_behavior("remote-sync").is_some());
+        assert!(find_behavior("Remote-Sync").is_some());
+        assert!(find_behavior(" remote-sync ").is_some());
+        assert!(find_behavior("remote_sync").is_none());
+        assert!(find_behavior("daft.checkout.fetch").is_none());
+
+        let behavior = find_behavior("remote-sync").unwrap();
+        assert_eq!(behavior.preset("ON").map(|p| p.name), Some("on"));
+        // "custom" is a derived state, never a preset someone can ask for.
+        assert!(behavior.preset("custom").is_none());
     }
 
     #[test]

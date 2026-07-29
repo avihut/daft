@@ -14,9 +14,9 @@
 //! never writes: that keeps the whole thing testable without a repository, and
 //! keeps the one place that touches git in `write.rs` where the CLI shares it.
 
-use crate::commands::config::resolve::Resolved;
+use crate::commands::config::resolve::{Resolved, ResolvedBehavior};
 use crate::commands::config::write::{WriteScope, canonical_value};
-use crate::core::settings_spec::{SettingSpec, ValueType};
+use crate::core::settings_spec::{BehaviorSpec, SettingSpec, ValueType};
 use crate::git::ConfigScope;
 
 /// What the editor decided to do, for the caller to carry out.
@@ -31,6 +31,55 @@ pub enum Apply {
         key: String,
         scope: WriteScope,
     },
+    /// Apply every member of a behavior's preset at once.
+    SetBehavior {
+        name: &'static str,
+        preset: &'static str,
+        scope: WriteScope,
+    },
+    /// Remove every member at this scope.
+    UnsetBehavior {
+        name: &'static str,
+        scope: WriteScope,
+    },
+}
+
+/// What the editor is editing.
+///
+/// One overlay for both, because they are the same interaction: a scope, a
+/// list of choices, and unset. Only the labels and what an apply produces
+/// differ.
+#[derive(Debug, Clone)]
+pub enum Subject {
+    // Boxed: a `SettingSpec` is ~250 bytes against the behavior's one
+    // reference, and every `Modal` would carry the larger of the two.
+    Setting(Box<SettingSpec>),
+    Behavior(&'static BehaviorSpec),
+}
+
+impl Subject {
+    /// The title line.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Setting(spec) => spec.label.to_string(),
+            Self::Behavior(behavior) => behavior.label.to_string(),
+        }
+    }
+
+    /// The identifier under the title — a key, or a behavior name.
+    pub fn name(&self) -> String {
+        match self {
+            Self::Setting(spec) => spec.key.to_string(),
+            Self::Behavior(behavior) => behavior.name.to_string(),
+        }
+    }
+
+    pub fn help(&self) -> String {
+        match self {
+            Self::Setting(spec) => spec.help.to_string(),
+            Self::Behavior(behavior) => behavior.help.to_string(),
+        }
+    }
 }
 
 /// One row of the value list.
@@ -58,7 +107,7 @@ pub enum Field {
 /// The open editor.
 #[derive(Debug, Clone)]
 pub struct Modal {
-    pub spec: SettingSpec,
+    pub subject: Subject,
     /// Where the write goes. Starts at the screen's pill.
     pub scope: WriteScope,
     /// The scopes worth offering — one of them when there is no repository.
@@ -148,13 +197,71 @@ impl Modal {
         };
 
         let mut modal = Self {
-            spec,
+            subject: Subject::Setting(Box::new(spec)),
             scope,
             scopes,
             options,
             field,
             error: None,
             inherited,
+            scope_is_inert: false,
+        };
+        modal.refresh_scope_warning();
+        modal
+    }
+
+    /// Open the editor for a behavior.
+    ///
+    /// Structurally the same box a closed-vocabulary setting gets: the presets
+    /// are the options, and unset is last. What it cannot show is a single
+    /// current value — the state comes from the members' effective values, and
+    /// the row behind the overlay is where that is spelled out.
+    pub fn open_behavior(behavior: &ResolvedBehavior, scope: ConfigScope, in_repo: bool) -> Self {
+        let spec = behavior.spec;
+
+        let scopes = if in_repo {
+            vec![WriteScope::Local, WriteScope::Global]
+        } else {
+            vec![WriteScope::Global]
+        };
+        let scope = match scope {
+            ConfigScope::Global => WriteScope::Global,
+            _ if in_repo => WriteScope::Local,
+            _ => WriteScope::Global,
+        };
+
+        let mut options: Vec<Option_> = spec
+            .presets
+            .iter()
+            .map(|preset| Option_::Value {
+                value: preset.name.to_string(),
+                gloss: format!("{} — {}", preset.label, preset.help),
+            })
+            .collect();
+        options.push(Option_::Unset {
+            reveals: format!("clear all {} settings at this scope", spec.members.len()),
+        });
+
+        // Start on the state the behavior is in, so Enter without moving is a
+        // no-op. Custom starts at the top, since there is no preset to point
+        // at and the first one is the untouched state.
+        let cursor = match behavior.preset() {
+            Some(current) => spec
+                .presets
+                .iter()
+                .position(|preset| preset.name == current.name)
+                .unwrap_or(0),
+            None => 0,
+        };
+
+        let mut modal = Self {
+            subject: Subject::Behavior(spec),
+            scope,
+            scopes,
+            options,
+            field: Field::Options { cursor },
+            error: None,
+            inherited: spec.presets[0].label.to_string(),
             scope_is_inert: false,
         };
         modal.refresh_scope_warning();
@@ -222,7 +329,8 @@ impl Modal {
     /// with the warning inline — hiding the scope would be more confusing than
     /// showing why it is a bad idea, and the apply still refuses.
     fn refresh_scope_warning(&mut self) {
-        self.scope_is_inert = self.spec.global_only && self.scope == WriteScope::Local;
+        self.scope_is_inert =
+            self.setting().is_some_and(|spec| spec.global_only) && self.scope == WriteScope::Local;
     }
 
     // ── Text entry ───────────────────────────────────────────────────────
@@ -274,10 +382,14 @@ impl Modal {
             return None;
         };
         if buffer.trim().is_empty() {
-            return self.spec.ty.format_hint().map(str::to_string);
+            return self
+                .setting()
+                .and_then(|spec| spec.ty.format_hint())
+                .map(str::to_string);
         }
-        match self.spec.ty.validate(buffer) {
-            Ok(()) => self.spec.ty.format_hint().map(str::to_string),
+        let spec = self.setting()?;
+        match spec.ty.validate(buffer) {
+            Ok(()) => spec.ty.format_hint().map(str::to_string),
             Err(reason) => Some(reason),
         }
     }
@@ -287,7 +399,12 @@ impl Modal {
         match &self.field {
             Field::Text {
                 buffer, on_unset, ..
-            } if !on_unset => !buffer.trim().is_empty() && self.spec.ty.validate(buffer).is_ok(),
+            } if !on_unset => {
+                !buffer.trim().is_empty()
+                    && self
+                        .setting()
+                        .is_some_and(|spec| spec.ty.validate(buffer).is_ok())
+            }
             _ => true,
         }
     }
@@ -301,7 +418,7 @@ impl Modal {
     /// the field rather than after the box has closed — the cross-key rules
     /// still run in `write.rs`, which is the one place that cannot be skipped.
     pub fn apply(&self) -> Result<Apply, String> {
-        let key = self.spec.key.to_string();
+        let key = self.subject.name();
 
         if self.scope_is_inert {
             return Err(format!(
@@ -323,20 +440,55 @@ impl Modal {
             }
         };
 
-        match chosen {
-            Some(raw) => {
-                let value = canonical_value(&self.spec.ty, &raw);
-                self.spec.ty.validate(&value)?;
+        match (&self.subject, chosen) {
+            (Subject::Setting(spec), Some(raw)) => {
+                let value = canonical_value(&spec.ty, &raw);
+                spec.ty.validate(&value)?;
                 Ok(Apply::Set {
                     key,
                     scope: self.scope,
                     value,
                 })
             }
-            None => Ok(Apply::Unset {
+            (Subject::Setting(_), None) => Ok(Apply::Unset {
                 key,
                 scope: self.scope,
             }),
+            // A preset name comes straight off the options list the registry
+            // built, so there is nothing left to validate here — the whole
+            // assignment is checked in `write.rs`, against where it lands.
+            (Subject::Behavior(behavior), Some(raw)) => behavior
+                .preset(&raw)
+                .map(|preset| Apply::SetBehavior {
+                    name: behavior.name,
+                    preset: preset.name,
+                    scope: self.scope,
+                })
+                .ok_or_else(|| format!("{raw} is not a state of {}", behavior.name)),
+            (Subject::Behavior(behavior), None) => Ok(Apply::UnsetBehavior {
+                name: behavior.name,
+                scope: self.scope,
+            }),
+        }
+    }
+
+    /// The setting being edited, when the subject is one.
+    pub fn setting(&self) -> std::option::Option<&SettingSpec> {
+        match &self.subject {
+            Subject::Setting(spec) => Some(spec),
+            Subject::Behavior(_) => None,
+        }
+    }
+
+    /// What this scope is called for whatever is being edited.
+    ///
+    /// A setting takes its backend's word for it — a `daft.yml` row's "global"
+    /// is the repository's committed file, not anything user-wide. A behavior
+    /// can span backends, so it keeps the plain scope word.
+    pub fn scope_label(&self, scope: WriteScope) -> &'static str {
+        match &self.subject {
+            Subject::Setting(spec) => scope.label_for(spec),
+            Subject::Behavior(_) => scope.label(),
         }
     }
 

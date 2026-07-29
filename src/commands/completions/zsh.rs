@@ -1023,7 +1023,7 @@ _daft() {
     # `daft config<TAB>` would stop completing the verb it is spelling.
     if [[ "$words[2]" == "config" ]] && (( CURRENT >= 3 )); then
         if (( CURRENT == 3 )); then
-            compadd get list remote-sync set unset
+            compadd get list set unset
             return
         fi
         local config_sub="$words[3]"
@@ -1060,12 +1060,6 @@ _daft() {
             list)
                 if [[ "$curword" == -* ]]; then
                     compadd -- --modified --category --format --template --no-headers -h --help
-                fi
-                return
-                ;;
-            remote-sync)
-                if [[ "$curword" == -* ]]; then
-                    compadd -- --on --off --status --global -h --help
                 fi
                 return
                 ;;

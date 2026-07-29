@@ -241,7 +241,7 @@ root via `git rev-parse --git-common-dir`.
 | `daft config get <key> [--origin]`                                              | One value on stdout, exit 1 when there is none — the same contract `git config --get` has. `--origin` adds the full layer-by-layer chain and any diagnostics.                                                                                                                                                                                                                                                                                             |
 | `daft config set [--global] <key> <value>`                                      | Change a setting, validated against its own type before anything is written. Without `--global` it writes this repository. Covers git-config keys, the worktree layout, and `daft.yml` scalars alike.                                                                                                                                                                                                                                                     |
 | `daft config unset [--global] <key>`                                            | Remove a value, revealing whatever it was masking. Not an error when nothing was set.                                                                                                                                                                                                                                                                                                                                                                     |
-| `daft config remote-sync [--on\|--off\|--status\|--global]`                     | Toggle fetch, push, and remote-delete behavior together. Bare `daft config` opens an interactive browser — never run it from an agent; use the verbs above.                                                                                                                                                                                                                                                                                               |
+| `daft config set [--global] remote-sync <on\|off>`                              | Behaviors are named groups of settings that only make sense together — `remote-sync` is fetch, push, and remote-delete. `get` returns `on`, `off`, or `custom` (the members disagree); `custom` can be read but never set. Bare `daft config` opens an interactive browser — never run it from an agent; use the verbs above.                                                                                                                             |
 | `daft layout [show\|list\|transform\|default]`                                  | Manage worktree layouts                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `daft hooks <subcommand>`                                                       | Manage hooks trust and configuration (`trust`, `prompt`, `deny`, `status`, `run`, `install`, `validate`, `dump`, `migrate`, `jobs`)                                                                                                                                                                                                                                                                                                                       |
 | `daft hooks jobs [logs\|cancel\|retry\|prune [--dry-run] [--older-than <D>]]`   | Manage background hook jobs: list (with a `Size` column), view logs, cancel, retry, prune old records. Automatic cleanup runs at most once every 24h (off in CI; opt out with `DAFT_NO_LOG_CLEAN=1`). JSON shape: see Machine-Readable Output.                                                                                                                                                                                                            |
@@ -528,8 +528,9 @@ Set one per hook (default is `parallel`):
   tags: ["build"] # Tags for filtering
   skip: CI # Skip when $CI is set
   only: DEPLOY_ENABLED # Only run when $DEPLOY_ENABLED is set
-  os: linux # Target OS: macos, linux, windows (or list)
-  arch: x86_64 # Target arch: x86_64, aarch64 (or list)
+  arch:
+    x86_64 # Target arch: x86_64, aarch64 (or list). No os: field —
+    # gate on the OS with a skip: command instead.
   needs: [install-npm] # Wait for these jobs to complete first
   tracks: [path, branch] # Worktree attributes this job depends on (move hooks)
   interactive: true # Needs TTY (forces sequential)
@@ -1293,8 +1294,8 @@ the result arrives.
 ## Configuration Reference
 
 **Local-first defaults**: daft does not contact the remote by default. Remote
-operations are opt-in via `daft config remote-sync --on` (or the individual keys
-below); `--local` on any command suppresses remote operations for a single
+operations are opt-in via `daft config set remote-sync on` (or the individual
+keys below); `--local` on any command suppresses remote operations for a single
 invocation.
 
 | Key                              | Default               | Description                                                                                                                                                                 |

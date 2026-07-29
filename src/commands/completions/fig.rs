@@ -1059,41 +1059,11 @@ fn build_fig_config_subcommand() -> FigSubcommand {
         ]),
     };
 
-    let remote_sync = FigSubcommand {
-        name: "remote-sync".to_string(),
-        description: Some("Configure remote sync behavior".to_string()),
-        load_spec: None,
-        subcommands: None,
-        args: None,
-        options: Some(vec![
-            FigOption {
-                name: FigName::Single("--on".into()),
-                description: "Enable all remote sync operations".into(),
-                args: None,
-            },
-            FigOption {
-                name: FigName::Single("--off".into()),
-                description: "Disable all remote sync operations".into(),
-                args: None,
-            },
-            FigOption {
-                name: FigName::Single("--status".into()),
-                description: "Show current remote sync settings".into(),
-                args: None,
-            },
-            FigOption {
-                name: FigName::Single("--global".into()),
-                description: "Write to global git config instead of local".into(),
-                args: None,
-            },
-        ]),
-    };
-
     FigSubcommand {
         name: "config".to_string(),
         description: Some("Browse and change daft settings".to_string()),
         load_spec: None,
-        subcommands: Some(vec![get, list, remote_sync, set, unset]),
+        subcommands: Some(vec![get, list, set, unset]),
         args: None,
         options: None,
     }
