@@ -45,9 +45,13 @@ test_config_tui_paints_and_exits() {
 
     git config --local daft.merge.style squash
 
+    # The screen opens on a behavior, whose detail panel is its members'
+    # ladders rather than one effective line — so step onto a setting before
+    # quitting and the frames cover both shapes.
     local log="$TEMP_BASE_DIR/config-tui-paint.log"
     _config_tui_daft python3 "$CONFIG_TUI_PTY_RUN" \
-        --send-after 'Daft Settings:q' \
+        --send-after 'Daft Settings:j' \
+        --send-after 'effective:q' \
         "$log" \
         daft config
     local status=$?
@@ -62,9 +66,13 @@ test_config_tui_paints_and_exits() {
     local painted
     painted=$(_config_tui_clean "$log")
 
-    # The four things the screen is for: a title, the scope it writes to, a
-    # value with its origin, and the resolved effective line.
-    local expected=("Daft Settings" "writes:" "local" "effective:")
+    # What the screen is for: a title, the scope it writes to, a value with
+    # its origin, the resolved effective line — and, on the row it opens on,
+    # a behavior with the settings it stands for.
+    local expected=(
+        "Daft Settings" "writes:" "local" "effective:"
+        "Behaviors" "remote-sync" "What it sets"
+    )
     for needle in "${expected[@]}"; do
         if [[ "$painted" != *"$needle"* ]]; then
             log_error "The screen never painted '$needle'"
@@ -94,12 +102,13 @@ test_config_tui_write_lands() {
     git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-config-tui-write/main" || return 1
 
-    # daft.autocd is the first row and a boolean, so `space` toggles it off
+    # The screen opens on the behaviors block, so one `j` reaches the first
+    # ordinary setting — daft.autocd, a boolean — and `space` toggles it off
     # its default. Then wait for the narration before quitting, which is what
     # proves the write completed rather than merely being dispatched.
     local log="$TEMP_BASE_DIR/config-tui-write.log"
     _config_tui_daft python3 "$CONFIG_TUI_PTY_RUN" \
-        --send-after 'Daft Settings: ' \
+        --send-after 'Daft Settings:j ' \
         --send-after 'Set daft.autocd:q' \
         "$log" \
         daft config
@@ -131,6 +140,56 @@ test_config_tui_write_lands() {
     return 0
 }
 
+# `space` on the opening row writes every setting the behavior covers
+#
+# The one thing no unit test reaches: a behavior write is several git-config
+# writes behind one keystroke, and only a real run proves all of them land.
+test_config_tui_behavior_write_lands() {
+    local remote_repo=$(create_test_remote "test-repo-config-tui-behavior" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-config-tui-behavior/main" || return 1
+
+    # The screen opens on remote-sync, which starts at its default state, so
+    # `space` steps it to the other one.
+    local log="$TEMP_BASE_DIR/config-tui-behavior.log"
+    _config_tui_daft python3 "$CONFIG_TUI_PTY_RUN" \
+        --send-after 'Daft Settings: ' \
+        --send-after 'Set remote-sync:q' \
+        "$log" \
+        daft config
+    local status=$?
+
+    if [[ $status -ne 0 ]]; then
+        log_error "The settings screen exited $status (expected 0)"
+        _config_tui_clean "$log" | tail -20
+        return 1
+    fi
+
+    local key
+    for key in daft.checkout.fetch daft.checkout.push daft.branchDelete.remote; do
+        local stored
+        stored=$(git config --local --get "$key")
+        if [[ "$stored" != "true" ]]; then
+            log_error "$key did not reach git config (got '${stored:-unset}')"
+            _config_tui_clean "$log" | tail -20
+            return 1
+        fi
+    done
+    log_success "one keystroke wrote all three of the behavior's settings"
+
+    # And the narration says where it landed, not just what it wrote.
+    local painted
+    painted=$(_config_tui_clean "$log")
+    if [[ "$painted" != *"now reads Full sync"* ]]; then
+        log_error "The screen never reported the resulting state"
+        printf '%s\n' "$painted" | tail -20
+        return 1
+    fi
+    log_success "and reported the state it left the behavior in"
+
+    return 0
+}
+
 # Without a terminal the bare command prints the list rather than hanging
 test_config_tui_falls_back_without_a_terminal() {
     local remote_repo=$(create_test_remote "test-repo-config-notty" "main")
@@ -156,6 +215,7 @@ run_config_tui_tests() {
 
     run_test "config_tui_paints_and_exits" "test_config_tui_paints_and_exits"
     run_test "config_tui_write_lands" "test_config_tui_write_lands"
+    run_test "config_tui_behavior_write_lands" "test_config_tui_behavior_write_lands"
     run_test "config_tui_falls_back_without_a_terminal" "test_config_tui_falls_back_without_a_terminal"
 }
 

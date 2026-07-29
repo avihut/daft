@@ -124,3 +124,25 @@ cd $(mktemp -d) && git init -q . && daft config
 - [ ] `daft config get daft.merge.stile` suggests `daft.merge.style`
 - [ ] `daft config <TAB>` completes the verbs; `daft config set <TAB>` completes
       keys; `daft config set daft.merge.style <TAB>` completes its variants
+
+## Behaviors
+
+- [ ] The list and the browser both open with `Behaviors` above the categories
+- [ ] `daft config get remote-sync` prints `off` in an untouched repository
+- [ ] `daft config set remote-sync on` writes all three settings in one line,
+      and says which state it left the behavior in
+- [ ] Setting one member alone flips the row to `Custom`, and the detail panel
+      names which member is out of step
+- [ ] `space` on the behavior row steps to the state the panel says it is
+      closest to
+- [ ] `→` narrows the list to the three member settings; `←` and `esc` each come
+      back, and a write while narrowed keeps the narrowed list
+- [ ] `enter` opens the same editor a setting gets, offering the states rather
+      than `true`/`false`
+- [ ] `daft config unset remote-sync` at local scope reports the state the
+      global values reveal, not just the removal
+- [ ] `daft config set remote-sync custom` is refused and names the real states
+- [ ] `daft config set --global remote-sync on` in a repo whose local config
+      disagrees says the local value still wins
+- [ ] `daft config set remote-sync <TAB>` completes `on`/`off`, not
+      `true`/`false`
