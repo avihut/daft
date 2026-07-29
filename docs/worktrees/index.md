@@ -268,6 +268,8 @@ root and place new worktrees according to the active layout.
   traditional repo to the worktree layout
 - **Forks and mirrors:** [Multi-remote](/worktrees/multi-remote) — organize
   worktrees by remote
+- **Start warm, not cold:** [Copying build caches](/worktrees/copying-caches) —
+  the `copy:` key and `daft warm`
 - **Run commands across worktrees:**
   [Running commands across worktrees](/worktrees/running-commands) — `daft exec`
 - **Merge across worktrees:** [Merging across worktrees](/worktrees/merging) —

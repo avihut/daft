@@ -1,0 +1,90 @@
+name: A relative --at does not displace the copy and link stages
+description: >
+  `--at sub/foo` reaches the creation core as a RELATIVE path, and creation
+  chdirs into the new worktree partway through. Everything after that point
+  re-resolved the relative path against the new cwd, landing on
+  `<worktree>/sub/foo`: shared linking degraded to a silent no-op there, and the
+  copy stage would have created that junk path, written a cache-sized tree into
+  it, and reported green. The `shared:` half of this scenario bites TODAY — that
+  linking is already implemented, so the symlink assertion below is red without
+  the absolutize fix and green with it. The `copy:` half joins it when the
+  engine lands. Both halves also assert the junk path never appears, which is
+  the failure mode a green-but-wrong copy row would otherwise hide.
+
+repos:
+  - name: copy-relat
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-relat"
+          - path: .gitignore
+            content: |
+              node_modules/
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+    daft_yml: |
+      shared:
+        - .env
+      copy:
+        - node_modules/
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_RELAT
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-relat/main"
+
+  - name: Collect a shared file and build a cache in the source worktree
+    # `set -e`: step bodies run under `bash -c` with no errexit, so without it
+    # only the last command's status is reported.
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/copy-relat/.git/.daft/shared"
+      printf 'SECRET=val\n' > "$WORK_DIR/copy-relat/.git/.daft/shared/.env"
+      mkdir -p node_modules/pkg
+      printf 'module.exports = 1;\n' > node_modules/pkg/index.js
+      git check-ignore node_modules
+    cwd: "$WORK_DIR/copy-relat/main"
+    expect:
+      exit_code: 0
+
+  - name: Check out into a RELATIVE --at path
+    run: daft go --at sub/foo develop 2>&1
+    cwd: "$WORK_DIR/copy-relat/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-relat/main/sub/foo"
+
+  - name: The shared file linked into the worktree, not into a junk subpath
+    run: |
+      set -e
+      test -L "$WORK_DIR/copy-relat/main/sub/foo/.env"
+      test ! -e "$WORK_DIR/copy-relat/main/sub/foo/sub"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/copy-relat/main/sub/foo/.env"
+          content: "SECRET=val"
+
+  - name: The cache copied into the worktree, not into a junk subpath
+    run: |
+      set -e
+      test ! -e "$WORK_DIR/copy-relat/main/sub/foo/sub"
+      test -d "$WORK_DIR/copy-relat/main/sub/foo/node_modules"
+      test ! -L "$WORK_DIR/copy-relat/main/sub/foo/node_modules"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-relat/main/sub/foo/node_modules/pkg/index.js"
+      files_not_exist:
+        - "$WORK_DIR/copy-relat/main/sub/foo/sub/foo/node_modules/pkg/index.js"
+      file_contains:
+        - path: "$WORK_DIR/copy-relat/main/sub/foo/node_modules/pkg/index.js"
+          content: "module.exports = 1;"

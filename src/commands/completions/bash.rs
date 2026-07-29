@@ -1,7 +1,7 @@
 use super::{
-    allows_path_completion, command_has_repo_flag, command_has_repo_positional, emit_formats_for,
-    extract_flags, get_command_for_name, repo_flag_capture, uses_fetch_on_miss,
-    uses_rich_completions, value_taking_flags,
+    allows_path_completion, command_has_repo_flag, command_has_repo_positional,
+    command_has_worktree_from_flag, emit_formats_for, extract_flags, get_command_for_name,
+    repo_flag_capture, uses_fetch_on_miss, uses_rich_completions, value_taking_flags,
 };
 use anyhow::{Context, Result};
 
@@ -297,6 +297,24 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
         ""
     };
 
+    // Value completion for --from (worktree names, same source as the
+    // positional). Sits before the `-*` flag branch like --repo does, so
+    // `daft warm --from <TAB>` answers with worktrees instead of flags.
+    let from_flag_pre = if command_has_worktree_from_flag(command_name) {
+        format!(
+            r#"    if [[ "$prev" == "--from" ]]; then
+        local __wts
+        __wts=$(daft __complete {command_name} "$cur" --position 1 2>/dev/null | cut -f1)
+        COMPREPLY=( $(compgen -W "$__wts" -- "$cur") )
+        return 0
+    fi
+
+"#
+        )
+    } else {
+        String::new()
+    };
+
     // daft-go and daft-start complete later positions against the repo named
     // at position 1; pass it via env — the __complete protocol only carries
     // the current word. `$__first` is the first *positional*, not words[1],
@@ -371,7 +389,7 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     local cur prev words cword
     {init_completion}
 
-{repo_flag_pre}{skip_hooks_pre}    if [[ "$cur" == -* ]]; then
+{repo_flag_pre}{from_flag_pre}{skip_hooks_pre}    if [[ "$cur" == -* ]]; then
         local flags="{flags_joined}"
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
         return 0
@@ -991,6 +1009,12 @@ _daft() {
                 _git_worktree_init
                 return 0
                 ;;
+            warm)
+                COMP_WORDS=("git-worktree-warm" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_worktree_warm
+                return 0
+                ;;
         esac
     fi
 
@@ -999,7 +1023,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h -C" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo skill clone init install go start carry exec run update list prune rename sync push remove merge worktree-merge adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo skill clone init install go start carry exec run warm update list prune rename sync push remove merge worktree-merge adopt eject" -- "$cur") )
         fi
         return 0
     fi

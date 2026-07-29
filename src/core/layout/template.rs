@@ -93,7 +93,15 @@ pub fn resolve_path(rendered: &str, repo_path: &Path) -> Result<PathBuf> {
 }
 
 /// Normalize a path by resolving `.` and `..` components without filesystem access.
-fn normalize_path(path: &Path) -> PathBuf {
+///
+/// Deliberately lexical: unlike `canonicalize` it never touches the disk and
+/// never resolves symlinks, so the result is still the path the user named
+/// (`/tmp/...` stays `/tmp/...`, not `/private/tmp/...`). Shared with the
+/// creation core, which absolutizes a relative `--at` the same way so a
+/// layout-derived path and an `--at`-derived one are spelled identically
+/// everywhere they surface — `DAFT_WORKTREE_PATH`, the result line,
+/// `daft list`.
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     let mut components = Vec::new();
     for component in path.components() {
         match component {

@@ -3,7 +3,7 @@
 //! Validates a parsed `YamlConfig` for semantic correctness beyond
 //! what serde can enforce.
 
-use super::yaml_config::{HookDef, JobDef, YamlConfig};
+use super::yaml_config::{CopyConfig, HookDef, JobDef, YamlConfig};
 use crate::VERSION;
 use anyhow::Result;
 
@@ -74,6 +74,12 @@ pub fn validate_config(config: &YamlConfig) -> Result<ValidationResult> {
         );
     }
 
+    // Validate the copy: section's shape (serde already enforced the value
+    // types; these are the semantic rules it cannot express).
+    if let Some(ref copy) = config.copy {
+        validate_copy(copy, &mut result);
+    }
+
     // Validate each hook definition
     for (hook_name, hook_def) in &config.hooks {
         validate_hook_def("hooks", hook_name, hook_def, &mut result);
@@ -102,6 +108,59 @@ pub fn validate_config(config: &YamlConfig) -> Result<ValidationResult> {
     }
 
     Ok(result)
+}
+
+/// Validate the `copy:` section.
+///
+/// Two rules serde cannot express:
+///
+/// 1. The **map form must declare a non-empty `paths:`**. `paths` is
+///    `#[serde(default)]` so a map that omits or misspells the key still
+///    deserializes; without this check `copy: {fallback: skip}` would be a
+///    silent no-op that looks configured. The bare-list form is exempt —
+///    `copy: []` is an honest "nothing declared", not a mistake.
+/// 2. **`max_size:` must parse.** A garbage cap (`5 gigs`, `5GBB`) would
+///    otherwise be dropped at read time and silently promote every entry to
+///    an uncapped byte-copy — the opposite of what was asked for.
+///
+/// Both are errors, not warnings: each one means the section does something
+/// other than what it says.
+fn validate_copy(copy: &CopyConfig, result: &mut ValidationResult) {
+    if matches!(copy, CopyConfig::Full { .. }) && copy.paths().is_empty() {
+        result.error(
+            "copy",
+            "'copy' declares no paths; give it a non-empty 'paths:' list \
+             (or remove the section)",
+        );
+    }
+
+    // An absolute entry is refused at copy time; catching it here means the
+    // author hears about it once, at `daft hooks validate`, instead of once
+    // per worktree creation. Same sentence both places.
+    for entry in copy.paths() {
+        if entry.trim().starts_with('/') {
+            result.error(
+                "copy.paths",
+                format!(
+                    "'{}' {}",
+                    entry.trim(),
+                    crate::core::copy_paths::absolute_entry_hint(entry.trim())
+                ),
+            );
+        }
+    }
+
+    if let Some(max_size) = copy.max_size()
+        && let Err(e) = crate::coordinator::clean_policy::parse_size(max_size)
+    {
+        result.error(
+            "copy.max_size",
+            format!(
+                "invalid max_size '{max_size}': {e} (expected a byte count or \
+                 a value with a KB/MB/GB suffix, e.g. '5GB')"
+            ),
+        );
+    }
 }
 
 /// Validate a task name for CLI and shell-completion safety.
@@ -525,6 +584,110 @@ hooks:
             "expected a no-op + legacy-suppression warning, got: {:?}",
             result.warnings
         );
+    }
+
+    #[test]
+    fn copy_valid_forms_pass_validation() {
+        for yaml in [
+            "copy:\n  - target/\n",
+            "copy: []\n",
+            "copy:\n  paths: [target/]\n",
+            "copy:\n  paths: [target/]\n  fallback: skip\n  max_size: 5GB\n",
+            "copy:\n  paths: [target/]\n  max_size: '1048576'\n",
+            "copy:\n  paths: [target/]\n  max_size: 500mb\n",
+        ] {
+            let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+            let result = validate_config(&config).unwrap();
+            assert!(
+                result.is_ok(),
+                "{yaml:?} should validate: {:?}",
+                result.errors
+            );
+        }
+    }
+
+    #[test]
+    fn copy_full_form_with_empty_paths_is_an_error() {
+        // The map form is how a user says "I configured copying"; with no
+        // paths it silently does nothing, so it must not load quietly.
+        for yaml in [
+            "copy:\n  paths: []\n",
+            "copy:\n  fallback: skip\n",
+            // A misspelled list key lands here too, with a readable message
+            // instead of serde's "did not match any variant".
+            "copy:\n  pahts: [target/]\n",
+        ] {
+            let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+            let result = validate_config(&config).unwrap();
+            assert!(
+                result
+                    .errors
+                    .iter()
+                    .any(|e| e.path == "copy" && e.message.contains("no paths")),
+                "{yaml:?} should error on empty paths, got: {:?}",
+                result.errors
+            );
+        }
+
+        // The bare-list form's empty spelling is honest, not a mistake.
+        let config: YamlConfig = serde_yaml::from_str("copy: []\n").unwrap();
+        assert!(validate_config(&config).unwrap().is_ok());
+    }
+
+    #[test]
+    fn copy_rejects_an_absolute_entry_with_the_fix_in_the_message() {
+        // An absolute entry is refused at copy time; catching it here means
+        // the answer arrives once, from `daft hooks validate`, instead of once
+        // per worktree creation. `/target` is what cargo writes into
+        // `.gitignore`, so it is the likeliest way one appears.
+        let config: YamlConfig =
+            serde_yaml::from_str("copy:\n  - /target\n  - node_modules/\n").unwrap();
+        let result = validate_config(&config).unwrap();
+
+        let message = result
+            .errors
+            .iter()
+            .find(|e| e.path == "copy.paths")
+            .map(|e| e.message.clone())
+            .expect("an absolute entry is an error");
+        assert!(
+            message.contains("/target") && message.contains("write 'target'"),
+            "the error has to name the entry and the fix: {message}"
+        );
+        // A relative entry alongside it is not implicated.
+        assert_eq!(
+            result
+                .errors
+                .iter()
+                .filter(|e| e.path == "copy.paths")
+                .count(),
+            1,
+            "{:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn copy_invalid_max_size_is_an_error_naming_the_value() {
+        for bad in ["5 gigs", "abc", "10XB", "", "99999999999999GB"] {
+            let config = YamlConfig {
+                copy: Some(CopyConfig::Full {
+                    paths: vec!["target/".to_string()],
+                    fallback: None,
+                    max_size: Some(bad.to_string()),
+                }),
+                ..Default::default()
+            };
+            let result = validate_config(&config).unwrap();
+            assert!(
+                result
+                    .errors
+                    .iter()
+                    .any(|e| e.path == "copy.max_size" && e.message.contains(bad)),
+                "max_size {bad:?} should be rejected and named, got: {:?}",
+                result.errors
+            );
+        }
     }
 
     #[test]

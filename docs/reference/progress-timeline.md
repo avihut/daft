@@ -24,6 +24,10 @@ receipt.
 ✓  Created worktree   ../daft-652/cool-feature
 ✓  Pushed             → origin/daft-652/cool-feature  (1.8s)
 │
+├─ copied paths from 'main'
+│  ✓  target/         12 paths · 1.4 GB · reflinked · 0.4s
+│  ○  node_modules/   nothing to copy yet
+│
 ├─ shared files
 │  ✓  .env
 │  ✓  .claude/settings.json
@@ -115,12 +119,36 @@ never keeps an identity ink.
   `daft.branchDelete.remote` off (the default), or `--local` — the rail never
   mentions them, exactly as an unconfigured push plans no row.
 - [Shared files](../cli/daft-shared.md) get their own section under a
-  `├─ shared files` anchor: one receipt row per declared path stating its state.
-  `✓` means the symlink landed; `○ already linked` and `○ materialized` are the
-  quiet no-ops; a path never collected into shared storage renders the yellow
-  `↓ … missing from shared storage` row with the `daft shared sync` remedy, and
-  a real file in the way gets the `daft shared link` remedy. The section never
-  silently ignores a declaration it could not honor.
+  `├─ shared files` anchor, after the copied paths — daft-managed links go on
+  top of whatever bulk content the copy brought: one receipt row per declared
+  path stating its state. `✓` means the symlink landed; `○ already linked` and
+  `○ materialized` are the quiet no-ops; a path never collected into shared
+  storage renders the yellow `↓ … missing from shared storage` row with the
+  `daft shared sync` remedy, and a real file in the way gets the
+  `daft shared link` remedy. The section never silently ignores a declaration it
+  could not honor.
+- [Copied paths](/worktrees/copying-caches) get the same treatment under a
+  `├─ copied paths from 'master'` anchor, immediately **before** the
+  shared-files section. The anchor names the worktree the caches came from,
+  because that is a ranked decision rather than something the command line shows
+  — the base branch's worktree when it has one, otherwise any worktree at the
+  identical commit (`· same commit`, plus `, where you are` or `, warmest` when
+  a tie had to be broken), otherwise where you ran the command
+  (`· the same-commit worktree is empty` when the ladder passed over a match
+  that carried none of the declared caches). Below it, one row per declared
+  **entry**, never per expanded glob match, so a `**/dist/` declaration stays
+  one row and reports its fan-out in the annotation
+  (`3 paths · 1.2 GB · reflinked · 0.3s`; `part reflinked` when only some
+  matches cloned, `· 2 unreadable` when the expansion could not read
+  everywhere). Exactly three skips are dim, because they are the stage working
+  as designed: `nothing to copy yet`, `already present`, `matched nothing`.
+  Every other outcome is yellow — a declaration daft refused
+  (`must be gitignored — tracked content is never copied`), could not size
+  (`2.1 GB — over the 1 GB max_size`), or could not carry out (`failed — …`).
+  The row's label is the entry, so its phrase never repeats it; when a glob
+  expands, the phrase names the one match that offended. No copy row is ever
+  red: the stage is an optimization, and a cache that did not copy has not cost
+  the user the worktree they asked for.
 - `daft remove` lists steps in true execution order — the remote branch is
   deleted first (it is the hardest to recreate), then the worktree, then the
   local branch. Multi-branch removals group rows under `├─` branch anchors. Its

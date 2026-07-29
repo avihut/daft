@@ -52,6 +52,18 @@ pub enum StageId {
     /// the file's relative path; the row's label is the path itself (set via
     /// [`StepSpec::with_label`]), planned under a `shared files` group.
     SharedFile,
+    /// Copy one declared `copy:` entry into the new worktree (#387) — the
+    /// independent-replica sibling of [`Self::SharedFile`], planned under a
+    /// `copied paths` group between the shared section and the post-create
+    /// hooks, so hook-driven builds hit a warm cache.
+    ///
+    /// Always scoped by the **config entry** as written, never by an expanded
+    /// glob match: one declaration is one row regardless of how many paths it
+    /// covers, which keeps the plan face walk-free and the reconcile keys
+    /// stable. The row's label is the entry itself (set via
+    /// [`StepSpec::with_label`]) and the fan-out lands in its annotation
+    /// (`**/dist/ → 3 paths · 1.2 GB · reflinked`).
+    CopyPath,
     /// `worktree-post-create` hooks.
     PostCreateHooks,
 

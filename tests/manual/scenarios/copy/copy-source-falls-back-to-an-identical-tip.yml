@@ -1,0 +1,90 @@
+name: A worktree at the base's exact commit stands in when the base has none
+description: >
+  The base a `daft start` names does not always have a worktree — it is often
+  just a ref. When it does not, a worktree whose HEAD is the identical commit
+  holds exactly the tree being branched from, whatever its branch is called, so
+  its caches match just as well. That is the second rung of the source ladder,
+  below the base's own worktree and above "wherever you were standing".
+
+  The fixture separates the two: `release` is a local branch at main's commit
+  with no worktree of its own, develop is moved off that commit with a commit of
+  its own, and the branch is started from inside develop. Standing is therefore
+  NOT a candidate, so the run can only resolve through the identical-commit rung
+  — and the cache that lands says whether it did.
+
+repos:
+  - name: copy-tip
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-tip"
+          - path: .gitignore
+            content: |
+              cache/
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+    daft_yml: |
+      copy:
+        - cache/
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_TIP
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-tip/main"
+
+  - name: Build main's cache and point a worktree-less branch at its commit
+    # `set -e`: step bodies run under `bash -c` with no errexit, so without it
+    # only the last command's status is reported.
+    run: |
+      set -e
+      mkdir -p cache
+      printf 'from-main\n' > cache/who.txt
+      git check-ignore cache
+      git branch release
+    cwd: "$WORK_DIR/copy-tip/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      Check out develop, give it its own cache, and move it off main's commit
+    run: |
+      set -e
+      daft go develop
+      printf 'from-develop\n' > "$WORK_DIR/copy-tip/develop/cache/who.txt"
+      cd "$WORK_DIR/copy-tip/develop"
+      git commit --allow-empty -q -m "develop moves ahead"
+    cwd: "$WORK_DIR/copy-tip/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/copy-tip/develop/cache/who.txt"
+          content: "from-develop"
+
+  - name:
+      Start a branch from release — which has no worktree — from inside develop
+    run: daft start feat-tip release 2>&1
+    cwd: "$WORK_DIR/copy-tip/develop"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Copied cache"
+      files_exist:
+        - "$WORK_DIR/copy-tip/feat-tip/cache/who.txt"
+
+  - name: The cache came from main, which holds release's exact commit
+    run: "true"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/copy-tip/feat-tip/cache/who.txt"
+          content: "from-main"
+      file_not_contains:
+        - path: "$WORK_DIR/copy-tip/feat-tip/cache/who.txt"
+          content: "from-develop"

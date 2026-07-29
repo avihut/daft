@@ -1,0 +1,114 @@
+name: Declared cache paths are copied into a new worktree
+description: >
+  `copy:` in daft.yml replicates gitignored build caches from the source
+  worktree into a newly created one (#387), so a fresh worktree starts warm
+  instead of paying a full `npm install` / `cargo build`. The replica must be a
+  REAL copy, not a symlink back into the source — that is `shared:`'s job, and
+  the whole point of `copy:` is that the two worktrees can diverge. Two entries
+  are declared, one literal and one glob, so the fan-out path (`**/dist/`
+  matching two package directories) is exercised alongside the simple one. This
+  exercises the `daft go` (existing-branch) creation journey.
+
+repos:
+  - name: copy-create
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-create"
+          # `web/` and `api/` are tracked, so the new worktree gets them from
+          # git and the glob entry only has to copy the ignored `dist/` under
+          # each — one behaviour per assertion.
+          - path: web/package.json
+            content: '{"name":"web"}'
+          - path: api/package.json
+            content: '{"name":"api"}'
+          - path: .gitignore
+            content: |
+              node_modules/
+              dist/
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+    daft_yml: |
+      copy:
+        - node_modules/
+        - "**/dist/"
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_CREATE
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-create/main"
+
+  - name: Build the caches in the source worktree; confirm git ignores them
+    # `set -e` is load-bearing in EVERY multi-command body here: steps run
+    # under `bash -c` with no errexit, so the step's exit status is the LAST
+    # command's and every earlier failure is discarded. Without it a body of
+    # assertions silently cannot fail.
+    run: |
+      set -e
+      mkdir -p node_modules/pkg web/dist api/dist
+      printf 'module.exports = 1;\n' > node_modules/pkg/index.js
+      printf 'web bundle\n' > web/dist/bundle.js
+      printf 'api bundle\n' > api/dist/bundle.js
+      git check-ignore node_modules web/dist api/dist
+    cwd: "$WORK_DIR/copy-create/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "node_modules"
+
+  - name: Check out an existing branch — the caches come along
+    run: daft go develop 2>&1
+    cwd: "$WORK_DIR/copy-create/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-create/develop/node_modules/pkg"
+      files_exist:
+        - "$WORK_DIR/copy-create/develop/node_modules/pkg/index.js"
+      file_contains:
+        - path: "$WORK_DIR/copy-create/develop/node_modules/pkg/index.js"
+          content: "module.exports = 1;"
+
+  - name: The glob entry fanned out to BOTH matching package directories
+    run: "true"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-create/develop/web/dist/bundle.js"
+        - "$WORK_DIR/copy-create/develop/api/dist/bundle.js"
+      file_contains:
+        - path: "$WORK_DIR/copy-create/develop/web/dist/bundle.js"
+          content: "web bundle"
+        - path: "$WORK_DIR/copy-create/develop/api/dist/bundle.js"
+          content: "api bundle"
+
+  - name: Every replica is a real directory, not a symlink into the source
+    run: |
+      set -e
+      test -d "$WORK_DIR/copy-create/develop/node_modules"
+      test ! -L "$WORK_DIR/copy-create/develop/node_modules"
+      test ! -L "$WORK_DIR/copy-create/develop/node_modules/pkg/index.js"
+      test -d "$WORK_DIR/copy-create/develop/web/dist"
+      test ! -L "$WORK_DIR/copy-create/develop/web/dist"
+      test ! -L "$WORK_DIR/copy-create/develop/api/dist"
+    expect:
+      exit_code: 0
+
+  - name: The replica is independent — writing to it leaves the source alone
+    run:
+      printf 'module.exports = 2;\n' >
+      "$WORK_DIR/copy-create/develop/node_modules/pkg/index.js"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/copy-create/main/node_modules/pkg/index.js"
+          content: "module.exports = 1;"
+        - path: "$WORK_DIR/copy-create/develop/node_modules/pkg/index.js"
+          content: "module.exports = 2;"

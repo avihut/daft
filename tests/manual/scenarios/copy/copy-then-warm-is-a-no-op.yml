@@ -1,0 +1,114 @@
+name: Warming a worktree creation already copied is a no-op
+description: >
+  The composition the idempotence contract promises, and the one place it can
+  actually be observed (#387): the creation stage and `daft warm` drive the same
+  engine over the same entry, so an entry creation copied must come back as
+  `already present` when warm re-runs — not a second copy, and not a silent
+  clobber of whatever the target has done to that cache since.
+
+  The two halves were each pinned alone and never together. `warm-skip-existing`
+  builds its destination with a first `daft warm`, so both runs are the same
+  command and a destination-shape mismatch between the two surfaces could not
+  show up; every creation scenario stops at the worktree. Here creation writes
+  the destination and warm reads it, which is the only arrangement that can
+  catch the two disagreeing about what "already there" looks like.
+
+  `--force` closes it: over a creation-produced destination it must replace,
+  which also makes this the counterpart of `warm-force` (whose destination came
+  from a previous warm). A diverged copy proves the replacement really happened
+  rather than the run merely reporting that it did.
+
+repos:
+  - name: copy-parity
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-parity"
+          - path: .gitignore
+            content: |
+              node_modules/
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      copy:
+        - node_modules/
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_PARITY
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-parity/main"
+
+  - name: Build a cache in the source worktree; confirm git ignores it
+    # `set -e`: step bodies run under `bash -c` with no errexit, so without it
+    # only the last command's status is reported.
+    run: |
+      set -e
+      mkdir -p node_modules/pkg
+      printf 'built-in-main\n' > node_modules/pkg/index.js
+      git check-ignore node_modules
+    cwd: "$WORK_DIR/copy-parity/main"
+    expect:
+      exit_code: 0
+
+  - name: Creation copies the cache
+    run: daft start feat-parity 2>&1
+    cwd: "$WORK_DIR/copy-parity/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Copied node_modules"
+      files_exist:
+        - "$WORK_DIR/copy-parity/feat-parity/node_modules/pkg/index.js"
+
+  - name: Diverge the copy so a silent re-copy would be visible
+    run: |
+      printf 'edited-in-feat\n' > "$WORK_DIR/copy-parity/feat-parity/node_modules/pkg/index.js"
+    expect:
+      exit_code: 0
+
+  - name: Warming what creation already copied reports it as already present
+    run: daft warm feat-parity 2>&1
+    cwd: "$WORK_DIR/copy-parity/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "node_modules: already present"
+        - "Copied nothing"
+        - "needed no work"
+        - "--force"
+      output_not_contains:
+        - "Copied 1 of 1 declared path"
+      # The divergence survived: `already present` is a real skip, not a
+      # re-copy that happened to be reported quietly.
+      file_contains:
+        - path: "$WORK_DIR/copy-parity/feat-parity/node_modules/pkg/index.js"
+          content: "edited-in-feat"
+
+  - name: --force replaces a destination that creation produced
+    run: daft warm feat-parity --force 2>&1
+    cwd: "$WORK_DIR/copy-parity/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Copied 1 of 1 declared path"
+      output_not_contains:
+        - "already present"
+      file_contains:
+        - path: "$WORK_DIR/copy-parity/feat-parity/node_modules/pkg/index.js"
+          content: "built-in-main"
+
+  - name: The replacement is still a real directory, and the source is untouched
+    run: |
+      set -e
+      test -d "$WORK_DIR/copy-parity/feat-parity/node_modules"
+      test ! -L "$WORK_DIR/copy-parity/feat-parity/node_modules"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/copy-parity/main/node_modules/pkg/index.js"
+          content: "built-in-main"

@@ -1,0 +1,69 @@
+name: Warm --force replaces an existing destination entry
+description: >
+  The escape hatch from warm-skip-existing.yml. `--force` is the one way to make
+  `daft warm` destroy something, so it is tested for both halves: the stale
+  destination is really gone (the file only the old copy had must not survive)
+  and the fresh one is really the source's.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Create a second worktree while no copy paths are declared
+    run: daft go develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Build a gitignored cache in main and declare it
+    run: |
+      # `set -e` is load-bearing: bodies run under `bash -c` with no
+      # errexit, so without it the exit status is the LAST command's and
+      # earlier failures silently cannot fail the step.
+      set -e
+      printf 'node_modules/\n' > .gitignore
+      printf 'copy:\n  - node_modules/\n' > daft.yml
+      mkdir -p node_modules/pkg
+      printf 'built-in-main\n' > node_modules/pkg/index.js
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  # Hand-built, not warmed: the destination must be replaceable whatever put
+  # it there, and a stale entry with an extra file is the case where a
+  # merge-instead-of-replace bug would hide.
+  - name: Give develop a stale cache of its own
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/test-repo/develop/node_modules/pkg"
+      printf 'stale\n' > "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
+      printf 'only-in-stale\n' > "$WORK_DIR/test-repo/develop/node_modules/leftover.txt"
+    expect:
+      exit_code: 0
+
+  - name: Warm with --force replaces it
+    run: daft warm develop --force 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Copied 1 of 1 declared path"
+      output_not_contains:
+        - "already present"
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/develop/node_modules/leftover.txt"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
+          content: "built-in-main"

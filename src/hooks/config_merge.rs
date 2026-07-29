@@ -28,6 +28,7 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
         source_dir_local,
         layout,
         shared,
+        copy,
         log,
         relations,
         merge,
@@ -67,6 +68,12 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
     }
     if shared.is_some() {
         merged.shared = shared;
+    }
+    // `copy` replaces wholesale, exactly like `shared`: an overlay that
+    // declares the key restates the entire section (paths AND knobs), so a
+    // local override is never a half-inherited hybrid.
+    if copy.is_some() {
+        merged.copy = copy;
     }
     if relations.is_some() {
         merged.relations = relations;
@@ -282,6 +289,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         source_dir_local: b_source_dir_local,
         layout: b_layout,
         shared: b_shared,
+        copy: b_copy,
         log: b_log,
         relations: b_relations,
         merge: b_merge,
@@ -299,6 +307,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         source_dir_local: o_source_dir_local,
         layout: o_layout,
         shared: o_shared,
+        copy: o_copy,
         log: o_log,
         relations: o_relations,
         merge: o_merge,
@@ -316,6 +325,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         source_dir_local: t_source_dir_local,
         layout: t_layout,
         shared: t_shared,
+        copy: t_copy,
         log: t_log,
         relations: t_relations,
         merge: t_merge,
@@ -352,6 +362,11 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         ),
         layout: pick3("layout", b_layout, o_layout, t_layout, &mut tally),
         shared: pick3("shared", b_shared, o_shared, t_shared, &mut tally),
+        // Whole-key granularity like `shared`: the section is one declaration
+        // (paths + knobs), so a two-sided edit is one conflict, not a
+        // per-path reconciliation that could produce a list neither side
+        // wrote.
+        copy: pick3("copy", b_copy, o_copy, t_copy, &mut tally),
         log: merge3_log(b_log, o_log, t_log, &mut tally),
         relations: pick3(
             "relations",
@@ -877,6 +892,11 @@ mod tests {
             source_dir_local: Some(".daft-local".to_string()),
             layout: Some("contained".to_string()),
             shared: Some(vec![".env".to_string()]),
+            copy: Some(crate::hooks::yaml_config::CopyConfig::Full {
+                paths: vec!["target/".to_string()],
+                fallback: Some(crate::hooks::yaml_config::CopyFallback::Skip),
+                max_size: Some("5GB".to_string()),
+            }),
             log: Some(LogConfig {
                 retention: Some("7d".to_string()),
                 ..Default::default()
@@ -1007,6 +1027,70 @@ mod tests {
             merged.tasks.contains_key("seed"),
             "overlay-only task must be added"
         );
+    }
+
+    #[test]
+    fn merge_configs_copy_overlay_replaces_wholesale() {
+        use crate::hooks::yaml_config::{CopyConfig, CopyFallback};
+
+        // A `daft.local.yml` that declares `copy:` restates the whole
+        // section: the base's paths AND its knobs are gone, not merged
+        // element-wise. Same rule as `shared`.
+        let base = YamlConfig {
+            copy: Some(CopyConfig::Full {
+                paths: vec!["target/".into(), "node_modules/".into()],
+                fallback: Some(CopyFallback::Skip),
+                max_size: Some("5GB".into()),
+            }),
+            ..Default::default()
+        };
+        let overlay = YamlConfig {
+            copy: Some(CopyConfig::Paths(vec![".venv/".into()])),
+            ..Default::default()
+        };
+        let merged = merge_configs(base.clone(), overlay);
+        let copy = merged.copy.unwrap();
+        assert_eq!(copy.paths(), [".venv/"], "overlay replaces, never unions");
+        assert_eq!(
+            copy.fallback(),
+            CopyFallback::Copy,
+            "the base's fallback: skip must NOT leak into a replaced section"
+        );
+        assert_eq!(copy.max_size(), None, "and neither must its max_size");
+
+        // An overlay without a `copy:` key leaves the base section intact.
+        let merged = merge_configs(base.clone(), YamlConfig::default());
+        assert_eq!(merged.copy, base.copy);
+    }
+
+    #[test]
+    fn merge3_copy_follows_the_shared_precedence_rules() {
+        use crate::hooks::yaml_config::CopyConfig;
+
+        let cfg = |paths: &[&str]| YamlConfig {
+            copy: Some(CopyConfig::Paths(
+                paths.iter().map(|p| p.to_string()).collect(),
+            )),
+            ..Default::default()
+        };
+        let base = cfg(&["target/"]);
+        let ours = cfg(&["target/", "node_modules/"]);
+        let theirs = cfg(&["target/", ".venv/"]);
+
+        // Ours-only change: ours stands, nothing reported.
+        let out = merge3(&base, &ours, &base.clone());
+        assert_eq!(out.merged.copy, ours.copy);
+        assert!(out.conflicts.is_empty() && out.took_from_theirs.is_empty());
+
+        // Theirs-only change: adopted, and reported under the `copy` key.
+        let out = merge3(&base, &base.clone(), &theirs);
+        assert_eq!(out.merged.copy, theirs.copy);
+        assert_eq!(out.took_from_theirs, vec!["copy".to_string()]);
+
+        // Both changed differently: one whole-section conflict, ours kept.
+        let out = merge3(&base, &ours, &theirs);
+        assert_eq!(out.conflicts, vec!["copy".to_string()]);
+        assert_eq!(out.merged.copy, ours.copy, "a conflicted key keeps ours");
     }
 
     #[test]
@@ -1383,6 +1467,11 @@ mod tests {
             source_dir_local: Some(".daft-local".to_string()),
             layout: Some("contained".to_string()),
             shared: Some(vec![".env".to_string()]),
+            copy: Some(crate::hooks::yaml_config::CopyConfig::Full {
+                paths: vec!["target/".to_string()],
+                fallback: Some(crate::hooks::yaml_config::CopyFallback::Skip),
+                max_size: Some("5GB".to_string()),
+            }),
             log: Some(LogConfig {
                 retention: Some("7d".to_string()),
                 ..Default::default()

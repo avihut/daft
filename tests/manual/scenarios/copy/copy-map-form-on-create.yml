@@ -1,0 +1,118 @@
+name: The map form and its knobs survive a real creation journey
+description: >
+  Every other creation scenario declares `copy:` in its bare-list form, so the
+  map form (`paths` / `fallback` / `max_size`) had no end-to-end proof at all
+  (#387). It needs one for a reason the bare list does not: `copy:` is an
+  UNTAGGED serde enum, so a value neither variant accepts does not fail the key
+  — it fails the WHOLE daft.yml. The loader then falls back to script hooks and
+  every YAML hook in the repository silently stops running. That blast radius is
+  why `max_size` has a hand-written int-or-string deserializer, and it is what
+  this scenario pins: an unquoted `max_size: 104857600` must be accepted as
+  bytes, exactly as the quoted spelling would be.
+
+  The `worktree-post-create` hook is the instrument. It writes a marker and
+  asserts nothing, so it says one thing only: the YAML config still parsed. Drop
+  the int arm from the deserializer and the marker vanishes together with the
+  copied cache — two independent failures from one broken key, which is
+  precisely the failure mode a per-key test cannot see.
+
+  `fallback: copy` is the portable choice: it is the default, so the entry
+  copies on a reflinking filesystem (APFS) and byte-copies on one without (Linux
+  CI tmpfs). `max_size` is set far above the fixture for the same reason — a cap
+  that actually gated would only gate on the non-reflinking half of the matrix,
+  since a clone is never size-checked.
+
+repos:
+  - name: copy-mapform
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-mapform"
+          - path: .gitignore
+            content: |
+              node_modules/
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      copy:
+        paths:
+          - node_modules/
+        fallback: copy
+        # Unquoted on purpose: a bare YAML integer is bytes, and against a
+        # plain Option<String> it would fail the whole untagged enum.
+        max_size: 104857600
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: config-still-parsed
+              run: printf 'yaml\n' > "$DAFT_WORKTREE_PATH/HOOK_RAN"
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_MAPFORM
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-mapform/main"
+
+  - name: Trust the repository's hooks
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/copy-mapform/main"
+    expect:
+      exit_code: 0
+
+  # A config the loader rejected would report itself here, before any creation
+  # journey muddies the evidence with a second reason for a missing cache.
+  - name: The map form validates as a whole config
+    run: daft hooks validate 2>&1
+    cwd: "$WORK_DIR/copy-mapform/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "valid"
+
+  - name: Build a cache in the source worktree; confirm git ignores it
+    # `set -e` is load-bearing: step bodies run under `bash -c` with no
+    # errexit, so the step's status is the LAST command's and every earlier
+    # failure is silently discarded.
+    run: |
+      set -e
+      mkdir -p node_modules/pkg
+      printf 'module.exports = 1;\n' > node_modules/pkg/index.js
+      git check-ignore node_modules
+    cwd: "$WORK_DIR/copy-mapform/main"
+    expect:
+      exit_code: 0
+
+  - name: Start a new branch — the map-form entry copies and the hooks still run
+    run: daft start feat-mapform 2>&1
+    cwd: "$WORK_DIR/copy-mapform/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Copied node_modules"
+      # The `max_size` warning the engine emits for a cap it could not read.
+      # An unquoted integer that reached `parse_size` as "104857600" parses
+      # cleanly, so this must stay silent — the assertion that tells "the int
+      # arm worked" apart from "the int arm degraded to uncapped".
+      output_not_contains:
+        - "could not read max_size"
+      files_exist:
+        - "$WORK_DIR/copy-mapform/feat-mapform/node_modules/pkg/index.js"
+        - "$WORK_DIR/copy-mapform/feat-mapform/HOOK_RAN"
+      file_contains:
+        - path: "$WORK_DIR/copy-mapform/feat-mapform/node_modules/pkg/index.js"
+          content: "module.exports = 1;"
+        - path: "$WORK_DIR/copy-mapform/feat-mapform/HOOK_RAN"
+          content: "yaml"
+
+  - name: The replica is a real directory, not a symlink into the source
+    run: |
+      set -e
+      test -d "$WORK_DIR/copy-mapform/feat-mapform/node_modules"
+      test ! -L "$WORK_DIR/copy-mapform/feat-mapform/node_modules"
+      test ! -L "$WORK_DIR/copy-mapform/feat-mapform/node_modules/pkg/index.js"
+    expect:
+      exit_code: 0

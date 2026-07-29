@@ -70,6 +70,7 @@
                   git-worktree-flow-adopt \
                   git-worktree-flow-eject \
                   git-worktree-push \
+                  git-worktree-warm \
                   git-daft \
                   daft-go \
                   daft-start \

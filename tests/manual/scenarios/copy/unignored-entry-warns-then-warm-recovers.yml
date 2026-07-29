@@ -1,0 +1,117 @@
+name: An entry nobody gitignored warns, and warm picks it up after the fix
+description: >
+  The commonest way to get the gitignored-only invariant wrong is not the
+  force-added file `tracked-path-warning` covers — it is forgetting to gitignore
+  the cache at all. That path had no end-to-end coverage, and it is the one a
+  user actually walks: declare `copy: [cache/]`, never touch `.gitignore`, watch
+  nothing arrive.
+
+  Two claims, and the second is the reason this is a whole-feature scenario
+  rather than another engine test. First, creation warns and writes nothing —
+  warn-never-abort, per-entry, with the destination left absent rather than
+  half-made. Second, the fix is recoverable without re-creating the worktree:
+  add the line to `.gitignore` and `daft warm` copies the entry that creation
+  refused. Creation and warm reach the same verdict from opposite sides of the
+  fix, which is the composition that makes the warning actionable instead of
+  merely honest.
+
+  `--no-carry` is load-bearing, and the reason is worth knowing: an entry nobody
+  gitignored is, by construction, an untracked non-ignored path, so CARRY takes
+  it. On a default `daft start` the source's `cache/` is stashed out and applied
+  into the new worktree before the copy stage ever looks, the stage then finds
+  no source and reports the silent `nothing to copy yet`, and the "must be
+  gitignored" diagnostic never appears at all. Removing the flag does not make
+  this scenario stricter — it makes it test carry.
+
+repos:
+  - name: copy-unignored
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-unignored"
+          # Deliberately does NOT list `cache/` — that omission is the bug
+          # under test.
+          - path: .gitignore
+            content: |
+              node_modules/
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      copy:
+        - cache/
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_UNIGNORED
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-unignored/main"
+
+  - name: Build the cache, and confirm git does not consider it ignored
+    # `set -e`: step bodies run under `bash -c` with no errexit, so without it
+    # only the last command's status is reported.
+    run: |
+      set -e
+      mkdir -p cache
+      printf 'blob\n' > cache/big.bin
+      git check-ignore cache && exit 1 || true
+      test -z "$(git ls-files cache)"
+    cwd: "$WORK_DIR/copy-unignored/main"
+    expect:
+      exit_code: 0
+
+  - name: Creation warns, succeeds, and leaves the destination absent
+    run: daft start feat-unignored --no-carry 2>&1
+    cwd: "$WORK_DIR/copy-unignored/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "must be gitignored"
+        - "cache"
+      dirs_exist:
+        - "$WORK_DIR/copy-unignored/feat-unignored"
+      # Nothing half-made: a refusal writes no destination at all.
+      files_not_exist:
+        - "$WORK_DIR/copy-unignored/feat-unignored/cache/big.bin"
+
+  - name: The source keeps its cache — a refusal moves nothing
+    run: "true"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-unignored/main/cache/big.bin"
+
+  - name: Fix the omission
+    run: |
+      set -e
+      printf 'node_modules/\ncache/\n' > .gitignore
+      git check-ignore cache
+    cwd: "$WORK_DIR/copy-unignored/main"
+    expect:
+      exit_code: 0
+
+  - name: Warm recovers the entry creation refused, no re-creation needed
+    run: daft warm feat-unignored 2>&1
+    cwd: "$WORK_DIR/copy-unignored/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Copied 1 of 1 declared path"
+      output_not_contains:
+        - "must be gitignored"
+      files_exist:
+        - "$WORK_DIR/copy-unignored/feat-unignored/cache/big.bin"
+      file_contains:
+        - path: "$WORK_DIR/copy-unignored/feat-unignored/cache/big.bin"
+          content: "blob"
+
+  - name: The recovered replica is a real directory, not a symlink
+    run: |
+      set -e
+      test -d "$WORK_DIR/copy-unignored/feat-unignored/cache"
+      test ! -L "$WORK_DIR/copy-unignored/feat-unignored/cache"
+    expect:
+      exit_code: 0

@@ -27,6 +27,24 @@
 # fit is files that are gitignored by design (e.g. `.env`, `.venv`) so each
 # worktree doesn't carry its own copy.
 
+# copy: []
+# Gitignored build caches copied (copy-on-write where the filesystem
+# supports it) into every new worktree, so `cargo build` / `npm install`
+# start warm instead of from scratch. Unlike `shared:`, each worktree gets
+# its own independent replica. Re-run by hand with `daft warm`.
+#
+# Short form — just the paths:
+#   copy:
+#     - target/
+#     - node_modules/
+#
+# Full form — paths plus knobs:
+#   copy:
+#     paths: [target/, node_modules/]
+#     fallback: copy   # copy | skip — what to do when the filesystem
+#                      # can't copy-on-write (default: copy)
+#     max_size: 5GB    # optional per-entry cap on the byte-copy fallback
+
 # hooks:
 #   post-clone:
 #     jobs:

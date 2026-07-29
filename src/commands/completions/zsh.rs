@@ -1,7 +1,7 @@
 use super::{
-    allows_path_completion, command_has_repo_flag, command_has_repo_positional, emit_formats_for,
-    extract_flags, get_command_for_name, repo_flag_capture, uses_fetch_on_miss,
-    uses_rich_completions, value_taking_flags,
+    allows_path_completion, command_has_repo_flag, command_has_repo_positional,
+    command_has_worktree_from_flag, emit_formats_for, extract_flags, get_command_for_name,
+    repo_flag_capture, uses_fetch_on_miss, uses_rich_completions, value_taking_flags,
 };
 use anyhow::{Context, Result};
 
@@ -348,6 +348,17 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
         ""
     };
 
+    // Value completion for --from (worktree names, same source as the
+    // positional) — the zsh half of the bash snippet, kept in the same shape
+    // so a reader diffing the two generators sees one idea, not two.
+    let from_flag_pre = if command_has_worktree_from_flag(command_name) {
+        format!(
+            "    if [[ \"${{words[$((CURRENT-1))]}}\" == \"--from\" ]]; then\n        local -a __wts\n        __wts=( ${{(f)\"$(daft __complete {command_name} \"$curword\" --position 1 2>/dev/null | cut -f1)\"}} )\n        (( ${{#__wts}} )) && compadd -- \"${{__wts[@]}}\"\n        return\n    fi\n\n"
+        )
+    } else {
+        String::new()
+    };
+
     // daft-go and daft-start complete later positions against the repo named
     // at position 1; the __complete protocol only carries the current word,
     // so pass the first positional via env.
@@ -404,7 +415,7 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
 __{func_name}_impl() {{
     local curword="${{words[$CURRENT]}}"
 
-{repo_flag_pre}{skip_hooks_pre}    if [[ "$curword" == -* ]]; then
+{repo_flag_pre}{from_flag_pre}{skip_hooks_pre}    if [[ "$curword" == -* ]]; then
         local -a flags
         flags=(
 {flags_block}        )
@@ -1216,6 +1227,12 @@ _daft() {
                 __git_worktree_init_impl
                 return
                 ;;
+            warm)
+                words=("git-worktree-warm" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_worktree_warm_impl
+                return
+                ;;
         esac
     fi
 
@@ -1225,7 +1242,7 @@ _daft() {
             compadd -- --version -V --help -h -C
         else
             compadd activate hooks shell-init multi-remote release-notes doctor layout shared \
-                    config file repo skill clone init install go start carry exec run update list prune rename sync push remove \
+                    config file repo skill clone init install go start carry exec run warm update list prune rename sync push remove \
                     merge worktree-merge adopt eject
         fi
         return

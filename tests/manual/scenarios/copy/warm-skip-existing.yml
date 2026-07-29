@@ -1,0 +1,73 @@
+name: Warm leaves an existing destination entry alone
+description: >
+  Idempotence is what makes `daft warm` safe to put in a script or a hook: a
+  second run must not clobber a cache the target has already built or edited.
+  The re-run reports the entry as already present, says how to override, and
+  leaves the destination byte-for-byte untouched.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Create a second worktree while no copy paths are declared
+    run: daft go develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Build a gitignored cache in main and declare it
+    run: |
+      # `set -e` is load-bearing: bodies run under `bash -c` with no
+      # errexit, so without it the exit status is the LAST command's and
+      # earlier failures silently cannot fail the step.
+      set -e
+      printf 'node_modules/\n' > .gitignore
+      printf 'copy:\n  - node_modules/\n' > daft.yml
+      mkdir -p node_modules/pkg
+      printf 'built-in-main\n' > node_modules/pkg/index.js
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: First warm copies the cache
+    run: daft warm develop 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
+
+  - name: Diverge the copy in develop
+    run: |
+      printf 'edited-in-develop\n' > "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
+    expect:
+      exit_code: 0
+
+  - name: Second warm skips the entry and points at --force
+    run: daft warm develop 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "node_modules: already present"
+        - "--force"
+      output_not_contains:
+        - "Copied 1 of 1 declared path"
+
+  - name: The diverged copy survived untouched
+    run: "true"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
+          content: "edited-in-develop"

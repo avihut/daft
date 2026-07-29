@@ -146,6 +146,7 @@ git-worktree-branch-delete() { __daft_wrapper git-worktree-branch-delete "$@"; }
 git-worktree-flow-adopt() { __daft_wrapper git-worktree-flow-adopt "$@"; }
 git-worktree-flow-eject() { __daft_wrapper git-worktree-flow-eject "$@"; }
 git-worktree-sync() { __daft_wrapper git-worktree-sync "$@"; }
+git-worktree-warm() { __daft_wrapper git-worktree-warm "$@"; }
 
 # Git wrapper to intercept "git worktree-*" subcommands (with spaces)
 git() {
@@ -170,6 +171,8 @@ git() {
             shift; __daft_wrapper git-worktree-flow-eject "$@" ;;
         worktree-sync)
             shift; __daft_wrapper git-worktree-sync "$@" ;;
+        worktree-warm)
+            shift; __daft_wrapper git-worktree-warm "$@" ;;
         *)
             command git "$@" ;;
     esac
@@ -231,6 +234,12 @@ daft() {
             shift; __daft_wrapper git-worktree-flow-eject "${__daft_pre[@]}" "$@" ;;
         worktree-sync|sync)
             shift; __daft_wrapper git-worktree-sync "${__daft_pre[@]}" "$@" ;;
+        worktree-warm|warm)
+            # `--force` removes the destination cache trees before recopying,
+            # so a shell sitting in `<worktree>/target/debug` loses its cwd.
+            # The binary writes DAFT_CD_FILE when that happens; only the
+            # parent shell can act on it.
+            shift; __daft_wrapper git-worktree-warm "${__daft_pre[@]}" "$@" ;;
         layout|repo)
             # `daft layout` (transform) and `daft repo remove` both need cd
             # support — repo-remove writes DAFT_CD_FILE when the user invoked
@@ -425,6 +434,10 @@ function git-worktree-sync
     __daft_wrapper git-worktree-sync $argv
 end
 
+function git-worktree-warm
+    __daft_wrapper git-worktree-warm $argv
+end
+
 # Git wrapper to intercept "git worktree-*" subcommands (with spaces)
 function git --wraps git
     switch $argv[1]
@@ -448,6 +461,8 @@ function git --wraps git
             __daft_wrapper git-worktree-flow-eject $argv[2..-1]
         case worktree-sync
             __daft_wrapper git-worktree-sync $argv[2..-1]
+        case worktree-warm
+            __daft_wrapper git-worktree-warm $argv[2..-1]
         case '*'
             command git $argv
     end
@@ -505,6 +520,8 @@ function daft --wraps daft
             __daft_wrapper git-worktree-flow-eject $pre $argv[2..-1]
         case worktree-sync sync
             __daft_wrapper git-worktree-sync $pre $argv[2..-1]
+        case worktree-warm warm
+            __daft_wrapper git-worktree-warm $pre $argv[2..-1]
         case layout repo
             # `daft layout` (transform) and `daft repo remove` both need cd
             # support — repo-remove writes DAFT_CD_FILE when the user invoked

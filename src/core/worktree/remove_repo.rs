@@ -145,6 +145,9 @@ fn enumerate_worktrees_gix(target: &RepoTarget) -> Result<Vec<WorktreeEntry>> {
             branch,
             is_bare: false,
             is_detached,
+            // Repo removal identifies worktrees by path, never by content, so
+            // the extra ref lookup per entry would buy nothing.
+            head: None,
         });
     }
 
@@ -172,6 +175,7 @@ fn enumerate_worktrees_gix(target: &RepoTarget) -> Result<Vec<WorktreeEntry>> {
             branch,
             is_bare: false,
             is_detached,
+            head: None,
         });
     }
     Ok(out)

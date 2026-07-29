@@ -138,21 +138,45 @@ pub fn mark_row_removed(uuid: &str) -> anyhow::Result<()> {
 /// any. Read-only; `repo remove` uses it to decide whether its confirmation
 /// prompt offers the keep-files (catalog-only) choice.
 pub fn live_catalog_row_for(bare_git_dir: &Path) -> Option<CatalogRepoRow> {
-    let catalog = Catalog::open_ro().ok().flatten()?;
+    try_live_catalog_row_for(bare_git_dir).ok().flatten()
+}
+
+/// [`live_catalog_row_for`] with the outage kept separate from the answer.
+///
+/// `Ok(None)` means the catalog was asked and had nothing live to say: no
+/// catalog file yet, no row for this repo, or a row that has been tombstoned
+/// (a removed repo is deliberately *absence*, not an error — callers fall
+/// back to git exactly as they would for a repo daft never cataloged).
+/// `Err` means the catalog could not be asked at all — the store failed to
+/// open, or its schema is newer than this binary understands, which a sibling
+/// worktree running a newer daft build reaches by migrating the shared
+/// catalog out from under an older one.
+///
+/// That distinction is what lets a caller gating a *mutation* fail closed
+/// (CLAUDE.md's repo-aware command grammar: a store error must never be
+/// silently reinterpreted as "no such repo", which turns an outage into a
+/// wrong action). Callers that only want a hint keep using
+/// [`live_catalog_row_for`] and its collapsed `Option`.
+pub fn try_live_catalog_row_for(
+    bare_git_dir: &Path,
+) -> crate::catalog::service::Result<Option<CatalogRepoRow>> {
+    let Some(catalog) = Catalog::open_ro()? else {
+        return Ok(None);
+    };
     let daft_id = std::fs::read_to_string(bare_git_dir.join("daft-id"))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| uuid::Uuid::parse_str(s).is_ok());
     let row = match daft_id {
-        Some(id) => catalog.get_by_uuid(&id).ok().flatten(),
+        Some(id) => catalog.get_by_uuid(&id)?,
         None => {
             let canonical = bare_git_dir
                 .canonicalize()
                 .unwrap_or_else(|_| bare_git_dir.to_path_buf());
-            catalog.resolve(&canonical.to_string_lossy()).ok().flatten()
+            catalog.resolve(&canonical.to_string_lossy())?
         }
-    }?;
-    row.removed_at.is_none().then_some(row)
+    };
+    Ok(row.filter(|r| r.removed_at.is_none()))
 }
 
 fn tombstone_repo_at(bare_git_dir: &Path, project_root: &Path) -> anyhow::Result<Option<String>> {

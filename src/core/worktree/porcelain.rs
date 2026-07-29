@@ -28,6 +28,16 @@ pub struct WorktreeListEntry {
     /// True for a detached-HEAD worktree (the `detached` line) — e.g. a daft
     /// sandbox.
     pub is_detached: bool,
+    /// The commit this worktree's HEAD resolves to (from the `HEAD <oid>`
+    /// line), or `None` for the bare entry and for an unborn HEAD — a
+    /// freshly-`init`ed worktree on a branch with no commits reports no
+    /// `HEAD` line at all.
+    ///
+    /// Consumers that compare worktrees by *content* rather than by name read
+    /// this: two worktrees at the same OID hold the same tree, whatever their
+    /// branches are called ([`crate::core::copy_source`] ranks cache sources
+    /// this way).
+    pub head: Option<String>,
 }
 
 /// Parse `git worktree list --porcelain` output into [`WorktreeListEntry`]s.
@@ -35,13 +45,16 @@ pub struct WorktreeListEntry {
 /// Stanzas are delimited by blank lines, each opening with a `worktree <path>`
 /// line. The final stanza needs no trailing blank line or newline — it is
 /// flushed at end of input. Bare entries are retained with `is_bare = true`;
-/// a `detached` worktree yields `branch = None`.
+/// a `detached` worktree yields `branch = None`, and its `HEAD <oid>` line
+/// still populates `head` — that OID is the only identity a detached
+/// worktree has.
 pub fn parse_worktree_list_porcelain(porcelain: &str) -> Vec<WorktreeListEntry> {
     let mut entries = Vec::new();
     let mut path: Option<PathBuf> = None;
     let mut branch: Option<String> = None;
     let mut is_bare = false;
     let mut is_detached = false;
+    let mut head: Option<String> = None;
 
     for line in porcelain.lines() {
         if let Some(rest) = line.strip_prefix("worktree ") {
@@ -51,14 +64,18 @@ pub fn parse_worktree_list_porcelain(porcelain: &str) -> Vec<WorktreeListEntry> 
                     branch: branch.take(),
                     is_bare,
                     is_detached,
+                    head: head.take(),
                 });
             }
             branch = None;
             is_bare = false;
             is_detached = false;
+            head = None;
             path = Some(PathBuf::from(rest));
         } else if let Some(rest) = line.strip_prefix("branch refs/heads/") {
             branch = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("HEAD ") {
+            head = Some(rest.to_string());
         } else if line == "bare" {
             is_bare = true;
         } else if line == "detached" {
@@ -71,6 +88,7 @@ pub fn parse_worktree_list_porcelain(porcelain: &str) -> Vec<WorktreeListEntry> 
             branch: branch.take(),
             is_bare,
             is_detached,
+            head: head.take(),
         });
     }
 
@@ -108,6 +126,7 @@ branch refs/heads/develop
                 branch: Some("main".to_string()),
                 is_bare: false,
                 is_detached: false,
+                head: Some("abc123".to_string()),
             }
         );
         assert_eq!(
@@ -117,6 +136,7 @@ branch refs/heads/develop
                 branch: Some("develop".to_string()),
                 is_bare: false,
                 is_detached: false,
+                head: Some("def456".to_string()),
             }
         );
     }
@@ -156,6 +176,34 @@ detached
         assert!(entries[1].is_detached);
         assert_eq!(entries[1].branch, None);
         assert_eq!(entries[1].path, PathBuf::from("/home/user/proj/sandbox"));
+    }
+
+    #[test]
+    fn captures_head_oids_including_for_detached_worktrees() {
+        // The OID is the only identity a detached worktree has, so it must
+        // survive the parse — content-ranked consumers have nothing else to
+        // compare. The bare entry keeps its own HEAD line; an unborn branch
+        // emits no HEAD line at all and must not invent one.
+        let input = "\
+worktree /p/main
+HEAD abc123
+branch refs/heads/main
+
+worktree /p/sandbox
+HEAD abc123
+detached
+
+worktree /p/unborn
+branch refs/heads/fresh
+";
+        let entries = parse_worktree_list_porcelain(input);
+        assert_eq!(entries[0].head.as_deref(), Some("abc123"));
+        assert_eq!(
+            entries[1].head.as_deref(),
+            Some("abc123"),
+            "a detached sandbox at the same commit must be recognizable as such"
+        );
+        assert_eq!(entries[2].head, None);
     }
 
     #[test]

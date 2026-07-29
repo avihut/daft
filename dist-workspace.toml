@@ -43,6 +43,7 @@ daft = [
     "git-worktree-list",
     "git-worktree-sync",
     "git-worktree-push",
+    "git-worktree-warm",
     "git-daft",
     "daft-go",
     "daft-start",

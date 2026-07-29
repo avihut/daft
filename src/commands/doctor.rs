@@ -190,6 +190,7 @@ fn run_repository_checks(ctx: &repository::RepoContext) -> CheckCategory {
         repository::check_fetch_refspec(ctx),
         repository::check_remote_head(ctx),
         repository::check_remote_sync_config(ctx),
+        repository::check_reflink_support(ctx),
     ];
 
     // A project-level agent-skill copy (committed .claude/skills/) gets the

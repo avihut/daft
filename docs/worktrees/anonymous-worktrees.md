@@ -54,20 +54,32 @@ Make commits in each fork as usual. Every worktree's HEAD is a git reachability
 root, so the commits are protected for as long as the fork exists — no branch
 required.
 
-To merge work back, name a fork's HEAD from the target worktree. Git spells
-another worktree's HEAD as `worktrees/<dirname>/HEAD`, and `daft merge` accepts
-any commit-ish as a source:
+To merge work back, give each fork's position a branch name first. From inside
+the fork:
+
+```bash
+git switch -c fork-a          # names this fork's HEAD, in place
+```
+
+Then adopt it from the target worktree:
 
 ```bash
 # from the feature-x worktree
-daft merge worktrees/feature-x-fork/HEAD          # adopt one fork
+daft merge --rebase fork-a               # adopt one fork, linear history
 
 # adopt two at once — octopus, one merge commit
-daft merge worktrees/feature-x-fork/HEAD worktrees/feature-x-fork-2/HEAD
+daft merge fork-a fork-b
 
 # adopt a single commit out of a fork instead of the whole thing
 git cherry-pick <sha>
 ```
+
+Naming the branch is what makes this work in a repository that commits
+`merge: { source_worktree: clean }`: that gate certifies the source's **working
+tree**, and a bare commit-ish — including git's `worktrees/<dirname>/HEAD`
+spelling for another worktree's HEAD — gives it no worktree to inspect.
+`git switch -c` costs nothing here, since the fork's own directory becomes the
+new branch's worktree, already clean.
 
 Merge hooks fire as on any other merge, with `DAFT_MERGE_SOURCE_SHAS` naming the
 resolved fork positions — see [Merging across worktrees](/worktrees/merging).

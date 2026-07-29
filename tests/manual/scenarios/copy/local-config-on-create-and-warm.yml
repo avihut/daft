@@ -1,0 +1,111 @@
+name: One daft.local.yml declaration serves creation and warm alike
+description: >
+  `copy:` reads through `load_merged_config` rather than the raw single-file
+  loader `shared:` uses, which is what lets an untracked `daft.local.yml`
+  declare caches a visitor never wants committed (#387). Two consumers depend on
+  that read path — the creation stage and `daft warm` — and each already has a
+  scenario proving it alone (`copy-on-create-local-config`,
+  `warm-local-config`). Neither can prove they read the same thing: a regression
+  that reverted only one call site to the raw loader would leave the other's
+  scenario green and the feature half-broken, with the failure mode "the overlay
+  works when I make a worktree but not when I warm one" — the shape nobody
+  reports as a bug.
+
+  So this declares the section exactly once, in one untracked overlay, and then
+  runs both consumers against it: a worktree that predates the overlay is
+  warmed, and a fresh worktree is created. Both must land the same cache from
+  the same declaration. The tracked daft.yml deliberately declares no `copy:` at
+  all.
+
+repos:
+  - name: copy-bothends
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-bothends"
+          - path: .gitignore
+            content: |
+              .venv/
+              daft.local.yml
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+    daft_yml: |
+      # No `copy:` key: the untracked overlay written below is the only place
+      # the cache is ever named.
+      shared: []
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_BOTHENDS
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-bothends/main"
+
+  # Created before the overlay exists, so its cache can only arrive by warm —
+  # the creation stage had nothing to read when this worktree was made.
+  - name: Create a second worktree while nothing is declared
+    run: daft go develop 2>&1
+    cwd: "$WORK_DIR/copy-bothends/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-bothends/develop"
+      files_not_exist:
+        - "$WORK_DIR/copy-bothends/develop/.venv/bin/activate"
+
+  - name: Declare the cache only in an untracked daft.local.yml, and build it
+    # `set -e`: step bodies run under `bash -c` with no errexit, so without it
+    # only the last command's status is reported.
+    run: |
+      set -e
+      printf 'copy:\n  - .venv/\n' > daft.local.yml
+      mkdir -p .venv/bin
+      printf 'export VIRTUAL_ENV=here\n' > .venv/bin/activate
+      git check-ignore .venv daft.local.yml
+      grep -q "^copy:" daft.yml && exit 1 || true
+    cwd: "$WORK_DIR/copy-bothends/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-bothends/main/daft.local.yml"
+
+  - name: Consumer one — warm honours the overlay on an older worktree
+    run: daft warm develop 2>&1
+    cwd: "$WORK_DIR/copy-bothends/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Copied 1 of 1 declared path"
+      files_exist:
+        - "$WORK_DIR/copy-bothends/develop/.venv/bin/activate"
+      file_contains:
+        - path: "$WORK_DIR/copy-bothends/develop/.venv/bin/activate"
+          content: "VIRTUAL_ENV=here"
+
+  - name: Consumer two — creation honours the same overlay, unchanged
+    run: daft start feat-bothends 2>&1
+    cwd: "$WORK_DIR/copy-bothends/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Copied .venv"
+      files_exist:
+        - "$WORK_DIR/copy-bothends/feat-bothends/.venv/bin/activate"
+      file_contains:
+        - path: "$WORK_DIR/copy-bothends/feat-bothends/.venv/bin/activate"
+          content: "VIRTUAL_ENV=here"
+
+  - name: Both replicas are independent directories, not symlinks
+    run: |
+      set -e
+      test -d "$WORK_DIR/copy-bothends/develop/.venv"
+      test ! -L "$WORK_DIR/copy-bothends/develop/.venv"
+      test -d "$WORK_DIR/copy-bothends/feat-bothends/.venv"
+      test ! -L "$WORK_DIR/copy-bothends/feat-bothends/.venv"
+    expect:
+      exit_code: 0

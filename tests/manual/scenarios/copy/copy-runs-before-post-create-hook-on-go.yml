@@ -1,0 +1,93 @@
+name: On daft go, the cache is copied before the post-create hook runs
+description: >
+  The `daft start` sibling (copy-runs-before-post-create-hook.yml) pins the
+  ordering guarantee on checkout_branch.rs; this pins it on checkout.rs. The two
+  wiring sites are duplicated verbatim, so a change that edits only one of them
+  leaves the other journey's guarantee resting on nothing — and `daft go` is the
+  creation path most users walk most often. The scenario also carries the second
+  half of that journey's read path: `copy:` is declared ONLY in an untracked
+  daft.local.yml, so the merged loader has to be what reads it (the raw
+  single-file loader `shared:` uses would find nothing). The two regressions
+  stay distinguishable — a broken read path leaves the cache absent from the new
+  worktree, a broken ORDER leaves the cache present but the hook's marker
+  missing.
+
+repos:
+  - name: copy-go-hook-order
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-go-hook-order"
+          - path: .gitignore
+            content: |
+              node_modules/
+              daft.local.yml
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+    daft_yml: |
+      # No `copy:` here on purpose — the untracked overlay written by the
+      # steps below is the only place the cache is declared.
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: assert-cache-is-warm
+              # `set -e` is load-bearing: jobs run under `sh -c` with no
+              # errexit, so without it a failing `test` would fall through to
+              # the marker write and the job would exit 0 — the scenario would
+              # pass with the cache missing, which is the exact regression it
+              # exists to catch.
+              run: |
+                set -e
+                test -f "$DAFT_WORKTREE_PATH/node_modules/.package-lock.json"
+                printf 'warm\n' > "$DAFT_WORKTREE_PATH/HOOK_SAW_CACHE"
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_GO_HOOK_ORDER
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-go-hook-order/main"
+
+  - name: Trust the repository's hooks
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/copy-go-hook-order/main"
+    expect:
+      exit_code: 0
+
+  - name: Declare the cache only in an untracked daft.local.yml, and build it
+    # `set -e`: step bodies run under `bash -c` with no errexit, so without it
+    # only the last command's status is reported.
+    run: |
+      set -e
+      printf 'copy:\n  - node_modules/\n' > daft.local.yml
+      mkdir -p node_modules
+      printf '{"name":"cached"}\n' > node_modules/.package-lock.json
+      git check-ignore node_modules daft.local.yml
+    cwd: "$WORK_DIR/copy-go-hook-order/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-go-hook-order/main/daft.local.yml"
+
+  - name: The tracked config declares no copy key at all
+    run: grep -q "^copy:" daft.yml
+    cwd: "$WORK_DIR/copy-go-hook-order/main"
+    expect:
+      exit_code: 1
+
+  - name: Check out an existing branch — the hook finds the cache already copied
+    run: daft go develop 2>&1
+    cwd: "$WORK_DIR/copy-go-hook-order/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-go-hook-order/develop/node_modules/.package-lock.json"
+        - "$WORK_DIR/copy-go-hook-order/develop/HOOK_SAW_CACHE"
+      file_contains:
+        - path: "$WORK_DIR/copy-go-hook-order/develop/HOOK_SAW_CACHE"
+          content: "warm"

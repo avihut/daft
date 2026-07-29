@@ -43,6 +43,7 @@ pub mod rename;
 pub mod sandbox;
 pub mod sync_dag;
 pub mod temp_worktree;
+pub mod warm;
 
 /// Configuration for worktree operations.
 #[derive(Debug, Clone)]
@@ -161,6 +162,73 @@ pub(crate) fn post_create_failure_error(
     })
 }
 
+/// Make a worktree path absolute and lexically clean, for use immediately
+/// **before** a creation core chdirs into the worktree it just made.
+///
+/// `--at sub/foo` reaches the creation cores as a relative path, and every
+/// consumer that runs after the chdir — `shared:` linking, the `copy:` stage
+/// (#387), the post-create `HookContext`'s `DAFT_WORKTREE_PATH`, the returned
+/// result — would otherwise re-resolve it against the *new* cwd and land on
+/// `<worktree>/sub/foo`. Shared linking degrades to a silent no-op there; the
+/// copy stage would create that path, fill it with a cache-sized tree, and
+/// report success.
+///
+/// Deliberately not `canonicalize()`: that also resolves symlinks (`/tmp` →
+/// `/private/tmp` on macOS), changing the path every downstream face prints
+/// for a problem that is purely about relativity. The lexical normalizer is
+/// the one every layout-derived path already goes through, so an
+/// `--at ../sibling` and its layout-derived twin are spelled identically
+/// wherever they surface instead of one of them carrying `main/../sibling`.
+///
+/// Shared by all three creation cores (checkout, checkout_branch, sandbox).
+pub(crate) fn normalize_worktree_path(
+    path: std::path::PathBuf,
+) -> anyhow::Result<std::path::PathBuf> {
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        crate::utils::get_current_directory()?.join(path)
+    };
+    Ok(crate::core::layout::template::normalize_path(&absolute))
+}
+
+/// The plan's row shape from the `copy:` anchor onward, as compact tokens.
+///
+/// Row identity alone cannot express "the `copy:` anchor sits before the
+/// shared section and both sit before the post-create step" — a positional
+/// claim needs positions. Rendering the tail as strings puts the expected order
+/// in the test as one readable list, and makes a mis-splice print as a diff of
+/// two short vectors rather than a wall of `Debug`.
+///
+/// The window opens at the **copied-paths** anchor, which is the earlier of the
+/// two sections: opening it at `shared files` would put the copy rows outside
+/// the slice, so an assertion listing both would silently be checking only the
+/// tail. Everything before it (fetch, tracking, branch, worktree, carry, push)
+/// is deliberately ignored — it differs per creation core and is not what these
+/// tests are about. The anchor carries the resolved source, so it is matched on
+/// its prefix. Shared by all three cores' splice tests.
+#[cfg(test)]
+pub(crate) fn plan_shape_from_copied(rows: &[crate::core::stage::Row]) -> Vec<String> {
+    use crate::core::stage::Row;
+    let start = rows
+        .iter()
+        .position(|r| matches!(r, Row::Group { label } if label.starts_with("copied paths")))
+        .expect("the fixture declares `copy:`, so its anchor must be planned");
+    rows[start..]
+        .iter()
+        // Exhaustive on purpose — no wildcard arm. A new `Row` variant
+        // appearing in this span is exactly the kind of change these tests
+        // exist to notice, and a `_ =>` would render it as something bland
+        // and let it slip through.
+        .map(|r| match r {
+            Row::Group { label } => format!("group:{label}"),
+            Row::EndGroup => "endgroup".to_string(),
+            Row::Step(spec) => format!("step:{:?}", spec.key.id),
+            Row::Note { text } => format!("note:{text}"),
+        })
+        .collect()
+}
+
 /// Resolve the planned Carry row (#651): a clean tree resolves silently —
 /// the row vanishes — an applied stash completes, and a conflicted one
 /// fails with the recovery hint. Shared by the two creation cores, whose
@@ -186,6 +254,58 @@ pub(crate) fn resolve_carry_row(
             StageEvent::Failed {
                 detail: "stash conflicts \u{2014} run git stash pop".to_string(),
             },
+        );
+    }
+}
+
+#[cfg(test)]
+mod normalize_worktree_path_tests {
+    use super::normalize_worktree_path;
+    use std::path::PathBuf;
+
+    /// An absolute path keeps its spelling — symlinked prefixes included.
+    /// The `/tmp` case is the one that matters on macOS, where
+    /// `canonicalize` would rewrite it to `/private/tmp` and change what
+    /// every downstream face prints.
+    #[test]
+    fn absolute_paths_pass_through_without_resolving_symlinks() {
+        assert_eq!(
+            normalize_worktree_path(PathBuf::from("/tmp/wt/feat-x")).unwrap(),
+            PathBuf::from("/tmp/wt/feat-x"),
+        );
+    }
+
+    /// `..` and `.` collapse lexically, so `--at ../sibling` is spelled the
+    /// way its layout-derived twin would be rather than dragging
+    /// `main/../sibling` into DAFT_WORKTREE_PATH and `daft list`.
+    #[test]
+    fn parent_and_current_components_collapse() {
+        assert_eq!(
+            normalize_worktree_path(PathBuf::from("/repo/main/../sibling")).unwrap(),
+            PathBuf::from("/repo/sibling"),
+        );
+        assert_eq!(
+            normalize_worktree_path(PathBuf::from("/repo/./main")).unwrap(),
+            PathBuf::from("/repo/main"),
+        );
+    }
+
+    /// A relative path resolves against the CURRENT directory — the whole
+    /// point of calling this before the creation cores chdir into the new
+    /// worktree. `#[serial]`: the assertion compares two cwd reads (one here,
+    /// one inside the function), and the suite's chdir-happy serial tests run
+    /// on other threads — a chdir landing in the gap would flake this.
+    #[test]
+    #[serial_test::serial]
+    fn relative_paths_resolve_against_the_current_directory() {
+        let cwd = crate::utils::get_current_directory().unwrap();
+        assert_eq!(
+            normalize_worktree_path(PathBuf::from("sub/foo")).unwrap(),
+            cwd.join("sub").join("foo"),
+        );
+        assert_eq!(
+            normalize_worktree_path(PathBuf::from("../sibling")).unwrap(),
+            cwd.parent().unwrap().join("sibling"),
         );
     }
 }

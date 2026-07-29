@@ -58,4 +58,5 @@ git worktree-carry [OPTIONS] <TARGETS>
 
 - [git-worktree-checkout](./git-worktree-checkout.md)
 - [git-worktree-fetch](./git-worktree-fetch.md)
+- [git-worktree-warm](./git-worktree-warm.md)
 

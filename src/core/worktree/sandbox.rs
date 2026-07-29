@@ -346,6 +346,41 @@ fn create_sandbox(
     }
     let planned_shared =
         crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
+    // Cache paths declared with `copy:` get their own section (#387). A
+    // sandbox is minted from a real source worktree just like a branch
+    // worktree is, so `daft go <tag>` and `daft start --fork` have exactly
+    // as much to gain from a warm cache — leaving them out would make forks
+    // silently the slow path. Read ONCE, here, and reused verbatim at
+    // execution below so plan and receipt cannot disagree. Revisits never
+    // reach this code: both idempotence lookups and the on-disk fallback
+    // return through `navigate` above, before the plan commits.
+    let copy_config = crate::core::copy_paths::read_copy_config(&source_worktree);
+    let planned_copy = copy_config
+        .as_ref()
+        .map(|c| c.paths.clone())
+        .unwrap_or_default();
+    // A sandbox has no branch, so the pinned commit is the whole anchor — and
+    // it is the sharpest one any journey has: another worktree already sitting
+    // at this exact OID holds precisely the tree being minted. `--fork -n N`
+    // benefits most, since every fork after the first has a sibling at the
+    // identical commit to copy from.
+    let copy_source = copy_config.as_ref().map(|_| {
+        crate::core::copy_source::resolve(
+            git,
+            &crate::core::copy_source::CopyAnchor {
+                branch: None,
+                commit: Some(params.commit.clone()),
+            },
+            &source_worktree,
+            &worktree_path,
+            &planned_copy,
+        )
+    });
+    // Caches first, daft-managed links on top — see the execution ordering
+    // below, which the plan face must mirror row for row.
+    if let Some(source) = &copy_source {
+        crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy, source);
+    }
     crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
@@ -431,6 +466,11 @@ fn create_sandbox(
         worktree_path.display(),
         short_oid(&params.commit)
     ));
+    // Absolutize and lexically clean before the chdir — a relative `--at`
+    // would otherwise be re-resolved against the new worktree by everything
+    // below (shared linking, the copy stage, DAFT_WORKTREE_PATH). See
+    // `super::normalize_worktree_path`.
+    let worktree_path = super::normalize_worktree_path(worktree_path)?;
     change_directory(&worktree_path)?;
 
     if stash_created {
@@ -458,8 +498,25 @@ fn create_sandbox(
         }
     }
 
-    // Shared links after propagation, before hooks — order is load-bearing
-    // (see checkout::execute).
+    // Caches, then shared links, both after propagation and before the hooks —
+    // all three orderings load-bearing, all three explained in
+    // `checkout_branch::execute`, which this mirrors step for step.
+    // `force = false`: an entry already present at the destination is left
+    // alone; only `daft warm --force` clobbers.
+    // Both are Some together or neither is: the source is resolved exactly
+    // when a declaration exists, so that no repository without `copy:` pays
+    // for a worktree listing on the creation path.
+    if let (Some(config), Some(source)) = (&copy_config, &copy_source) {
+        let copy_result = crate::core::copy_paths::copy_entries(
+            &source.path,
+            &worktree_path,
+            config,
+            false,
+            sink,
+        );
+        crate::core::copy_paths::report_copy_results(&copy_result, &planned_copy, sink);
+    }
+
     let link_result =
         crate::core::shared::link_shared_files_on_create(&worktree_path, git_dir, project_root);
     crate::core::shared::report_link_results(&link_result, &planned_shared, sink);
@@ -766,6 +823,145 @@ mod tests {
             layout: None,
             at_path: Some(at),
         }
+    }
+
+    /// The `copy:` stage (#387) is inert on the sandbox journey too — the
+    /// third of three verbatim call sites, and the one reached by
+    /// `daft go <tag>` and `daft start --fork`. Each site carries its own
+    /// guard because a regression that edits only ONE of them has to be
+    /// caught in the file it edits; without this, a stray empty anchor here
+    /// would put a dim "copied paths" heading on every fork anyone ever
+    /// mints and nothing would object.
+    ///
+    /// Pins absence and wiring only, NOT the section's plan position: with no
+    /// `copy:` declared, `push_copy_section` is a no-op and the call could sit
+    /// anywhere in `create_sandbox` with this test still green. The positional
+    /// test needs a declaring fixture, which needs the engine. Siblings live
+    /// in checkout.rs and checkout_branch.rs.
+    #[test]
+    #[serial]
+    fn no_copy_section_when_the_source_declares_none() {
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let (tmp, repo, oid) = repo_with_tag();
+        // A config that exists and parses, but says nothing about `copy:`.
+        // The `shared:` key is the vacuity guard: it makes the plan under
+        // test one that really did read a config and really did plan a
+        // neighbouring section, so the absences below are about `copy:` and
+        // not about a plan that came out empty for an unrelated reason.
+        std::fs::write(repo.join("daft.yml"), "shared:\n  - .env\n").unwrap();
+        std::env::set_current_dir(&repo).unwrap();
+
+        let wt = tmp.path().join("v1");
+        let mut sink = crate::core::RecordingStageSink::default();
+        execute_visit(
+            &params("v1", &oid, WorktreeKind::Canonical, wt.clone()),
+            &GitCommand::new(true),
+            &repo,
+            &mut sink,
+        )
+        .expect("visit materializes");
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert!(
+            !plan
+                .rows
+                .iter()
+                .any(|r| matches!(r, Row::Group { label } if label == "copied paths")),
+            "no `copy:` key, no anchor: {:?}",
+            plan.rows
+        );
+        assert_eq!(
+            plan.steps()
+                .filter(|s| s.key.id == StageId::CopyPath)
+                .count(),
+            0,
+            "no `copy:` key, no rows"
+        );
+        assert!(
+            !sink.events.iter().any(|(k, _)| k.id == StageId::CopyPath),
+            "no `copy:` key, no events: {:?}",
+            sink.events
+        );
+        assert_eq!(
+            plan.steps()
+                .filter(|s| s.key.id == StageId::SharedFile)
+                .count(),
+            1,
+            "the neighbouring shared section is present: {:?}",
+            plan.rows
+        );
+        // The plan still ends with the post-create row — the shape the copy
+        // section splices into. (A plan-shape guard, not a splice-point
+        // guard: see the doc comment.)
+        assert!(
+            matches!(
+                plan.rows.last(),
+                Some(Row::Step(spec)) if spec.key.id == StageId::PostCreateHooks
+            ),
+            "post-create still closes the plan: {:?}",
+            plan.rows
+        );
+    }
+
+    /// The `copy:` section's POSITION in the sandbox plan (#387) — the same
+    /// splice the two checkout journeys make, on the path `daft go <tag>` and
+    /// `daft start --fork` take. See the checkout.rs twin for why the
+    /// declares-nothing sibling above cannot make this claim.
+    #[test]
+    #[serial]
+    fn copy_section_sits_before_shared_and_both_before_post_create() {
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let (tmp, repo, oid) = repo_with_tag();
+        std::fs::write(
+            repo.join("daft.yml"),
+            "shared:\n  - .env\ncopy:\n  - cache\n  - node_modules\n",
+        )
+        .unwrap();
+        std::env::set_current_dir(&repo).unwrap();
+
+        let wt = tmp.path().join("v1");
+        let mut sink = crate::core::RecordingStageSink::default();
+        execute_visit(
+            &params("v1", &oid, WorktreeKind::Canonical, wt.clone()),
+            &GitCommand::new(true),
+            &repo,
+            &mut sink,
+        )
+        .expect("visit materializes");
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert_eq!(
+            crate::core::worktree::plan_shape_from_copied(&plan.rows),
+            [
+                // A sandbox names no branch and the tag sits at no worktree's
+                // tip, so both specific rungs miss and the floor — where the
+                // command was run — carries the section.
+                "group:copied paths from 'main'",
+                "step:CopyPath",
+                "step:CopyPath",
+                "endgroup",
+                // Caches first, daft-managed links on top: shared linking
+                // creates the parents it needs, and an empty scaffold made the
+                // copy report `already present` and never run.
+                "group:shared files",
+                "step:SharedFile",
+                "endgroup",
+                "step:PostCreateHooks",
+            ],
+            "caches land before the shared links, and both before post-create: {:?}",
+            plan.rows
+        );
+        let scopes: Vec<_> = plan
+            .steps()
+            .filter(|s| s.key.id == StageId::CopyPath)
+            .map(|s| s.key.scope.clone())
+            .collect();
+        assert_eq!(
+            scopes,
+            vec![Some("cache".to_string()), Some("node_modules".to_string())],
+        );
     }
 
     #[test]

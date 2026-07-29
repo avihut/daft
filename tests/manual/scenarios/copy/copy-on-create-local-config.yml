@@ -1,0 +1,81 @@
+name: A daft.local.yml-only copy declaration is honoured on create
+description: >
+  Regression pinning the read path (#387). `copy:` is read through
+  `load_merged_config`, deliberately NOT the raw single-file loader `shared:`
+  uses — so a `daft.local.yml` overlay (and `extends:`) reaches the section and
+  a visitor can declare caches without touching the tracked config. Here the
+  tracked daft.yml declares no `copy:` at all; the untracked overlay declares
+  the only one. Regress the read path to the raw loader and the overlay becomes
+  invisible: nothing copies, and this scenario is the only thing that notices.
+  Exercises the `daft start` (new-branch) creation journey.
+
+repos:
+  - name: copy-local
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-local"
+          - path: .gitignore
+            content: |
+              .venv/
+              daft.local.yml
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      # The tracked config deliberately declares no `copy:` — the personal
+      # overlay below is the only place the cache is named.
+      shared: []
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_LOCAL
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-local/main"
+
+  - name: Declare the cache only in an untracked daft.local.yml, and build it
+    # `set -e`: step bodies run under `bash -c` with no errexit, so without it
+    # only the last command's status is reported and every earlier failure is
+    # silently discarded.
+    run: |
+      set -e
+      printf 'copy:\n  - .venv/\n' > daft.local.yml
+      mkdir -p .venv/bin
+      printf 'export VIRTUAL_ENV=here\n' > .venv/bin/activate
+      git check-ignore .venv daft.local.yml
+    cwd: "$WORK_DIR/copy-local/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-local/main/daft.local.yml"
+
+  - name: The tracked config declares no copy key at all
+    run: grep -q "^copy:" daft.yml
+    cwd: "$WORK_DIR/copy-local/main"
+    expect:
+      exit_code: 1
+
+  - name: Start a new branch — the overlay-declared cache is copied
+    run: daft start feat-venv 2>&1
+    cwd: "$WORK_DIR/copy-local/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-local/feat-venv/.venv/bin"
+      files_exist:
+        - "$WORK_DIR/copy-local/feat-venv/.venv/bin/activate"
+      file_contains:
+        - path: "$WORK_DIR/copy-local/feat-venv/.venv/bin/activate"
+          content: "VIRTUAL_ENV=here"
+
+  - name: The replica is a real directory, not a symlink into the source
+    run: |
+      set -e
+      test -d "$WORK_DIR/copy-local/feat-venv/.venv"
+      test ! -L "$WORK_DIR/copy-local/feat-venv/.venv"
+      test ! -L "$WORK_DIR/copy-local/feat-venv/.venv/bin/activate"
+    expect:
+      exit_code: 0

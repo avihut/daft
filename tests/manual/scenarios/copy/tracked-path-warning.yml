@@ -1,0 +1,124 @@
+name: A tracked copy entry warns and the worktree is still created
+description: >
+  `copy:` replicates caches, not the working tree, so an entry git tracks is
+  refused (#387). The refusal is a WARNING, never an abort — deliberately the
+  opposite of post-create hooks' abort-by-default (#765): a cache copy is an
+  optimization, and no config mistake may cost the user the worktree they asked
+  for. The trap covered here is the force-added file: the untracked bulk under
+  `cache/` really is ignored (`git check-ignore cache/big.bin` passes), so from
+  the outside the entry looks like an ordinary cache directory — but `git
+  ls-files cache` is non-empty, and git will not even call the directory itself
+  ignored once it has to descend into it for tracked content, so `git
+  check-ignore cache` exits 1. Both halves of the engine's eligibility probe
+  reject the entry independently. A SECOND, perfectly valid entry is declared
+  after it and must still land — per-entry isolation is what "warn, never abort"
+  means in practice, and a stage that gave up at the first bad entry would pass
+  every single-entry test ever written. (Neither the repo name nor the branch
+  name contains "tracked" — the output assertion would otherwise pass off the
+  rail's own path annotations.) The `output_contains` assertions ride the
+  CopyPath Plain-mode fallback (`copy_paths::render_copy_stage_fallback`,
+  dispatched from both `core::progress::route_stage` and the default
+  `ProgressSink::on_stage`): this scenario is the standing regression guard that
+  copy warnings stay visible in non-TTY output, where the runner lives.
+
+repos:
+  - name: copy-forceadd
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-forceadd"
+          - path: .gitignore
+            content: |
+              cache/
+              node_modules/
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      copy:
+        - cache/
+        - node_modules/
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_FORCEADD
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-forceadd/main"
+
+  - name: Force-add a file inside the ignored cache dir, then fill both entries
+    # `set -e`: step bodies run under `bash -c` with no errexit, so the step's
+    # exit status is the LAST command's and every earlier failure is silently
+    # discarded. Without it a failed fixture command surfaces later as a
+    # confusing assertion failure somewhere else.
+    run: |
+      set -e
+      mkdir -p cache node_modules/pkg
+      printf 'checked in by mistake\n' > cache/keep.txt
+      git add -f cache/keep.txt
+      git commit -m "force-add a file under the ignored cache dir"
+      printf 'bulk\n' > cache/big.bin
+      printf 'module.exports = 1;\n' > node_modules/pkg/index.js
+    cwd: "$WORK_DIR/copy-forceadd/main"
+    expect:
+      exit_code: 0
+
+  - name: The first entry looks ignored but is not — that is the whole trap
+    run: |
+      set -e
+      # The untracked bulk under `cache/` really is ignored — from the
+      # outside the entry looks like a perfectly ordinary cache directory.
+      git check-ignore cache/big.bin
+      # But it holds a force-added tracked file, which is what makes the
+      # entry ineligible. Note `git check-ignore cache` (the directory
+      # itself) exits 1 here: git will not call a directory ignored when it
+      # must descend into it for tracked content. So BOTH halves of the
+      # engine's eligibility probe independently reject this entry.
+      test -n "$(git ls-files cache)"
+    cwd: "$WORK_DIR/copy-forceadd/main"
+    expect:
+      exit_code: 0
+
+  - name: The second entry is genuinely ignored, with nothing tracked under it
+    run: |
+      set -e
+      git check-ignore node_modules
+      test -z "$(git ls-files node_modules)"
+    cwd: "$WORK_DIR/copy-forceadd/main"
+    expect:
+      exit_code: 0
+
+  - name: Creation succeeds and warns instead of copying the tracked entry
+    run: daft start feat-x 2>&1
+    cwd: "$WORK_DIR/copy-forceadd/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "cache"
+        - "tracked"
+      dirs_exist:
+        - "$WORK_DIR/copy-forceadd/feat-x"
+      files_not_exist:
+        - "$WORK_DIR/copy-forceadd/feat-x/cache/big.bin"
+
+  - name: The refusal is per-entry — the valid entry after it still landed
+    run: "true"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-forceadd/feat-x/node_modules/pkg/index.js"
+      file_contains:
+        - path: "$WORK_DIR/copy-forceadd/feat-x/node_modules/pkg/index.js"
+          content: "module.exports = 1;"
+
+  - name: Git's own checkout of the tracked file is unaffected by the refusal
+    run: "true"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-forceadd/feat-x/cache/keep.txt"
+      file_contains:
+        - path: "$WORK_DIR/copy-forceadd/feat-x/cache/keep.txt"
+          content: "checked in by mistake"

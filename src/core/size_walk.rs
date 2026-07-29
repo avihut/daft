@@ -74,8 +74,31 @@ fn default_jobs() -> usize {
 /// distinct from a real empty tree's `Some(0)`. For the two blocking call
 /// sites.
 pub fn walk_all(roots: &[PathBuf], cancel: Option<&AtomicBool>, jobs: usize) -> Vec<Option<u64>> {
+    walk_all_sized(roots, cancel, jobs, HardLinks::Deduplicate)
+}
+
+/// How a walk counts a file that has more than one link to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardLinks {
+    /// Count each `(dev, ino)` once, like `du`. The right answer to "how much
+    /// disk does this tree occupy?", which is what `daft list` asks.
+    Deduplicate,
+    /// Count every link separately. The right answer to "how much will copying
+    /// this tree write?", which is what `copy:` asks — a copier materializes
+    /// each link as an independent file, so a pnpm or ccache tree costs an
+    /// order of magnitude more at the destination than `du` says at the source.
+    CountEveryLink,
+}
+
+/// [`walk_all`], choosing how hard links are counted.
+pub fn walk_all_sized(
+    roots: &[PathBuf],
+    cancel: Option<&AtomicBool>,
+    jobs: usize,
+    hard_links: HardLinks,
+) -> Vec<Option<u64>> {
     let mut out = vec![None; roots.len()];
-    walk_streaming(roots, cancel, jobs, |idx, size| out[idx] = size);
+    walk_streaming_sized(roots, cancel, jobs, hard_links, |idx, size| out[idx] = size);
     out
 }
 
@@ -88,6 +111,17 @@ pub fn walk_streaming(
     roots: &[PathBuf],
     cancel: Option<&AtomicBool>,
     jobs: usize,
+    on_complete: impl FnMut(usize, Option<u64>),
+) {
+    walk_streaming_sized(roots, cancel, jobs, HardLinks::Deduplicate, on_complete);
+}
+
+/// [`walk_streaming`], choosing how hard links are counted.
+pub fn walk_streaming_sized(
+    roots: &[PathBuf],
+    cancel: Option<&AtomicBool>,
+    jobs: usize,
+    hard_links: HardLinks,
     mut on_complete: impl FnMut(usize, Option<u64>),
 ) {
     if roots.is_empty() {
@@ -112,6 +146,7 @@ pub fn walk_streaming(
         cvar: Condvar::new(),
         totals: (0..n).map(|_| AtomicU64::new(0)).collect(),
         seen: (0..n).map(|_| Mutex::new(HashSet::new())).collect(),
+        hard_links,
     };
     let shared = &shared;
     let workers = jobs.max(1);
@@ -162,6 +197,8 @@ struct Shared {
     /// Per-root hard-link dedup set, kept separate from `queue` so file-level
     /// dedup (only for `nlink > 1`) never contends with queue operations.
     seen: Vec<Mutex<HashSet<(u64, u64)>>>,
+    /// Whether a multiply-linked file counts once or once per link.
+    hard_links: HardLinks,
 }
 
 fn worker(shared: &Shared, cancel: Option<&AtomicBool>, tx: mpsc::Sender<(usize, Option<u64>)>) {
@@ -185,7 +222,8 @@ fn worker(shared: &Shared, cancel: Option<&AtomicBool>, tx: mpsc::Sender<(usize,
         };
 
         // Scan the directory OUTSIDE the lock — this is the syscall storm.
-        let (bytes, subdirs, readable) = scan_dir(&job.dir, &shared.seen[job.root]);
+        let (bytes, subdirs, readable) =
+            scan_dir(&job.dir, &shared.seen[job.root], shared.hard_links);
         shared.totals[job.root].fetch_add(bytes, Ordering::Relaxed);
 
         // Record this directory done, enqueue its children, detect completion.
@@ -231,7 +269,11 @@ fn worker(shared: &Shared, cancel: Option<&AtomicBool>, tx: mpsc::Sender<(usize,
 /// value is whether the directory itself was readable (`read_dir` succeeded);
 /// the caller uses it only for the *root* of each tree to distinguish an
 /// unreadable root (`None`) from a genuinely empty one (`Some(0)`).
-fn scan_dir(dir: &Path, seen: &Mutex<HashSet<(u64, u64)>>) -> (u64, Vec<PathBuf>, bool) {
+fn scan_dir(
+    dir: &Path,
+    seen: &Mutex<HashSet<(u64, u64)>>,
+    hard_links: HardLinks,
+) -> (u64, Vec<PathBuf>, bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return (0, Vec::new(), false);
     };
@@ -244,7 +286,7 @@ fn scan_dir(dir: &Path, seen: &Mutex<HashSet<(u64, u64)>>) -> (u64, Vec<PathBuf>
         };
         if meta.is_dir() {
             subdirs.push(entry.path());
-        } else if count_file(&meta, seen) {
+        } else if count_file(&meta, seen, hard_links) {
             bytes += meta.len();
         }
     }
@@ -252,10 +294,18 @@ fn scan_dir(dir: &Path, seen: &Mutex<HashSet<(u64, u64)>>) -> (u64, Vec<PathBuf>
 }
 
 /// Whether this file's bytes should be counted: always for `nlink <= 1`; for a
-/// hard-linked file only the first `(dev, ino)` seen (matching `du`).
+/// hard-linked file only the first `(dev, ino)` seen (matching `du`), unless
+/// the caller asked for every link.
 #[cfg(unix)]
-fn count_file(meta: &std::fs::Metadata, seen: &Mutex<HashSet<(u64, u64)>>) -> bool {
+fn count_file(
+    meta: &std::fs::Metadata,
+    seen: &Mutex<HashSet<(u64, u64)>>,
+    hard_links: HardLinks,
+) -> bool {
     use std::os::unix::fs::MetadataExt;
+    if hard_links == HardLinks::CountEveryLink {
+        return true;
+    }
     if meta.nlink() > 1 {
         seen.lock().unwrap().insert((meta.dev(), meta.ino()))
     } else {
@@ -264,7 +314,11 @@ fn count_file(meta: &std::fs::Metadata, seen: &Mutex<HashSet<(u64, u64)>>) -> bo
 }
 
 #[cfg(not(unix))]
-fn count_file(_meta: &std::fs::Metadata, _seen: &Mutex<HashSet<(u64, u64)>>) -> bool {
+fn count_file(
+    _meta: &std::fs::Metadata,
+    _seen: &Mutex<HashSet<(u64, u64)>>,
+    _hard_links: HardLinks,
+) -> bool {
     true
 }
 
@@ -356,6 +410,29 @@ mod tests {
             roots.push(root);
         }
         assert_eq!(walk_all(&roots, None, 4), expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_links_counted_every_time_when_asked() {
+        // `copy:` gates `max_size` on this figure: a copier writes every link
+        // as an independent file, so the du-style answer would let a pnpm or
+        // ccache tree land many times its measured size.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("hl");
+        write(&root.join("real"), &vec![9u8; 2000]);
+        fs::hard_link(root.join("real"), root.join("linkA")).unwrap();
+        fs::hard_link(root.join("real"), root.join("linkB")).unwrap();
+
+        let roots = std::slice::from_ref(&root);
+        assert_eq!(
+            walk_all_sized(roots, None, 4, HardLinks::Deduplicate),
+            vec![Some(2000)]
+        );
+        assert_eq!(
+            walk_all_sized(roots, None, 4, HardLinks::CountEveryLink),
+            vec![Some(6000)]
+        );
     }
 
     #[cfg(unix)]

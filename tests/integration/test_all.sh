@@ -28,6 +28,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_exec_verbose_toggle.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_run.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_list.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_worktree_exec.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_warm.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_visitor_propagation.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_daft_merge_visitor_rollback.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_merge_gate_lane.sh"
@@ -371,6 +372,7 @@ run_all_integration_tests() {
     run_run_tests
     run_list_tests
     run_worktree_exec_tests
+    run_warm_tests
 
     # Integration tests
     run_test "integration_full_workflow" "test_integration_full_workflow"

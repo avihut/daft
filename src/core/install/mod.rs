@@ -14,6 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use crate::core::git_ignore::{IgnoreStatus, git_ignore_status};
 use crate::output::Output;
 use crate::utils::git_command_at;
 
@@ -136,70 +137,6 @@ pub(crate) fn install_starter(worktree_root: &Path, output: &mut dyn Output) -> 
 /// the worktree root — where `install` writes the file — so it never matches a
 /// nested `daft.yml` elsewhere in the tree.
 const EXCLUDE_PATTERN: &str = "/daft.yml";
-
-/// How git currently sees a path within a work tree, for the purpose of
-/// deciding whether to offer to exclude it.
-#[derive(Debug, PartialEq, Eq)]
-enum IgnoreStatus {
-    /// A `.gitignore`/exclude pattern matches the path — git already hides it.
-    Ignored,
-    /// Tracked by git (committed or staged). Excluding it is a no-op — git
-    /// ignores exclude rules for tracked files — and a tracked daft.yml is a
-    /// team baseline, not a visitor file. Never offered.
-    Tracked,
-    /// Untracked and not ignored — a visitor file git can currently see. This
-    /// is the only status that triggers the exclude offer.
-    Visible,
-    /// git could not answer (not a repo, git missing or errored). Skip silently.
-    Unknown,
-}
-
-/// Classify how git sees `relpath` (relative to `worktree_root`).
-///
-/// Probes through `git_command_at` — which strips inherited `GIT_*` so `-C` is
-/// authoritative — with both pipes nulled, mirroring the conservative pattern in
-/// `file::merge::is_target_untracked`:
-/// 1. `rev-parse --is-inside-work-tree` — not in a repo → `Unknown`.
-/// 2. `check-ignore -q` — exit 0 → `Ignored`; 1 → not ignored (continue);
-///    anything else (128, …) → `Unknown`.
-/// 3. `ls-files --error-unmatch` — `check-ignore` reports exit 1 for BOTH an
-///    untracked-visible file AND a tracked one (tracked files are never
-///    "ignored"), so disambiguate: tracked → `Tracked`, otherwise `Visible`.
-///    (`daft install` always writes a fresh, untracked daft.yml, so `Tracked`
-///    is unreachable from the command today — this keeps the helper correct if
-///    it is ever reused where the file could already be tracked.)
-fn git_ignore_status(worktree_root: &Path, relpath: &str) -> IgnoreStatus {
-    let inside = git_command_at(worktree_root)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    if !matches!(inside, Ok(s) if s.success()) {
-        return IgnoreStatus::Unknown;
-    }
-
-    let checked = git_command_at(worktree_root)
-        .args(["check-ignore", "-q", "--", relpath])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    match checked.as_ref().map(|s| s.code()) {
-        Ok(Some(0)) => return IgnoreStatus::Ignored,
-        Ok(Some(1)) => {} // not ignored — fall through to the tracked probe
-        _ => return IgnoreStatus::Unknown, // 128 / other / error — can't tell
-    }
-
-    let tracked = git_command_at(worktree_root)
-        .args(["ls-files", "--error-unmatch", "--", relpath])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    match tracked {
-        Ok(s) if s.success() => IgnoreStatus::Tracked,
-        Ok(_) => IgnoreStatus::Visible,
-        Err(_) => IgnoreStatus::Unknown,
-    }
-}
 
 /// Resolve the repository's local exclude file (`.git/info/exclude`) for the
 /// repo containing `worktree_root`. `git rev-parse --git-path` resolves the

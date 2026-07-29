@@ -97,6 +97,41 @@ pub fn check_daft_config(ctx: &RepoContext) -> CheckResult {
     }
 }
 
+/// Report whether this repository's filesystem can clone blocks.
+///
+/// `copy:` replicates declared build caches into every new worktree. On a
+/// reflinking filesystem (APFS, btrfs, XFS with `reflink=1`, OpenZFS 2.2+,
+/// ReFS) that replica costs almost nothing until it diverges; anywhere else it
+/// is a real byte copy, which is the entire reason the `fallback` and
+/// `max_size` knobs exist. Which one a repo gets is not something a user can
+/// read off the mount table, and it decides whether declaring a multi-gigabyte
+/// `target/` is a free win or an expensive one.
+///
+/// Answered by attempting a clone in the worktree, exactly as the copy stage
+/// does: the filesystem's *name* is not the question — a `copy:` entry can
+/// straddle mount points, and only the attempt is honest.
+///
+/// Always informational, like [`check_daft_config`]: a filesystem without
+/// reflink support is not a misconfiguration and there is nothing to fix, so it
+/// must never flip doctor's exit code.
+pub fn check_reflink_support(ctx: &RepoContext) -> CheckResult {
+    // doctor renders a passing check as "Name (message)", so the message must
+    // not carry its own parentheses or it nests them.
+    match crate::core::copy_paths::probe_reflink_support(&ctx.current_worktree) {
+        Some(true) => CheckResult::pass(
+            "Copy-on-write",
+            "reflink supported \u{2014} copy: entries clone near-free",
+        ),
+        Some(false) => CheckResult::pass(
+            "Copy-on-write",
+            "no reflink support \u{2014} copy: entries fall back to byte copies",
+        ),
+        // Distinct from "unsupported": the probe never ran, so daft does not
+        // know, and saying either answer would be inventing one.
+        None => CheckResult::skipped("Copy-on-write", "could not probe the worktree filesystem"),
+    }
+}
+
 /// Check that the repository uses a daft-compatible worktree layout.
 pub fn check_worktree_layout(ctx: &RepoContext) -> CheckResult {
     let git = GitCommand::new(true);
@@ -594,6 +629,55 @@ mod tests {
             result.message.contains("visitor"),
             "got: {}",
             result.message
+        );
+    }
+
+    // ── check_reflink_support ───────────────────────────────────────────
+
+    #[test]
+    fn reflink_check_is_informational_either_way_and_leaves_nothing_behind() {
+        // Both answers are Pass: a filesystem that cannot reflink is a fact
+        // about the machine, not a problem with the repo, and a permanent
+        // yellow row on every ext4 install would be noise. The two answers do
+        // have to differ — a row that said the same thing regardless would be
+        // reporting nothing.
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+
+        let result = check_reflink_support(&ctx_for(dir.path()));
+        assert_eq!(result.status, CheckStatus::Pass, "{}", result.message);
+        assert!(
+            result.message.contains("reflink"),
+            "got: {}",
+            result.message
+        );
+        assert!(
+            !result.message.contains('('),
+            "doctor renders a pass as \"Name (message)\": {}",
+            result.message
+        );
+
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains("reflink-probe"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the probe must not litter the worktree: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn reflink_check_skips_when_it_cannot_probe() {
+        // "Could not ask" is a third answer, not a quiet vote for either of
+        // the other two.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-worktree");
+        assert_eq!(
+            check_reflink_support(&ctx_for(&missing)).status,
+            CheckStatus::Skipped
         );
     }
 

@@ -1,0 +1,76 @@
+name: Copied caches are in place before the post-create hook runs
+description: >
+  The copy stage's position in the creation sequence IS the feature (#387): it
+  runs after `shared:` linking and BEFORE `worktree-post-create`, so a
+  hook-driven `npm install` / `cargo build` hits a warm cache instead of a cold
+  one. The hook here fails outright if the cache is missing, and a failing
+  post-create aborts by default (#765) — so an ordering regression shows up as a
+  non-zero exit and an absent marker, not as a silently slower worktree.
+
+repos:
+  - name: copy-hook-order
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-hook-order"
+          - path: .gitignore
+            content: |
+              node_modules/
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      copy:
+        - node_modules/
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: assert-cache-is-warm
+              # `set -e` is load-bearing: jobs run under `sh -c` with no
+              # errexit, so without it a failing `test` would fall through to
+              # the marker write and the job would exit 0 — the scenario would
+              # pass with the cache missing, which is the exact regression it
+              # exists to catch.
+              run: |
+                set -e
+                test -f "$DAFT_WORKTREE_PATH/node_modules/.package-lock.json"
+                printf 'warm\n' > "$DAFT_WORKTREE_PATH/HOOK_SAW_CACHE"
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_HOOK_ORDER
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-hook-order/main"
+
+  - name: Trust the repository's hooks
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/copy-hook-order/main"
+    expect:
+      exit_code: 0
+
+  - name: Build a cache in the source worktree
+    # `set -e`: step bodies run under `bash -c` with no errexit, so without it
+    # only the last command's status is reported.
+    run: |
+      set -e
+      mkdir -p node_modules
+      printf '{"name":"cached"}\n' > node_modules/.package-lock.json
+      git check-ignore node_modules
+    cwd: "$WORK_DIR/copy-hook-order/main"
+    expect:
+      exit_code: 0
+
+  - name: Start a new branch — the hook finds the cache already copied
+    run: daft start feat-warm 2>&1
+    cwd: "$WORK_DIR/copy-hook-order/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-hook-order/feat-warm/node_modules/.package-lock.json"
+        - "$WORK_DIR/copy-hook-order/feat-warm/HOOK_SAW_CACHE"
+      file_contains:
+        - path: "$WORK_DIR/copy-hook-order/feat-warm/HOOK_SAW_CACHE"
+          content: "warm"

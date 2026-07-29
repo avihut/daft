@@ -75,6 +75,16 @@ pub struct YamlConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shared: Option<Vec<String>>,
 
+    /// Paths to copy (CoW-replicate) into each new worktree.
+    ///
+    /// The independent-copy sibling of [`Self::shared`]: where `shared:`
+    /// centralizes one file and symlinks it everywhere, `copy:` gives every
+    /// worktree its own private replica — build caches (`target/`,
+    /// `node_modules/`, `.gradle/`) that must not be shared but are expensive
+    /// to rebuild. Entries must be gitignored; see [`CopyConfig`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copy: Option<CopyConfig>,
+
     /// Log configuration (retention, etc.).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<LogConfig>,
@@ -172,6 +182,322 @@ pub enum OutputSetting {
     Disabled(bool),
     /// Show output only for these hooks.
     Hooks(Vec<String>),
+}
+
+/// The `copy:` block — paths CoW-replicated into each new worktree.
+///
+/// One untagged key with two spellings, on the model of [`OutputSetting`]:
+/// the bare list covers the common case, the map form adds knobs.
+///
+/// ```yaml
+/// # Bare list
+/// copy:
+///   - target/
+///   - node_modules/
+///   - "**/dist/"
+///
+/// # Full map
+/// copy:
+///   paths: [target/, node_modules/]
+///   fallback: copy   # copy | skip (default: copy) — what to do when the
+///                    # filesystem cannot reflink
+///   max_size: 5GB    # optional per-ENTRY cap; gates the byte-copy fallback
+///                    # only, never a reflink (which is near-free)
+/// ```
+///
+/// **Entries must be gitignored.** The engine validates each entry with `git
+/// check-ignore` *and* a "nothing tracked underneath" probe (a force-added
+/// file inside an ignored directory still disqualifies it); a violation is a
+/// per-entry warning row and creation continues.
+///
+/// Entries may name files or directories, and may contain glob metacharacters
+/// (`*`, `?`, `[`), which expand against the source worktree. A trailing `/`
+/// is cosmetic and normalized away.
+///
+/// Merge semantics: an overlay (`daft.local.yml`, an `extends:` file) replaces
+/// this key **wholesale**, exactly like `shared:` — there is no element-wise
+/// union, so a local override is always a complete restatement.
+///
+/// Unknown keys inside the map form are tolerated (unlike [`MergeConfig`]): a
+/// mistyped knob costs a copy optimization, not a safety boundary. The cost of
+/// that tolerance — a misspelled `paths:` reading as "declares nothing" — is
+/// paid where it can be seen, by `copy_paths::copy_entries` warning that the
+/// block declares no paths, rather than here where refusing it would fail the
+/// whole `daft.yml`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum CopyConfig {
+    /// Bare list form — paths only, every knob at its default.
+    Paths(Vec<String>),
+    /// Map form — paths plus the `fallback` / `max_size` knobs.
+    Full {
+        /// The declared entries.
+        paths: Vec<String>,
+        /// Behavior when the filesystem cannot reflink. `None` ≡
+        /// [`CopyFallback::Copy`].
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fallback: Option<CopyFallback>,
+        /// Per-entry size cap as a human string (`5GB`, `500MB`, `1048576`).
+        /// Parsed by `crate::coordinator::clean_policy::parse_size` —
+        /// case-insensitive, binary multiples (1KB = 1024), a bare integer is
+        /// bytes. Applies to the byte-copy fallback only.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_size: Option<String>,
+    },
+}
+
+/// Hand-written so a near-miss inside `copy:` says what is wrong with it.
+///
+/// A derived `#[serde(untagged)]` impl reports **every** shape mistake as
+/// `data did not match any variant of untagged enum CopyConfig`, and that
+/// message is the whole diagnosis a user gets: the error fails the entire
+/// `daft.yml`, so the runtime warning that reports it is the only thing
+/// standing between them and a config whose hooks have all quietly stopped
+/// running. "Did not match any variant" does not name the key, the line, or
+/// the fix.
+///
+/// So the shapes are dispatched by hand, each with its own sentence, and two
+/// spellings a derived impl would have rejected are accepted on purpose:
+///
+/// * `copy: target/` — a bare scalar, read as a one-entry list;
+/// * `paths: target/` — the same sugar one level down, which is the natural
+///   thing to write for a single entry and otherwise took the whole file with
+///   it.
+///
+/// `max_size` accepts an unquoted YAML integer beside the string form, since
+/// `parse_size` documents a bare integer as bytes and `max_size: 1048576` is
+/// the obvious thing to type. Unknown keys are ignored — see the type docs.
+impl<'de> Deserialize<'de> for CopyConfig {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(CopyConfigVisitor)
+    }
+}
+
+struct CopyConfigVisitor;
+
+impl<'de> serde::de::Visitor<'de> for CopyConfigVisitor {
+    type Value = CopyConfig;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(
+            "a list of paths, or a map with `paths:` (plus optional `fallback:`/`max_size:`)",
+        )
+    }
+
+    fn visit_str<E: serde::de::Error>(self, value: &str) -> std::result::Result<Self::Value, E> {
+        Ok(CopyConfig::Paths(vec![value.to_string()]))
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut paths = Vec::new();
+        while let Some(entry) = seq.next_element::<String>()? {
+            paths.push(entry);
+        }
+        Ok(CopyConfig::Paths(paths))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut paths: Option<Vec<String>> = None;
+        let mut fallback: Option<CopyFallback> = None;
+        let mut max_size: Option<String> = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "paths" => paths = Some(map.next_value::<PathList>()?.0),
+                "fallback" => fallback = map.next_value::<Option<CopyFallback>>()?,
+                "max_size" => max_size = map.next_value::<Option<SizeScalar>>()?.map(|s| s.0),
+                // Tolerated, by design: a mistyped knob must not fail the file.
+                _ => {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+        }
+
+        Ok(CopyConfig::Full {
+            paths: paths.unwrap_or_default(),
+            fallback,
+            max_size,
+        })
+    }
+}
+
+/// A `paths:` value: a list, or a single entry written as a bare scalar.
+struct PathList(Vec<String>);
+
+impl<'de> Deserialize<'de> for PathList {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = PathList;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a list of paths, or a single path")
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                value: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(PathList(vec![value.to_string()]))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut out = Vec::new();
+                while let Some(entry) = seq.next_element::<String>()? {
+                    out.push(entry);
+                }
+                Ok(PathList(out))
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
+/// A `max_size:` value: the string form, or an unquoted integer meaning bytes.
+struct SizeScalar(String);
+
+impl<'de> Deserialize<'de> for SizeScalar {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = SizeScalar;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a size such as `5GB`, or a plain byte count")
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                value: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(SizeScalar(value.to_string()))
+            }
+
+            fn visit_u64<E: serde::de::Error>(
+                self,
+                value: u64,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(SizeScalar(value.to_string()))
+            }
+
+            fn visit_i64<E: serde::de::Error>(
+                self,
+                value: i64,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(SizeScalar(value.to_string()))
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
+impl CopyConfig {
+    /// The declared entries, in config order, whichever form was written.
+    pub fn paths(&self) -> &[String] {
+        match self {
+            CopyConfig::Paths(p) => p,
+            CopyConfig::Full { paths, .. } => paths,
+        }
+    }
+
+    /// The effective fallback mode — [`CopyFallback::Copy`] unless the map
+    /// form says otherwise.
+    pub fn fallback(&self) -> CopyFallback {
+        match self {
+            CopyConfig::Paths(_) => CopyFallback::default(),
+            CopyConfig::Full { fallback, .. } => fallback.unwrap_or_default(),
+        }
+    }
+
+    /// The raw `max_size` string, if the map form set one. Unparsed — see
+    /// [`CopyConfig::Full::max_size`] for the accepted spellings.
+    pub fn max_size(&self) -> Option<&str> {
+        match self {
+            CopyConfig::Paths(_) => None,
+            CopyConfig::Full { max_size, .. } => max_size.as_deref(),
+        }
+    }
+
+    /// True when nothing is declared — the "no copy section at all" case,
+    /// which plans no rows and does no work.
+    pub fn is_empty(&self) -> bool {
+        self.paths().is_empty()
+    }
+}
+
+/// What `copy:` does with an entry when the filesystem cannot reflink it.
+///
+/// Lowercase in YAML (`fallback: copy` / `fallback: skip`), but parsed
+/// case-insensitively — see the [`Deserialize`] impl for why that matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CopyFallback {
+    /// Byte-copy the entry anyway (subject to `max_size`). The default: a
+    /// warm cache is worth the bytes on most trees.
+    #[default]
+    Copy,
+    /// Leave the entry out and report an attention skip. For trees where a
+    /// non-CoW copy would cost more than the rebuild it saves.
+    Skip,
+}
+
+impl CopyFallback {
+    /// Parse a fallback mode from a string (case-insensitive).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "copy" => Some(CopyFallback::Copy),
+            "skip" => Some(CopyFallback::Skip),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CopyFallback {
+    /// Deserialize case-insensitively via [`CopyFallback::parse`], mirroring
+    /// [`crate::hooks::FailMode`] and for the same reason: a bad enum value
+    /// fails the *entire* `daft.yml` deserialize, which silently drops every
+    /// YAML hook for that operation to the legacy-script fallback. A derived
+    /// `rename_all = "lowercase"` impl would put `fallback: Copy` — the
+    /// spelling a user naturally writes after reading `CopyFallback::Copy` —
+    /// in that blast radius over a capital letter.
+    ///
+    /// A genuinely unknown value (`fallback: symlink`) still fails, as it
+    /// must. Note that the error text below does **not** survive: `copy:` is
+    /// an untagged enum, so serde reports the generic "data did not match any
+    /// variant of untagged enum CopyConfig" instead. That is inherent to the
+    /// untagged surface (every other untagged field in this schema behaves
+    /// the same way) — the message is reachable through
+    /// [`CopyFallback::parse`], which is what callers with a raw string
+    /// should use.
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        CopyFallback::parse(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "invalid copy fallback {s:?}, expected \"copy\" or \"skip\""
+            ))
+        })
+    }
 }
 
 // Re-export from executor so that format-agnostic types are defined once.
@@ -1507,6 +1833,166 @@ hooks:
 "#;
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.shared.is_none());
+    }
+
+    #[test]
+    fn copy_bare_list_form_parses_with_default_knobs() {
+        let yaml = r#"
+copy:
+  - target/
+  - node_modules/
+  - "**/dist/"
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let copy = config.copy.unwrap();
+        assert!(matches!(copy, CopyConfig::Paths(_)));
+        assert_eq!(copy.paths(), ["target/", "node_modules/", "**/dist/"]);
+        assert_eq!(copy.fallback(), CopyFallback::Copy);
+        assert_eq!(copy.max_size(), None);
+    }
+
+    #[test]
+    fn copy_full_map_form_parses_every_knob() {
+        let yaml = r#"
+copy:
+  paths:
+    - target/
+    - node_modules/
+  fallback: skip
+  max_size: 5GB
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let copy = config.copy.unwrap();
+        assert_eq!(copy.paths(), ["target/", "node_modules/"]);
+        assert_eq!(copy.fallback(), CopyFallback::Skip);
+        assert_eq!(copy.max_size(), Some("5GB"));
+    }
+
+    #[test]
+    fn copy_max_size_accepts_an_unquoted_integer() {
+        // `parse_size` documents a bare integer as bytes, so this is the
+        // obvious thing to write — and against a plain Option<String> it did
+        // not merely fail this key: the untagged `copy:` enum failed the WHOLE
+        // daft.yml, dropping every YAML hook to the legacy-script fallback.
+        for yaml in [
+            "copy:\n  paths: [target]\n  max_size: 1048576\n",
+            "copy:\n  paths: [target]\n  max_size: \"1048576\"\n",
+        ] {
+            let config: YamlConfig = serde_yaml::from_str(yaml).expect(yaml);
+            assert_eq!(config.copy.unwrap().max_size(), Some("1048576"), "{yaml}");
+        }
+
+        // The rest of the file survives either spelling.
+        let config: YamlConfig =
+            serde_yaml::from_str("shared:\n  - .env\ncopy:\n  paths: [target]\n  max_size: 5000\n")
+                .unwrap();
+        assert_eq!(config.shared.unwrap(), [".env"]);
+    }
+
+    #[test]
+    fn copy_full_map_form_defaults_the_omitted_knobs() {
+        // The map form without knobs must behave exactly like the bare list.
+        let yaml = "copy:\n  paths: [target/]\n";
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let copy = config.copy.unwrap();
+        assert_eq!(copy.paths(), ["target/"]);
+        assert_eq!(copy.fallback(), CopyFallback::Copy);
+        assert_eq!(copy.max_size(), None);
+    }
+
+    #[test]
+    fn copy_absent_is_none_and_never_serialized() {
+        let config: YamlConfig = serde_yaml::from_str("hooks: {}\n").unwrap();
+        assert!(config.copy.is_none());
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(
+            !yaml.contains("copy:"),
+            "unset copy must be omitted:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn copy_fallback_parses_case_insensitively() {
+        // A bad enum value fails the ENTIRE daft.yml deserialize, which
+        // silently drops every YAML hook to the legacy-script fallback (the
+        // hazard `FailMode`'s custom impl exists for). `fallback: Copy` — the
+        // spelling a user writes after reading the Rust variant name — must
+        // not land in that blast radius over a capital letter.
+        for (spelling, expected) in [
+            ("copy", CopyFallback::Copy),
+            ("Copy", CopyFallback::Copy),
+            ("COPY", CopyFallback::Copy),
+            ("skip", CopyFallback::Skip),
+            ("Skip", CopyFallback::Skip),
+            ("SKIP", CopyFallback::Skip),
+        ] {
+            let yaml = format!("copy:\n  paths: [t/]\n  fallback: {spelling}\n");
+            let config: YamlConfig = serde_yaml::from_str(&yaml)
+                .unwrap_or_else(|e| panic!("{spelling:?} should parse, got: {e}"));
+            assert_eq!(config.copy.unwrap().fallback(), expected);
+        }
+    }
+
+    #[test]
+    fn copy_rejects_an_unknown_fallback_value() {
+        // A genuinely invalid value must fail to load, never deserialize to a
+        // silent default — `fallback: symlink` silently meaning `copy` would
+        // byte-copy caches the user asked daft to leave alone.
+        //
+        // And the message must NAME it. The failure takes the whole `daft.yml`
+        // with it, so the runtime warning reporting this string is the entire
+        // diagnosis the user gets; a derived untagged impl discarded its
+        // variants' errors and said only "data did not match any variant of
+        // untagged enum CopyConfig", which names neither the key nor the value
+        // nor the fix. That is what the hand-written `Deserialize` is for.
+        let err = serde_yaml::from_str::<YamlConfig>("copy:\n  paths: [t/]\n  fallback: symlink\n")
+            .expect_err("an unknown fallback value must fail to parse");
+        let text = err.to_string();
+        assert!(
+            text.contains("symlink"),
+            "must name the offending value: {err}"
+        );
+        assert!(
+            text.contains("copy") && text.contains("skip"),
+            "must name the accepted values: {err}"
+        );
+
+        assert_eq!(CopyFallback::parse("symlink"), None);
+        assert_eq!(CopyFallback::parse("copy"), Some(CopyFallback::Copy));
+        assert_eq!(CopyFallback::parse("SKIP"), Some(CopyFallback::Skip));
+    }
+
+    #[test]
+    fn copy_map_without_paths_key_parses_to_an_empty_full_form() {
+        // `paths` defaults precisely so this reaches a diagnosis instead of
+        // failing the whole file: unknown keys inside the map form are
+        // tolerated, so a misspelled `paths:` lands here. `copy_entries` warns
+        // that the block declares nothing, and `daft hooks validate` errors.
+        let config: YamlConfig = serde_yaml::from_str("copy:\n  fallback: skip\n").unwrap();
+        let copy = config.copy.unwrap();
+        assert!(copy.is_empty());
+        assert_eq!(copy.fallback(), CopyFallback::Skip);
+    }
+
+    #[test]
+    fn copy_roundtrips_through_serialization_in_both_forms() {
+        for cfg in [
+            CopyConfig::Paths(vec!["target/".into()]),
+            CopyConfig::Full {
+                paths: vec!["target/".into()],
+                fallback: Some(CopyFallback::Skip),
+                max_size: Some("500MB".into()),
+            },
+        ] {
+            let config = YamlConfig {
+                copy: Some(cfg.clone()),
+                ..Default::default()
+            };
+            let yaml = serde_yaml::to_string(&config).unwrap();
+            let back: YamlConfig = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(back.copy, Some(cfg), "roundtrip failed for:\n{yaml}");
+            assert!(!yaml.contains("null"), "no null litter:\n{yaml}");
+        }
     }
 
     #[test]
