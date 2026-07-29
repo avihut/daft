@@ -25,6 +25,12 @@ precedence chains; this command hides that split behind one list of keys.
   daft config set --global ...   Change it at the shared scope instead
   daft config unset <key>        Remove it, revealing whatever it was masking
 
+Some settings only make sense together, and travel as a named behavior — one
+name for the group and for the states it can be in:
+
+  daft config get remote-sync    on, off, or custom
+  daft config set remote-sync on Write every setting the state names
+
 Values are validated against the setting's own type before anything is
 written, so a bad enum or column spec is refused where you typed it rather
 than at the next command that reads it.
@@ -67,7 +73,7 @@ daft config get [OPTIONS] <KEY>
 
 | Argument | Description | Required |
 |----------|-------------|----------|
-| `<KEY>` | The setting to read | Yes |
+| `<KEY>` | The setting or behavior to read | Yes |
 
 #### Options
 
@@ -87,8 +93,8 @@ daft config set [OPTIONS] <KEY> <VALUE>
 
 | Argument | Description | Required |
 |----------|-------------|----------|
-| `<KEY>` | The setting to change | Yes |
-| `<VALUE>` | The new value | Yes |
+| `<KEY>` | The setting or behavior to change | Yes |
+| `<VALUE>` | The new value, or a behavior's state | Yes |
 
 #### Options
 
@@ -108,7 +114,7 @@ daft config unset [OPTIONS] <KEY>
 
 | Argument | Description | Required |
 |----------|-------------|----------|
-| `<KEY>` | The setting to remove | Yes |
+| `<KEY>` | The setting or behavior to remove | Yes |
 
 #### Options
 

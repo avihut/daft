@@ -23,6 +23,12 @@ precedence chains; this command hides that split behind one list of keys.
   daft config set \-\-global ...   Change it at the shared scope instead
   daft config unset <key>        Remove it, revealing whatever it was masking
 .PP
+Some settings only make sense together, and travel as a named behavior — one
+name for the group and for the states it can be in:
+.PP
+  daft config get remote\-sync    on, off, or custom
+  daft config set remote\-sync on Write every setting the state names
+.PP
 Values are validated against the setting\*(Aqs own type before anything is
 written, so a bad enum or column spec is refused where you typed it rather
 than at the next command that reads it.

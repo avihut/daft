@@ -207,26 +207,40 @@ is an **inclusion** filter (run only the named jobs, re-running against an
 already-set-up worktree); `--skip-hooks` is the **exclusion** side and carries
 the dependents with it.
 
-## Architecture gating
+## OS and architecture gating
 
 A job can declare an `arch:` constraint: `arch: aarch64` runs only on ARM
 machines. It accepts a single value or a list, and is evaluated at runtime — a
-job whose architecture does not match is silently skipped.
+job whose architecture does not match is skipped.
 
-There is no `os:` field. Gate on the operating system with a `skip:` command,
-which is evaluated the same way and reports the same "skipped" reason:
+There is no `os:` field. Operating-system targeting is a property of `run:`,
+which may be an OS-keyed map instead of a string. A job whose map has no entry
+for the current OS is skipped, with
+`platform-specific run has no entry for <os>` as the reason — so a one-platform
+job is a map with one key:
 
 ```yaml
 - name: install-brew
   run:
-    /bin/bash -c "$(curl -fsSL
-    https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    macos:
+      /bin/bash -c "$(curl -fsSL
+      https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
   skip:
-    - run: '[ "$(uname)" != Darwin ]'
-      desc: Not macOS
     - run: "command -v brew"
       desc: Brew is already installed
 ```
+
+The map also lets one job cover several platforms with different commands, which
+a boolean `os:` field could not:
+
+```yaml
+- name: install-deps
+  run:
+    macos: brew bundle
+    linux: sudo apt-get install -y build-essential
+```
+
+Each value may also be a list, joined with `&&`.
 
 This matters in cross-platform teams. A shared `daft.yml` committed to the repo
 can describe the full setup for all platforms, and each developer's machine

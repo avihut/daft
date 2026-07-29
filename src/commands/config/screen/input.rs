@@ -166,14 +166,12 @@ fn quick_toggle(state: &mut ScreenState) -> Action {
     // case reads as a toggle, and a longer preset list cycles.
     if let Some(behavior) = state.selected_behavior() {
         let presets = behavior.spec.presets;
-        let next = match behavior.preset() {
-            Some(current) => presets
-                .iter()
-                .position(|preset| preset.name == current.name)
-                .map_or(0, |at| (at + 1) % presets.len()),
-            // From Custom, the first press picks a coherent state rather than
-            // guessing which way the user meant to resolve the disagreement.
-            None => 0,
+        let next = match &behavior.state {
+            crate::commands::config::resolve::BehaviorState::Preset(at) => (at + 1) % presets.len(),
+            // From Custom, land on the state the row already says it is
+            // closest to — the detail panel names it, and stepping somewhere
+            // else would contradict what is on screen.
+            crate::commands::config::resolve::BehaviorState::Custom { nearest, .. } => *nearest,
         };
         return Action::Write(Apply::SetBehavior {
             name: behavior.spec.name,

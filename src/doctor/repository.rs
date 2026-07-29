@@ -382,38 +382,22 @@ pub fn dry_run_fetch_refspec() -> Vec<FixAction> {
 /// Shows a one-time informational note when none of the three remote-sync
 /// keys are set, so users know the defaults have changed.
 pub fn check_remote_sync_config(_ctx: &RepoContext) -> CheckResult {
-    use crate::settings::keys;
+    use crate::commands::config::resolve::{Snapshot, resolve_all};
 
-    let git = GitCommand::new(true);
+    // Through the resolver rather than six hand-rolled config reads. Those
+    // saw only the local and global scopes, so a value set at system or
+    // worktree scope — or through the environment — read as "nothing is
+    // configured", and this check now points the user at a behavior row that
+    // would disagree with it.
+    let configured = Snapshot::capture(&GitCommand::new(true))
+        .map(|snapshot| {
+            let set = resolve_all(&snapshot);
+            set.behavior("remote-sync")
+                .is_some_and(|behavior| behavior.is_set(&set.settings))
+        })
+        .unwrap_or(false);
 
-    let has_fetch = git
-        .config_get(keys::CHECKOUT_FETCH)
-        .ok()
-        .flatten()
-        .is_some()
-        || git
-            .config_get_global(keys::CHECKOUT_FETCH)
-            .ok()
-            .flatten()
-            .is_some();
-    let has_push = git.config_get(keys::CHECKOUT_PUSH).ok().flatten().is_some()
-        || git
-            .config_get_global(keys::CHECKOUT_PUSH)
-            .ok()
-            .flatten()
-            .is_some();
-    let has_delete = git
-        .config_get(keys::BRANCH_DELETE_REMOTE)
-        .ok()
-        .flatten()
-        .is_some()
-        || git
-            .config_get_global(keys::BRANCH_DELETE_REMOTE)
-            .ok()
-            .flatten()
-            .is_some();
-
-    if has_fetch || has_push || has_delete {
+    if configured {
         CheckResult::pass("Remote sync", "Remote sync settings are configured")
     } else {
         CheckResult::warning(

@@ -272,6 +272,18 @@ impl ScreenState {
 
         self.rows.clear();
 
+        // Drilled into one behavior: the list is exactly its members, and has
+        // to stay that way *through* a rebuild. Every write re-resolves and
+        // rebuilds, so a narrowing that only happened at drill-in time would
+        // quietly restore the full list while the screen still believed it was
+        // drilled in — and then swallow the next Esc as an exit from a view
+        // the user could no longer see.
+        if self.member_focus.is_some() {
+            self.build_member_rows();
+            self.finish_rebuild(held);
+            return;
+        }
+
         let behaviors: Vec<usize> = (0..self.config.behaviors.len())
             .filter(|index| {
                 let behavior = &self.config.behaviors[*index];
@@ -310,6 +322,35 @@ impl ScreenState {
             }
         }
 
+        self.finish_rebuild(held);
+    }
+
+    /// The member rows of the behavior the list is drilled into.
+    ///
+    /// A behavior that no longer resolves — the registry changed under a
+    /// reload — leaves the drill-down with nothing to show, so it drops back
+    /// to the full list rather than painting an empty screen.
+    fn build_member_rows(&mut self) {
+        let members: Vec<usize> = self
+            .member_focus
+            .and_then(|name| {
+                self.config
+                    .behaviors
+                    .iter()
+                    .find(|behavior| behavior.spec.name == name)
+            })
+            .map(|behavior| behavior.members.clone())
+            .unwrap_or_default();
+
+        if members.is_empty() {
+            self.member_focus = None;
+            return;
+        }
+        self.rows.extend(members.into_iter().map(Row::Setting));
+    }
+
+    /// The rail, cursor, and scroll, once the rows are decided.
+    fn finish_rebuild(&mut self, held: Option<String>) {
         self.rail = self.build_rail();
         self.rail_cursor = self.rail_cursor.min(self.rail.len().saturating_sub(1));
 
@@ -701,27 +742,13 @@ impl ScreenState {
     /// so a category jump would land on some of them — a filter is the only
     /// thing that shows exactly the set the behavior is made of.
     pub fn focus_members(&mut self, behavior: &ResolvedBehavior) {
-        let keys: Vec<String> = behavior
-            .members
-            .iter()
-            .map(|index| self.config.settings[*index].spec.key.to_string())
-            .collect();
-
         self.mode = Mode::All;
         self.filter = None;
-        self.rows.clear();
-        for key in &keys {
-            if let Some(index) = self
-                .config
-                .settings
-                .iter()
-                .position(|r| r.spec.key == key.as_str())
-            {
-                self.rows.push(Row::Setting(index));
-            }
-        }
+        self.prompt_open = false;
         self.member_focus = Some(behavior.spec.name);
-        self.rail = self.build_rail();
+        // Through `rebuild`, so the narrowing is a property of the state
+        // rather than something this one entry point did once.
+        self.rebuild();
         self.rail_cursor = 0;
         self.cursor = 0;
         self.settle_forward();
@@ -1099,6 +1126,32 @@ mod tests {
         assert!(state.member_focus().is_none());
         assert!(state.rows().len() > behavior.spec.members.len());
         assert!(!state.clear_member_focus(), "already out");
+    }
+
+    /// The drill-down has to survive a rebuild.
+    ///
+    /// Every write re-resolves and rebuilds. When the narrowing lived only in
+    /// `focus_members`, the rebuild restored the full list while the flag
+    /// stayed set — so the screen showed everything, still believed it was
+    /// drilled in, and swallowed the next Esc as an exit from a view that was
+    /// no longer there.
+    #[test]
+    fn the_drill_down_survives_a_rebuild() {
+        let mut state = state_as_opened();
+        let behavior = state.selected_behavior().unwrap().clone();
+        state.focus_members(&behavior);
+        let narrowed = state.rows().len();
+
+        state.rebuild();
+        assert_eq!(state.rows().len(), narrowed, "still just the members");
+        assert_eq!(state.member_focus(), Some("remote-sync"));
+
+        // A write goes through `reload`, which rebuilds against fresh data.
+        let config = state.config.clone();
+        state.reload(config);
+        assert_eq!(state.rows().len(), narrowed, "still just the members");
+        assert_eq!(state.member_focus(), Some("remote-sync"));
+        assert!(state.selected().is_some(), "and the cursor is still on one");
     }
 
     #[test]

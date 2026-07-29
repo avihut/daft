@@ -528,9 +528,9 @@ Set one per hook (default is `parallel`):
   tags: ["build"] # Tags for filtering
   skip: CI # Skip when $CI is set
   only: DEPLOY_ENABLED # Only run when $DEPLOY_ENABLED is set
-  arch:
-    x86_64 # Target arch: x86_64, aarch64 (or list). No os: field —
-    # gate on the OS with a skip: command instead.
+  arch: x86_64 # Target arch: x86_64, aarch64 (or list). No `os:` field —
+  # make run: an OS-keyed map (macos/linux/windows) to target an OS; a job
+  # with no entry for the current one is skipped.
   needs: [install-npm] # Wait for these jobs to complete first
   tracks: [path, branch] # Worktree attributes this job depends on (move hooks)
   interactive: true # Needs TTY (forces sequential)

@@ -44,6 +44,12 @@ precedence chains; this command hides that split behind one list of keys.
   daft config set --global ...   Change it at the shared scope instead
   daft config unset <key>        Remove it, revealing whatever it was masking
 
+Some settings only make sense together, and travel as a named behavior — one
+name for the group and for the states it can be in:
+
+  daft config get remote-sync    on, off, or custom
+  daft config set remote-sync on Write every setting the state names
+
 Values are validated against the setting's own type before anything is
 written, so a bad enum or column spec is refused where you typed it rather
 than at the next command that reads it.
@@ -81,7 +87,11 @@ pub struct ListArgs {
 
 #[derive(Args)]
 pub struct GetArgs {
-    /// The setting to read
+    /// The setting or behavior to read
+    ///
+    /// A behavior is a named group of settings that only make sense together
+    /// — `remote-sync` is one. Reading it gives the state its settings add up
+    /// to, or `custom` when they disagree.
     #[arg(value_name = "KEY")]
     key: String,
 
@@ -92,11 +102,14 @@ pub struct GetArgs {
 
 #[derive(Args)]
 pub struct SetArgs {
-    /// The setting to change
+    /// The setting or behavior to change
+    ///
+    /// Naming a behavior — `remote-sync` — writes every setting its chosen
+    /// state names, in one go.
     #[arg(value_name = "KEY")]
     key: String,
 
-    /// The new value
+    /// The new value, or a behavior's state
     ///
     /// Hyphen-leading values are taken literally, because several settings
     /// hold flags — `daft.update.args` defaults to `--ff-only`, and requiring
@@ -119,7 +132,10 @@ pub struct SetArgs {
 
 #[derive(Args)]
 pub struct UnsetArgs {
-    /// The setting to remove
+    /// The setting or behavior to remove
+    ///
+    /// Naming a behavior clears every setting it covers at this scope, and
+    /// reports what that revealed.
     #[arg(value_name = "KEY")]
     key: String,
 
@@ -370,6 +386,17 @@ fn cmd_list(args: &ListArgs) -> Result<()> {
 }
 
 fn parse_category(name: &str) -> Result<Category> {
+    // "Behaviors" is a heading in the listing but not a category, so someone
+    // who read it off the screen and typed it back deserves the real answer
+    // rather than a list that does not contain the word they just saw.
+    if name.eq_ignore_ascii_case("behaviors") || name.eq_ignore_ascii_case("behavior") {
+        bail!(
+            "behaviors are not a category — they are named groups of settings.\n\
+             `daft config list` shows them at the top; `daft config get <name>` \
+             reads one."
+        );
+    }
+
     Category::all()
         .iter()
         .copied()

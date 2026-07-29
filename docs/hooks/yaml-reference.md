@@ -652,18 +652,19 @@ hooks:
 
 ### Platform constraint with skip condition
 
-There is no `os:` field; gate on the operating system with a `skip:` command.
-(`arch:` does exist, and constrains the architecture rather than the OS.)
+There is no `os:` field. OS targeting lives in `run:`, which may be an OS-keyed
+map (`macos`, `linux`, `windows`) instead of a string; a job whose map has no
+entry for the current OS is skipped. `arch:` is separate and constrains the
+architecture.
 
 ```yaml
 - name: install-brew
   description: Install Homebrew package manager
   run:
-    /bin/bash -c "$(curl -fsSL
-    https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    macos:
+      /bin/bash -c "$(curl -fsSL
+      https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
   skip:
-    - run: '[ "$(uname)" != Darwin ]'
-      desc: Not macOS
     - run: "command -v brew"
       desc: Brew is already installed
 ```
