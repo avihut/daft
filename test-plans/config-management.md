@@ -35,6 +35,8 @@ cd $(mktemp -d) && git init -q . && daft config
 
 - [ ] With a value set at both global and local scope, the ladder shows both and
       marks the local one as the winner
+- [ ] With nothing set, the ladder marks the default — the mark and the
+      effective line always name the same layer
 - [ ] The detail panel names the file each value came from
 - [ ] `daft.checkout.pushVerify` with nothing set reads "inherited from
       daft.pushVerify"

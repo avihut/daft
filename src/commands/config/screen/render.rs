@@ -550,9 +550,10 @@ fn draw_detail(frame: &mut Frame, area: Rect, state: &ScreenState) {
         Line::from(""),
     ];
 
-    // The ladder: every layer's answer, and which one won.
+    // The ladder: every layer's answer, and which one daft reads.
+    let reads_from = resolved.reads_from();
     for (index, rung) in resolved.rungs.iter().enumerate() {
-        let winner = resolved.winner == Some(index);
+        let winner = reads_from == Some(index);
         let value = rung.value.clone().unwrap_or_else(|| "—".to_string());
 
         let value_span = match (&rung.value, rung.inert.is_some()) {
@@ -913,6 +914,21 @@ mod tests {
             ladder[0].contains("local") && ladder[0].contains("rebase"),
             "the winner must be the local value: {:?}",
             ladder[0]
+        );
+    }
+
+    #[test]
+    fn the_ladder_marks_a_row_that_nothing_sets() {
+        // Most rows are this row: nothing sets them and the default applies.
+        // A ladder that marks nothing there does not answer the question the
+        // panel exists to answer.
+        let all = painted(&state_with(vec![]), 120, 40).join("\n");
+        let marked: Vec<&str> = all.lines().filter(|line| line.contains('●')).collect();
+        assert_eq!(marked.len(), 1, "{all}");
+        assert!(
+            marked[0].contains("default"),
+            "the mark belongs on the layer the effective line names: {:?}",
+            marked[0]
         );
     }
 

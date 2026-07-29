@@ -396,8 +396,9 @@ pub struct Resolved {
     pub spec: SettingSpec,
     /// Every layer, lowest precedence first.
     pub rungs: Vec<Rung>,
-    /// Index into `rungs` of the layer git would answer with, if any. This is
-    /// the ● in the ladder — it can point at an invalid value.
+    /// Index into `rungs` of the layer git would answer with, if any. Answers
+    /// "does anything set this", which is not the same question as "where does
+    /// the value come from" — see `reads_from`.
     pub winner: Option<usize>,
     /// What daft actually uses — `None` when nothing sets it and it has no
     /// default, which is a real state for the settings whose absence is
@@ -412,6 +413,24 @@ impl Resolved {
     /// default. Drives the "Modified" filter and the bold value in the list.
     pub fn is_set(&self) -> bool {
         self.winner.is_some()
+    }
+
+    /// The rung the effective value actually comes from — the ● in the ladder.
+    ///
+    /// Not `winner`. That one is `None` for every setting nothing sets, which
+    /// is most of them, and a ladder that marks nothing on most rows does not
+    /// answer the question it exists to answer. The mark has to agree with the
+    /// effective line under it, so where no scope wins — or where the winning
+    /// value will not parse and the loaders fall back past it rather than to
+    /// the scope below — it lands on the default.
+    pub fn reads_from(&self) -> Option<usize> {
+        match self.origin {
+            Origin::Layer(_) => self.winner,
+            Origin::Default | Origin::Inherited(_) | Origin::DefaultAfterInvalid(_) => self
+                .rungs
+                .iter()
+                .position(|rung| rung.layer == Layer::Default),
+        }
     }
 
     /// The effective value as a row renders it: the em dash stands for
@@ -892,6 +911,66 @@ mod tests {
 
     fn resolve(key: &str, entries: Vec<ConfigEntry>) -> Resolved {
         resolve_key(key, &snapshot(entries)).expect("registry row exists")
+    }
+
+    // ── What the ladder marks ────────────────────────────────────────────
+
+    #[test]
+    fn the_ladder_marks_the_default_when_nothing_sets_a_key() {
+        let resolved = resolve(keys::MERGE_STYLE, vec![]);
+        let marked = resolved.reads_from().expect("something is in force");
+        assert_eq!(resolved.rungs[marked].layer, Layer::Default);
+        assert_eq!(
+            resolved.rungs[marked].value.as_deref(),
+            resolved.effective.as_deref(),
+            "the mark and the effective line have to agree"
+        );
+        assert!(
+            !resolved.is_set(),
+            "and nothing is set — a separate question"
+        );
+    }
+
+    #[test]
+    fn the_ladder_marks_the_scope_that_won_when_one_did() {
+        let resolved = resolve(
+            keys::MERGE_STYLE,
+            vec![
+                entry(keys::MERGE_STYLE, "rebase", ConfigScope::Global),
+                entry(keys::MERGE_STYLE, "squash", ConfigScope::Local),
+            ],
+        );
+        let marked = resolved.reads_from().expect("local wins");
+        assert_eq!(resolved.rungs[marked].layer, Layer::Git(ConfigScope::Local));
+        assert_eq!(resolved.rungs[marked].value.as_deref(), Some("squash"));
+    }
+
+    #[test]
+    fn the_ladder_marks_the_default_when_the_winning_value_will_not_parse() {
+        // The loaders fall back past an unparseable value to the default, so
+        // the ● belongs there too — marking the local rung would say daft uses
+        // a value it does not.
+        let resolved = resolve(
+            keys::CHECKOUT_FETCH,
+            vec![entry(keys::CHECKOUT_FETCH, "maybe", ConfigScope::Local)],
+        );
+        let marked = resolved.reads_from().expect("the default applies");
+        assert_eq!(resolved.rungs[marked].layer, Layer::Default);
+        assert_eq!(
+            resolved.rungs[marked].value.as_deref(),
+            resolved.effective.as_deref()
+        );
+        assert!(resolved.is_set(), "something does set it, badly");
+    }
+
+    #[test]
+    fn the_ladder_marks_an_inherited_value_where_it_lands() {
+        // The default rung carries the parent's value, so that is what the
+        // mark points at — and the origin label says where it came from.
+        let resolved = resolve(keys::CHECKOUT_PUSH_VERIFY, vec![]);
+        let marked = resolved.reads_from().expect("the parent supplies one");
+        assert_eq!(resolved.rungs[marked].layer, Layer::Default);
+        assert!(matches!(resolved.origin, Origin::Inherited(_)));
     }
 
     // ── Key matching ─────────────────────────────────────────────────────
