@@ -410,6 +410,43 @@ impl ScreenState {
         }
     }
 
+    /// The first row you can land on in each section, in order.
+    fn section_starts(&self) -> Vec<usize> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| matches!(row, Row::Header(_) | Row::StrayHeader))
+            .filter_map(|(index, _)| {
+                self.rows[index + 1..]
+                    .iter()
+                    .position(is_landable)
+                    .map(|offset| index + 1 + offset)
+            })
+            .collect()
+    }
+
+    /// Jump to the top of the next section, or of this one and then the one
+    /// before it.
+    ///
+    /// The categories are the screen's structure and they are a screenful
+    /// apart, so reaching the next one costs a dozen `j`s or a trip through
+    /// the rail and back. Backwards lands on the current section's own first
+    /// row before leaving it, the way vim's `{` does: from the middle of a
+    /// section the useful move is nearly always "take me to the top of this",
+    /// and the other one is a second press away.
+    pub fn jump_section(&mut self, forward: bool) {
+        let starts = self.section_starts();
+        let target = if forward {
+            starts.into_iter().find(|start| *start > self.cursor)
+        } else {
+            starts.into_iter().rfind(|start| *start < self.cursor)
+        };
+        if let Some(index) = target {
+            self.cursor = index;
+            self.clamp();
+        }
+    }
+
     pub fn move_to_top(&mut self) {
         self.cursor = 0;
         self.settle_forward();
@@ -789,6 +826,74 @@ mod tests {
             state.move_up();
             assert!(!matches!(state.rows()[state.cursor()], Row::Spacer));
         }
+    }
+
+    #[test]
+    fn the_section_motion_walks_the_headings_in_both_directions() {
+        let mut state = state();
+        let first = state.selected().unwrap().spec.category;
+
+        state.jump_section(true);
+        let second = state.selected().unwrap().spec.category;
+        assert_ne!(second, first, "forward lands in the next section");
+        assert!(
+            state.rows()[state.cursor() - 1].eq(&Row::Header(second)),
+            "and on its first row, right under the heading"
+        );
+
+        // Back from a section's own first row is the section before it.
+        state.jump_section(false);
+        assert_eq!(state.selected().unwrap().spec.category, first);
+    }
+
+    #[test]
+    fn going_back_lands_on_this_section_before_leaving_it() {
+        let mut state = state();
+        state.jump_section(true);
+        let section = state.selected().unwrap().spec.category;
+        let top = state.cursor();
+
+        state.move_down();
+        state.move_down();
+        assert!(state.cursor() > top);
+
+        state.jump_section(false);
+        assert_eq!(
+            state.cursor(),
+            top,
+            "from the middle, go to the top of this"
+        );
+        assert_eq!(state.selected().unwrap().spec.category, section);
+    }
+
+    #[test]
+    fn the_section_motion_stops_at_the_ends() {
+        let mut state = state();
+        for _ in 0..40 {
+            state.jump_section(true);
+            assert!(state.selected().is_some());
+        }
+        let last = state.cursor();
+        state.jump_section(true);
+        assert_eq!(state.cursor(), last, "there is nowhere further to go");
+
+        for _ in 0..40 {
+            state.jump_section(false);
+            assert!(state.selected().is_some());
+        }
+        assert_eq!(state.cursor(), 1, "the first section's first row");
+    }
+
+    #[test]
+    fn the_section_motion_survives_a_filter_that_matches_nothing() {
+        let mut state = state();
+        state.start_filter();
+        for ch in "zzzznothing".chars() {
+            state.filter_push(ch);
+        }
+        state.jump_section(true);
+        state.jump_section(false);
+        assert!(state.selected().is_none());
     }
 
     #[test]

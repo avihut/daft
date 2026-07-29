@@ -692,41 +692,77 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &ScreenState, show_rail: bo
         return;
     }
 
-    let mut hints: Vec<Span> = Vec::new();
-    let push = |key: &str, what: &str, hints: &mut Vec<Span>| {
-        hints.push(format!(" {key} ").bold());
-        hints.push(format!("{what}  ").dim());
-    };
+    frame.render_widget(
+        Paragraph::new(footer_hints(state, show_rail, area.width as usize)),
+        area,
+    );
+}
 
-    if state.is_prompt_open() {
-        push("esc", "clear filter", &mut hints);
-        push("enter", "keep it", &mut hints);
+/// The key hints, in most-useful-first order, cut to what the width holds.
+///
+/// A budget rather than a fixed list, because a fixed list silently loses its
+/// tail: the wide set plus a filter's own `esc` hint already ran eleven columns
+/// past the width where the rail appears, and the first thing a clipped line
+/// drops is the way out. So `q` is reserved along with the note explaining a
+/// missing pane, and the rest fill what is left — a narrow terminal loses the
+/// shortcut that saves a keystroke over `enter`, never `enter` itself.
+fn footer_hints(state: &ScreenState, show_rail: bool, width: usize) -> Line<'static> {
+    let prompt = state.is_prompt_open();
+
+    let mut wanted: Vec<(&str, String)> = Vec::new();
+    if prompt {
+        wanted.push(("esc", "clear filter".to_string()));
+        wanted.push(("enter", "keep it".to_string()));
     } else {
         if state.is_filtering() {
-            push("esc", "clear filter", &mut hints);
+            wanted.push(("esc", "clear filter".to_string()));
         }
-        push("j/k", "move", &mut hints);
+        wanted.push(("j/k", "move".to_string()));
+        wanted.push(("enter", "edit".to_string()));
+        wanted.push(("/", "filter".to_string()));
+        wanted.push(("[/]", "section".to_string()));
+        wanted.push(("space", "toggle".to_string()));
+        wanted.push(("u", "unset".to_string()));
+        wanted.push(("s", other_scope(state).to_string()));
+        // No rail means no second pane, so the key that crosses between them
+        // is not offered — advertising it would promise a place to go.
         if show_rail {
-            // No rail means no second pane, so the key that switches between
-            // them is not offered — advertising it would promise a place to
-            // go. The same width that costs the rail costs the shortcuts that
-            // only save a keystroke over `enter`.
-            push("tab", "panes", &mut hints);
-            push("enter", "edit", &mut hints);
-            push("space", "toggle", &mut hints);
-            push("u", "unset", &mut hints);
-            push("/", "filter", &mut hints);
-            push("s", other_scope(state), &mut hints);
-            push("q", "quit", &mut hints);
-        } else {
-            push("enter", "edit", &mut hints);
-            push("/", "filter", &mut hints);
-            push("q", "quit", &mut hints);
-            hints.push("rail hidden — widen".dim());
+            wanted.push(("tab", "panes".to_string()));
         }
     }
 
-    frame.render_widget(Paragraph::new(Line::from(hints)), area);
+    // `q` types a letter into the filter rather than quitting, so it is not
+    // offered while the prompt is open.
+    let note = (!show_rail).then_some("rail hidden — widen");
+    let reserved = if prompt { 0 } else { hint_width("q", "quit") }
+        + note.map_or(0, |note| note.chars().count());
+
+    let mut budget = width.saturating_sub(reserved);
+    let mut spans: Vec<Span> = Vec::new();
+    for (key, what) in &wanted {
+        let cost = hint_width(key, what);
+        if cost > budget {
+            break;
+        }
+        budget -= cost;
+        spans.extend(hint_spans(key, what));
+    }
+    if !prompt {
+        spans.extend(hint_spans("q", "quit"));
+    }
+    if let Some(note) = note {
+        spans.push(note.dim());
+    }
+
+    Line::from(spans)
+}
+
+fn hint_width(key: &str, what: &str) -> usize {
+    key.chars().count() + what.chars().count() + 4
+}
+
+fn hint_spans(key: &str, what: &str) -> [Span<'static>; 2] {
+    [format!(" {key} ").bold(), format!("{what}  ").dim()]
 }
 
 fn other_scope(state: &ScreenState) -> &'static str {
@@ -963,6 +999,49 @@ mod tests {
         let all = painted(&state, 120, 40).join("\n");
         assert!(all.contains("matching"), "{all}");
         assert!(all.contains("clear filter"), "the footer switches hints");
+    }
+
+    #[test]
+    fn the_footer_fits_every_width_it_is_drawn_at() {
+        // It has overflowed twice, and a clipped hint line loses its tail —
+        // which is where the way out lives.
+        let mut state = state_with(vec![]);
+        for width in [40usize, 60, 80, 99, 100, 101, 110, 120, 200] {
+            for show_rail in [true, false] {
+                let line = footer_hints(&state, show_rail, width);
+                assert!(
+                    line.width() <= width,
+                    "{}-column footer in {width} columns (rail: {show_rail}): {line:?}",
+                    line.width()
+                );
+            }
+        }
+
+        // And in the two states that add hints of their own.
+        state.start_filter();
+        for width in [80usize, 100, 120] {
+            assert!(footer_hints(&state, true, width).width() <= width);
+        }
+        state.commit_filter();
+        for width in [80usize, 100, 120] {
+            assert!(footer_hints(&state, true, width).width() <= width);
+        }
+    }
+
+    #[test]
+    fn the_footer_keeps_the_way_out_when_it_has_to_drop_hints() {
+        let state = state_with(vec![]);
+        let cramped = footer_hints(&state, false, 44);
+        let text: String = cramped.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("quit"), "{text:?}");
+        assert!(
+            text.contains("rail hidden"),
+            "a missing pane still explains itself: {text:?}"
+        );
+        assert!(
+            !text.contains("toggle"),
+            "the keystroke-savers are what goes: {text:?}"
+        );
     }
 
     #[test]

@@ -91,6 +91,19 @@ pub fn handle_key(state: &mut ScreenState, key: KeyEvent, page: usize) -> Action
             Action::Continue
         }
 
+        // The sections are the screen's structure, so they get their own
+        // motion. `{`/`}` because the blank lines between them make the list a
+        // sequence of paragraphs and that is vim's paragraph motion; `[`/`]`
+        // because it means the same thing without reaching for shift.
+        (KeyCode::Char(']'), _) | (KeyCode::Char('}'), _) => {
+            state.jump_section(true);
+            Action::Continue
+        }
+        (KeyCode::Char('['), _) | (KeyCode::Char('{'), _) => {
+            state.jump_section(false);
+            Action::Continue
+        }
+
         (KeyCode::Char('g'), _) | (KeyCode::Home, _) => {
             state.move_to_top();
             Action::Continue
@@ -503,6 +516,36 @@ mod tests {
         press(&mut state, KeyCode::Char('g'));
         assert!(state.cursor() < bottom);
         assert!(state.selected().is_some());
+    }
+
+    #[test]
+    fn brackets_and_braces_both_walk_the_sections() {
+        let mut state = state();
+        let first = state.selected().unwrap().spec.category;
+
+        press(&mut state, KeyCode::Char(']'));
+        let second = state.selected().unwrap().spec.category;
+        assert_ne!(second, first);
+
+        press(&mut state, KeyCode::Char('}'));
+        let third = state.selected().unwrap().spec.category;
+        assert_ne!(third, second);
+
+        press(&mut state, KeyCode::Char('['));
+        assert_eq!(state.selected().unwrap().spec.category, second);
+        press(&mut state, KeyCode::Char('{'));
+        assert_eq!(state.selected().unwrap().spec.category, first);
+    }
+
+    #[test]
+    fn the_section_keys_type_into_the_filter_while_the_prompt_is_open() {
+        // Every printable key belongs to the prompt while it is taking input —
+        // a bracket in a search string must not jump the list out from under
+        // the person typing it.
+        let mut state = state();
+        press(&mut state, KeyCode::Char('/'));
+        press(&mut state, KeyCode::Char('['));
+        assert_eq!(state.filter.as_deref(), Some("["));
     }
 
     #[test]

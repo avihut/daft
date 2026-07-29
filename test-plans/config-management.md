@@ -28,6 +28,10 @@ cd $(mktemp -d) && git init -q . && daft config
       Modified / Issues)
 - [ ] Walking the rail's categories moves the cursor without hiding anything
 - [ ] `g` and `G` reach both ends; `PageUp`/`PageDown` move by a screenful
+- [ ] `]` and `[` (and `}`/`{`) walk the categories; `[` from mid-section goes
+      to the top of that section first
+- [ ] The footer fits on one line at 80, 100, 101 and 120 columns, with and
+      without a filter — `q quit` is never the thing that falls off
 - [ ] `q` exits and the terminal is left exactly as it was found — scrollback
       intact, cursor visible, no leftover raw mode
 
