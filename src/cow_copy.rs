@@ -45,34 +45,45 @@ impl CopyStats {
     }
 }
 
-/// The link text to write at `dst_link` for the symlink at `src_link`, when the
-/// tree rooted at `entry_root` is being copied.
+/// The link text to write at `dst_link` for the symlink at `src_link`, given
+/// that everything under `move_root` is moving to the destination together.
 ///
 /// Copying relative link text verbatim only works while the link and its target
-/// move together. They do not when the target sits **outside** the copied tree:
+/// move together. They do not when the target sits **outside** what is moving:
 /// `.venv -> ../.venvs/proj` is correct from `repo/main` and dangles from
 /// `repo/feature/login`, and daft's own contained layout puts worktrees at
 /// exactly those differing depths. The same shape is how a path declared in
 /// both `shared:` and `copy:` loses its shared link under `warm --force` —
 /// the correct link is replaced by a dangling one and reported as a clean copy.
 ///
-/// So: a relative link resolving outside `entry_root` is rewritten to reach the
+/// So: a relative link resolving outside `move_root` is rewritten to reach the
 /// **same resolved target** from its new position. Everything else is left
 /// alone, and deliberately:
 ///
-/// * a link resolving **inside** the copied tree keeps its text — its base
-///   moved with it, and rewriting would point the copy back at the original;
+/// * a link resolving **inside** `move_root` keeps its text — its base moved
+///   with it, and rewriting would point the copy back at the original;
 /// * an **absolute** link is already position-independent;
 /// * a link whose target does not exist replicates **verbatim** — the source
 ///   is already broken, and inventing a path would fabricate a target the user
 ///   never had. Preserved garbage beats invented meaning.
+///
+/// `move_root` is what moves, which is **not** always the tree being walked.
+/// For a `copy:` entry the walked tree is `node_modules/` but the thing that
+/// moves is the whole worktree, so a workspace link
+/// `node_modules/@acme/api -> ../../packages/api` has to keep its text: the
+/// destination worktree has its own `packages/api`, and rebasing would point a
+/// new branch's dependency graph back at the branch it was seeded from — where
+/// it compiles the wrong sources and dangles the moment that worktree is
+/// removed. Callers that really are copying a free-standing tree pass the tree
+/// itself ([`copy_dir_reporting`]); callers copying part of something larger
+/// pass the larger thing ([`copy_dir_within`]).
 ///
 /// Resolution is **lexical**: `..` is folded textually rather than by walking
 /// the filesystem, because resolving for real would follow the very symlinks
 /// this is reasoning about. An intermediate symlinked component can therefore
 /// classify as inside when the kernel would land outside; the failure mode is a
 /// link left verbatim, which is what the old code did for every link.
-pub fn rebased_link_target(src_link: &Path, dst_link: &Path, entry_root: &Path) -> Result<PathBuf> {
+pub fn rebased_link_target(src_link: &Path, dst_link: &Path, move_root: &Path) -> Result<PathBuf> {
     let text = fs::read_link(src_link)
         .with_context(|| format!("reading symlink {}", src_link.display()))?;
     if text.is_absolute() {
@@ -81,7 +92,7 @@ pub fn rebased_link_target(src_link: &Path, dst_link: &Path, entry_root: &Path) 
 
     let src_dir = src_link.parent().unwrap_or(Path::new("/"));
     let resolved = lexically_normalize(&src_dir.join(&text));
-    let root = lexically_normalize(entry_root);
+    let root = lexically_normalize(move_root);
     if resolved.starts_with(&root) || fs::symlink_metadata(&resolved).is_err() {
         return Ok(text);
     }
@@ -191,6 +202,17 @@ pub fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
 /// self-perpetuating: the entry fails, the partial destination is discarded,
 /// and the next run repeats it forever.
 pub fn copy_dir_reporting(src: &Path, dst: &Path) -> Result<CopyStats> {
+    copy_dir_within(src, dst, src)
+}
+
+/// [`copy_dir_reporting`] for a tree that is only **part** of what is moving.
+///
+/// `move_root` is the enclosing thing whose contents travel to the destination
+/// together — for `copy:` that is the source worktree, not the declared entry.
+/// It decides only which relative symlinks keep their text and which are
+/// rebased; see [`rebased_link_target`]. Everything else is identical, and
+/// `copy_dir_reporting(src, dst)` is exactly `copy_dir_within(src, dst, src)`.
+pub fn copy_dir_within(src: &Path, dst: &Path, move_root: &Path) -> Result<CopyStats> {
     let src_meta = fs::symlink_metadata(src)
         .with_context(|| format!("reading metadata of {}", src.display()))?;
     anyhow::ensure!(
@@ -225,10 +247,13 @@ pub fn copy_dir_reporting(src: &Path, dst: &Path) -> Result<CopyStats> {
         } else if ftype.is_symlink() {
             #[cfg(unix)]
             {
-                // `src` is the copied tree's root: a link pointing within it
-                // keeps its text, one escaping it is re-based on the new
-                // position. See `rebased_link_target`.
-                let target = rebased_link_target(entry.path(), &dst_path, src)?;
+                // A link pointing within what is moving keeps its text, one
+                // escaping it is re-based on the new position. The boundary is
+                // `move_root`, not `src`: under `copy:` the walked tree is one
+                // entry but the whole worktree moves, and a workspace link that
+                // leaves `node_modules/` still lands inside the worktree the
+                // destination has its own copy of. See `rebased_link_target`.
+                let target = rebased_link_target(entry.path(), &dst_path, move_root)?;
                 std::os::unix::fs::symlink(target, &dst_path)
                     .with_context(|| format!("creating symlink {}", dst_path.display()))?;
             }
@@ -414,6 +439,54 @@ mod tests {
         // And it points at the COPY, not back at the source.
         write_file(&src.join("pkg/bin/tool"), b"MUTATED");
         assert_eq!(fs::read(dst.join(".bin/tool")).unwrap(), b"#!");
+    }
+
+    /// The boundary is what MOVES, not what is walked. Under `copy:` the walked
+    /// tree is one entry (`node_modules/`) but the whole worktree travels, so a
+    /// link leaving the entry and landing elsewhere in the worktree — every npm
+    /// and pnpm workspace — must keep its text and re-resolve in its new home.
+    /// Treating the entry as the boundary rebased it back at the source, where
+    /// it reads the wrong sources and dangles the moment that worktree is
+    /// removed.
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_within_keeps_a_link_that_leaves_the_entry_but_not_the_worktree() {
+        let tmp = TempDir::new().unwrap();
+        let src_wt = tmp.path().join("main");
+        let dst_wt = tmp.path().join("feature");
+        write_file(&src_wt.join("packages/api/index.js"), b"source");
+        write_file(&dst_wt.join("packages/api/index.js"), b"destination");
+        fs::create_dir_all(src_wt.join("node_modules/@acme")).unwrap();
+        symlink("../../packages/api", src_wt.join("node_modules/@acme/api")).unwrap();
+
+        copy_dir_within(
+            &src_wt.join("node_modules"),
+            &dst_wt.join("node_modules"),
+            &src_wt,
+        )
+        .unwrap();
+
+        let copied = dst_wt.join("node_modules/@acme/api");
+        assert_eq!(
+            fs::read_link(&copied).unwrap(),
+            Path::new("../../packages/api"),
+            "a link that stays inside what moves keeps its text"
+        );
+        assert_eq!(
+            fs::read(copied.join("index.js")).unwrap(),
+            b"destination",
+            "and resolves against the destination's own copy"
+        );
+
+        // The same link, copied as a free-standing tree, still rebases — the
+        // two entry points genuinely mean different things.
+        let elsewhere = tmp.path().join("elsewhere/node_modules");
+        fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        copy_dir(&src_wt.join("node_modules"), &elsewhere).unwrap();
+        assert_ne!(
+            fs::read_link(elsewhere.join("@acme/api")).unwrap(),
+            Path::new("../../packages/api")
+        );
     }
 
     #[cfg(unix)]

@@ -144,6 +144,14 @@ pub struct ResolvedCopyConfig {
 /// absent. Loud config diagnostics are the loader's and validator's job, and
 /// they run on every command; repeating them here would double the noise on
 /// every worktree creation.
+///
+/// `Some` with an **empty** [`ResolvedCopyConfig::paths`] is a distinct answer
+/// from `None`, and the distinction is load-bearing: it means the key is there
+/// and declares nothing usable — a misspelled `paths:` inside the map form, or
+/// a list of entries that all normalized away. Collapsing that into `None`
+/// made the one diagnosable mistake in the section the one that stayed silent,
+/// since the only validator that would catch it (`daft hooks validate`) is not
+/// run by any creation journey. [`copy_entries`] says so instead.
 pub fn read_copy_config(source_root: &Path) -> Option<ResolvedCopyConfig> {
     let copy = crate::hooks::yaml_config_loader::load_merged_config(source_root)
         .ok()
@@ -158,10 +166,6 @@ pub fn read_copy_config(source_root: &Path) -> Option<ResolvedCopyConfig> {
         }
         paths.push(normalized);
     }
-    if paths.is_empty() {
-        return None;
-    }
-
     let raw_max_size = copy.max_size();
     let max_size_bytes =
         raw_max_size.and_then(|raw| crate::coordinator::clean_policy::parse_size(raw).ok());
@@ -218,7 +222,7 @@ fn normalize_entry(declared: &str) -> String {
 /// reports that as an expected skip, not an error. Never returns `Err`:
 /// walk errors are skipped entries, never a failed creation.
 pub fn expand_entries(source_root: &Path, entry: &str) -> Vec<String> {
-    expand_reporting(source_root, entry).matches
+    expand_reporting(source_root, entry, &[]).matches
 }
 
 /// What expanding one entry found, including what it could not read.
@@ -236,8 +240,16 @@ pub(crate) struct Expansion {
     pub unreadable: Vec<(String, String)>,
 }
 
-/// [`expand_entries`], keeping the walk errors it has nowhere to put.
-pub(crate) fn expand_reporting(source_root: &Path, entry: &str) -> Expansion {
+/// [`expand_entries`], keeping the walk errors it has nowhere to put and
+/// pruning the trees it has no business walking.
+///
+/// `siblings` are the other declared entries. Every **literal** one is pruned
+/// from the walk, which is both a large saving and semantically free:
+/// `copy: [node_modules, "**/dist"]` has no reason to walk several hundred
+/// thousand `node_modules` inodes looking for a `dist/` that is copied wholesale
+/// with its parent anyway. Nothing prunes the very trees `copy:` exists to avoid
+/// traversing unless it is told what they are.
+pub(crate) fn expand_reporting(source_root: &Path, entry: &str, siblings: &[String]) -> Expansion {
     if !is_glob(entry) {
         return Expansion {
             matches: vec![entry.to_string()],
@@ -264,6 +276,13 @@ pub(crate) fn expand_reporting(source_root: &Path, entry: &str) -> Expansion {
 
     let root = source_root.to_path_buf();
     let prune = Arc::clone(&overrides);
+    // Only literals: a glob sibling would have to be expanded to be pruned,
+    // which is the walk this is trying to avoid.
+    let prune_paths: Vec<String> = siblings
+        .iter()
+        .filter(|s| !is_glob(s) && s.as_str() != entry)
+        .cloned()
+        .collect();
     let mut walker = WalkBuilder::new(source_root);
     walker
         // `copy:` entries are gitignored by definition, so every filter that
@@ -276,7 +295,7 @@ pub(crate) fn expand_reporting(source_root: &Path, entry: &str) -> Expansion {
         .git_exclude(false)
         .require_git(false)
         .follow_links(false)
-        .filter_entry(move |found| descend_into(found, &root, &prune));
+        .filter_entry(move |found| descend_into(found, &root, &prune, &prune_paths));
 
     let mut matches = Vec::new();
     let mut unreadable = Vec::new();
@@ -370,14 +389,20 @@ fn is_glob(entry: &str) -> bool {
 }
 
 /// `filter_entry` predicate for [`expand_entries`]: prune git's own directory,
-/// and prune descent below anything the pattern already matched.
+/// anything that is a worktree in its own right, the literal entries declared
+/// beside this one, and descent below anything the pattern already matched.
 ///
 /// Returning `false` for a directory both skips it and stops the walk from
 /// descending into it, which is exactly the "prune below a match" rule — so
 /// only *strict* ancestors are consulted here. The matched directory itself has
 /// no matching ancestor, passes, and is yielded; its children then find it and
 /// stop.
-fn descend_into(found: &ignore::DirEntry, root: &Path, overrides: &Override) -> bool {
+fn descend_into(
+    found: &ignore::DirEntry,
+    root: &Path,
+    overrides: &Override,
+    prune_paths: &[String],
+) -> bool {
     if found.file_name() == std::ffi::OsStr::new(".git")
         && found.file_type().is_some_and(|t| t.is_dir())
     {
@@ -386,7 +411,27 @@ fn descend_into(found: &ignore::DirEntry, root: &Path, overrides: &Override) -> 
     let Ok(rel) = found.path().strip_prefix(root) else {
         return true;
     };
+    // Another worktree nested inside this one is not this worktree's content.
+    // In a flat / progressive-adoption layout the project root IS the main
+    // worktree and linked worktrees sit under it, where a linked worktree's
+    // `.git` is a FILE — so the directory check above never fires and
+    // `copy: ["**/node_modules"]` would otherwise match a sibling branch's
+    // cache and copy gigabytes into `<new-worktree>/.worktrees/other/…`,
+    // reported as a clean green row.
+    if found.depth() > 0
+        && found.file_type().is_some_and(|t| t.is_dir())
+        && found.path().join(".git").exists()
+    {
+        return false;
+    }
     let components: Vec<_> = rel.components().collect();
+    // A literal entry declared beside this one is copied whole by its own row,
+    // so walking into it can only find paths that are coming along anyway.
+    if let Some(as_rel) = relative_to_slash_string(rel)
+        && prune_paths.iter().any(|p| p == &as_rel)
+    {
+        return false;
+    }
     let Some(strict_ancestors) = components.len().checked_sub(1).filter(|n| *n > 0) else {
         return true;
     };
@@ -455,7 +500,35 @@ pub enum SkipReason {
     /// path declared in both `shared:` and `copy:` leaves behind), a file
     /// where a tree belongs, or a dangling link. Existence alone would call
     /// that "already present" forever.
+    ///
+    /// Only reachable **without** `--force`: replacing a wrong-shape
+    /// destination is the whole point of `--force`, and the state that most
+    /// needs replacing must not be the one it cannot repair.
     DestinationConflict { path: String, detail: String },
+    /// A directory on the way to the destination is a **symlink**, so the
+    /// destination is not inside the target worktree at all.
+    ///
+    /// `target.join(rel)` is a lexical join; the kernel is not. A path declared
+    /// in `shared:` is replaced by a link into daft's shared store in every
+    /// worktree, so `shared: [web]` plus `copy: [web/dist]` makes every
+    /// worktree's `web/dist` the *same* directory — which a plain run would
+    /// write into and `--force` would delete, out of a store the config never
+    /// named. Refused on both paths: the source's containment check
+    /// ([`Self::Uncontained`]) reasons about the entry's text, and text is not
+    /// where this happens.
+    DestinationEscapes { path: String, detail: String },
+    /// `--force` would have replaced a destination symlink that resolves
+    /// outside the target worktree with something of a **different shape**.
+    ///
+    /// Link-for-link replacement is deliberate and stays allowed: the
+    /// `shared:` + `copy:` double declaration recreates a correct link at the
+    /// destination's own depth. Turning that link into a private directory is
+    /// what this refuses — what it points at is not this worktree's to manage
+    /// (daft's shared store, an external cache directory), and it would stay
+    /// broken until whatever created it runs again. A **dangling** link is
+    /// replaced like any other wrong shape: nothing on the other end to
+    /// preserve.
+    DestinationLinksOutside { path: String, detail: String },
     /// The entry is not gitignored, or git tracks content under it. `copy:`
     /// replicates caches, not the working tree — the attention case, because
     /// the config asked for something daft refuses to do.
@@ -683,6 +756,20 @@ pub fn copy_entries(
         ));
     }
 
+    // A `copy:` block that declares nothing is the section's one silent
+    // failure: the map form tolerates unknown keys, so `pahts:` parses cleanly
+    // into an empty list and every caller downstream reads that as "no `copy:`
+    // key at all" — no plan section, no rows, no line. The user sees an
+    // entirely normal creation and concludes the feature does not work.
+    if config.paths.is_empty() {
+        sink.on_warning(&format!(
+            "copy: the `copy:` block declares no paths — check the `paths:` key; \
+             `{}` explains the config",
+            crate::daft_cmd("hooks validate")
+        ));
+        return CopyPathsResult::default();
+    }
+
     // Copying a worktree into itself is a no-op request — and under `force` a
     // destructive one, because clearing each destination would clear the
     // source. Refuse it here rather than trusting every caller's source and
@@ -724,6 +811,24 @@ pub fn copy_entries(
 
     let mut outcomes: Vec<Option<CopyOutcome>> = vec![None; config.paths.len()];
     for i in order {
+        // Activate the row before the work, not after it. `report_copy_results`
+        // runs once every entry has finished, so without this the whole
+        // `copied paths` section sits in the dim pending face for the entire
+        // copy — minutes of it, byte-copying gigabytes on a filesystem that
+        // cannot reflink — and then flips every row at once. A rail that shows
+        // nothing happening while something is happening is read as a hang, and
+        // gets interrupted. `shared:` never needed this because symlinking is
+        // instantaneous.
+        //
+        // Costs nothing off the rail: `legacy_copy_stage_line` has no `Started`
+        // arm, so Plain mode and piped output print exactly what they did.
+        sink.on_stage(
+            &crate::core::stage::StepKey::scoped(
+                crate::core::stage::StageId::CopyPath,
+                &config.paths[i],
+            ),
+            crate::core::stage::StageEvent::Started,
+        );
         outcomes[i] = Some(copy_one(
             source,
             target,
@@ -807,7 +912,7 @@ fn copy_one_inner(
     let Expansion {
         matches,
         unreadable,
-    } = expand_reporting(source, entry);
+    } = expand_reporting(source, entry, &config.paths);
     // An unreadable subtree must not be swallowed — silently walking past it
     // under-reports a green `Copied`, and root-owned directories inside a
     // container image are the common way it happens. But it must not cost the
@@ -889,6 +994,19 @@ fn copy_one_inner(
     for rel in &present {
         let src = source.join(rel);
         let dst = target.join(rel);
+        // Before anything reads or writes it: is this path even inside the
+        // target worktree? `target.join(rel)` is lexical and the kernel is not,
+        // so a symlinked directory on the way — which is exactly what `shared:`
+        // installs — silently redirects both the write and `--force`'s removal.
+        if let Some((offender, detail)) = destination_escape(target, rel) {
+            return skipped(
+                SkipReason::DestinationEscapes {
+                    path: offender,
+                    detail,
+                },
+                unreadable_count,
+            );
+        }
         let dst_meta = match fs::symlink_metadata(&dst) {
             Ok(meta) => Some(meta),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
@@ -913,17 +1031,44 @@ fn copy_one_inner(
                     .with_context(|| format!("reading metadata of {}", src.display()))?,
             );
             let dst_kind = path_kind(&dst_meta);
-            if src_kind != dst_kind {
+            if !force {
+                if src_kind != dst_kind {
+                    return skipped(
+                        SkipReason::DestinationConflict {
+                            path: rel.clone(),
+                            detail: format!("a {dst_kind} where the source is a {src_kind}"),
+                        },
+                        unreadable_count,
+                    );
+                }
+                continue; // the idempotence case
+            }
+            // From here on `--force`, which replaces the destination whatever
+            // shape it is in. A wrong shape is not a reason to refuse here: it
+            // is the state that most needs replacing, and refusing it would
+            // leave the documented escape hatch unable to repair the one thing
+            // no other run can.
+            //
+            // One exception, and it is narrow. Replacing a link with a link is
+            // fine and deliberate — the `shared:` + `copy:` double declaration
+            // recreates a correct link at the destination's own depth. What is
+            // not fine is replacing a link with something of a DIFFERENT shape
+            // when the link resolves outside this worktree: that turns daft's
+            // own shared store (or an external cache dir) into a private copy
+            // and leaves the link broken until whatever created it runs again.
+            // A dangling link has nothing on the other end and is replaced like
+            // any other wrong shape.
+            if src_kind != dst_kind
+                && dst_meta.file_type().is_symlink()
+                && let Some(detail) = link_leaves_worktree(&dst, target)
+            {
                 return skipped(
-                    SkipReason::DestinationConflict {
+                    SkipReason::DestinationLinksOutside {
                         path: rel.clone(),
-                        detail: format!("a {dst_kind} where the source is a {src_kind}"),
+                        detail,
                     },
                     unreadable_count,
                 );
-            }
-            if !force {
-                continue; // the idempotence case
             }
             // `--force` is the only path that destroys anything, so it is the
             // only one that has to ask the TARGET what it is about to delete.
@@ -976,21 +1121,31 @@ fn copy_one_inner(
         return skipped(SkipReason::DestinationExists, unreadable_count);
     }
 
-    // ── 6. Measure and probe, per match — only if anything will read them ─
+    // ── 6. Measure and probe, per match — each only if something reads it ─
     //
-    // The gate below is a no-op under the default bare-list config
-    // (`fallback: copy`, no `max_size`), and measuring means walking every
-    // declared cache tree in full. On a reflinking filesystem that walk is the
-    // dominant cost of the entire stage — several `node_modules` worth of
-    // `lstat` spent computing a number nothing then reads. Nothing is lost by
-    // skipping it: the row's method and byte count come from what the copier
-    // reports, not from here.
+    // Two questions, two costs, and they are NOT the same question.
+    //
+    // The **probe** is needed whenever the gate can reach an outcome at all:
+    // `fallback: skip` and `max_size` both turn on how the bytes would move.
+    // It costs one clone attempt per match.
+    //
+    // The **measurement** is needed only when there is a `max_size` to weigh
+    // the bytes against — `gate_byte_copies` refuses a skip-fallback entry
+    // without ever looking at a byte count. And measuring means walking every
+    // declared cache tree in full: this repository's own `daft.yml`
+    // (`fallback: skip`, no cap) would spend several `node_modules` worth of
+    // `lstat` on the critical path of every creation to compute a number that
+    // only a `-v` debug line would ever read. Nothing is lost by skipping it:
+    // the row's method and byte count come from what the copier reports.
     let gate_can_fire = gate_can_fire_for(config);
-    if gate_can_fire {
+    let measured = config.max_size_bytes.is_some();
+    if measured {
         let sources: Vec<PathBuf> = planned.iter().map(|p| source.join(&p.rel)).collect();
         for (item, bytes) in planned.iter_mut().zip(measure_all(&sources)) {
             item.bytes = bytes;
         }
+    }
+    if gate_can_fire {
         for item in &mut planned {
             match reflinks_into(&source.join(&item.rel), &target.join(&item.rel), target)? {
                 Ok(reflinks) => item.reflinks = reflinks,
@@ -1035,7 +1190,7 @@ fn copy_one_inner(
     // would report a skip while having destroyed the cache.
     // Only quote a size that was actually measured — `0 B` on every entry
     // under the default config is a worse `-v` line than no size at all.
-    sink.on_debug(&if gate_can_fire {
+    sink.on_debug(&if measured {
         format!(
             "copy: {entry} — {} path(s), {}",
             planned.len(),
@@ -1059,7 +1214,7 @@ fn copy_one_inner(
                 err.context(format!("clearing {}", dst.display())),
             ));
         }
-        match replicate(&source.join(&item.rel), &dst) {
+        match replicate(&source.join(&item.rel), &dst, source) {
             Ok(item_stats) => {
                 stats.reflinked += item_stats.reflinked;
                 stats.copied += item_stats.copied;
@@ -1079,11 +1234,18 @@ fn copy_one_inner(
     })
 }
 
-/// Whether [`gate_byte_copies`] can reach any outcome at all for this config.
+/// Whether [`gate_byte_copies`] can reach any outcome at all for this config,
+/// and therefore whether the **reflink probe** has to run.
 ///
 /// `false` for the bare-list default (`fallback: copy`, no `max_size`), which
-/// is what makes skipping the measurement safe: nothing downstream reads a
-/// number the gate will not consult.
+/// is what makes skipping the probe safe: nothing downstream reads an answer
+/// the gate will not consult.
+///
+/// Deliberately **not** the condition for the size walk — that one is
+/// `max_size_bytes.is_some()` alone, because `gate_byte_copies` returns on
+/// `fallback: skip` before a byte count is ever read. Sharing one flag between
+/// the two made every `fallback: skip` repository pay a full recursive walk of
+/// every declared cache for a number nothing consumed.
 fn gate_can_fire_for(config: &ResolvedCopyConfig) -> bool {
     config.max_size_bytes.is_some() || config.fallback == CopyFallback::Skip
 }
@@ -1189,6 +1351,69 @@ pub fn absolute_entry_hint(entry: &str) -> String {
         "is an absolute path — drop the leading '/' to anchor at the worktree root \
          (write '{anchored}')"
     )
+}
+
+/// The first **strict ancestor** of `<target>/<rel>` that is a symlink, if any,
+/// as `(worktree-relative offender, clause)`.
+///
+/// [`containment_violation`] asks whether the entry's *text* stays inside the
+/// worktree; this asks whether the resulting *path* does. They are different
+/// questions and only one of them can be answered lexically: `target.join(rel)`
+/// is a textual join, while the kernel resolves every component, so a symlinked
+/// directory on the way lands somewhere else entirely with nothing in the text
+/// to show for it.
+///
+/// That is not a hypothetical shape — it is what `shared:` installs. A path
+/// declared there becomes a link into daft's shared store in *every* worktree,
+/// so `shared: [web]` plus `copy: [web/dist]` makes every worktree's `web/dist`
+/// the same directory: a plain run would write the cache into the store, and
+/// `--force` would delete out of it, reporting a green row either way.
+///
+/// Only strict ancestors are consulted. The destination itself being a symlink
+/// is a shape question, decided by the caller — replacing a link is legitimate,
+/// writing *through* one is not.
+fn destination_escape(target: &Path, rel: &str) -> Option<(String, String)> {
+    let components: Vec<_> = Path::new(rel).components().collect();
+    let strict_ancestors = components.len().checked_sub(1)?;
+    let mut prefix = target.to_path_buf();
+    let mut walked = String::new();
+    for component in &components[..strict_ancestors] {
+        prefix.push(component);
+        if !walked.is_empty() {
+            walked.push('/');
+        }
+        walked.push_str(&component.as_os_str().to_string_lossy());
+        // Anything unreadable is left to the destination probe below, which
+        // reports it in its own words rather than as an escape.
+        if fs::symlink_metadata(&prefix).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Some((
+                walked,
+                "is a symlink, so the destination is outside this worktree — not copied"
+                    .to_string(),
+            ));
+        }
+    }
+    None
+}
+
+/// Whether the symlink at `dst` resolves outside the `target` worktree, as the
+/// clause explaining it. `None` for a link that stays inside, and for a
+/// **dangling** one — nothing on the other end can be harmed by replacing it.
+fn link_leaves_worktree(dst: &Path, target: &Path) -> Option<String> {
+    // `canonicalize` follows the link and fails on a dangling one, which is
+    // exactly the answer wanted for both.
+    let resolved = fs::canonicalize(dst).ok()?;
+    let root = fs::canonicalize(target).ok()?;
+    if resolved.starts_with(&root) {
+        return None;
+    }
+    // The link TEXT, not the resolved path: it is shorter, it is what is
+    // written on disk, and it is what the user would edit.
+    let text = fs::read_link(dst).ok()?;
+    Some(format!(
+        "already present as a symlink to '{}' outside this worktree — not replaced",
+        text.display()
+    ))
 }
 
 /// Which kind of thing a path is, for the destination-shape check.
@@ -1502,7 +1727,14 @@ fn remove_existing(path: &Path) -> Result<()> {
 /// rather than dereferenced — a `.venv` or `node_modules` that *is* a link
 /// should stay one, and following it would copy a tree living outside the
 /// worktree entirely.
-fn replicate(src: &Path, dst: &Path) -> Result<crate::cow_copy::CopyStats> {
+///
+/// `source_root` is the source **worktree**, not the entry: it is what decides
+/// which relative symlinks inside the copied tree keep their text. Under
+/// `copy:` the whole worktree is what moves, so a link that leaves the entry but
+/// stays inside the worktree — the shape every npm/pnpm workspace produces —
+/// must resolve against the *destination's* copy of that path, not be rebased
+/// back at the source. See [`crate::cow_copy::rebased_link_target`].
+fn replicate(src: &Path, dst: &Path, source_root: &Path) -> Result<crate::cow_copy::CopyStats> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -1511,10 +1743,10 @@ fn replicate(src: &Path, dst: &Path) -> Result<crate::cow_copy::CopyStats> {
         .file_type();
 
     if ftype.is_symlink() {
-        replicate_symlink(src, dst)?;
+        replicate_symlink(src, dst, source_root)?;
         Ok(crate::cow_copy::CopyStats::default())
     } else if ftype.is_dir() {
-        crate::cow_copy::copy_dir_reporting(src, dst)
+        crate::cow_copy::copy_dir_within(src, dst, source_root)
     } else if ftype.is_file() {
         crate::cow_copy::copy_file_reporting(src, dst)
     } else {
@@ -1523,18 +1755,19 @@ fn replicate(src: &Path, dst: &Path) -> Result<crate::cow_copy::CopyStats> {
 }
 
 #[cfg(unix)]
-fn replicate_symlink(src: &Path, dst: &Path) -> Result<()> {
-    // The entry IS the link, so its "copied tree" is the link itself and any
-    // target at all is outside it: a relative `.venv -> ../.venvs/proj` gets
-    // re-based onto the destination's depth rather than copied verbatim into a
-    // dangling one. See `cow_copy::rebased_link_target`.
-    let link = crate::cow_copy::rebased_link_target(src, dst, src)?;
+fn replicate_symlink(src: &Path, dst: &Path, source_root: &Path) -> Result<()> {
+    // What moves is the worktree, so a relative `.venv -> ../.venvs/proj` — which
+    // leaves it — gets re-based onto the destination's depth rather than copied
+    // verbatim into a dangling one, while a link that stays inside the worktree
+    // keeps its text and resolves against the destination's own copy.
+    // See `cow_copy::rebased_link_target`.
+    let link = crate::cow_copy::rebased_link_target(src, dst, source_root)?;
     std::os::unix::fs::symlink(link, dst)
         .with_context(|| format!("creating symlink {}", dst.display()))
 }
 
 #[cfg(not(unix))]
-fn replicate_symlink(src: &Path, _dst: &Path) -> Result<()> {
+fn replicate_symlink(src: &Path, _dst: &Path, _source_root: &Path) -> Result<()> {
     // Same stance as `cow_copy::copy_dir`: recreating a link here needs the
     // file-vs-dir distinction up front plus elevated privileges.
     anyhow::bail!(
@@ -1921,6 +2154,12 @@ pub fn skip_phrase(entry: &str, reason: &SkipReason) -> String {
         SkipReason::DestinationConflict { path, detail } => {
             format!("{}already present as {detail} — not replaced", named(path))
         }
+        SkipReason::DestinationEscapes { path, detail } => {
+            format!("{}{detail}", named(path))
+        }
+        SkipReason::DestinationLinksOutside { path, detail } => {
+            format!("{}{detail}", named(path))
+        }
         // Says nothing about presence, because nothing was established: the
         // path could not be read at all.
         SkipReason::DestinationUnreadable { path, detail } => {
@@ -2276,20 +2515,61 @@ mod tests {
         );
     }
 
+    /// A `copy:` key that declares nothing is NOT the same answer as no
+    /// `copy:` key. Collapsing the two into `None` is what made a misspelled
+    /// `paths:` the one mistake in the section that produced no output at all.
     #[test]
-    fn read_copy_config_treats_an_empty_section_as_absent() {
+    fn read_copy_config_keeps_an_empty_section_distinct_from_an_absent_one() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
 
-        write(&root.join("daft.yml"), b"copy: []\n");
-        assert_eq!(read_copy_config(root), None);
+        write(&root.join("daft.yml"), b"hooks: {}\n");
+        assert_eq!(read_copy_config(root), None, "no key at all");
 
-        // Entries that normalize away are dropped, and an entry list that is
-        // *entirely* slashes is indistinguishable from no section at all.
+        write(&root.join("daft.yml"), b"copy: []\n");
+        assert_eq!(
+            read_copy_config(root).map(|c| c.paths),
+            Some(Vec::new()),
+            "the key is there and declares nothing — a fact with a warning attached"
+        );
+
+        // Entries that normalize away are dropped; what is left still counts.
         write(&root.join("daft.yml"), b"copy:\n  - \"/\"\n  - target/\n");
         assert_eq!(
             read_copy_config(root).unwrap().paths,
             vec!["target".to_string()]
+        );
+    }
+
+    /// The exact typo that used to be silent: an unknown key inside the map
+    /// form is tolerated (so it cannot fail the whole `daft.yml`), which means
+    /// `paths` simply goes missing — and the stage has to say so.
+    #[test]
+    fn copy_entries_says_so_when_the_block_declares_no_paths() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp.path().join("daft.yml"),
+            b"copy:\n  pahts: [target/]\n  fallback: skip\n",
+        );
+        let config = read_copy_config(tmp.path()).expect("the key is present");
+        assert!(config.paths.is_empty());
+
+        let mut sink = crate::core::RecordingStageSink::default();
+        let result = copy_entries(
+            tmp.path(),
+            &tmp.path().join("elsewhere"),
+            &config,
+            false,
+            &mut sink,
+        );
+
+        assert!(result.outcomes.is_empty());
+        assert!(
+            sink.warnings
+                .iter()
+                .any(|w| w.contains("declares no paths")),
+            "{:?}",
+            sink.warnings
         );
     }
 
@@ -2594,7 +2874,12 @@ mod tests {
     fn copy_entries_handles_file_and_symlink_entries_not_only_directories() {
         let (_tmp, source, target) = repo_fixture("/cache.bin\n/link\n");
         write(&source.join("cache.bin"), b"blob");
+        // `real/` is ordinary tracked content, so it exists in BOTH worktrees —
+        // the git checkout put it in the target before the copy stage ran. A
+        // fixture without it would make the link's only reachable target the
+        // source's copy, which is precisely the mistake being tested against.
         write(&source.join("real/inner"), b"inner");
+        write(&target.join("real/inner"), b"the target's own");
         #[cfg(unix)]
         std::os::unix::fs::symlink("real", source.join("link")).unwrap();
 
@@ -2618,15 +2903,16 @@ mod tests {
         {
             // Recreated, not dereferenced: a cache that *is* a link stays one.
             assert!(target.join("link").is_symlink());
-            // And it still resolves. `real/` lives outside the copied entry
-            // (the entry is the link), so the text is re-based onto the
-            // destination's position rather than copied verbatim into a
-            // dangling link. Resolution is the invariant; the exact text is
-            // whatever reaching the same target requires.
+            // And it resolves to the DESTINATION's own `real/`, not the
+            // source's. The worktree is what moves, so a link that stays inside
+            // it keeps its text and re-resolves in its new home. Rebasing it
+            // would tie the new worktree's cache to the tree it was seeded
+            // from — where it reads the wrong content today and dangles the
+            // moment that worktree is removed.
             assert_eq!(
                 fs::read(target.join("link/inner")).unwrap(),
-                b"inner",
-                "the link resolves to the same tree, via {:?}",
+                b"the target's own",
+                "the link must follow the worktree it landed in, via {:?}",
                 fs::read_link(target.join("link")).unwrap()
             );
         }
@@ -3378,16 +3664,40 @@ mod tests {
     // ── read_copy_config: the remaining shapes ───────────────────────────
 
     #[test]
-    fn read_copy_config_treats_a_full_form_with_no_paths_as_absent() {
+    fn read_copy_config_reads_a_full_form_with_no_paths_as_declared_but_empty() {
         // The bare-list empty case is covered above; the map form has its own
-        // route to the same place, and knobs must not resurrect an empty
-        // declaration into a section that plans rows for nothing.
+        // route to the same place. Knobs must not resurrect an empty
+        // declaration into a section that plans rows for nothing — but the
+        // declaration itself is still a fact worth reporting.
         let tmp = TempDir::new().unwrap();
         write(
             &tmp.path().join("daft.yml"),
             b"copy:\n  paths: []\n  fallback: skip\n  max_size: 1GB\n",
         );
-        assert_eq!(read_copy_config(tmp.path()), None);
+        assert_eq!(
+            read_copy_config(tmp.path()).map(|c| c.paths),
+            Some(Vec::new())
+        );
+    }
+
+    /// A single entry is the natural thing to write as a scalar, and against
+    /// the old untagged enum it did not merely fail this key — it failed the
+    /// whole `daft.yml`, taking every YAML hook with it.
+    #[test]
+    fn read_copy_config_accepts_a_single_entry_written_as_a_scalar() {
+        let tmp = TempDir::new().unwrap();
+
+        write(&tmp.path().join("daft.yml"), b"copy: target/\n");
+        assert_eq!(
+            read_copy_config(tmp.path()).unwrap().paths,
+            vec!["target".to_string()]
+        );
+
+        write(&tmp.path().join("daft.yml"), b"copy:\n  paths: target/\n");
+        assert_eq!(
+            read_copy_config(tmp.path()).unwrap().paths,
+            vec!["target".to_string()]
+        );
     }
 
     #[test]
@@ -3579,14 +3889,20 @@ mod tests {
     // ── copy_entries: what the sink is and is not told ───────────────────
 
     #[test]
-    fn copy_entries_tells_the_sink_nothing_it_will_report_later() {
+    fn copy_entries_tells_the_sink_no_outcome_it_will_report_later() {
         // The engine's half of "rendered exactly once". Per-entry facts travel
         // in the returned outcomes and are drawn by `report_copy_results`; a
         // `sink.on_warning` here as well would print every skip twice — once
         // as a stderr line, once as a rail row — and tear the live region
         // between them. Only `on_debug` (`-v` narration, which this sink drops)
         // belongs to the engine.
+        //
+        // `Started` is the one exception, and it is not a duplicate: it says an
+        // entry is being worked on, which is the only thing that can put a
+        // spinner on the row while a multi-gigabyte byte copy runs. Nothing
+        // renders it twice because nothing renders it as an outcome at all.
         use crate::core::RecordingStageSink;
+        use crate::core::stage::StageEvent;
 
         let (_tmp, source, target) = repo_fixture("/target\n");
         write(&source.join("target/app"), b"binary");
@@ -3607,8 +3923,16 @@ mod tests {
         assert!(sink.warnings.is_empty(), "{:?}", sink.warnings);
         assert!(sink.steps.is_empty(), "{:?}", sink.steps);
         assert!(
-            sink.events.is_empty(),
-            "the engine reports no stage events of its own: {:?}",
+            sink.events
+                .iter()
+                .all(|(_, event)| matches!(event, StageEvent::Started)),
+            "the engine resolves no row itself — it only activates them: {:?}",
+            sink.events
+        );
+        assert_eq!(
+            sink.events.len(),
+            3,
+            "one activation per declared entry, before its work: {:?}",
             sink.events
         );
     }
@@ -4364,6 +4688,223 @@ mod tests {
         );
     }
 
+    /// The `shared:` + `copy:` overlap that made every cache invisible.
+    /// `shared: [web]` replaces `web` with a link into daft's store, so
+    /// `<target>/web/dist` is not inside the target worktree at all — a plain
+    /// run would write the cache into the store, and `--force` would delete out
+    /// of it, both reporting a clean green row.
+    #[cfg(unix)]
+    #[test]
+    fn a_destination_reached_through_a_symlinked_directory_is_refused() {
+        let (tmp, source, target) = repo_fixture("dist\n");
+        write(&source.join("web/dist/app.js"), b"built");
+        // Content nobody asked to touch, on the other side of the link.
+        let store = tmp.path().join("store");
+        write(&store.join("dist/precious.js"), b"shared by every worktree");
+        std::os::unix::fs::symlink(&store, target.join("web")).unwrap();
+
+        for force in [false, true] {
+            let result = copy_entries(
+                &source,
+                &target,
+                &config(&["web/dist"]),
+                force,
+                &mut NullSink,
+            );
+            assert!(
+                matches!(sole_skip(&result), SkipReason::DestinationEscapes { .. }),
+                "force = {force}: {:?}",
+                result.outcomes
+            );
+        }
+        assert_eq!(
+            fs::read(store.join("dist/precious.js")).unwrap(),
+            b"shared by every worktree",
+            "nothing outside the worktree may be written or deleted"
+        );
+    }
+
+    /// The state that most needs `--force` was the one it could not repair:
+    /// the shape check refused before the force branch was ever consulted, so
+    /// the documented escape hatch was refused identically, forever.
+    #[test]
+    fn force_replaces_a_destination_of_the_wrong_shape() {
+        let (_tmp, source, target) = repo_fixture("/node_modules\n");
+        write(&source.join("node_modules/pkg/index.js"), b"real");
+        // A stale FILE where the source has a directory — what an interrupted
+        // tool or an old `shared:` declaration leaves behind.
+        write(&target.join("node_modules"), b"not a directory");
+
+        assert!(
+            matches!(
+                sole_skip(&run(&source, &target, &config(&["node_modules"]))),
+                SkipReason::DestinationConflict { .. }
+            ),
+            "without --force it is still reported, not silently replaced"
+        );
+
+        let result = copy_entries(
+            &source,
+            &target,
+            &config(&["node_modules"]),
+            true,
+            &mut NullSink,
+        );
+        assert!(
+            matches!(result.outcomes.as_slice(), [CopyOutcome::Copied { .. }]),
+            "{:?}",
+            result.outcomes
+        );
+        assert_eq!(
+            fs::read(target.join("node_modules/pkg/index.js")).unwrap(),
+            b"real"
+        );
+    }
+
+    /// `--force` may replace a link with a link (covered below), but turning a
+    /// link that leaves the worktree into a private directory would quietly
+    /// privatize daft's shared store.
+    #[cfg(unix)]
+    #[test]
+    fn force_will_not_turn_a_link_that_leaves_the_worktree_into_a_copy() {
+        let (tmp, source, target) = repo_fixture("/node_modules\n");
+        write(&source.join("node_modules/pkg/index.js"), b"real");
+        let store = tmp.path().join("store/node_modules");
+        write(&store.join("pkg/index.js"), b"shared");
+        std::os::unix::fs::symlink(&store, target.join("node_modules")).unwrap();
+
+        let result = copy_entries(
+            &source,
+            &target,
+            &config(&["node_modules"]),
+            true,
+            &mut NullSink,
+        );
+
+        assert!(
+            matches!(
+                sole_skip(&result),
+                SkipReason::DestinationLinksOutside { .. }
+            ),
+            "{:?}",
+            result.outcomes
+        );
+        assert!(target.join("node_modules").is_symlink(), "link left intact");
+    }
+
+    /// A dangling link has nothing on the other end, so `--force` replaces it
+    /// like any other wrong shape rather than refusing forever.
+    #[cfg(unix)]
+    #[test]
+    fn force_replaces_a_dangling_link_at_the_destination() {
+        let (_tmp, source, target) = repo_fixture("/node_modules\n");
+        write(&source.join("node_modules/pkg/index.js"), b"real");
+        std::os::unix::fs::symlink("nowhere-at-all", target.join("node_modules")).unwrap();
+
+        let result = copy_entries(
+            &source,
+            &target,
+            &config(&["node_modules"]),
+            true,
+            &mut NullSink,
+        );
+
+        assert!(
+            matches!(result.outcomes.as_slice(), [CopyOutcome::Copied { .. }]),
+            "{:?}",
+            result.outcomes
+        );
+        assert_eq!(
+            fs::read(target.join("node_modules/pkg/index.js")).unwrap(),
+            b"real"
+        );
+    }
+
+    /// The npm/pnpm workspace shape: a link that leaves the copied ENTRY but
+    /// stays inside the worktree. Rebasing it onto the source is how a new
+    /// branch ends up compiling the branch it was seeded from — and dangling
+    /// the moment that worktree is removed.
+    #[cfg(unix)]
+    #[test]
+    fn a_workspace_link_out_of_the_entry_resolves_in_its_new_worktree() {
+        let (_tmp, source, target) = repo_fixture("/node_modules\n");
+        write(&source.join("packages/api/index.js"), b"source's api");
+        write(&target.join("packages/api/index.js"), b"target's own api");
+        fs::create_dir_all(source.join("node_modules/@acme")).unwrap();
+        std::os::unix::fs::symlink("../../packages/api", source.join("node_modules/@acme/api"))
+            .unwrap();
+
+        let result = run(&source, &target, &config(&["node_modules"]));
+        assert!(
+            matches!(result.outcomes.as_slice(), [CopyOutcome::Copied { .. }]),
+            "{:?}",
+            result.outcomes
+        );
+
+        let copied = target.join("node_modules/@acme/api");
+        assert!(copied.is_symlink(), "still a link");
+        assert_eq!(
+            fs::read(copied.join("index.js")).unwrap(),
+            b"target's own api",
+            "the workspace link must follow its worktree, via {:?}",
+            fs::read_link(&copied).unwrap()
+        );
+    }
+
+    /// A glob must not walk into — or match inside — a worktree of its own.
+    /// In a flat layout a linked worktree's `.git` is a FILE, so the
+    /// directory-only prune missed it and `**/node_modules` copied a sibling
+    /// branch's cache into a nonsensical path, reported as a green row.
+    #[test]
+    fn a_glob_never_reaches_into_a_nested_worktree() {
+        let (_tmp, source, target) = repo_fixture("node_modules\n.worktrees\n");
+        write(&source.join("node_modules/pkg/index.js"), b"ours");
+        write(
+            &source.join(".worktrees/other/node_modules/pkg/index.js"),
+            b"someone else's",
+        );
+        // What a linked worktree has instead of a `.git` directory.
+        write(
+            &source.join(".worktrees/other/.git"),
+            b"gitdir: /elsewhere/.git/worktrees/other\n",
+        );
+
+        assert_eq!(
+            expand_entries(&source, "**/node_modules"),
+            vec!["node_modules".to_string()],
+            "the nested worktree's cache is not this worktree's content"
+        );
+
+        run(&source, &target, &config(&["**/node_modules"]));
+        assert!(
+            !target.join(".worktrees").exists(),
+            "nothing may be written into another worktree's path: {:?}",
+            entries_of(&target)
+        );
+    }
+
+    /// A literal entry declared beside a glob is copied whole by its own row,
+    /// so walking into it can only find paths that are coming along anyway —
+    /// and walking it is exactly the cost `copy:` exists to avoid.
+    #[test]
+    fn a_glob_does_not_walk_a_cache_its_own_config_already_declares() {
+        let (_tmp, source, _target) = repo_fixture("node_modules\ndist\n");
+        write(&source.join("node_modules/pkg/dist/bundle.js"), b"nested");
+        write(&source.join("web/dist/app.js"), b"wanted");
+
+        assert_eq!(
+            expand_reporting(&source, "**/dist", &["node_modules".to_string()]).matches,
+            vec!["web/dist".to_string()]
+        );
+        // Without the sibling declaration the same glob still finds both, so
+        // the pruning is the declaration's doing and not an accident of the
+        // walk order.
+        assert_eq!(
+            expand_reporting(&source, "**/dist", &[]).matches,
+            vec!["node_modules/pkg/dist".to_string(), "web/dist".to_string()]
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn force_replacing_a_shared_link_leaves_one_that_still_resolves() {
@@ -4495,6 +5036,44 @@ mod tests {
         assert!(
             gate_can_fire_for(&skipping),
             "`fallback: skip` needs the probe's answer even with no cap"
+        );
+
+        // But the PROBE gate is not the MEASUREMENT gate. `gate_byte_copies`
+        // returns on `fallback: skip` before a byte count is read, so sharing
+        // one flag made every skip-fallback repository — this one included —
+        // walk every declared cache in full on the creation path for a number
+        // nothing consumed. The `-v` line is where that shows: it quotes a size
+        // only when one was actually measured.
+        #[derive(Default)]
+        struct DebugSink(Vec<String>);
+        impl crate::core::ProgressSink for DebugSink {
+            fn on_step(&mut self, _: &str) {}
+            fn on_warning(&mut self, _: &str) {}
+            fn on_debug(&mut self, msg: &str) {
+                self.0.push(msg.to_string());
+            }
+        }
+
+        let (_tmp, skip_source, skip_target) = repo_fixture("/target\n");
+        write(&skip_source.join("target/app"), b"0123456789");
+        let mut sink = DebugSink::default();
+        copy_entries(&skip_source, &skip_target, &skipping, false, &mut sink);
+        assert!(
+            sink.0.iter().any(|line| line == "copy: target — 1 path(s)"),
+            "`fallback: skip` with no cap must not walk the tree: {:?}",
+            sink.0
+        );
+
+        let mut sink = DebugSink::default();
+        let (_tmp, cap_source, cap_target) = repo_fixture("/target\n");
+        write(&cap_source.join("target/app"), b"0123456789");
+        copy_entries(&cap_source, &cap_target, &capped, false, &mut sink);
+        assert!(
+            sink.0
+                .iter()
+                .any(|line| line.starts_with("copy: target — 1 path(s), ")),
+            "a cap has to be weighed against a measured size: {:?}",
+            sink.0
         );
 
         // Nothing is lost: the row's method and size come from the copier.
