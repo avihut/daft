@@ -1,0 +1,58 @@
+name: Go cross-repo navigation with checkout fetch enabled
+description:
+  "#782 regression: with daft.checkout.fetch=true the catalog hop must not
+  commit a worktree-creation plan or leak the resolution fetch's branch miss as
+  a warning — the probe runs under the collapsed rail line and only the hop's
+  own output appears. The fetch itself still runs against the current repo's
+  remote, which is what makes the miss the signal the hop needs. A real remote
+  branch still fetches and creates its worktree, and a genuine miss errors
+  without warning noise."
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: Enable checkout fetch locally in repo A
+    run: git config daft.checkout.fetch true
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+
+  - name: The catalog hop stays clean — no probe-fetch warnings, no receipt
+    run: daft go test-repo-b 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Opening repository 'test-repo-b'"
+      output_not_contains:
+        - "Failed to fetch"
+        - "Failed after"
+
+  - name: A real remote branch still fetches and creates its worktree
+    run: daft go develop 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/develop"
+      output_not_contains:
+        - "Failed to fetch"
+
+  - name: A genuine miss errors without probe-warning noise
+    run: daft go nosuchbranch 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 1
+      output_not_contains:
+        - "Failed to fetch specific branch"

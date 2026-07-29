@@ -854,7 +854,7 @@ fn run_start_fork(args: StartArgs, base: Option<String>, count: u32) -> Result<(
             format!("Forking {dirname}"),
         );
         timeline.set_verbose_density(hook_output_config.verbose);
-        timeline.open_planning("Pinning commit");
+        timeline.open_planning();
         let create_result = {
             let mut bridge = TimelineBridge::new(
                 &mut output,
@@ -2153,13 +2153,15 @@ fn run_checkout(
         },
         layout: Some(layout),
         at_path: args.at.clone(),
-        // The morph (branch missing → run_create_branch) must leave no rail
-        // behind: hold the plan until the branch is known to exist, so the
-        // fetch runs under the planning face and a not-found dissolves the
-        // face tracelessly instead of closing a Failed receipt before
-        // start's rail opens. Forge targets never morph (their misses are
-        // Other, not BranchNotFound), so they don't defer.
-        defer_plan_until_branch_known: !is_forge && (args.start || settings.go_auto_start),
+        // The plan must not commit before the branch is known to exist
+        // (#782): a miss is never this rail's work — it morphs into
+        // run_create_branch (`--start` / autoStart), falls back to the
+        // catalog / a sandbox, or errors — and none of those may leave a
+        // Failed worktree-creation receipt behind. Deferring keeps the
+        // fetch under the planning face; it joins a committed plan as a
+        // pre-completed row. Forge targets don't defer: their misses are
+        // Other, not BranchNotFound, and their fetch is planned work.
+        defer_plan_until_branch_known: !is_forge,
         forge: forge_checkout,
     };
 
@@ -2181,7 +2183,7 @@ fn run_checkout(
     );
     timeline.set_verbose_density(hook_output_config.verbose);
 
-    timeline.open_planning("Resolving branch");
+    timeline.open_planning();
     let checkout_result = {
         let mut bridge = TimelineBridge::new(output, &mut timeline, executor, hook_output_config);
         checkout::execute(&params, git, &project_root, &mut bridge)
@@ -2297,7 +2299,7 @@ fn run_sandbox_visit(
     );
     timeline.set_verbose_density(hook_output_config.verbose);
 
-    timeline.open_planning("Resolving commit");
+    timeline.open_planning();
     let visit_result = {
         let mut bridge = TimelineBridge::new(output, &mut timeline, executor, hook_output_config);
         sandbox::execute_visit(&params, git, &project_root, &mut bridge)
@@ -2510,7 +2512,7 @@ fn run_create_branch_core(
     // (#686's silent-gap concern is covered by the rail itself); core's
     // pause_spinner/resume_spinner bracketing in push_if_enabled stays for
     // the legacy CommandBridge commands.
-    timeline.open_planning("Resolving base branch");
+    timeline.open_planning();
     let checkout_result = {
         let mut bridge =
             TimelineBridge::new(output, &mut timeline, executor, hook_output_config.clone());

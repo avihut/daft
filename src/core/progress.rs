@@ -351,6 +351,10 @@ impl ProgressSink for TimelineSink<'_> {
         route_step(self.output, self.timeline, msg);
     }
 
+    fn on_resolve_phase(&mut self, phase: &str) {
+        self.timeline.set_planning_label(phase);
+    }
+
     fn on_warning(&mut self, msg: &str) {
         route_warning(self.output, self.timeline, msg);
     }
@@ -420,6 +424,10 @@ impl<'a> TimelineBridge<'a> {
 impl ProgressSink for TimelineBridge<'_> {
     fn on_step(&mut self, msg: &str) {
         route_step(self.output, self.timeline, msg);
+    }
+
+    fn on_resolve_phase(&mut self, phase: &str) {
+        self.timeline.set_planning_label(phase);
     }
 
     fn on_warning(&mut self, msg: &str) {
@@ -790,7 +798,7 @@ mod tests {
             false,
             "Removing feature",
         );
-        timeline.open_planning("Validating branches");
+        timeline.open_planning();
         assert!(timeline.region_live());
 
         let req = ConsolidationRequest {
@@ -834,7 +842,7 @@ mod tests {
             false,
             "Removing feature",
         );
-        timeline.open_planning("Validating branches");
+        timeline.open_planning();
 
         let req = ConsolidationRequest {
             branch: "feature".into(),

@@ -66,40 +66,42 @@ hook renderer's summary also speaks), failure details and skip reasons always
 render plain, and a dimmed row — pending glyphs, expected skips, `(not run)` —
 never keeps an identity ink.
 
-- The rail opens the moment the command starts (after any pre-flight prompts):
-  the header, a grey planning row (`⠹ Validating branches`,
-  `⠹ Resolving branch`, `⠹ Cloning repository`), and the ticking stopwatch
-  appear immediately, and the committed plan replaces the middle in place as
-  soon as the command has resolved its work. The label follows the resolve phase
-  — `daft clone` runs its whole network clone under the face, flips to
-  `⠹ Resolving branches`, and commits a plan led by the already-done
-  `✓ Cloned repository` row. A prompt that must own the terminal mid-resolve
-  (the first-clone layout prompt) makes the face step aside tracelessly and
-  return once answered. A run that resolves into a navigation early-exit or a
-  resolve-phase error collapses the face without a trace and keeps its
-  single-line response.
+- The rail opens the moment the command starts (after any pre-flight prompts) as
+  a single collapsed line — the active spinner, the header's own text, and the
+  ticking stopwatch on its tail. That line is the whole rail until a plan gives
+  it a body: the `┌ │ └` frame appears only when the command has resolved work
+  worth framing, expanding the line in place with the committed plan beneath it.
+  The text follows the resolve phase — `daft clone` runs its whole network clone
+  under the collapsed line, flips to `Resolving branches`, and commits a plan
+  led by the already-done `✓ Cloned repository` row; `daft go` flips to
+  `Fetching origin` while a `daft.checkout.fetch` round-trip runs. A prompt that
+  must own the terminal mid-resolve (the first-clone layout prompt) makes the
+  line step aside tracelessly and return, on the same phase, once answered. A
+  run that resolves into a navigation early-exit, a hop to another cataloged
+  repo, or a resolve-phase error collapses the line without a trace and keeps
+  its single-line response.
 - The header names the resolved intent (`Starting <branch> ← <base>`); the
   footer closes the rail with the outcome and total duration. While the command
   runs, the pending footer is a stopwatch — a dim elapsed counter (`└ 1.2s`)
   ticking from the moment the rail opens until the outcome replaces it.
-- With `daft.checkout.fetch` on, the remote fetch is planned work committed
-  before the network round-trip: `daft start` opens its rail with the
-  `Fetch remote` and `Set up tracking` rows, and `daft go` leads its plan with a
-  `Fetch remote` row and notes the branch's provenance (`← origin/x`,
-  `tracking origin/x`, `local only`) onto the pending `Check out branch` row
-  once the fetch lands. A failed fetch turns its row yellow
-  (`↓ Fetch remote  failed — continuing with local refs`) and the command
-  proceeds on local refs. A branch the fetch fails to reveal closes `daft go`'s
-  rail as a `Failed` receipt with the error below it; with the fetch off, the
-  branch probe precedes the plan and an unknown branch keeps the plain error.
-  When the morph into branch creation is armed (`daft go --start`, or
-  `daft.go.autoStart`), the fetch runs under the planning face instead and the
-  plan commits only for a branch that exists — leading with the already-done
-  `✓ Fetched remote` row; a missing branch dissolves the face tracelessly and
-  `daft start`'s rail is the only rail the run leaves behind. For `daft start`
-  the header names the requested base; when the fetch reveals a fresher remote
-  ref, the `Created branch` row carries the resolved provenance
-  (`← origin/main`).
+- With `daft.checkout.fetch` on, `daft go` runs the fetch under the collapsed
+  line and commits its plan only once the branch is known to exist — leading
+  with the already-done `✓ Fetched remote` row, the branch's provenance
+  (`← origin/x`, `tracking origin/x`, `local only`) already resolved onto the
+  `Check out branch` row. A name the fetch fails to reveal is never this rail's
+  work: the line dissolves tracelessly, and whatever the name turns out to be —
+  another cataloged repo, a tag or commit that opens a sandbox, a branch
+  `--start` (or `daft.go.autoStart`) creates, or a plain error — owns the run's
+  only output. A failed fetch warns, turns its row yellow
+  (`↓ Fetch remote  failed — continuing with local refs`), and the command
+  proceeds on the refs it has. With the fetch off, the branch probe precedes the
+  plan and an unknown branch keeps the plain error. `daft start` and forge
+  targets (`daft go pr:123`) plan the fetch as work committed before the
+  round-trip instead — `daft start` opens its rail with the `Fetch remote` and
+  `Set up tracking` rows, and a forge miss falls back to the PR/MR head ref
+  rather than failing to find a branch. For `daft start` the header names the
+  requested base; when the fetch reveals a fresher remote ref, the
+  `Created branch` row carries the resolved provenance (`← origin/main`).
 - The rail lists only work that happens. A step known to be off at planning time
   (push with `daft.checkout.push` off or `--local`) plans no row, and a step
   that resolves as a no-op (carry with a clean tree) removes its row — the
