@@ -16,8 +16,14 @@ cd $(mktemp -d) && git init -q . && daft config
 - [ ] `daft config` opens full screen and lists every setting, grouped by
       category
 - [ ] The header names the repository and shows the write scope
-- [ ] `j`/`k` and the arrows move; neither ever lands on a category heading
+- [ ] `j`/`k` and the arrows move; neither ever lands on a category heading or
+      in the gap between two
+- [ ] The current row is lit across its whole width, out to the right edge
+- [ ] A blank line separates every category from the one above it, and the top
+      of the list is never that blank line
 - [ ] `tab` moves between the rail and the list; `h`/`l` do the same
+- [ ] With the rail focused, the list keeps its lit row but drops the cyan bar,
+      so a category jump is visible where it lands
 - [ ] Walking the rail's top three entries changes what the list holds (All /
       Modified / Issues)
 - [ ] Walking the rail's categories moves the cursor without hiding anything

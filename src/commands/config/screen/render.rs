@@ -360,6 +360,7 @@ fn draw_rail(frame: &mut Frame, area: Rect, state: &ScreenState) {
 
 fn draw_list(frame: &mut Frame, area: Rect, state: &ScreenState) {
     let height = area.height as usize;
+    let width = area.width as usize;
     let focused = state.focus == Focus::List;
 
     if state.rows().is_empty() {
@@ -383,6 +384,7 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &ScreenState) {
         .skip(state.scroll)
         .take(height)
     {
+        let current = index == state.cursor();
         match row {
             Row::Header(category) => {
                 lines.push(Line::from(vec![
@@ -390,12 +392,13 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &ScreenState) {
                     category.label().dim().underlined(),
                 ]));
             }
+            Row::Spacer => lines.push(Line::from("")),
             Row::Setting(setting) => {
                 let Some(resolved) = state.config.settings.get(*setting) else {
                     continue;
                 };
-                let selected = focused && index == state.cursor();
-                lines.push(setting_line(resolved, selected, label_width, value_width));
+                let spans = setting_spans(resolved, label_width, value_width);
+                lines.push(list_row(spans, current, focused, width));
             }
             Row::StrayHeader => {
                 lines.push(Line::from(vec![
@@ -409,10 +412,8 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &ScreenState) {
                 let Some(entry) = state.config.unrecognized.get(*stray) else {
                     continue;
                 };
-                let selected = focused && index == state.cursor();
                 let value = truncate(&entry.value, value_width);
-                lines.push(Line::from(vec![
-                    if selected { "▌ ".cyan() } else { "  ".into() },
+                let spans = vec![
                     Span::from(pad(&entry.key, label_width)),
                     "  ".into(),
                     value.clone().yellow(),
@@ -420,7 +421,8 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &ScreenState) {
                         .into(),
                     "  ".into(),
                     format!("{} — ignored", entry.scope.label()).dim(),
-                ]));
+                ];
+                lines.push(list_row(spans, current, focused, width));
             }
         }
     }
@@ -428,12 +430,44 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &ScreenState) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn setting_line(
+/// Finish a list row: mark it, pad it out, and lay the highlight across all
+/// of it.
+///
+/// The padding is what makes the highlight a *row* rather than a stripe behind
+/// the text — a `Paragraph` styles only the cells it writes, so a line that
+/// stops at its last word leaves the rest of the highlight missing.
+///
+/// The two markers say different things and both are needed: the background is
+/// where you are, and it stays put when `tab` hands the keys to the rail —
+/// which moves this cursor, so a row that went dark with focus would leave a
+/// category jump landing out of sight. The cyan bar is where the keys are.
+fn list_row(
+    spans: Vec<Span<'static>>,
+    current: bool,
+    focused: bool,
+    width: usize,
+) -> Line<'static> {
+    let marker: Span = if current && focused {
+        "▌ ".cyan()
+    } else {
+        "  ".into()
+    };
+    let mut all = vec![marker];
+    all.extend(spans);
+
+    if !current {
+        return Line::from(all);
+    }
+    let used: usize = all.iter().map(|span| span.content.chars().count()).sum();
+    all.push(" ".repeat(width.saturating_sub(used)).into());
+    Line::from(all).on_dark_gray()
+}
+
+fn setting_spans(
     resolved: &Resolved,
-    selected: bool,
     label_width: usize,
     value_width: usize,
-) -> Line<'static> {
+) -> Vec<Span<'static>> {
     let label = truncate(&resolved.spec.label, label_width);
     let value = truncate(resolved.effective_display(), value_width);
 
@@ -447,8 +481,7 @@ fn setting_line(
         None => Span::from(value.clone()),
     };
 
-    Line::from(vec![
-        if selected { "▌ ".cyan() } else { "  ".into() },
+    vec![
         Span::from(pad(&label, label_width)),
         "  ".into(),
         value_span,
@@ -456,7 +489,7 @@ fn setting_line(
             .into(),
         "  ".into(),
         resolved.origin.label().dim(),
-    ])
+    ]
 }
 
 /// What a row's worst diagnostic is, if any.
@@ -752,11 +785,31 @@ mod tests {
         ScreenState::new(config, true, Some("daft".to_string()))
     }
 
-    /// Render once and return the frame as plain text, line by line.
-    fn painted(state: &ScreenState, width: u16, height: u16) -> Vec<String> {
+    /// Render once and return the raw frame — for the assertions that are
+    /// about colour rather than text.
+    fn frame_of(state: &ScreenState, width: u16, height: u16) -> ratatui::buffer::Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| draw(frame, state)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The rows whose last cell carries the highlight — a row counts as
+    /// highlighted only if it is highlighted all the way to the edge.
+    fn highlighted_rows(buffer: &ratatui::buffer::Buffer, width: u16, height: u16) -> Vec<u16> {
+        (0..height)
+            .filter(|y| buffer[(width - 1, *y)].style().bg == Some(ratatui::style::Color::DarkGray))
+            .collect()
+    }
+
+    fn text_of(buffer: &ratatui::buffer::Buffer, y: u16, width: u16) -> String {
+        (0..width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect()
+    }
+
+    /// Render once and return the frame as plain text, line by line.
+    fn painted(state: &ScreenState, width: u16, height: u16) -> Vec<String> {
+        let buffer = frame_of(state, width, height);
         (0..height)
             .map(|y| {
                 (0..width)
@@ -780,6 +833,63 @@ mod tests {
         assert!(all.contains("Checkout"), "the rail lists categories");
         assert!(all.contains("effective:"), "the detail panel resolves");
         assert!(all.contains("quit"), "the footer shows the way out");
+    }
+
+    #[test]
+    fn the_cursor_row_is_highlighted_all_the_way_across() {
+        let (width, height) = (120u16, 40u16);
+        let state = state_with(vec![]);
+        let buffer = frame_of(&state, width, height);
+
+        let rows = highlighted_rows(&buffer, width, height);
+        assert_eq!(rows.len(), 1, "exactly one row is the cursor's: {rows:?}");
+
+        let line = text_of(&buffer, rows[0], width);
+        let label = truncate(&state.selected().unwrap().spec.label, 34);
+        assert!(
+            line.contains(label.trim()),
+            "the highlight sits on some other row: {line:?}"
+        );
+        assert!(line.contains('▌'), "the focused pane also marks its row");
+        assert_eq!(
+            buffer[(0, rows[0])].style().bg,
+            Some(ratatui::style::Color::Reset),
+            "the rail is a different pane — the highlight stops at its edge"
+        );
+    }
+
+    #[test]
+    fn the_cursor_row_keeps_its_highlight_when_the_rail_takes_the_keys() {
+        // Walking the rail moves the list cursor, so a highlight that went out
+        // with focus would leave every category jump landing out of sight. The
+        // cyan bar is what goes; the row stays lit.
+        let (width, height) = (120u16, 40u16);
+        let mut state = state_with(vec![]);
+        state.focus_rail();
+        let buffer = frame_of(&state, width, height);
+
+        let rows = highlighted_rows(&buffer, width, height);
+        assert_eq!(rows.len(), 1, "the cursor is still somewhere: {rows:?}");
+        assert!(
+            !text_of(&buffer, rows[0], width).contains('▌'),
+            "the bar means the keys are here, and they are not"
+        );
+    }
+
+    #[test]
+    fn the_sections_are_separated_by_a_blank_line() {
+        // Narrow enough to drop the rail, so every line is a list row and a
+        // blank one means the gap rather than an empty rail cell.
+        let lines = painted(&state_with(vec![]), 80, 44);
+        let heading = lines
+            .iter()
+            .position(|line| line.contains("Push & Sync"))
+            .expect("the second category paints");
+        assert!(
+            lines[heading - 1].trim().is_empty(),
+            "the sections run together: {:?}",
+            &lines[heading - 2..=heading]
+        );
     }
 
     #[test]

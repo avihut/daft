@@ -49,6 +49,12 @@ pub enum RailEntry {
 pub enum Row {
     Header(Category),
     Setting(usize),
+    /// The blank line above a heading. Carries nothing.
+    ///
+    /// It is a row rather than something the renderer inserts because the
+    /// scroll offset indexes this list: a line the list draws but does not
+    /// count would slide the viewport out from under the cursor.
+    Spacer,
     /// A heading for the `daft.*` keys that are not settings.
     StrayHeader,
     /// A `daft.*` key in the config that matches no registry row — a typo, or
@@ -69,6 +75,17 @@ pub enum Focus {
 /// Whether the cursor may rest on a row. Headings are signposts, not stops.
 fn is_landable(row: &Row) -> bool {
     matches!(row, Row::Setting(_) | Row::Stray(_))
+}
+
+/// Put a blank line above the heading about to be pushed.
+///
+/// Every section but the first gets one: the gap is what makes the categories
+/// read as groups, and it costs a row where a rule would cost a row and a
+/// line of ink.
+fn open_section(rows: &mut Vec<Row>) {
+    if !rows.is_empty() {
+        rows.push(Row::Spacer);
+    }
 }
 
 /// The whole screen.
@@ -228,6 +245,7 @@ impl ScreenState {
                 continue;
             }
             if current != Some(resolved.spec.category) {
+                open_section(&mut self.rows);
                 self.rows.push(Row::Header(resolved.spec.category));
                 current = Some(resolved.spec.category);
             }
@@ -241,6 +259,7 @@ impl ScreenState {
                 .filter(|index| self.matches_filter_text(&self.config.unrecognized[*index].key))
                 .collect();
             if !strays.is_empty() {
+                open_section(&mut self.rows);
                 self.rows.push(Row::StrayHeader);
                 self.rows.extend(strays.into_iter().map(Row::Stray));
             }
@@ -318,7 +337,7 @@ impl ScreenState {
                 .settings
                 .get(*index)
                 .is_some_and(|r| r.spec.key == key),
-            Row::Header(_) | Row::StrayHeader | Row::Stray(_) => false,
+            Row::Header(_) | Row::Spacer | Row::StrayHeader | Row::Stray(_) => false,
         })
     }
 
@@ -339,7 +358,7 @@ impl ScreenState {
                         .settings
                         .get(*index)
                         .is_some_and(|r| r.spec.category == category),
-                    Row::Header(_) | Row::StrayHeader | Row::Stray(_) => false,
+                    Row::Header(_) | Row::Spacer | Row::StrayHeader | Row::Stray(_) => false,
                 })
                 .count(),
         }
@@ -470,6 +489,12 @@ impl ScreenState {
         } else if self.cursor >= self.scroll + height {
             self.scroll = self.cursor + 1 - height;
         }
+        // A blank line at the top of the viewport says nothing — a gap only
+        // means something with a section either side of it. Skipping it can
+        // only move the viewport towards the cursor, which never sits on one.
+        if matches!(self.rows.get(self.scroll), Some(Row::Spacer)) {
+            self.scroll += 1;
+        }
         // Show a setting's own heading when it is the first thing on screen,
         // so a scrolled list rarely leaves a value without its category — but
         // only when there is room. Stealing the row costs the bottom line, and
@@ -534,7 +559,7 @@ impl ScreenState {
                 .settings
                 .get(*index)
                 .is_some_and(|r| r.spec.category == category),
-            Row::Header(_) | Row::StrayHeader | Row::Stray(_) => false,
+            Row::Header(_) | Row::Spacer | Row::StrayHeader | Row::Stray(_) => false,
         }) {
             self.cursor = index;
             self.clamp();
@@ -721,6 +746,80 @@ mod tests {
             seen += 1;
         }
         assert!(seen > 0);
+    }
+
+    #[test]
+    fn a_blank_line_opens_every_section_but_the_first() {
+        let state = state();
+        let rows = state.rows();
+
+        assert!(
+            !matches!(rows[0], Row::Spacer),
+            "a gap above the first section is a wasted row"
+        );
+
+        let mut headings = 0;
+        for (index, row) in rows.iter().enumerate() {
+            if !matches!(row, Row::Header(_) | Row::StrayHeader) {
+                continue;
+            }
+            headings += 1;
+            if index > 0 {
+                assert!(
+                    matches!(rows[index - 1], Row::Spacer),
+                    "the heading at row {index} runs straight on from the section above"
+                );
+            }
+        }
+        assert!(headings > 1, "there is more than one section to separate");
+    }
+
+    #[test]
+    fn the_cursor_walks_over_the_gaps() {
+        let mut state = state();
+        for _ in 0..state.rows().len() + 5 {
+            state.move_down();
+            assert!(
+                !matches!(state.rows()[state.cursor()], Row::Spacer),
+                "the cursor stopped in a gap at row {}",
+                state.cursor()
+            );
+        }
+        for _ in 0..state.rows().len() + 5 {
+            state.move_up();
+            assert!(!matches!(state.rows()[state.cursor()], Row::Spacer));
+        }
+    }
+
+    #[test]
+    fn the_viewport_never_opens_on_a_gap() {
+        let mut state = state();
+        let height = 8;
+
+        let check = |state: &ScreenState| {
+            assert!(
+                !matches!(state.rows().get(state.scroll), Some(Row::Spacer)),
+                "the top line of the viewport is blank"
+            );
+            assert!(
+                state.cursor() >= state.scroll && state.cursor() < state.scroll + height,
+                "cursor {} outside viewport [{}, {})",
+                state.cursor(),
+                state.scroll,
+                state.scroll + height
+            );
+        };
+
+        for _ in 0..state.rows().len() + 5 {
+            state.move_down();
+            state.follow_cursor(height);
+            check(&state);
+        }
+        for _ in 0..state.rows().len() + 5 {
+            state.move_up();
+            state.follow_cursor(height);
+            check(&state);
+        }
     }
 
     #[test]
