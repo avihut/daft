@@ -346,7 +346,6 @@ fn create_sandbox(
     }
     let planned_shared =
         crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
-    crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
     // Cache paths declared with `copy:` get their own section (#387). A
     // sandbox is minted from a real source worktree just like a branch
     // worktree is, so `daft go <tag>` and `daft start --fork` have exactly
@@ -377,9 +376,12 @@ fn create_sandbox(
             &planned_copy,
         )
     });
+    // Caches first, daft-managed links on top — see the execution ordering
+    // below, which the plan face must mirror row for row.
     if let Some(source) = &copy_source {
         crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy, source);
     }
+    crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
     ))));
@@ -496,17 +498,11 @@ fn create_sandbox(
         }
     }
 
-    // Shared links after propagation, before hooks — order is load-bearing
-    // (see checkout::execute). The `copy:` stage below closes the same
-    // window for build caches.
-    let link_result =
-        crate::core::shared::link_shared_files_on_create(&worktree_path, git_dir, project_root);
-    crate::core::shared::report_link_results(&link_result, &planned_shared, sink);
-
-    // Copy declared caches (#387) after shared linking, before the
-    // post-create hooks — the ordering IS the feature (see
-    // checkout::execute). `force = false`: an entry already present at the
-    // destination is left alone; only `daft warm --force` clobbers.
+    // Caches, then shared links, both after propagation and before the hooks —
+    // all three orderings load-bearing, all three explained in
+    // `checkout_branch::execute`, which this mirrors step for step.
+    // `force = false`: an entry already present at the destination is left
+    // alone; only `daft warm --force` clobbers.
     // Both are Some together or neither is: the source is resolved exactly
     // when a declaration exists, so that no repository without `copy:` pays
     // for a worktree listing on the creation path.
@@ -520,6 +516,10 @@ fn create_sandbox(
         );
         crate::core::copy_paths::report_copy_results(&copy_result, &planned_copy, sink);
     }
+
+    let link_result =
+        crate::core::shared::link_shared_files_on_create(&worktree_path, git_dir, project_root);
+    crate::core::shared::report_link_results(&link_result, &planned_shared, sink);
 
     let post_hook_ctx = HookContext::new(
         HookType::PostCreate,
@@ -910,7 +910,7 @@ mod tests {
     /// declares-nothing sibling above cannot make this claim.
     #[test]
     #[serial]
-    fn copy_section_splices_between_shared_and_post_create() {
+    fn copy_section_sits_before_shared_and_both_before_post_create() {
         let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let (tmp, repo, oid) = repo_with_tag();
@@ -933,11 +933,8 @@ mod tests {
 
         let plan = sink.plan.as_ref().expect("plan committed");
         assert_eq!(
-            crate::core::worktree::plan_shape_from_shared(&plan.rows),
+            crate::core::worktree::plan_shape_from_copied(&plan.rows),
             [
-                "group:shared files",
-                "step:SharedFile",
-                "endgroup",
                 // A sandbox names no branch and the tag sits at no worktree's
                 // tip, so both specific rungs miss and the floor — where the
                 // command was run — carries the section.
@@ -945,9 +942,15 @@ mod tests {
                 "step:CopyPath",
                 "step:CopyPath",
                 "endgroup",
+                // Caches first, daft-managed links on top: shared linking
+                // creates the parents it needs, and an empty scaffold made the
+                // copy report `already present` and never run.
+                "group:shared files",
+                "step:SharedFile",
+                "endgroup",
                 "step:PostCreateHooks",
             ],
-            "copy section sits between the shared section and post-create: {:?}",
+            "caches land before the shared links, and both before post-create: {:?}",
             plan.rows
         );
         let scopes: Vec<_> = plan

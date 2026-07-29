@@ -192,25 +192,28 @@ pub(crate) fn normalize_worktree_path(
     Ok(crate::core::layout::template::normalize_path(&absolute))
 }
 
-/// The plan's row shape from the `shared:` anchor onward, as compact tokens.
+/// The plan's row shape from the `copy:` anchor onward, as compact tokens.
 ///
-/// Row identity alone cannot express "the `copy:` anchor sits after the
-/// shared section's `EndGroup` and before the post-create step" — a
-/// positional claim needs positions. Rendering the tail as strings puts the
-/// expected order in the test as one readable list, and makes a mis-splice
-/// print as a diff of two short vectors rather than a wall of `Debug`.
+/// Row identity alone cannot express "the `copy:` anchor sits before the
+/// shared section and both sit before the post-create step" — a positional
+/// claim needs positions. Rendering the tail as strings puts the expected order
+/// in the test as one readable list, and makes a mis-splice print as a diff of
+/// two short vectors rather than a wall of `Debug`.
 ///
-/// Slicing from the shared anchor deliberately ignores everything before it
-/// (fetch, tracking, branch, worktree, carry, push), which differs per
-/// creation core and is not what these tests are about. Shared by all three
-/// cores' splice tests.
+/// The window opens at the **copied-paths** anchor, which is the earlier of the
+/// two sections: opening it at `shared files` would put the copy rows outside
+/// the slice, so an assertion listing both would silently be checking only the
+/// tail. Everything before it (fetch, tracking, branch, worktree, carry, push)
+/// is deliberately ignored — it differs per creation core and is not what these
+/// tests are about. The anchor carries the resolved source, so it is matched on
+/// its prefix. Shared by all three cores' splice tests.
 #[cfg(test)]
-pub(crate) fn plan_shape_from_shared(rows: &[crate::core::stage::Row]) -> Vec<String> {
+pub(crate) fn plan_shape_from_copied(rows: &[crate::core::stage::Row]) -> Vec<String> {
     use crate::core::stage::Row;
     let start = rows
         .iter()
-        .position(|r| matches!(r, Row::Group { label } if label == "shared files"))
-        .expect("the fixture declares `shared:`, so its anchor must be planned");
+        .position(|r| matches!(r, Row::Group { label } if label.starts_with("copied paths")))
+        .expect("the fixture declares `copy:`, so its anchor must be planned");
     rows[start..]
         .iter()
         // Exhaustive on purpose — no wildcard arm. A new `Row` variant

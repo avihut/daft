@@ -167,7 +167,6 @@ pub fn execute(
     // rows that turn out to be no-ops vanish silently either way.
     let planned_shared =
         crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
-    crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
     // Cache paths declared with `copy:` get their own section (#387). The
     // CONFIG is read from the propagation source — a visitor's untracked
     // overlay lives where they are standing — while the BYTES come from
@@ -193,22 +192,29 @@ pub fn execute(
                 // thing to type, and without this the identical-commit rung would
                 // have nothing to rank against on exactly the runs where the base
                 // has no worktree of its own to take rank 1.
-                commit: crate::core::copy_source::resolve_oid(&source_worktree, &base_branch)
-                    .or_else(|| {
-                        crate::core::copy_source::resolve_oid(
-                            &source_worktree,
-                            &format!("{}/{}", params.remote_name, base_branch),
-                        )
-                    }),
+                commit: crate::core::copy_source::resolve_branch_oid(
+                    &source_worktree,
+                    &base_branch,
+                )
+                .or_else(|| {
+                    crate::core::copy_source::resolve_remote_branch_oid(
+                        &source_worktree,
+                        &params.remote_name,
+                        &base_branch,
+                    )
+                }),
             },
             &source_worktree,
             &worktree_path,
             &planned_copy,
         )
     });
+    // Caches first, daft-managed links on top — see the execution ordering
+    // below, which the plan face must mirror row for row.
     if let Some(source) = &copy_source {
         crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy, source);
     }
+    crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
     ))));
@@ -386,26 +392,37 @@ pub fn execute(
         }
     }
 
-    // Link shared files AFTER propagation and BEFORE post-create hooks.
-    // Order is load-bearing: a *visitor* daft.yml (untracked) reaches the new
-    // worktree only via the propagation step above, so reading `shared:` before
-    // propagation finds no config and silently links nothing. (A tracked daft.yml
-    // arrives via the git checkout regardless of order, which is why this bug was
-    // invisible until visitor configs existed — do not move this back above
-    // propagation.) Linking before hooks lets hooks depend on .env etc., and
-    // the `copy:` stage below closes the same window for build caches.
-    let link_result =
-        crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
-    crate::core::shared::report_link_results(&link_result, &planned_shared, sink);
-
-    // Copy declared caches (#387) AFTER shared linking and BEFORE the
-    // post-create hooks — the ordering IS the feature: a post-create
-    // `cargo build` / `npm install` has to find `target/` and `node_modules/`
-    // already in place, or the stage bought nothing. Warn, never abort: the
-    // engine returns receipts rather than errors, so a cache that failed to
-    // copy costs a yellow row, never the worktree. `force = false` — an entry
-    // that already exists at the destination is left alone here; only
-    // `daft warm --force` clobbers.
+    // Copy declared caches (#387), then link shared files, both AFTER
+    // propagation and BEFORE the post-create hooks.
+    //
+    // Two orderings are load-bearing here and they are not the same one.
+    //
+    // Against PROPAGATION: a *visitor* daft.yml (untracked) reaches the new
+    // worktree only via the propagation step above, so reading `shared:` or
+    // `copy:` before propagation finds no config and silently does nothing.
+    // (A tracked daft.yml arrives via the git checkout regardless of order,
+    // which is why that bug was invisible until visitor configs existed — do
+    // not move either stage back above propagation.)
+    //
+    // Against EACH OTHER: caches first, daft-managed links on top. Shared
+    // linking `create_dir_all`s the parents it needs, so running it first made
+    // `shared: [node_modules/.cache/creds.json]` manufacture an empty
+    // `node_modules/` that the copy stage then reported as `already present` —
+    // the cache never copied, in any worktree, with a dim row saying everything
+    // was fine. Copying first lands the tree; linking after puts the managed
+    // link on top of whatever the copy brought, which is the precedence the two
+    // features should have anyway.
+    //
+    // Against the HOOKS: both before, because that is the feature — a
+    // post-create `cargo build` / `npm install` has to find `target/` and
+    // `node_modules/` already in place, or the stage bought nothing, and a hook
+    // that reads `.env` needs it linked.
+    //
+    // Warn, never abort: the engine returns receipts rather than errors, so a
+    // cache that failed to copy costs a yellow row, never the worktree.
+    // `force = false` — an entry that already exists at the destination is left
+    // alone here; only `daft warm --force` clobbers.
+    //
     // Both are Some together or neither is: the source is resolved exactly
     // when a declaration exists, so that no repository without `copy:` pays
     // for a worktree listing on the creation path.
@@ -419,6 +436,10 @@ pub fn execute(
         );
         crate::core::copy_paths::report_copy_results(&copy_result, &planned_copy, sink);
     }
+
+    let link_result =
+        crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
+    crate::core::shared::report_link_results(&link_result, &planned_shared, sink);
 
     // Run post-create hook
     let post_hook_ctx = HookContext::new(
@@ -1695,7 +1716,7 @@ mod timeline_tests {
     /// no-op there, so the call could sit anywhere. See the checkout.rs twin.
     #[test]
     #[serial]
-    fn copy_section_splices_between_shared_and_post_create() {
+    fn copy_section_sits_before_shared_and_both_before_post_create() {
         let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
@@ -1735,20 +1756,23 @@ mod timeline_tests {
 
         let plan = sink.plan.as_ref().expect("plan committed");
         assert_eq!(
-            crate::core::worktree::plan_shape_from_shared(&plan.rows),
+            crate::core::worktree::plan_shape_from_copied(&plan.rows),
             [
-                "group:shared files",
-                "step:SharedFile",
-                "endgroup",
                 // The base branch has a resident worktree, so rank 1 takes it
                 // outright and the anchor carries no tiebreak qualifier.
                 "group:copied paths from 'main'",
                 "step:CopyPath",
                 "step:CopyPath",
                 "endgroup",
+                // Caches first, daft-managed links on top: shared linking
+                // creates the parents it needs, and an empty scaffold made the
+                // copy report `already present` and never run.
+                "group:shared files",
+                "step:SharedFile",
+                "endgroup",
                 "step:PostCreateHooks",
             ],
-            "copy section sits between the shared section and post-create: {:?}",
+            "caches land before the shared links, and both before post-create: {:?}",
             plan.rows
         );
         let scopes: Vec<_> = plan

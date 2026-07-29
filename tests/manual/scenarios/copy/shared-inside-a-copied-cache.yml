@@ -1,0 +1,91 @@
+name: A shared path inside a copied cache does not mask the copy
+description: >
+  `shared:` and `copy:` can name overlapping paths, and one ordering of the two
+  stages silently defeats the other. Linking runs `create_dir_all` on the
+  parents it needs, so `shared: [node_modules/.cache/token]` manufactures an
+  empty `node_modules/` in the new worktree — and a copy stage running after it
+  finds its destination "already present" and skips the entire entry, on every
+  worktree, forever, with a dim row saying everything is fine. Caches are
+  therefore copied FIRST and daft-managed links go on top, which is also the
+  precedence the two features should have: `copy:` moves bulk content, `shared:`
+  owns the specific paths it names. This pins both halves — the cache arrives,
+  and the shared link still points at the store.
+
+repos:
+  - name: overlap
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# overlap"
+          - path: .gitignore
+            content: |
+              node_modules/
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+    daft_yml: |
+      shared:
+        - node_modules/.cache/token
+      copy:
+        - node_modules/
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_OVERLAP
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/overlap/main"
+
+  - name: Build a cache in the source worktree
+    run: |
+      set -e
+      mkdir -p node_modules/pkg
+      printf 'module.exports = 1;\n' > node_modules/pkg/index.js
+      git check-ignore node_modules
+    cwd: "$WORK_DIR/overlap/main"
+    expect:
+      exit_code: 0
+
+  - name: Put the shared path in the store — it lives UNDER the copied entry
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/overlap/.git/.daft/shared/node_modules/.cache"
+      printf 'secret-token\n' > \
+        "$WORK_DIR/overlap/.git/.daft/shared/node_modules/.cache/token"
+    expect:
+      exit_code: 0
+
+  - name: Create a worktree — the cache must arrive, not be masked
+    run: daft go develop 2>&1
+    cwd: "$WORK_DIR/overlap/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/overlap/develop/node_modules/pkg/index.js"
+      file_contains:
+        - path: "$WORK_DIR/overlap/develop/node_modules/pkg/index.js"
+          content: "module.exports = 1;"
+
+  - name: The shared path is still a link into the store, not a private copy
+    run: |
+      set -e
+      test -L "$WORK_DIR/overlap/develop/node_modules/.cache/token"
+      grep -q 'secret-token' "$WORK_DIR/overlap/develop/node_modules/.cache/token"
+    expect:
+      exit_code: 0
+
+  - name: The copied cache is independent of the source
+    run:
+      printf 'module.exports = 2;\n' >
+      "$WORK_DIR/overlap/develop/node_modules/pkg/index.js"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/overlap/main/node_modules/pkg/index.js"
+          content: "module.exports = 1;"
+        - path: "$WORK_DIR/overlap/develop/node_modules/pkg/index.js"
+          content: "module.exports = 2;"
