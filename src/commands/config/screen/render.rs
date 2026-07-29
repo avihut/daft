@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use super::modal::{Field, Modal, Option_};
 use super::state::{Focus, Mode, RailEntry, Row, ScreenState, StatusKind};
 use crate::commands::config::resolve::{Diagnostic, Layer, Resolved};
+use crate::commands::config::write::WriteScope;
 
 /// Below this the rail is dropped: three columns in eighty cells leaves the
 /// values truncated, and the values are the thing people came for.
@@ -276,12 +277,19 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &ScreenState, show_rail: bo
     spans.push("   ".into());
     spans.push("writes: ".dim());
     // The pill is the one piece of header state that changes what a keystroke
-    // does, so it gets the emphasis and the scope name spelled out.
-    spans.push(
-        format!(" {} ", state.write_scope.label())
-            .bold()
-            .on_dark_gray(),
-    );
+    // does, so it gets the emphasis and the scope name spelled out — named for
+    // the row under the cursor, because the two scopes are different *places*
+    // per backend. "global" over a daft.yml row would promise a user-wide
+    // setting and deliver an edit to the repository's committed file.
+    let write_scope = match state.write_scope {
+        crate::git::ConfigScope::Global => WriteScope::Global,
+        _ => WriteScope::Local,
+    };
+    let scope = match state.selected() {
+        Some(resolved) => write_scope.label_for(&resolved.spec),
+        None => state.write_scope.label(),
+    };
+    spans.push(format!(" {scope} ").bold().on_dark_gray());
 
     if state.issue_count() > 0 && show_rail {
         spans.push("   ".into());

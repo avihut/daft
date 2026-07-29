@@ -311,7 +311,7 @@ fn check_removable(spec: &SettingSpec) -> Result<()> {
 
     bail!(
         "{path} is a merge-gate policy — removing it would drop the gate entirely. \
-         Edit the file directly if the repository means to retire it."
+         Retiring it is an edit to the file that declares it."
     )
 }
 

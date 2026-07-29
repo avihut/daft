@@ -68,10 +68,14 @@ fn still_set(scope: &[&str], key: &str) -> Result<bool> {
         .output()
         .context("Failed to execute git config --get-all command")?;
 
-    // Exit 1 is "no such key", which is the answer we are looking for; any
-    // other failure leaves the question open, and reporting "still set" keeps
-    // the caller on the loud path rather than inventing a success.
-    Ok(!output.stdout.is_empty())
+    // Exit 1 is git's "no such key" — the only answer that licenses the quiet
+    // path. Success with output means values remain; anything else leaves the
+    // question open, and reporting "still set" keeps the caller loud rather
+    // than inventing a success out of an empty pipe.
+    match output.status.code() {
+        Some(1) => Ok(false),
+        _ => Ok(true),
+    }
 }
 
 /// Which config file a value came from, in git's own precedence order.

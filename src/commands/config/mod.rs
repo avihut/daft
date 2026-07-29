@@ -41,8 +41,8 @@ precedence chains; this command hides that split behind one list of keys.
   daft config list --modified    Only the settings something sets
   daft config get <key>          Print one effective value
   daft config get <key> --origin Print it with the full layer-by-layer chain
-  daft config set <key> <value>  Change it in this repository
-  daft config set --global ...   Change it for every repository
+  daft config set <key> <value>  Change it for this worktree
+  daft config set --global ...   Change it at the shared scope instead
   daft config unset <key>        Remove it, revealing whatever it was masking
 
 Values are validated against the setting's own type before anything is
@@ -109,7 +109,13 @@ pub struct SetArgs {
     #[arg(value_name = "VALUE", allow_hyphen_values = true)]
     value: String,
 
-    /// Write to global config instead of this repository
+    /// Write at the shared scope rather than this worktree's own
+    ///
+    /// Where that is depends on what stores the setting: the user's global git
+    /// config, the repository's committed daft.yml, or the global layout file.
+    /// A daft.yml setting is the one to watch — its shared scope is a tracked
+    /// file, so the change lands in the repository's diff rather than
+    /// user-wide. Every write says which file it went to.
     #[arg(long)]
     global: bool,
 }
@@ -120,7 +126,10 @@ pub struct UnsetArgs {
     #[arg(value_name = "KEY")]
     key: String,
 
-    /// Remove from global config instead of this repository
+    /// Remove at the shared scope rather than this worktree's own
+    ///
+    /// The same three stores `set --global` writes: global git config, the
+    /// committed daft.yml, or the global layout file.
     #[arg(long)]
     global: bool,
 }

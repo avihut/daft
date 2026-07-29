@@ -21,8 +21,8 @@ precedence chains; this command hides that split behind one list of keys.
   daft config list --modified    Only the settings something sets
   daft config get <key>          Print one effective value
   daft config get <key> --origin Print it with the full layer-by-layer chain
-  daft config set <key> <value>  Change it in this repository
-  daft config set --global ...   Change it for every repository
+  daft config set <key> <value>  Change it for this worktree
+  daft config set --global ...   Change it at the shared scope instead
   daft config unset <key>        Remove it, revealing whatever it was masking
 
 Values are validated against the setting's own type before anything is
@@ -94,7 +94,7 @@ daft config set [OPTIONS] <KEY> <VALUE>
 
 | Option | Description | Default |
 |--------|-------------|----------|
-| `--global` | Write to global config instead of this repository |  |
+| `--global` | Write at the shared scope rather than this worktree's own |  |
 
 ### unset
 
@@ -114,7 +114,7 @@ daft config unset [OPTIONS] <KEY>
 
 | Option | Description | Default |
 |--------|-------------|----------|
-| `--global` | Remove from global config instead of this repository |  |
+| `--global` | Remove at the shared scope rather than this worktree's own |  |
 
 ### remote-sync
 

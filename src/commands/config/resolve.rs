@@ -328,8 +328,17 @@ pub enum Layer {
     /// One layer of the worktree-layout chain.
     Layout(LayoutSource),
     /// A `daft.yml` file. `tracked` distinguishes the team's committed
-    /// convention from a visitor's own untracked copy.
-    Yaml { file: String, tracked: bool },
+    /// convention from a visitor's own untracked copy; `overlay` marks the
+    /// `daft.local.yml` that outranks the rest.
+    ///
+    /// The two are independent, and conflating them is a trap: in a visitor's
+    /// repository the main config is untracked too, so `tracked` alone cannot
+    /// say which of the two files a write should land in.
+    Yaml {
+        file: String,
+        tracked: bool,
+        overlay: bool,
+    },
 }
 
 impl Layer {
@@ -341,7 +350,7 @@ impl Layer {
             Self::Git(scope) => scope.label().to_string(),
             Self::Env(var) => format!("${var}"),
             Self::Layout(source) => layout_layer_label(*source).to_string(),
-            Self::Yaml { file, tracked } => {
+            Self::Yaml { file, tracked, .. } => {
                 if *tracked {
                     file.clone()
                 } else {
@@ -496,6 +505,10 @@ impl Resolved {
     /// Both other backends have exactly two writable rungs, which is what
     /// makes the mapping total.
     pub fn value_written_at(&self, spec: &SettingSpec, scope: WriteScope) -> Option<&str> {
+        // `overlay` rather than `tracked`: tracked says whether the *main*
+        // config is committed, which is false for a visitor's own daft.yml —
+        // and then the committed-position file and the overlay are both
+        // untracked, so tracked cannot tell the two write targets apart.
         let wanted = |rung: &Rung| match (spec.backend, scope) {
             (Backend::GitConfig, _) => rung.layer == Layer::Git(scope.as_config_scope()),
             (Backend::LayoutChain, WriteScope::Global) => {
@@ -504,14 +517,11 @@ impl Resolved {
             (Backend::LayoutChain, WriteScope::Local) => {
                 rung.layer == Layer::Layout(LayoutSource::RepoStore)
             }
-            // The overlay is the only untracked file in the chain, and the
-            // committed one is the only writable tracked file — an extends
-            // rung is tracked but was marked unwritable when it was built.
             (Backend::DaftYml { .. }, WriteScope::Local) => {
-                matches!(rung.layer, Layer::Yaml { tracked: false, .. })
+                matches!(rung.layer, Layer::Yaml { overlay: true, .. })
             }
             (Backend::DaftYml { .. }, WriteScope::Global) => {
-                matches!(rung.layer, Layer::Yaml { tracked: true, .. }) && rung.writable
+                matches!(rung.layer, Layer::Yaml { overlay: false, .. }) && rung.writable
             }
         };
 
@@ -797,20 +807,21 @@ fn resolve_one(spec: &SettingSpec, snapshot: &Snapshot, inherited: Option<String
         // targets — `set` edits the main file or the overlay, so an extends
         // rung that advertised itself as writable would point at a file no
         // scope can reach.
-        let chain = std::iter::once((files.main.as_ref(), "daft.yml", true))
+        let chain = std::iter::once((files.main.as_ref(), "daft.yml", true, false))
             .chain(
                 files
                     .extends
                     .iter()
-                    .map(|layer| (Some(layer), "daft.yml", false)),
+                    .map(|layer| (Some(layer), "daft.yml", false, false)),
             )
             .chain(std::iter::once((
                 files.local.as_ref(),
                 "daft.local.yml",
                 true,
+                true,
             )));
 
-        for (layer, file, writable) in chain {
+        for (layer, file, writable, overlay) in chain {
             let Some(layer) = layer else { continue };
             rungs.push(Rung {
                 layer: Layer::Yaml {
@@ -820,6 +831,7 @@ fn resolve_one(spec: &SettingSpec, snapshot: &Snapshot, inherited: Option<String
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| file.to_string()),
                     tracked: layer.tracked,
+                    overlay,
                 },
                 value: scalar_at(&layer.doc, path),
                 origin_path: Some(layer.path.clone()),
@@ -1745,6 +1757,37 @@ mod tests {
             retention.value_at(ConfigScope::Local),
             None,
             "the git-only lookup is blind here — that was the bug"
+        );
+    }
+
+    #[test]
+    fn the_editor_finds_both_files_in_a_visitor_repository_too() {
+        // A visitor's own daft.yml is untracked, so `tracked` is false for the
+        // committed-position file *and* the overlay. Keying the two write
+        // targets off it therefore picks the wrong file for one scope and no
+        // file at all for the other — and every other test here builds main
+        // as tracked, so none of them can see it.
+        let set = resolve_all(&yaml_snapshot(YamlLayers {
+            main: Some(yaml_layer("daft.yml", "log:\n  retention: 30d\n", false)),
+            extends: vec![],
+            local: Some(yaml_layer(
+                "daft.local.yml",
+                "log:\n  retention: 90d\n",
+                false,
+            )),
+        }));
+
+        let retention = set.get("log.retention").unwrap();
+        let spec = find("log.retention").unwrap();
+        assert_eq!(
+            retention.value_written_at(&spec, WriteScope::Global),
+            Some("30d"),
+            "the committed-position file, tracked or not"
+        );
+        assert_eq!(
+            retention.value_written_at(&spec, WriteScope::Local),
+            Some("90d"),
+            "the overlay"
         );
     }
 
