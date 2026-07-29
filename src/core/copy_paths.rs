@@ -1138,7 +1138,7 @@ fn copy_one_inner(
     // only a `-v` debug line would ever read. Nothing is lost by skipping it:
     // the row's method and byte count come from what the copier reports.
     let gate_can_fire = gate_can_fire_for(config);
-    let measured = config.max_size_bytes.is_some();
+    let measured = measurement_needed_for(config);
     if measured {
         let sources: Vec<PathBuf> = planned.iter().map(|p| source.join(&p.rel)).collect();
         for (item, bytes) in planned.iter_mut().zip(measure_all(&sources)) {
@@ -1248,6 +1248,19 @@ fn copy_one_inner(
 /// every declared cache for a number nothing consumed.
 fn gate_can_fire_for(config: &ResolvedCopyConfig) -> bool {
     config.max_size_bytes.is_some() || config.fallback == CopyFallback::Skip
+}
+
+/// Whether anything will read a measured byte count, and therefore whether the
+/// **size walk** has to run.
+///
+/// Deliberately a different predicate from [`gate_can_fire_for`], and the whole
+/// point of the split: `gate_byte_copies` returns on `fallback: skip` before a
+/// byte count is ever consulted, so a config with no cap has nothing to weigh.
+/// One flag serving both made every `fallback: skip` repository pay a full
+/// recursive walk of every declared cache — this repository's own `daft.yml`
+/// included — for a number only a `-v` line would have printed.
+fn measurement_needed_for(config: &ResolvedCopyConfig) -> bool {
+    config.max_size_bytes.is_some()
 }
 
 /// Whether the byte-copying part of an entry is allowed to proceed.
@@ -5038,12 +5051,22 @@ mod tests {
             "`fallback: skip` needs the probe's answer even with no cap"
         );
 
-        // But the PROBE gate is not the MEASUREMENT gate. `gate_byte_copies`
-        // returns on `fallback: skip` before a byte count is read, so sharing
-        // one flag made every skip-fallback repository — this one included —
-        // walk every declared cache in full on the creation path for a number
-        // nothing consumed. The `-v` line is where that shows: it quotes a size
-        // only when one was actually measured.
+        // But the PROBE gate is not the MEASUREMENT gate, and that asymmetry is
+        // the whole fix: `gate_byte_copies` returns on `fallback: skip` before a
+        // byte count is read, so sharing one flag made every skip-fallback
+        // repository — this one included — walk every declared cache in full on
+        // the creation path for a number nothing consumed.
+        assert!(
+            !measurement_needed_for(&skipping),
+            "`fallback: skip` needs the probe's answer, but has no cap to weigh"
+        );
+        assert!(!measurement_needed_for(&config(&["target"])));
+        assert!(measurement_needed_for(&capped));
+
+        // The `-v` line follows the measurement, quoting a size only when one
+        // was taken. Both assertions use configs that reach that line on EVERY
+        // filesystem — `fallback: skip` refuses at the gate wherever reflink is
+        // unavailable (all of Linux CI), so there is no line there to inspect.
         #[derive(Default)]
         struct DebugSink(Vec<String>);
         impl crate::core::ProgressSink for DebugSink {
@@ -5054,25 +5077,31 @@ mod tests {
             }
         }
 
-        let (_tmp, skip_source, skip_target) = repo_fixture("/target\n");
-        write(&skip_source.join("target/app"), b"0123456789");
-        let mut sink = DebugSink::default();
-        copy_entries(&skip_source, &skip_target, &skipping, false, &mut sink);
-        assert!(
-            sink.0.iter().any(|line| line == "copy: target — 1 path(s)"),
-            "`fallback: skip` with no cap must not walk the tree: {:?}",
-            sink.0
-        );
-
-        let mut sink = DebugSink::default();
         let (_tmp, cap_source, cap_target) = repo_fixture("/target\n");
         write(&cap_source.join("target/app"), b"0123456789");
+        let mut sink = DebugSink::default();
         copy_entries(&cap_source, &cap_target, &capped, false, &mut sink);
         assert!(
             sink.0
                 .iter()
                 .any(|line| line.starts_with("copy: target — 1 path(s), ")),
             "a cap has to be weighed against a measured size: {:?}",
+            sink.0
+        );
+
+        let (_tmp, plain_source, plain_target) = repo_fixture("/target\n");
+        write(&plain_source.join("target/app"), b"0123456789");
+        let mut sink = DebugSink::default();
+        copy_entries(
+            &plain_source,
+            &plain_target,
+            &config(&["target"]),
+            false,
+            &mut sink,
+        );
+        assert!(
+            sink.0.iter().any(|line| line == "copy: target — 1 path(s)"),
+            "no cap, no walk, and no size in the line: {:?}",
             sink.0
         );
 
