@@ -86,6 +86,12 @@ pub enum CopySourceReason {
     SameCommitWarmest,
     /// Rank 3: nothing more specific — the propagation source.
     Standing,
+    /// Rank 3 reached **past** a live rank-2 candidate that carried none of
+    /// the declared caches. Distinct from [`Standing`](Self::Standing) because
+    /// the user would otherwise see the ladder skip a same-commit worktree with
+    /// nothing to say why — which is exactly what the bug this module fixes
+    /// looked like.
+    StandingWarmer,
 }
 
 /// The resolved cache source: where the bytes come from, and why.
@@ -119,8 +125,28 @@ impl CopySource {
             CopySourceReason::SameCommitWarmest => {
                 format!("from '{label}' · same commit, warmest")
             }
+            CopySourceReason::StandingWarmer => {
+                format!("from '{label}' · the same-commit worktree is empty")
+            }
         }
     }
+}
+
+/// The two filesystem questions [`rank`] has to ask about a candidate, injected
+/// so the ranking itself stays pure and every rung is testable without a disk.
+pub struct Probes<'a> {
+    /// How warm this candidate's declared caches look.
+    pub warmth: &'a dyn Fn(&Path) -> Warmth,
+    /// Whether the candidate is still on disk at all.
+    ///
+    /// `git worktree list --porcelain` keeps reporting a worktree whose
+    /// directory was deleted — with its last `HEAD <oid>` and `branch` intact —
+    /// until somebody runs `git worktree prune`. Ranking a ghost that way makes
+    /// creation announce `copied paths from 'ghost' · same commit` and copy
+    /// nothing, and makes `daft warm` refuse to run at all with
+    /// `source worktree does not exist`. `push.rs::classify_worktree` already
+    /// models this state; the ladder has to know about it too.
+    pub alive: &'a dyn Fn(&Path) -> bool,
 }
 
 /// How warm a candidate's declared caches look.
@@ -218,6 +244,29 @@ pub fn resolve_oid(dir: &Path, rev: &str) -> Option<String> {
     (!oid.is_empty()).then_some(oid)
 }
 
+/// The OID of a **branch**, resolved through its full ref so nothing else can
+/// answer for it.
+///
+/// git's refname resolution order puts `refs/tags/<name>` ahead of
+/// `refs/heads/<name>`, so a bare `git rev-parse release` in a repository that
+/// has both a `release` branch and a `release` tag returns the *tag*. The
+/// anchor is supposed to describe the content the new worktree will hold, which
+/// for `daft start hotfix release` is the branch's; taking the tag's OID ranks
+/// whichever worktree sits at the tag and seeds the new worktree from unrelated
+/// content, while the rail announces `· same commit` over it.
+///
+/// The remote-tracking form is spelled out for the same reason: `<remote>/<b>`
+/// as a bare name is itself ambiguous with a tag of that name.
+pub fn resolve_branch_oid(dir: &Path, branch: &str) -> Option<String> {
+    resolve_oid(dir, &format!("refs/heads/{branch}"))
+}
+
+/// [`resolve_branch_oid`] for a branch that exists only on the remote —
+/// `daft start feat release` where `release` has never been checked out here.
+pub fn resolve_remote_branch_oid(dir: &Path, remote: &str, branch: &str) -> Option<String> {
+    resolve_oid(dir, &format!("refs/remotes/{remote}/{branch}"))
+}
+
 /// Resolve the cache source, doing the IO.
 ///
 /// `standing` is the propagation source (what `resolve_source_worktree`
@@ -235,9 +284,16 @@ pub fn resolve(
         return standing_source(&[], standing);
     };
     let entries = parse_worktree_list_porcelain(&porcelain);
-    rank(&entries, anchor, standing, destination, &|path| {
-        measure_warmth(path, declared)
-    })
+    rank(
+        &entries,
+        anchor,
+        standing,
+        destination,
+        &Probes {
+            warmth: &|path| measure_warmth(path, declared),
+            alive: &|path| path.is_dir(),
+        },
+    )
 }
 
 /// The ranking itself: pure, so every rung and both tiebreaks are testable
@@ -248,13 +304,14 @@ pub fn rank(
     anchor: &CopyAnchor,
     standing: &Path,
     destination: &Path,
-    warmth_of: &dyn Fn(&Path) -> Warmth,
+    probes: &Probes<'_>,
 ) -> CopySource {
-    // The bare entry has no working tree to read, and the destination must
-    // never be its own source.
+    // The bare entry has no working tree to read, the destination must never be
+    // its own source, and a stale entry is not a worktree at all — see
+    // `Probes::alive`.
     let usable: Vec<&WorktreeListEntry> = entries
         .iter()
-        .filter(|e| !e.is_bare && !same_path(&e.path, destination))
+        .filter(|e| !e.is_bare && !same_path(&e.path, destination) && (probes.alive)(&e.path))
         .collect();
 
     // ── Rank 1: the anchor branch's own worktree ─────────────────────────
@@ -281,29 +338,52 @@ pub fn rank(
         // same way on every machine and every run.
         at_commit.sort_by(|a, b| a.path.cmp(&b.path));
 
-        match at_commit.len() {
-            0 => {}
-            1 => return source_of(at_commit[0], CopySourceReason::SameCommit),
-            _ => {
+        let winner = match at_commit.len() {
+            0 => None,
+            1 => Some((at_commit[0], CopySourceReason::SameCommit)),
+            _ => Some(
                 if let Some(entry) = at_commit.iter().find(|e| same_path(&e.path, standing)) {
-                    return source_of(entry, CopySourceReason::SameCommitStanding);
-                }
-
-                let mut scored: Vec<(Warmth, &WorktreeListEntry)> =
-                    at_commit.iter().map(|e| (warmth_of(&e.path), *e)).collect();
-                // Stable sort on a path-ordered input: equal warmth keeps
-                // path order.
-                scored.sort_by_key(|(warmth, _)| std::cmp::Reverse(*warmth));
-
-                // Only claim a warmth tiebreak when warmth actually broke it.
-                let decided = scored[0].0 > scored[1].0;
-                let reason = if decided {
-                    CopySourceReason::SameCommitWarmest
+                    (*entry, CopySourceReason::SameCommitStanding)
                 } else {
-                    CopySourceReason::SameCommit
-                };
-                return source_of(scored[0].1, reason);
+                    let mut scored: Vec<(Warmth, &WorktreeListEntry)> = at_commit
+                        .iter()
+                        .map(|e| ((probes.warmth)(&e.path), *e))
+                        .collect();
+                    // Stable sort on a path-ordered input: equal warmth keeps
+                    // path order.
+                    scored.sort_by_key(|(warmth, _)| std::cmp::Reverse(*warmth));
+
+                    // Only claim a warmth tiebreak when warmth actually broke it.
+                    let decided = scored[0].0 > scored[1].0;
+                    let reason = if decided {
+                        CopySourceReason::SameCommitWarmest
+                    } else {
+                        CopySourceReason::SameCommit
+                    };
+                    (scored[0].1, reason)
+                },
+            ),
+        };
+
+        // A rank-2 winner that carries NONE of the declared caches is not a
+        // stand-in for anything: the stage would report `nothing to copy yet`
+        // on every row and the worktree would start cold, while a worktree that
+        // does have them sat one rung down. Specificity earns the choice; it
+        // does not earn copying nothing when there is something to copy.
+        //
+        // Only ever demotes towards a source that is genuinely warmer, so a
+        // repository where nothing is built yet still resolves exactly as the
+        // ladder says.
+        if let Some((entry, reason)) = winner {
+            if (probes.warmth)(&entry.path).present > 0
+                || (probes.warmth)(standing).present == 0
+                || same_path(&entry.path, standing)
+            {
+                return source_of(entry, reason);
             }
+            let mut demoted = standing_source(entries, standing);
+            demoted.reason = CopySourceReason::StandingWarmer;
+            return demoted;
         }
     }
 
@@ -375,6 +455,20 @@ mod tests {
         Warmth::default()
     }
 
+    /// Every candidate is on disk — the ordinary case, so tests about *ranking*
+    /// do not have to restate it.
+    fn all_alive(_: &Path) -> bool {
+        true
+    }
+
+    /// Probe set for a test that only cares about warmth.
+    fn probes<'a>(warmth: &'a dyn Fn(&Path) -> Warmth) -> Probes<'a> {
+        Probes {
+            warmth,
+            alive: &all_alive,
+        }
+    }
+
     /// The bug this module exists to fix: `daft start feature-b master` run
     /// from inside feature-a used to copy feature-a's caches.
     #[test]
@@ -393,7 +487,7 @@ mod tests {
             &anchor,
             Path::new("/p/feature-a"),
             Path::new("/p/feature-b"),
-            &cold,
+            &probes(&cold),
         );
 
         assert_eq!(resolved.path, PathBuf::from("/p/master"));
@@ -419,7 +513,7 @@ mod tests {
             &anchor,
             Path::new("/p/feature-a"),
             Path::new("/p/new"),
-            &cold,
+            &probes(&cold),
         );
 
         assert_eq!(resolved.path, PathBuf::from("/p/release"));
@@ -442,7 +536,7 @@ mod tests {
             &anchor,
             Path::new("/p/feature-a"),
             Path::new("/p/new"),
-            &cold,
+            &probes(&cold),
         );
 
         assert_eq!(resolved.path, PathBuf::from("/p/sandbox-3"));
@@ -471,7 +565,7 @@ mod tests {
             &anchor,
             Path::new("/p/c"),
             Path::new("/p/new"),
-            &|_| Warmth::default(),
+            &probes(&|_| Warmth::default()),
         );
 
         assert_eq!(resolved.path, PathBuf::from("/p/c"));
@@ -495,7 +589,7 @@ mod tests {
             &anchor,
             Path::new("/p/elsewhere"),
             Path::new("/p/new"),
-            &|path| {
+            &probes(&|path| {
                 if path == Path::new("/p/b") {
                     Warmth {
                         present: 2,
@@ -507,7 +601,7 @@ mod tests {
                         newest: 999,
                     }
                 }
-            },
+            }),
         );
 
         assert_eq!(
@@ -535,7 +629,7 @@ mod tests {
             &anchor,
             Path::new("/p/elsewhere"),
             Path::new("/p/new"),
-            &cold,
+            &probes(&cold),
         );
 
         assert_eq!(resolved.path, PathBuf::from("/p/a"), "path order decides");
@@ -559,12 +653,108 @@ mod tests {
             &anchor,
             Path::new("/p/feature-a"),
             Path::new("/p/new"),
-            &cold,
+            &probes(&cold),
         );
 
         assert_eq!(resolved.path, PathBuf::from("/p/feature-a"));
         assert_eq!(resolved.label, "feature-a");
         assert_eq!(resolved.reason, CopySourceReason::Standing);
+    }
+
+    /// A worktree someone `rm -rf`'d without pruning is still in the porcelain,
+    /// branch and OID intact. Ranking it wins the rung and delivers nothing.
+    #[test]
+    fn a_worktree_that_is_no_longer_on_disk_is_not_a_candidate() {
+        let entries = vec![
+            entry("/p/ghost", Some("master"), Some("mmm")),
+            entry("/p/feature-a", Some("feature-a"), Some("aaa")),
+        ];
+        let anchor = CopyAnchor {
+            branch: Some("master".into()),
+            commit: Some("mmm".into()),
+        };
+
+        let resolved = rank(
+            &entries,
+            &anchor,
+            Path::new("/p/feature-a"),
+            Path::new("/p/new"),
+            &Probes {
+                warmth: &cold,
+                alive: &|path| path != Path::new("/p/ghost"),
+            },
+        );
+
+        assert_eq!(
+            resolved.path,
+            PathBuf::from("/p/feature-a"),
+            "a stale porcelain entry must not win rank 1"
+        );
+        assert_eq!(resolved.reason, CopySourceReason::Standing);
+    }
+
+    /// Specificity earns the choice; it does not earn copying nothing. A
+    /// same-commit worktree that carries none of the declared caches — the cold
+    /// sandbox `daft go <tag>` leaves behind — is not a stand-in for anything.
+    #[test]
+    fn an_empty_same_commit_worktree_loses_to_a_source_that_actually_has_caches() {
+        let entries = vec![
+            entry("/p/sandbox", None, Some("mmm")),
+            entry("/p/main", Some("main"), Some("aaa")),
+        ];
+        let anchor = CopyAnchor {
+            branch: Some("release-2".into()),
+            commit: Some("mmm".into()),
+        };
+
+        let resolved = rank(
+            &entries,
+            &anchor,
+            Path::new("/p/main"),
+            Path::new("/p/new"),
+            &probes(&|path| {
+                if path == Path::new("/p/main") {
+                    Warmth {
+                        present: 1,
+                        newest: 10,
+                    }
+                } else {
+                    Warmth::default()
+                }
+            }),
+        );
+
+        assert_eq!(resolved.path, PathBuf::from("/p/main"));
+        assert_eq!(
+            resolved.reason,
+            CopySourceReason::StandingWarmer,
+            "the rail has to say why the more specific candidate was passed over"
+        );
+    }
+
+    /// The demotion only ever moves towards something warmer. In a repository
+    /// where nothing has been built yet, the ladder still says what it says.
+    #[test]
+    fn an_empty_same_commit_worktree_still_wins_when_nothing_anywhere_is_built() {
+        let entries = vec![
+            entry("/p/sandbox", None, Some("mmm")),
+            entry("/p/main", Some("main"), Some("aaa")),
+        ];
+        let anchor = CopyAnchor {
+            branch: Some("release-2".into()),
+            commit: Some("mmm".into()),
+        };
+
+        let resolved = rank(
+            &entries,
+            &anchor,
+            Path::new("/p/main"),
+            Path::new("/p/new"),
+            &probes(&cold),
+        );
+
+        assert_eq!(resolved.path, PathBuf::from("/p/sandbox"));
+        assert_eq!(resolved.reason, CopySourceReason::SameCommit);
     }
 
     #[test]
@@ -585,7 +775,7 @@ mod tests {
             &anchor,
             Path::new("/p/elsewhere"),
             Path::new("/p/target"),
-            &cold,
+            &probes(&cold),
         );
 
         assert_eq!(resolved.path, PathBuf::from("/p/other"));
@@ -607,7 +797,7 @@ mod tests {
             &anchor,
             Path::new("/p/elsewhere"),
             Path::new("/p/new"),
-            &cold,
+            &probes(&cold),
         );
 
         assert_eq!(resolved.path, PathBuf::from("/p/main"));
@@ -622,7 +812,7 @@ mod tests {
             &CopyAnchor::none(),
             Path::new("/p/feature-a"),
             Path::new("/p/new"),
-            &cold,
+            &probes(&cold),
         );
 
         assert_eq!(resolved.reason, CopySourceReason::Standing);
