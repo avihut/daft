@@ -26,27 +26,40 @@ pub fn rail_fits(width: u16) -> bool {
     width >= RAIL_MIN_WIDTH
 }
 
+/// The vertical split: header, filter, list, detail, footer.
+///
+/// One function because two callers need the same answer. Deriving the list's
+/// height by subtracting a chrome total instead is wrong twice over: it drifts
+/// the moment a pane is added, and it disagrees with the solver *today* on a
+/// short terminal, where `Min(3)` outranks the detail pane's fixed height and
+/// the detail pane is what gives way. Subtracting a fixed 16 from a 16-row
+/// frame yields zero rows, which reads as "nothing is visible" and stops the
+/// scroll from ever following the cursor.
+fn panes(area: Rect, filtering: bool) -> [Rect; 5] {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),                    // header
+            Constraint::Length(u16::from(filtering)), // filter
+            Constraint::Min(3),                       // list
+            Constraint::Length(DETAIL_HEIGHT),        // detail
+            Constraint::Length(1),                    // footer
+        ])
+        .split(area);
+    [rows[0], rows[1], rows[2], rows[3], rows[4]]
+}
+
 /// How many list rows fit, given the frame — the event loop needs this to
 /// scroll by a page and to keep the cursor visible.
 pub fn list_height(area: Rect, filtering: bool) -> usize {
-    let chrome = 1 /* header */ + 1 /* footer */ + u16::from(filtering) + DETAIL_HEIGHT;
-    area.height.saturating_sub(chrome) as usize
+    panes(area, filtering)[2].height as usize
 }
 
 pub fn draw(frame: &mut Frame, state: &ScreenState) {
     let area = frame.area();
     let show_rail = rail_fits(area.width);
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),                               // header
-            Constraint::Length(u16::from(state.is_filtering())), // filter
-            Constraint::Min(3),                                  // list
-            Constraint::Length(DETAIL_HEIGHT),                   // detail
-            Constraint::Length(1),                               // footer
-        ])
-        .split(area);
+    let rows = panes(area, state.is_filtering());
 
     draw_header(frame, rows[0], state, show_rail);
     if state.is_filtering() {
@@ -1196,6 +1209,48 @@ mod tests {
         for (width, height) in [(20, 5), (40, 8), (100, 3), (200, 60)] {
             let _ = painted(&state, width, height);
         }
+    }
+
+    #[test]
+    fn the_viewport_matches_the_pane_the_layout_actually_gave_the_list() {
+        // Deriving the height by subtracting a fixed chrome total disagreed
+        // with the solver exactly where it mattered: `Min(3)` outranks the
+        // detail pane's fixed height, so on a short terminal the detail pane
+        // gives way and the list keeps rows the arithmetic said were gone.
+        // At sixteen rows it returned zero, `follow_cursor` early-returned on
+        // it, and the list froze while the cursor walked off the bottom.
+        for height in [10, 16, 17, 19, 24, 40] {
+            let area = Rect::new(0, 0, 120, height);
+            let measured = list_height(area, false);
+            let drawn = panes(area, false)[2].height as usize;
+            assert_eq!(
+                measured, drawn,
+                "at {height} rows the scroll and the paint disagree"
+            );
+            assert!(
+                measured > 0,
+                "a list with no rows can never follow its cursor ({height} rows)"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_terminal_still_scrolls_to_follow_the_cursor() {
+        let mut state = state_with(vec![]);
+        let height = list_height(Rect::new(0, 0, 120, 16), false);
+        state.move_to_bottom();
+        state.follow_cursor(height);
+        assert!(
+            state.scroll > 0,
+            "the cursor is past the last visible row, so the viewport has to move"
+        );
+        assert!(
+            state.cursor() >= state.scroll && state.cursor() < state.scroll + height,
+            "cursor {} outside viewport [{}, {})",
+            state.cursor(),
+            state.scroll,
+            state.scroll + height
+        );
     }
 
     #[test]
