@@ -935,6 +935,7 @@ mod sandbox_target_tests {
             branch: None,
             is_bare: false,
             is_detached: true,
+            head: None,
         }
     }
 
@@ -972,6 +973,7 @@ mod sandbox_target_tests {
             branch: Some("v1".into()),
             is_bare: false,
             is_detached: false,
+            head: None,
         };
         assert!(sandbox_target_by_name("v1", &identities, &[attached]).is_none());
     }
@@ -1094,6 +1096,7 @@ mod sandbox_target_tests {
             branch: Some("main-forky".into()),
             is_bare: false,
             is_detached: false,
+            head: None,
         };
 
         let mut resolved = Vec::new();

@@ -279,6 +279,7 @@ mod tests {
             branch: branch.map(str::to_string),
             is_bare: false,
             is_detached: branch.is_none(),
+            head: None,
         }
     }
 
@@ -399,6 +400,7 @@ mod tests {
             branch: None,
             is_bare: true,
             is_detached: false,
+            head: None,
         };
         assert_eq!(resolve_identities(&[bare]), vec![None]);
     }
@@ -412,6 +414,7 @@ mod tests {
             branch: None,
             is_bare: true,
             is_detached: false,
+            head: None,
         };
         let ids = resolve_identities(&[bare, entry(&main, Some("main"))]);
         assert_eq!(ids.len(), 2);

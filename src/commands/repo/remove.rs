@@ -1008,6 +1008,7 @@ mod tests {
             branch: branch.map(String::from),
             is_bare: false,
             is_detached: branch.is_none(),
+            head: None,
         }
     }
 
@@ -1101,6 +1102,7 @@ mod tests {
             branch: Some("feat".to_string()),
             is_bare: false,
             is_detached: false,
+            head: None,
         }];
         let rows = build_tui_rows(&entries);
 
@@ -1163,12 +1165,14 @@ mod tests {
                 branch: Some("main".into()),
                 is_bare: false,
                 is_detached: false,
+                head: None,
             },
             WorktreeEntry {
                 path: PathBuf::from("/tmp/repo/feature"),
                 branch: Some("feature".into()),
                 is_bare: false,
                 is_detached: false,
+                head: None,
             },
         ];
         assert_eq!(
@@ -1190,12 +1194,14 @@ mod tests {
                 branch: None,
                 is_bare: false,
                 is_detached: true,
+                head: None,
             },
             WorktreeEntry {
                 path: PathBuf::from("/tmp/repo/main"),
                 branch: Some("main".into()),
                 is_bare: false,
                 is_detached: false,
+                head: None,
             },
         ];
         assert_eq!(
