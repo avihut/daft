@@ -8,6 +8,26 @@ merge:
   ff: only
   source_worktree: clean
 
+# Gitignored build caches replicated into every new worktree. The copy stage
+# runs before the post-create hooks below, so `mise dev` reconciles a warm
+# `target/` instead of building one from nothing — the dependency half of a
+# cargo build survives the move even though our own crates rebuild.
+#
+# `fallback: skip` is the honest posture for a tree this size. On a reflinking
+# filesystem (APFS, btrfs, XFS `reflink=1`, OpenZFS 2.2+) the replica costs
+# almost nothing; anywhere else the entry is skipped with a yellow row rather
+# than turning every `daft start` into a multi-gigabyte byte copy — and one per
+# fork under `daft start --fork -n N`, which does not deduplicate.
+#
+# Entries are worktree-relative: `target/`, never `/target/`, whatever
+# .gitignore spells.
+copy:
+  paths:
+    - target/
+    - node_modules/
+    - docs/node_modules/
+  fallback: skip
+
 hooks:
   post-clone:
     jobs:
