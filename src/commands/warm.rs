@@ -35,9 +35,11 @@ standing in, then the default branch's. Both the target and --from accept a
 worktree directory name, a branch name, or a path under the project root.
 
 Entries that already exist in the target are left alone, which makes repeat
-runs a no-op; pass --force to replace them. On a filesystem that supports
-copy-on-write (APFS, btrfs, XFS with reflink=1, OpenZFS 2.2+, ReFS) the copy
-is near-free until the caches diverge.
+runs a no-op; pass --force to replace them. Running --force while standing
+inside a cache it replaces moves you to the target worktree's root, because
+that directory is unlinked out from under your shell. On a filesystem that
+supports copy-on-write (APFS, btrfs, XFS with reflink=1, OpenZFS 2.2+, ReFS)
+the copy is near-free until the caches diverge.
 
 Copy failures never fail the command: an entry that is tracked by git, too
 large for its max_size, or unreadable is reported and the rest still copy.
@@ -98,14 +100,69 @@ pub fn run() -> Result<()> {
         remote: settings.remote.clone(),
     };
 
+    // Snapshot the cwd BEFORE anything is removed. `--force` unlinks each
+    // destination entry before recopying it, so a shell standing in
+    // `<worktree>/target/debug` has its directory pulled out from under it —
+    // and by then `current_dir()` can no longer say where that was. Only ever
+    // taken for the run that can destroy something.
+    let original_cwd = args.force.then(|| std::env::current_dir().ok()).flatten();
+
     let result = {
         let mut sink = OutputSink(&mut output);
         warm::execute(&params, &git, &project_root, &mut sink)?
     };
 
     render_warm_result(&result, args.force, &mut output);
+    rescue_deleted_cwd(original_cwd, &result.target);
 
     Ok(())
+}
+
+/// Hand the shell somewhere to stand when `--force` replaced the directory it
+/// was in.
+///
+/// The test is `current_dir()`, and it has to be. `--force` removes a cache
+/// tree and immediately recreates it, so the *path* exists again a moment
+/// later — `exists()` reports everything is fine while the shell is already
+/// broken, and on APFS even the inode number can be handed straight back.
+/// What does not come back is the process's cwd *handle*: once the directory
+/// it refers to is unlinked, `getcwd()` fails, which is precisely the
+/// `getcwd: cannot access parent directories` the user is about to hit in
+/// every subsequent command. Ask the kernel the same question they will.
+///
+/// The target worktree root is the answer, not a distant parent: it survives
+/// (only entries *inside* it were replaced) and it is where the user was
+/// working. Nothing fires unless the cwd really is gone, so the ordinary
+/// `daft warm --force` run never moves anybody.
+///
+/// The `eprintln` fallback matters as much as the write: a user without the
+/// shell wrapper gets a broken shell and no explanation otherwise, and no
+/// binary can `cd` its own parent.
+fn rescue_deleted_cwd(before: Option<std::path::PathBuf>, target: &std::path::Path) {
+    let Some(before) = before else {
+        return;
+    };
+    if std::env::current_dir().is_ok() {
+        return; // the shell is still standing somewhere real
+    }
+    // `before` came from `current_dir()`, which is always the resolved path;
+    // `target` came from worktree resolution and may still carry a symlinked
+    // prefix. On macOS that is every path under `/tmp`, whose real name is
+    // `/private/tmp` — a plain `starts_with` calls the worktree and its own
+    // subdirectory unrelated and silently skips the rescue.
+    let target_real = target.canonicalize();
+    let root = target_real.as_deref().unwrap_or(target);
+    if !before.starts_with(root) {
+        return;
+    }
+    if let Ok(cd_file) = std::env::var(crate::CD_FILE_ENV) {
+        let _ = std::fs::write(&cd_file, format!("{}\n", target.display()));
+    } else {
+        eprintln!(
+            "Run `cd {}` (--force replaced the directory you were standing in)",
+            target.display()
+        );
+    }
 }
 
 /// Render one line per declared entry, then a summary.
@@ -129,6 +186,23 @@ fn render_warm_result(result: &warm::WarmResult, forced: bool, output: &mut dyn 
         ));
         output.warning(&format!(
             "nothing was copied into '{}'; run `{}` to see what is wrong",
+            result.target_name,
+            crate::daft_cmd("hooks validate")
+        ));
+        return;
+    }
+
+    // A block that is present but declares nothing is not a missing block, and
+    // the two want opposite advice: one says *write the key*, the other says
+    // *the key you wrote is not the one that counts*. The tolerant map form is
+    // what makes this reachable — `pahts:` parses cleanly into no entries.
+    if result.declared_empty {
+        output.warning(&format!(
+            "The `copy:` block in '{}' declares no paths — check the `paths:` key.",
+            result.source_name
+        ));
+        output.warning(&format!(
+            "Nothing was copied into '{}'; `{}` explains the config.",
             result.target_name,
             crate::daft_cmd("hooks validate")
         ));
@@ -500,6 +574,7 @@ mod tests {
             declared: declared.iter().map(|s| s.to_string()).collect(),
             outcome: CopyPathsResult { outcomes },
             config_error: None,
+            declared_empty: false,
         }
     }
 
@@ -626,6 +701,14 @@ mod tests {
                 path: s("target"),
                 detail: s("a symlink"),
             },
+            SkipReason::DestinationEscapes {
+                path: s("web"),
+                detail: s("is a symlink, so the destination is outside this worktree — not copied"),
+            },
+            SkipReason::DestinationLinksOutside {
+                path: s("target"),
+                detail: s("already present as a symlink to '../shared' outside this worktree"),
+            },
             not_ignored("target"),
             SkipReason::TargetTracked {
                 offender: s("target"),
@@ -659,6 +742,8 @@ mod tests {
                 | SkipReason::DestinationUnreadable { .. }
                 | SkipReason::DestinationUnclassifiable { .. }
                 | SkipReason::DestinationConflict { .. }
+                | SkipReason::DestinationEscapes { .. }
+                | SkipReason::DestinationLinksOutside { .. }
                 | SkipReason::NotIgnored { .. }
                 | SkipReason::TargetTracked { .. }
                 | SkipReason::Unclassifiable { .. }

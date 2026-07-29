@@ -83,6 +83,15 @@ pub struct WarmResult {
     /// tell them their perfectly-present config is absent. Populated by a
     /// separate load attempt whose only job is to tell the two apart.
     pub config_error: Option<String>,
+    /// True when the source has a `copy:` key that declares nothing usable —
+    /// a misspelled `paths:` inside the map form, or entries that all
+    /// normalized away.
+    ///
+    /// The third answer beside "no key at all" and "would not load", and it
+    /// needs its own advice too: telling someone to *declare some paths* when
+    /// the block is right in front of them sends them to write a key they have
+    /// already written.
+    pub declared_empty: bool,
 }
 
 impl WarmResult {
@@ -173,7 +182,12 @@ pub fn execute<S: ProgressSink>(
         None
     };
 
-    let Some(config) = config else {
+    // An empty declaration stops here rather than in `copy_entries`: the engine
+    // warns about it for the creation journeys, which have no other voice, but
+    // `warm` renders the same fact as a whole message of its own and saying it
+    // twice on one command reads as two different problems.
+    let declared_empty = config.as_ref().is_some_and(|c| c.paths.is_empty());
+    let Some(config) = config.filter(|c| !c.paths.is_empty()) else {
         return Ok(WarmResult {
             source,
             target,
@@ -182,6 +196,7 @@ pub fn execute<S: ProgressSink>(
             declared: Vec::new(),
             outcome: CopyPathsResult::default(),
             config_error,
+            declared_empty,
         });
     };
 
@@ -196,6 +211,7 @@ pub fn execute<S: ProgressSink>(
         declared,
         outcome,
         config_error: None,
+        declared_empty: false,
     })
 }
 
@@ -396,8 +412,14 @@ fn resolve_source(
         }
     }
 
-    let here = here.map_or_else(|| current_worktree(current), Ok)?;
-    if here != target {
+    // No second probe. `here` was made best-effort a few lines up precisely so
+    // the ladder could run from a container root, and re-asking the question
+    // that already failed there — with a `?` this time — put the hard error
+    // back and made the default-branch rung below unreachable from exactly the
+    // place it was written for. `daft warm develop` typed beside the bare
+    // `.git` aborted with "Could not determine the current worktree", naming a
+    // problem the user did not have: they had named the target outright.
+    if let Some(here) = here.filter(|here| here != target) {
         return Ok(here);
     }
 
@@ -418,8 +440,15 @@ fn resolve_source(
         })
 }
 
-/// This repository's default branch: the catalog's record first (it survives a
-/// missing `<remote>/HEAD`), then the local symref.
+/// This repository's default branch: the catalog's recorded branch first (it
+/// survives a missing `<remote>/HEAD`), then the local symref for `remote`.
+///
+/// The catalog rung reads `default_branch` **directly** rather than through
+/// `catalog::effective_default_branch`, whose own fallback hardcodes `origin`.
+/// Routing through it would honour `remote` on the git rung and ignore it on
+/// the catalog one, so a fork configured with `daft.remote = upstream` and a
+/// catalog row predating default-branch capture would silently warm from
+/// `origin/HEAD`'s branch — the one thing the parameter exists to prevent.
 ///
 /// **The catalog probe fails closed.** `Ok(None)` — no catalog file, no row, a
 /// tombstoned row — is genuine absence and falls through to git, exactly as for
@@ -438,8 +467,7 @@ fn default_branch(project_root: &Path, remote: &str) -> Result<Option<String>> {
                     project_root.display()
                 )
             })?
-            .as_ref()
-            .and_then(crate::catalog::effective_default_branch),
+            .and_then(|row| row.default_branch),
         None => None,
     };
 
@@ -767,6 +795,7 @@ mod tests {
             declared: vec!["target".to_string()],
             outcome: CopyPathsResult { outcomes },
             config_error: None,
+            declared_empty: false,
         };
 
         let existing = base(vec![CopyOutcome::Skipped {
@@ -1815,6 +1844,34 @@ mod resolution_tests {
 
             assert_eq!(result.target, layout.wt("develop"));
             assert_eq!(result.source, layout.wt("main"));
+        });
+    }
+
+    /// Only the TARGET named, from the container root. The ladder is
+    /// best-effort about "here" precisely so this can work — and then asked the
+    /// same failing question again, with a `?`, which put the hard error back
+    /// and made the default-branch rung below it unreachable from the one place
+    /// it was written for. The error even named the wrong problem: the user
+    /// supplied the target.
+    #[test]
+    #[serial]
+    fn a_target_only_run_from_the_container_root_falls_back_to_the_default_branch() {
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
+            // Diverge, so no other worktree sits at develop's commit and the
+            // identical-commit rung genuinely misses — a fixture where two
+            // rungs coincide tests neither.
+            layout.diverge("develop");
+
+            let result = run(&layout, &layout.root, params(Some("develop"), None))
+                .expect("the target is named; there is nothing to ask the cwd");
+
+            assert_eq!(result.target, layout.wt("develop"));
+            assert_eq!(
+                result.source,
+                layout.wt("main"),
+                "the default branch's worktree is the documented floor"
+            );
         });
     }
 

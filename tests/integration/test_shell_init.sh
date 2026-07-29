@@ -782,6 +782,53 @@ test_c_flag_symlink_entry() {
     return 0
 }
 
+# #387: `daft warm --force` unlinks each destination cache tree before recopying
+# it, so a shell standing inside one loses its cwd. The binary writes
+# DAFT_CD_FILE when that happens, but only if the verb reaches `__daft_wrapper`
+# at all — the YAML scenarios exercise the binary directly and cannot catch a
+# missing `warm)` case in the wrapper. Nothing else in the suite does.
+test_warm_force_rescues_shell_from_a_replaced_cache() {
+    log "Testing: daft warm --force from inside a replaced cache dir cds the shell out"
+
+    local remote
+    remote=$(create_test_remote "test-warm-wrapper" "main")
+    git-worktree-clone --layout contained "$remote" >/dev/null 2>&1
+    local repo="$PWD/test-warm-wrapper"
+
+    printf 'copy:\n  - cache\n' > "$repo/main/daft.yml"
+    printf 'cache/\n' > "$repo/main/.gitignore"
+    mkdir -p "$repo/main/cache/inner"
+    printf 'from main\n' > "$repo/main/cache/inner/blob"
+    (builtin cd "$repo/main" && git add -A && git commit -q -m "declare copy" \
+        && daft start warmed >/dev/null 2>&1) || true
+    if [[ ! -d "$repo/warmed/cache/inner" ]]; then
+        log_error "setup failed: the cache did not reach $repo/warmed"
+        return 1
+    fi
+
+    # Stand INSIDE the directory `--force` is about to replace.
+    local out
+    out=$(DOOMED="$repo/warmed/cache/inner" bash -c '
+        eval "$(daft shell-init bash)"
+        builtin cd "$DOOMED" || exit 11
+        daft warm --from main --force >/dev/null 2>&1 || true
+        builtin pwd
+    ' 2>&1) || true
+
+    local resolved_wt
+    resolved_wt=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$repo/warmed")
+
+    if [[ "$out" != "$resolved_wt" ]] || [[ ! -d "$out" ]]; then
+        log_error "warm --force did not rescue the shell into the target worktree"
+        log_error "  expected: $resolved_wt"
+        log_error "  actual pwd: $out"
+        return 1
+    fi
+
+    log_success "warm --force rescued the shell to: $out"
+    return 0
+}
+
 # --- Main Test Runner ---
 
 # #53: `daft start --fork` cd contract through the wrapper — a single fork
@@ -885,6 +932,7 @@ main() {
     run_test "c_flag_symlink_entry" test_c_flag_symlink_entry
     run_test "fork_cd_through_wrapper" test_fork_cd_through_wrapper
     run_test "go_tag_sandbox_cd_through_wrapper" test_go_tag_sandbox_cd_through_wrapper
+    run_test "warm_force_rescues_shell_from_a_replaced_cache" test_warm_force_rescues_shell_from_a_replaced_cache
 
     print_summary
 }

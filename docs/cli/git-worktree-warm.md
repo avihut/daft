@@ -29,9 +29,11 @@ standing in, then the default branch's. Both the target and --from accept a
 worktree directory name, a branch name, or a path under the project root.
 
 Entries that already exist in the target are left alone, which makes repeat
-runs a no-op; pass --force to replace them. On a filesystem that supports
-copy-on-write (APFS, btrfs, XFS with reflink=1, OpenZFS 2.2+, ReFS) the copy
-is near-free until the caches diverge.
+runs a no-op; pass --force to replace them. Running --force while standing
+inside a cache it replaces moves you to the target worktree's root, because
+that directory is unlinked out from under your shell. On a filesystem that
+supports copy-on-write (APFS, btrfs, XFS with reflink=1, OpenZFS 2.2+, ReFS)
+the copy is near-free until the caches diverge.
 
 Copy failures never fail the command: an entry that is tracked by git, too
 large for its max_size, or unreadable is reported and the rest still copy.
