@@ -183,29 +183,32 @@ pub fn execute(
     // The base is the whole point: `daft start feature-b master` takes
     // master's content, so master's caches are the ones that match — from
     // wherever the command was typed.
-    let copy_source = crate::core::copy_source::resolve(
-        git,
-        &crate::core::copy_source::CopyAnchor {
-            branch: Some(base_branch.clone()),
-            // A base that exists only on the remote resolves through its
-            // tracking ref — `daft start feat release` is a perfectly ordinary
-            // thing to type, and without this the identical-commit rung would
-            // have nothing to rank against on exactly the runs where the base
-            // has no worktree of its own to take rank 1.
-            commit: crate::core::copy_source::resolve_oid(&source_worktree, &base_branch).or_else(
-                || {
-                    crate::core::copy_source::resolve_oid(
-                        &source_worktree,
-                        &format!("{}/{}", params.remote_name, base_branch),
-                    )
-                },
-            ),
-        },
-        &source_worktree,
-        &worktree_path,
-        &planned_copy,
-    );
-    crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy, &copy_source);
+    let copy_source = copy_config.as_ref().map(|_| {
+        crate::core::copy_source::resolve(
+            git,
+            &crate::core::copy_source::CopyAnchor {
+                branch: Some(base_branch.clone()),
+                // A base that exists only on the remote resolves through its
+                // tracking ref — `daft start feat release` is a perfectly ordinary
+                // thing to type, and without this the identical-commit rung would
+                // have nothing to rank against on exactly the runs where the base
+                // has no worktree of its own to take rank 1.
+                commit: crate::core::copy_source::resolve_oid(&source_worktree, &base_branch)
+                    .or_else(|| {
+                        crate::core::copy_source::resolve_oid(
+                            &source_worktree,
+                            &format!("{}/{}", params.remote_name, base_branch),
+                        )
+                    }),
+            },
+            &source_worktree,
+            &worktree_path,
+            &planned_copy,
+        )
+    });
+    if let Some(source) = &copy_source {
+        crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy, source);
+    }
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
     ))));
@@ -403,9 +406,12 @@ pub fn execute(
     // copy costs a yellow row, never the worktree. `force = false` — an entry
     // that already exists at the destination is left alone here; only
     // `daft warm --force` clobbers.
-    if let Some(config) = &copy_config {
+    // Both are Some together or neither is: the source is resolved exactly
+    // when a declaration exists, so that no repository without `copy:` pays
+    // for a worktree listing on the creation path.
+    if let (Some(config), Some(source)) = (&copy_config, &copy_source) {
         let copy_result = crate::core::copy_paths::copy_entries(
-            &copy_source.path,
+            &source.path,
             &worktree_path,
             config,
             false,

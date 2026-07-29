@@ -365,17 +365,21 @@ fn create_sandbox(
     // at this exact OID holds precisely the tree being minted. `--fork -n N`
     // benefits most, since every fork after the first has a sibling at the
     // identical commit to copy from.
-    let copy_source = crate::core::copy_source::resolve(
-        git,
-        &crate::core::copy_source::CopyAnchor {
-            branch: None,
-            commit: Some(params.commit.clone()),
-        },
-        &source_worktree,
-        &worktree_path,
-        &planned_copy,
-    );
-    crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy, &copy_source);
+    let copy_source = copy_config.as_ref().map(|_| {
+        crate::core::copy_source::resolve(
+            git,
+            &crate::core::copy_source::CopyAnchor {
+                branch: None,
+                commit: Some(params.commit.clone()),
+            },
+            &source_worktree,
+            &worktree_path,
+            &planned_copy,
+        )
+    });
+    if let Some(source) = &copy_source {
+        crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy, source);
+    }
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
     ))));
@@ -503,9 +507,12 @@ fn create_sandbox(
     // post-create hooks — the ordering IS the feature (see
     // checkout::execute). `force = false`: an entry already present at the
     // destination is left alone; only `daft warm --force` clobbers.
-    if let Some(config) = &copy_config {
+    // Both are Some together or neither is: the source is resolved exactly
+    // when a declaration exists, so that no repository without `copy:` pays
+    // for a worktree listing on the creation path.
+    if let (Some(config), Some(source)) = (&copy_config, &copy_source) {
         let copy_result = crate::core::copy_paths::copy_entries(
-            &copy_source.path,
+            &source.path,
             &worktree_path,
             config,
             false,
