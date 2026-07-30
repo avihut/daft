@@ -560,8 +560,14 @@ impl JobPresenter for ManagerRoutingPresenter {
         self.inner.on_phase_start(phase_name, target);
     }
 
+    fn stand_down(&self) {
+        let mut state = self.state.lock().expect("routing state poisoned");
+        state.declined = true;
+        self.flush_held(&mut state);
+    }
+
     fn on_job_start(&self, name: &str, description: Option<&str>, command_preview: Option<&str>) {
-        if name == GATE_JOB {
+        if name == GATE_JOB && !self.state.lock().expect("routing state poisoned").declined {
             let mut state = self.state.lock().expect("routing state poisoned");
             state.held_start = Some(HeldStart {
                 name: name.to_string(),

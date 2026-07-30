@@ -15,6 +15,7 @@ pub mod dispatch;
 pub mod gitdir;
 pub mod install;
 pub mod shim;
+pub mod stage_runner;
 
 use crate::hooks::FailMode;
 
