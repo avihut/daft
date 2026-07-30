@@ -118,6 +118,18 @@ pub struct YamlConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<EnvConfig>,
 
+    /// Reusable command fragments, expanded wherever `{name}` appears in a
+    /// job's `run:`.
+    ///
+    /// The point is that a repository's gate and its CI run the same string:
+    /// define `lint: "eslint --max-warnings 0"` once and the flags cannot
+    /// drift between the two places that use it. Expansion is a single pass
+    /// with no recursion — a template naming another template gets the second
+    /// one's literal placeholder, not an expansion — because recursive
+    /// expansion turns a config typo into a hang.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub templates: Option<HashMap<String, String>>,
+
     /// Hook definitions, keyed by hook name.
     pub hooks: HashMap<String, HookDef>,
 
@@ -1156,6 +1168,35 @@ pub struct JobDef {
     /// interactive jobs or in `tasks:`. See [`TimeoutScalar`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout: Option<TimeoutScalar>,
+
+    /// Restrict this job's file list by what the paths *are*, after `glob:`
+    /// and `exclude:` have selected them.
+    ///
+    /// Accepts `text`, `binary`, `executable`, `not executable`, `symlink`,
+    /// `not symlink`; several are ANDed. A formatter handed a PNG because it
+    /// matched `assets/**` is the case this exists for — the glob describes
+    /// where files live, not what they contain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_types: Option<StringOrList>,
+
+    /// Re-stage this job's files after it runs, so a formatter's edits land
+    /// in the commit being made rather than as a surprise diff afterwards.
+    ///
+    /// Only meaningful on the commit-family stages, where there is an index
+    /// to stage into; declaring it elsewhere is a validation error rather
+    /// than a silent no-op.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage_fixed: Option<bool>,
+
+    /// Feed the stage's stdin to this job's command.
+    ///
+    /// `pre-push` and `post-rewrite` are handed a payload on stdin that a job
+    /// may want to read as a stream. The dispatcher drained it (a process
+    /// cannot read stdin twice), so daft replays it into the jobs that ask.
+    /// Incompatible with `interactive:` and `background:`, which own stdin
+    /// for other reasons.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_stdin: Option<bool>,
 }
 
 /// Legacy command definition (alias for JobDef).
