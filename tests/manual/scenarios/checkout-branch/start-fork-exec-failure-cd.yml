@@ -1,0 +1,53 @@
+name: A created fork keeps its cd target when -x fails
+description:
+  A single fork whose `-x` command failed was still created, so the shell
+  belongs inside it — matching go/start/visit, which have always cd'd on exec
+  failure. Bulk forks (`-n N`) have no single destination and still stay put.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: A failing -x does not cost the fork its redirect
+    # Pre-#811 the fork tail gated the cd on `failures.is_empty()`, and a
+    # failed `-x` pushes into `failures` — so a perfectly good fork was
+    # created and the user was left standing outside it.
+    run: |
+      cd_file=$(mktemp)
+      rc=0
+      DAFT_CD_FILE="$cd_file" daft start --fork -x 'false' >/dev/null 2>&1 || rc=$?
+      target=$(cat "$cd_file")
+      test "$rc" -ne 0 || { echo "FAIL: a failing -x must still exit non-zero"; exit 1; }
+      test -d "$WORK_DIR/test-repo/main-fork" || { echo "FAIL: fork was never created"; exit 1; }
+      test -n "$target" || { echo "FAIL: DAFT_CD_FILE not written — the shell would stay put"; exit 1; }
+      expected=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$WORK_DIR/test-repo/main-fork")
+      resolved=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$target")
+      test "$resolved" = "$expected" || { echo "FAIL: cd target '$resolved' != '$expected'"; exit 1; }
+      echo OK
+      rm -f "$cd_file"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "OK"
+
+  - name: Bulk forks still leave the shell where it was
+    # The `count == 1` gate on the pre-exec write: -n N has no single
+    # destination, so nothing may be written.
+    run: |
+      cd_file=$(mktemp)
+      DAFT_CD_FILE="$cd_file" daft start --fork -n 2 >/dev/null 2>&1
+      test ! -s "$cd_file" || { echo "FAIL: bulk fork wrote a cd target: $(cat "$cd_file")"; exit 1; }
+      echo OK
+      rm -f "$cd_file"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "OK"

@@ -1,0 +1,52 @@
+name: A nested daft inside -x cannot hijack the cd target
+description:
+  DAFT_CD_FILE is this invocation's private channel to the shell wrapper — a
+  bare daft run from inside `-x` must not inherit it and redirect the outer
+  shell somewhere the user never asked to go
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: The -x child does not inherit DAFT_CD_FILE
+    # The direct reading of the scrub: whatever the child does with the
+    # variable, it cannot see one.
+    run: |
+      cd_file=$(mktemp)
+      DAFT_CD_FILE="$cd_file" daft go develop -x 'echo "INNER_SEES=[$DAFT_CD_FILE]"'
+      target=$(cat "$cd_file")
+      test -n "$target" || { echo "FAIL: outer cd target not written"; exit 1; }
+      echo OK
+      rm -f "$cd_file"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INNER_SEES=[]"
+        - "OK"
+
+  - name: A nested daft go leaves the outer cd target intact
+    # End-to-end: the outer `go` owns the redirect. Pre-#811 the inner daft
+    # wrote its own destination into the outer file and only the outer
+    # post-exec write (since moved ahead of the exec sequence) papered over it.
+    run: |
+      cd_file=$(mktemp)
+      DAFT_CD_FILE="$cd_file" daft go feature/test-feature -x 'daft go develop'
+      target=$(cat "$cd_file")
+      test -n "$target" || { echo "FAIL: outer cd target not written"; exit 1; }
+      expected=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$WORK_DIR/test-repo/feature/test-feature")
+      resolved=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$target")
+      test "$resolved" = "$expected" || { echo "FAIL: nested daft hijacked the redirect — cd target '$resolved' != '$expected'"; exit 1; }
+      echo OK
+      rm -f "$cd_file"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "OK"

@@ -250,6 +250,13 @@ fn capture_aliases() -> Option<AliasCache> {
 fn spawn(cmd: &str, alias_cache: Option<&AliasCache>) -> std::io::Result<std::process::ExitStatus> {
     let spec = CommandSpec::Shell(cmd.to_string());
     build_command(&spec, alias_cache)
+        // `DAFT_CD_FILE` is the wrapper's private channel for *this*
+        // invocation's destination. Inheriting it lets a nested bare daft —
+        // `-x 'daft go other'` — write the outer shell's cd target and
+        // teleport the user somewhere they never asked to go. The callers
+        // write that target *before* the sequence runs (#811), so nothing
+        // downstream may touch the file.
+        .env_remove(crate::CD_FILE_ENV)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())

@@ -869,6 +869,14 @@ fn run_start_fork(args: StartArgs, base: Option<String>, count: u32) -> Result<(
         timeline.abandon_planning();
         match create_result {
             Ok(result) => {
+                // The single-fork cd, written before the `-x` sequence starts
+                // — on the rail that sequence runs inside the region just
+                // below, so an interrupted command must not be able to cost
+                // the redirect (#811). Bulk forks (`-n N`) have no single
+                // destination and must leave the shell where it is.
+                if count == 1 {
+                    output.cd_path(&result.cd_target);
+                }
                 // Per-fork exec, inside the fork (core chdir'd there). On the
                 // rail it is the plan's tail (#812) and runs before the
                 // receipt closes; the path record still follows the footer,
@@ -897,13 +905,14 @@ fn run_start_fork(args: StartArgs, base: Option<String>, count: u32) -> Result<(
         }
     }
 
-    if count == 1
-        && failures.is_empty()
-        && let Some(result) = completed.last()
-    {
+    // Gating on `completed` rather than `failures` (#811): with `count == 1`
+    // a creation failure leaves `completed` empty, so this still routes back
+    // to `original_dir` — but a *created* fork whose `-x` failed now keeps
+    // the shell inside it, matching go/start/visit, which have always cd'd
+    // on exec failure. The cd itself was written pre-exec, up in the loop.
+    if count == 1 && !completed.is_empty() {
         // Stay inside the fork (the cwd already is) and honor the wrapper's
         // cd contract.
-        output.cd_path(&result.cd_target);
         maybe_show_shell_hint(&mut output)?;
         if let Some(src) = source_worktree
             && let Ok(git_dir) = get_git_common_dir()
@@ -2209,6 +2218,20 @@ fn run_checkout(
         }
     };
 
+    // The worktree exists and its hooks have run: the shell belongs there,
+    // whatever `-x` goes on to do. The cd target is written before the exec
+    // sequence starts — on the rail that sequence runs below, inside the
+    // region — so a Ctrl-C aimed at `-x 'pnpm dev'` cannot cost the redirect
+    // (#811). The wrapper only reads the file once daft has exited, so
+    // writing it early is free.
+    //
+    // The other half of the guarantee lives in `exec::spawn`, which arms the
+    // interrupt dispatcher so daft *exits* on SIGINT rather than dying from
+    // it. Both are required: bash and zsh abandon the enclosing function when
+    // a foreground child is signal-killed, so without the arming the wrapper
+    // never reaches its `cd` no matter how early the file was written.
+    output.cd_path(&result.cd_target);
+
     // The `-x` sequence is the plan's tail (#812): run it while the region is
     // still live, so the rows that promised it are the rows that resolve it.
     let exec_tail = crate::exec::run_on_rail(&args.exec, &mut timeline);
@@ -2227,10 +2250,10 @@ fn run_checkout(
     // where they always have.
     let exec_result = run_exec_tail(exec_tail, &args.exec, output);
 
-    output.cd_path(&result.cd_target);
     maybe_show_shell_hint(output)?;
 
-    // Propagate exec error after cd_path is written
+    // A failed `-x` still leaves the shell in the new worktree; only the
+    // exit code carries the failure.
     exec_result?;
 
     Ok(result.already_existed)
@@ -2356,6 +2379,11 @@ fn run_sandbox_visit(
         }
     };
 
+    // cd before the `-x` sequence starts, so an interrupted command still
+    // lands the shell in the sandbox (#811); see run_checkout for the full
+    // reasoning.
+    output.cd_path(&result.cd_target);
+
     // The `-x` sequence is the plan's tail (#812) — see `run_checkout`. A
     // visit that navigated to an EXISTING sandbox committed no plan, so it
     // carries no rows and the commands run off the rail below, unchanged.
@@ -2370,7 +2398,6 @@ fn run_sandbox_visit(
 
     let exec_result = run_exec_tail(exec_tail, &args.exec, output);
 
-    output.cd_path(&result.cd_target);
     maybe_show_shell_hint(output)?;
 
     exec_result?;
@@ -2420,14 +2447,21 @@ fn run_create_branch(
     // core — the timeline lives and closes there.
     let (result, exec_tail) = run_create_branch_core(args, settings, git, output, &args.exec)?;
 
+    // The unconditional tail write, and the only one when there is no `-x`
+    // to run. A sequence is always preceded by its own write — the core made
+    // it before running the rows (#811) — so by here the target may already
+    // be on disk; rewriting the same path costs one small write and keeps the
+    // tail's contract uniform with every other command that cds.
+    output.cd_path(&result.cd_target);
+
     // Off the rail, the commands run here — after the record line, exactly
     // where they always have.
     let exec_result = run_exec_tail(exec_tail, &args.exec, output);
 
-    output.cd_path(&result.cd_target);
     maybe_show_shell_hint(output)?;
 
-    // Propagate exec error after cd_path is written
+    // A failed `-x` still leaves the shell in the new worktree; only the exit
+    // code carries the failure.
     exec_result?;
 
     Ok(())
@@ -2620,6 +2654,17 @@ fn run_create_branch_core(
         }
     };
 
+    // Whoever runs the `-x` sequence writes the cd target first (#811): the
+    // rows run inside the region just below, and a Ctrl-C aimed at one of
+    // them takes daft with it, so a redirect written afterwards is never
+    // written at all. The core only owns a sequence for `run_create_branch`,
+    // which is also the only caller that cds — `--with-related` passes none
+    // and keeps the write in its own tail, and the sibling repos it creates
+    // must never redirect the shell at all.
+    if !exec_on_rail.is_empty() {
+        output.cd_path(&result.cd_target);
+    }
+
     // The `-x` sequence is the plan's tail (#812) — see `run_checkout`.
     let exec_tail = crate::exec::run_on_rail(exec_on_rail, &mut timeline);
     let footer = ready_footer(&exec_tail, &timeline);
@@ -2748,8 +2793,11 @@ fn run_start_with_related(
     if current_post_create_failed {
         maybe_show_shell_hint(&mut output)?;
     } else {
-        let exec_result = crate::exec::run_exec_commands(&args.exec, &mut output);
+        // cd before `-x` (#811). The #765 gate above still decides *whether*
+        // to cd at all; this only moves the write ahead of the exec sequence
+        // so an interrupted command cannot cost the redirect.
         output.cd_path(&current_cd_target);
+        let exec_result = crate::exec::run_exec_commands(&args.exec, &mut output);
         maybe_show_shell_hint(&mut output)?;
         exec_result?;
     }
