@@ -1,0 +1,91 @@
+name: daft.copy.enabled=false skips the copy stage on creation, never on warm
+description: >
+  `copy:` in daft.yml is repo-shared, but whether copying is worth it is a
+  per-machine fact — near-free on reflink filesystems, a real byte copy on ext4
+  (#801). `daft.copy.enabled false` in git config is the machine's opt-out:
+  worktree creation skips the whole stage (no rows, no source ranking, no copy),
+  while an explicit `daft warm` still copies — running the command IS the
+  opt-in. The gate must read live config, so re-enabling it restores copying
+  without any other change.
+
+repos:
+  - name: copy-optout
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-optout"
+          - path: .gitignore
+            content: |
+              node_modules/
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+      - name: feature
+        from: main
+    daft_yml: |
+      copy:
+        - node_modules/
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_OPTOUT
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-optout/main"
+
+  - name: Build the cache in the source worktree; confirm git ignores it
+    run: |
+      set -e
+      mkdir -p node_modules/pkg
+      printf 'module.exports = 1;\n' > node_modules/pkg/index.js
+      git check-ignore node_modules
+    cwd: "$WORK_DIR/copy-optout/main"
+    expect:
+      exit_code: 0
+
+  - name: Opt this machine out of copying
+    run: git config daft.copy.enabled false
+    cwd: "$WORK_DIR/copy-optout/main"
+    expect:
+      exit_code: 0
+
+  - name: Creation skips the copy stage — no cache, no copy rows
+    run: daft go develop 2>&1
+    cwd: "$WORK_DIR/copy-optout/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-optout/develop"
+      files_not_exist:
+        - "$WORK_DIR/copy-optout/develop/node_modules/pkg/index.js"
+      output_not_contains:
+        - "copied paths"
+        - "node_modules"
+
+  - name: An explicit daft warm still copies — running the command is the opt-in
+    run: daft warm 2>&1
+    cwd: "$WORK_DIR/copy-optout/develop"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-optout/develop/node_modules/pkg/index.js"
+      output_contains:
+        - "node_modules"
+
+  - name: Re-enabling restores copying on the next creation
+    run: |
+      set -e
+      git config daft.copy.enabled true
+      daft go feature 2>&1
+    cwd: "$WORK_DIR/copy-optout/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/copy-optout/feature/node_modules/pkg/index.js"
+      file_contains:
+        - path: "$WORK_DIR/copy-optout/feature/node_modules/pkg/index.js"
+          content: "module.exports = 1;"

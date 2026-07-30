@@ -262,11 +262,12 @@ branch).
 
 ## Checkout Settings
 
-| Key                         | Default | Description                                                   |
-| --------------------------- | ------- | ------------------------------------------------------------- |
-| `daft.checkout.upstream`    | `true`  | Set upstream tracking for branches                            |
-| `daft.checkout.carry`       | `false` | Carry uncommitted changes when checking out existing branches |
-| `daft.checkoutBranch.carry` | `true`  | Carry uncommitted changes when creating new branches          |
+| Key                         | Default | Description                                                                                                           |
+| --------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
+| `daft.checkout.upstream`    | `true`  | Set upstream tracking for branches                                                                                    |
+| `daft.checkout.carry`       | `false` | Carry uncommitted changes when checking out existing branches                                                         |
+| `daft.checkoutBranch.carry` | `true`  | Carry uncommitted changes when creating new branches                                                                  |
+| `daft.copy.enabled`         | `true`  | Copy `copy:`-declared caches into newly created worktrees ([details](/worktrees/copying-caches#opting-a-machine-out)) |
 
 ## Forge Settings
 

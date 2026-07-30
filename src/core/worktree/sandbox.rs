@@ -57,6 +57,8 @@ pub struct SandboxParams {
     pub carry: bool,
     pub no_carry: bool,
     pub checkout_carry: bool,
+    /// `daft.copy.enabled`: whether creation copies `copy:`-declared caches.
+    pub copy_enabled: bool,
     /// Remote override for worktree organization (multi-remote mode).
     pub remote: Option<String>,
     /// Remote name from settings (hook context only — nothing is fetched).
@@ -354,7 +356,18 @@ fn create_sandbox(
     // execution below so plan and receipt cannot disagree. Revisits never
     // reach this code: both idempotence lookups and the on-disk fallback
     // return through `navigate` above, before the plan commits.
-    let copy_config = crate::core::copy_paths::read_copy_config(&source_worktree);
+    // `daft.copy.enabled=false` (a per-machine opt-out — the copy's value is
+    // filesystem-dependent, and daft.yml is repo-shared) drops the whole
+    // stage here: no plan section, no source ranking, no rows.
+    let copy_config = if params.copy_enabled {
+        crate::core::copy_paths::read_copy_config(&source_worktree)
+    } else {
+        crate::log_debug!(
+            "copy: stage disabled by {}",
+            crate::core::settings::keys::COPY_ENABLED
+        );
+        None
+    };
     let planned_copy = copy_config
         .as_ref()
         .map(|c| c.paths.clone())
@@ -816,6 +829,7 @@ mod tests {
             carry: false,
             no_carry: true,
             checkout_carry: false,
+            copy_enabled: true,
             remote: None,
             remote_name: "origin".to_string(),
             multi_remote_enabled: false,

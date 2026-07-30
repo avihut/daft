@@ -927,6 +927,12 @@ copy:
 - `copy:` is read through the full config merge, so `daft.local.yml` and
   `extends:` files can declare or override it. An overlay replaces the key
   **wholesale** — paths and knobs together, never element-wise.
+- **A machine can opt out**: `git config --global daft.copy.enabled false` (or
+  per-repo, without `--global`) drops the stage from worktree creation entirely
+  — for filesystems where a real byte copy costs more than the package manager
+  would. It does not disable `daft warm`; running that command is the opt-in. If
+  a worktree comes up cold and `copy:` is declared, check this key before
+  reporting a bug.
 
 `daft warm` replays the same declarations on demand — for a worktree created
 before the `copy:` key existed, or after building something expensive that other
@@ -1355,6 +1361,7 @@ invocation.
 | `daft.checkout.upstream`         | `true`                | Set upstream tracking                                                                                                                                                       |
 | `daft.checkout.carry`            | `false`               | Carry uncommitted changes on checkout                                                                                                                                       |
 | `daft.checkoutBranch.carry`      | `true`                | Carry uncommitted changes on branch creation                                                                                                                                |
+| `daft.copy.enabled`              | `true`                | Run the `copy:` stage when creating a worktree. `false` skips it on this machine; an explicit `daft warm` still copies                                                      |
 | `daft.update.args`               | `"--ff-only"`         | Default pull arguments for update (same-branch mode)                                                                                                                        |
 | `daft.prune.cdTarget`            | `"root"`              | Where to cd after pruning (`root` or `default-branch`)                                                                                                                      |
 | `daft.go.autoStart`              | `false`               | Auto-create worktree when branch not found in `daft go` (an existing tag/commit still wins: it opens a sandbox instead)                                                     |

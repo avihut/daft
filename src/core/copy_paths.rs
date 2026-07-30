@@ -1684,40 +1684,9 @@ fn remove_tree(path: &Path) -> Result<()> {
     if remove_existing(path).is_ok() {
         return Ok(());
     }
-    unlock_tree(path);
+    crate::cow_copy::unlock_tree(path);
     remove_existing(path)
 }
-
-/// Restore owner read/write/execute on every directory in a doomed tree,
-/// top-down so each level can be read to reach the next.
-///
-/// Only ever runs on a tree daft is about to delete, and never follows symlinks
-/// out of it (`symlink_metadata` reports a link as a non-directory), so it
-/// cannot widen permissions anywhere the copy did not already write.
-#[cfg(unix)]
-fn unlock_tree(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-
-    let Ok(meta) = fs::symlink_metadata(path) else {
-        return;
-    };
-    if !meta.is_dir() {
-        return;
-    }
-    let mode = meta.permissions().mode();
-    if mode & 0o700 != 0o700 {
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o700));
-    }
-    let Ok(entries) = fs::read_dir(path) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        unlock_tree(&entry.path());
-    }
-}
-
-#[cfg(not(unix))]
-fn unlock_tree(_path: &Path) {}
 
 /// Remove one existing path, once.
 fn remove_existing(path: &Path) -> Result<()> {
