@@ -296,7 +296,19 @@ impl CatalogTable {
             // A stale value is real (just not re-measured yet), so keep showing
             // it — breathing while the walk runs, settled once the run ends —
             // even after cancel. Only never-loaded cells fall to the em-dash.
-            SizeCell::Stale(bytes) => stale_cell(&format_human_size(bytes), self.tick, final_frame),
+            //
+            // `dim` still applies: it is the row-level tombstone signal for a
+            // removed repo, and the breath is a cell-level loading signal. They
+            // compose — without this the one pulsing cell would be the
+            // brightest thing in an otherwise dimmed row.
+            SizeCell::Stale(bytes) => {
+                let cell = stale_cell(&format_human_size(bytes), self.tick, final_frame);
+                if dim {
+                    cell.style(Style::default().add_modifier(Modifier::DIM))
+                } else {
+                    cell
+                }
+            }
             SizeCell::Loading if self.cancelled => not_loaded_cell(width),
             SizeCell::Loading => loading_shimmer_cell(width, self.tick),
         }
@@ -732,6 +744,51 @@ mod tests {
         assert_eq!(
             settled, dark,
             "final frame should settle the stale breath to its darkest phase"
+        );
+    }
+
+    /// A removed repo's row is dimmed whole — that is the tombstone signal.
+    /// The stale breath is a cell-level signal and must compose with it, not
+    /// override it: without the row's DIM the one pulsing cell would be the
+    /// brightest thing in an otherwise muted row, pulling the eye to the repo
+    /// that is going away.
+    #[test]
+    fn stale_cell_on_a_removed_row_keeps_the_row_dim() {
+        use crate::output::tui::render::SKELETON_BREATH_FRAMES;
+        use ratatui::style::Modifier;
+
+        let unit_style = |removed: bool| -> (Modifier, ratatui::style::Color) {
+            let mut table = CatalogTable::new(vec![cells("alpha", false, removed)], columns())
+                .with_stale_sizes(vec![Some(2048)]);
+            // Mid-breath: the phase where the ramp is brightest, i.e. where a
+            // missing DIM would show up most starkly against the dimmed row.
+            table.tick = SKELETON_BREATH_FRAMES / 2;
+            let backend = TestBackend::new(100, 6);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| table.render(f, false)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let x = (0..100u16)
+                .find(|x| buffer[(*x, 1)].symbol() == "K")
+                .expect("size unit rendered");
+            (buffer[(x, 1)].modifier, buffer[(x, 1)].fg)
+        };
+
+        let (removed_mod, removed_fg) = unit_style(true);
+        let (live_mod, live_fg) = unit_style(false);
+
+        assert!(
+            removed_mod.contains(Modifier::DIM),
+            "a removed row's stale size must stay dimmed with the rest of its row"
+        );
+        assert!(
+            !live_mod.contains(Modifier::DIM),
+            "a live row's stale size breathes undimmed — the ramp is the whole signal"
+        );
+        // The two signals compose rather than replace: dimming the row must
+        // not cost the cell its place on the breath ramp.
+        assert_eq!(
+            removed_fg, live_fg,
+            "the tombstone dim layers over the breath colour, it does not override it"
         );
     }
 

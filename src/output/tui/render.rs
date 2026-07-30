@@ -397,6 +397,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect, final_frame
                             |fs| state.live.is_cell_loading(row_idx, fs),
                             |fs| state.live.is_cell_unloaded(row_idx, fs),
                             |fs| state.live.is_cell_stale(row_idx, fs),
+                            |fs| state.live.is_cell_stale_settled(fs),
                             final_frame,
                         )
                     } else {
@@ -420,6 +421,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect, final_frame
                         |fs| state.live.is_cell_loading(row_idx, fs),
                         |fs| state.live.is_cell_unloaded(row_idx, fs),
                         |fs| state.live.is_cell_stale(row_idx, fs),
+                        |fs| state.live.is_cell_stale_settled(fs),
                         final_frame,
                     )
                 })
@@ -768,18 +770,16 @@ const STALE_SETTLED_TICK: usize = 0;
 /// loading shimmer, and supersedes cleanly (to the plain, full-brightness
 /// value) the moment the fresh patch lands.
 ///
-/// On `final_frame` the breath settles to its darkest phase instead of
-/// freezing wherever the tick happened to land: a stale value that outlives
-/// the run (cancelled, or never refreshed) stays honestly dim.
+/// When `settled` the breath rests at its darkest phase instead of moving (or
+/// freezing wherever the tick happened to land). That covers both the last
+/// draw of the run and a refresh that concluded without superseding the value:
+/// either way the figure is cached-and-unverified, so it keeps its muted ink
+/// but stops advertising activity that is not happening.
 ///
 /// Shared by the worktree and catalog tables so the stale convention lives in
 /// one place — any column rendered through it inherits the breath for free.
-pub(super) fn stale_cell(value: &str, tick: usize, final_frame: bool) -> Cell<'static> {
-    let phase = if final_frame {
-        STALE_SETTLED_TICK
-    } else {
-        tick
-    };
+pub(super) fn stale_cell(value: &str, tick: usize, settled: bool) -> Cell<'static> {
+    let phase = if settled { STALE_SETTLED_TICK } else { tick };
     Cell::from(Span::styled(
         value.to_string(),
         Style::default().fg(Color::Indexed(skeleton_pulse_color(phase))),
@@ -794,6 +794,8 @@ pub(super) fn stale_cell(value: &str, tick: usize, final_frame: bool) -> Cell<'s
 /// patch arrived; takes precedence over `is_cell_loading`.
 /// `is_cell_stale` returns true when the cell holds a persisted value awaiting
 /// a fresh walk; applies only to cells that already have a value to show.
+/// `is_cell_stale_settled` narrows that: the awaited refresh has concluded
+/// without superseding the value, so it stays muted but stops breathing.
 /// `final_frame` settles animated cells on the last draw — see `stale_cell`.
 #[allow(clippy::too_many_arguments)]
 fn render_cell(
@@ -807,6 +809,7 @@ fn render_cell(
     is_cell_loading: impl Fn(FieldSet) -> bool,
     is_cell_unloaded: impl Fn(FieldSet) -> bool,
     is_cell_stale: impl Fn(FieldSet) -> bool,
+    is_cell_stale_settled: impl Fn(FieldSet) -> bool,
     final_frame: bool,
 ) -> Cell<'static> {
     match col {
@@ -835,7 +838,11 @@ fn render_cell(
                     Cell::from(vals.size.clone())
                 }
             } else if is_cell_stale(FieldSet::SIZE) {
-                stale_cell(&vals.size, tick, final_frame)
+                stale_cell(
+                    &vals.size,
+                    tick,
+                    final_frame || is_cell_stale_settled(FieldSet::SIZE),
+                )
             } else {
                 Cell::from(vals.size.clone())
             }
@@ -902,8 +909,14 @@ fn render_cell(
                 // A warm cache stripped to identity: the number is real, its
                 // fate is still in flight. No status has loaded yet, so there
                 // is no color to preserve — breathe the identity itself until
-                // the refresh lands and the colored value supersedes it.
-                stale_cell(&vals.pr, tick, final_frame)
+                // the refresh lands and the colored value supersedes it. If
+                // the refresh ends without data the number stays muted (it was
+                // never verified) but stops moving.
+                stale_cell(
+                    &vals.pr,
+                    tick,
+                    final_frame || is_cell_stale_settled(FieldSet::FORGE_REF),
+                )
             } else {
                 // Color carries the status here (a ratatui buffer can't hold
                 // the colorless glyph fallback's escape-free sibling — plain
@@ -1678,6 +1691,7 @@ mod tests {
                         |_fs| false, // not loading (cancelled implies collection_complete)
                         |_fs| true,  // is_cell_unloaded → true
                         |_fs| false, // not stale
+                        |_fs| false, // not settled-stale
                         false,       // not the final frame
                     );
                     let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
@@ -1731,6 +1745,7 @@ mod tests {
                     |_fs| false, // not loading
                     |_fs| false, // not unloaded — received
                     |_fs| false, // not stale
+                    |_fs| false, // not settled-stale
                     false,       // not the final frame
                 );
                 let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
@@ -1793,6 +1808,7 @@ mod tests {
                         |_fs| false, // not loading
                         |_fs| false, // not unloaded
                         |_fs| stale,
+                        |_fs| false, // settled-stale is exercised via `final_frame` here
                         final_frame,
                     );
                     let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
@@ -1884,6 +1900,7 @@ mod tests {
         let render_at = |status: Option<PrStatus>,
                          tick: usize,
                          stale: bool,
+                         settled: bool,
                          final_frame: bool|
          -> (String, Color) {
             let l = lookup(status);
@@ -1911,6 +1928,7 @@ mod tests {
                         |_fs| false, // not loading — the cache has a value
                         |_fs| false, // not unloaded
                         |_fs| stale,
+                        |_fs| settled,
                         final_frame,
                     );
                     let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(12)]);
@@ -1928,24 +1946,39 @@ mod tests {
         };
 
         // Identity-only + refresh in flight: the real number, breathing.
-        let (row, dark) = render_at(None, 0, true, false);
+        let (row, dark) = render_at(None, 0, true, false, false);
         assert!(
             row.contains("42"),
             "a stale PR cell shows its cached identity; got {row:?}"
         );
-        let (_, bright) = render_at(None, SKELETON_BREATH_FRAMES / 2, true, false);
+        let (_, bright) = render_at(None, SKELETON_BREATH_FRAMES / 2, true, false, false);
         assert_eq!(dark, Color::Indexed(SKELETON_GRAY_DARKEST));
         assert_eq!(bright, Color::Indexed(SKELETON_GRAY_BRIGHTEST));
 
         // The final frame settles it — an unrefreshed PR must not freeze
         // bright and read as a fresh, status-bearing value.
-        let (_, settled) = render_at(None, SKELETON_BREATH_FRAMES / 2, true, true);
+        let (_, settled) = render_at(None, SKELETON_BREATH_FRAMES / 2, true, false, true);
         assert_eq!(settled, Color::Indexed(SKELETON_GRAY_DARKEST));
+
+        // A refresh that concluded without data settles the cell mid-run: the
+        // number was never verified, so it keeps the muted ink — but nothing
+        // is loading any more, so it stops moving well before the last frame.
+        let (row, unrefreshed) = render_at(None, SKELETON_BREATH_FRAMES / 2, true, true, false);
+        assert_eq!(
+            unrefreshed,
+            Color::Indexed(SKELETON_GRAY_DARKEST),
+            "an unrefreshed identity holds at the muted end of the ramp"
+        );
+        assert!(
+            row.contains("42"),
+            "settling must not drop the cached identity; got {row:?}"
+        );
 
         // Refresh landed: no longer stale, and the fate now carries the color.
         let (_, passing) = render_at(
             Some(PrStatus::Ci(CiStatus::Pass)),
             SKELETON_BREATH_FRAMES / 2,
+            false,
             false,
             false,
         );
