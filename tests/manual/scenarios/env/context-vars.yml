@@ -1,0 +1,106 @@
+name: "daft env answers daft's own DAFT_* variables"
+description:
+  "The DAFT_* namespace is daft's, not the schema's: at-rest variables answer
+  with live worktree state even under a declared schema (no --ad-hoc needed),
+  the @address reaches a sibling's values, event-scoped variables explain when
+  they exist instead of guessing, typos suggest the real name, derivation flags
+  are refused as a category error, and --export never serializes them."
+
+repos:
+  - name: env-ctx
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# ctx"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      env:
+        salt: myapp
+        ports:
+          - WEBAPP_PORT
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_ENV_CTX
+    expect:
+      exit_code: 0
+
+  - name: An at-rest variable answers under a declared schema, no --ad-hoc
+    run: daft env DAFT_BRANCH_NAME
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
+
+  - name: The worktree path variable answers with the live path
+    run: daft env DAFT_WORKTREE_PATH
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "env-ctx/main"
+
+  - name: The bare listing shows derived values and the context section
+    run: daft env
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "WEBAPP_PORT"
+        - "20960"
+        - "DAFT_BRANCH_NAME"
+        - "context"
+
+  - name: --export serializes the declared set only, never DAFT_*
+    run: daft env --export
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "export WEBAPP_PORT='20960'"
+      output_not_contains:
+        - "DAFT_"
+
+  - name: An event-scoped variable explains when it exists
+    run: daft env DAFT_HOOK 2>&1
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no value at rest"
+        - "lifecycle hook"
+
+  - name: A typo'd DAFT_ name suggests the real one
+    run: daft env DAFT_BRANCH_NAM 2>&1
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not a variable daft sets"
+        - "DAFT_BRANCH_NAME"
+
+  - name: Derivation flags are refused for daft's own variables
+    run: daft env DAFT_BRANCH_NAME --ad-hoc 2>&1
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "do not apply"
+
+  - name: Create a sibling worktree
+    run: daft start feature-x 2>&1
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 0
+
+  - name: The @address answers a sibling's branch from another worktree
+    run: daft env DAFT_BRANCH_NAME@feature-x
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature-x"

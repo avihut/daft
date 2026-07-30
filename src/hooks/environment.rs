@@ -452,6 +452,100 @@ impl HookEnvironment {
     }
 }
 
+/// How a `DAFT_*` variable relates to a job that is *not* currently running.
+///
+/// Welded to [`HookEnvironment::from_context`] above: every variable that
+/// function can emit must classify as `AtRest` or `EventScoped` — the
+/// `every_emitted_daft_var_is_classified` test enforces it, so adding a
+/// `env.set("DAFT_…")` there without a classification here fails the suite.
+/// `daft env` routes on this to answer daft's own namespace: at-rest
+/// variables with a value, event-scoped ones with an explanation of when
+/// they exist instead of a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaftVarKind {
+    /// Present in every job's environment with a value determined by the
+    /// worktree alone — the set a `daft run` task receives. (`DAFT_COMMIT`
+    /// is the one member that can be absent: only branchless worktrees
+    /// carry it.)
+    AtRest,
+    /// Only meaningful while a specific operation runs; `when` says which.
+    EventScoped {
+        /// When the variable is present, phrased to follow "it is set only".
+        when: &'static str,
+    },
+    /// Not a variable daft sets.
+    Unknown,
+}
+
+/// Classify a `DAFT_*` name. See [`DaftVarKind`].
+pub fn daft_var_kind(name: &str) -> DaftVarKind {
+    use DaftVarKind::{AtRest, EventScoped, Unknown};
+    if name.starts_with("DAFT_MERGE_") {
+        return EventScoped {
+            when: "during merge hooks (the merge command stamps them)",
+        };
+    }
+    match name {
+        "DAFT_PROJECT_ROOT"
+        | "DAFT_GIT_DIR"
+        | "DAFT_REMOTE"
+        | "DAFT_SOURCE_WORKTREE"
+        | "DAFT_WORKTREE_PATH"
+        | "DAFT_BRANCH_NAME"
+        | "DAFT_IS_NEW_BRANCH"
+        | "DAFT_COMMIT" => AtRest,
+        "DAFT_HOOK" => EventScoped {
+            when: "while a lifecycle hook runs (it names the hook type)",
+        },
+        "DAFT_TASK" => EventScoped {
+            when: "while a `daft run` task runs (it names the task)",
+        },
+        "DAFT_COMMAND" => EventScoped {
+            when: "while a job runs (the daft command that launched it)",
+        },
+        "DAFT_BASE_BRANCH" => EventScoped {
+            when: "during create hooks (the branch the worktree was based on)",
+        },
+        "DAFT_REPOSITORY_URL" | "DAFT_DEFAULT_BRANCH" => EventScoped {
+            when: "during hooks of operations that resolve the remote (clone, checkout)",
+        },
+        "DAFT_REMOVAL_REASON" => EventScoped {
+            when: "during remove hooks",
+        },
+        "DAFT_IS_MOVE" | "DAFT_OLD_WORKTREE_PATH" | "DAFT_OLD_BRANCH_NAME" => EventScoped {
+            when: "during rename hooks",
+        },
+        _ => Unknown,
+    }
+}
+
+/// Every concrete `DAFT_*` name daft can set, for typo suggestions. The
+/// merge family is prefix-matched in [`daft_var_kind`]; its known member is
+/// listed so near-misses of it still suggest well.
+pub fn daft_var_names() -> &'static [&'static str] {
+    &[
+        "DAFT_PROJECT_ROOT",
+        "DAFT_GIT_DIR",
+        "DAFT_REMOTE",
+        "DAFT_SOURCE_WORKTREE",
+        "DAFT_WORKTREE_PATH",
+        "DAFT_BRANCH_NAME",
+        "DAFT_IS_NEW_BRANCH",
+        "DAFT_COMMIT",
+        "DAFT_HOOK",
+        "DAFT_TASK",
+        "DAFT_COMMAND",
+        "DAFT_BASE_BRANCH",
+        "DAFT_REPOSITORY_URL",
+        "DAFT_DEFAULT_BRANCH",
+        "DAFT_REMOVAL_REASON",
+        "DAFT_IS_MOVE",
+        "DAFT_OLD_WORKTREE_PATH",
+        "DAFT_OLD_BRANCH_NAME",
+        "DAFT_MERGE_SOURCE_PATH",
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,6 +565,79 @@ mod tests {
 
     fn env_yaml_config(yaml: &str) -> crate::hooks::yaml_config::YamlConfig {
         serde_yaml::from_str(yaml).expect("test yaml parses")
+    }
+
+    /// The weld between `from_context` and `daft_var_kind`: a maxed-out
+    /// context (every conditional branch forced on) plus a task context must
+    /// emit only names the classifier knows. Adding a `DAFT_*` emission
+    /// without classifying it — or without listing it in `daft_var_names` —
+    /// fails here, not in the field.
+    #[test]
+    fn every_emitted_daft_var_is_classified() {
+        let mut maxed = HookContext::new(
+            HookType::PreRemove,
+            "rename",
+            "/p",
+            "/p/.git",
+            "origin",
+            "/p/main",
+            "/p/feat",
+            "feat",
+        )
+        .with_commit("abc123")
+        .with_new_branch(true)
+        .with_base_branch("main")
+        .with_repository_url("git@example.com:x/y.git")
+        .with_default_branch("main")
+        .with_removal_reason(RemovalReason::Manual)
+        .with_extra_env([("DAFT_MERGE_SOURCE_PATH".to_string(), "/p/feat".to_string())].into());
+        maxed.is_move = true;
+        maxed.old_worktree_path = Some("/p/old".into());
+        maxed.old_branch_name = Some("old".into());
+        let task = HookContext::for_task("dev", "/p", "/p/.git", "origin", "/p/main", "main");
+
+        for ctx in [&maxed, &task] {
+            for key in HookEnvironment::from_context(ctx).vars().keys() {
+                assert_ne!(
+                    daft_var_kind(key),
+                    DaftVarKind::Unknown,
+                    "{key} is emitted but unclassified — add it to daft_var_kind"
+                );
+                assert!(
+                    daft_var_names().contains(&key.as_str()) || key.starts_with("DAFT_MERGE_"),
+                    "{key} is emitted but missing from daft_var_names"
+                );
+            }
+        }
+    }
+
+    /// The at-rest set is exactly a task's environment minus the vars that
+    /// name the run itself: every key a bare task receives classifies
+    /// `AtRest` except `DAFT_TASK`/`DAFT_COMMAND`, and every `AtRest` name
+    /// except the branchless-only `DAFT_COMMIT` is present in it.
+    #[test]
+    fn at_rest_is_the_task_surface() {
+        let task = HookContext::for_task("dev", "/p", "/p/.git", "origin", "/p/main", "main");
+        let env = HookEnvironment::from_context(&task);
+
+        for key in env.vars().keys() {
+            match key.as_str() {
+                "DAFT_TASK" | "DAFT_COMMAND" => {}
+                other => assert_eq!(
+                    daft_var_kind(other),
+                    DaftVarKind::AtRest,
+                    "{other} is in a task's env but not classified AtRest"
+                ),
+            }
+        }
+        for name in daft_var_names() {
+            if daft_var_kind(name) == DaftVarKind::AtRest && *name != "DAFT_COMMIT" {
+                assert!(
+                    env.get(name).is_some(),
+                    "{name} classifies AtRest but a task does not receive it"
+                );
+            }
+        }
     }
 
     /// `with_derived_env` EXTENDS: the DAFT_MERGE_* entries a merge command

@@ -140,7 +140,11 @@ The `env:` section declares deterministic per-worktree values — ports and
 templated names — derived from the worktree's slug. No allocation, no registry:
 the same worktree name yields the same values on every machine, even before the
 worktree exists. Query them with [`daft env`](/reference/cli/daft-env); hooks,
-tasks, and `daft exec` receive them in their environment automatically.
+tasks, and `daft exec` receive them in their environment automatically. The
+`DAFT_*` prefix is reserved for daft's own
+[job variables](/hooks/lifecycle#environment-provided-to-hooks) — those cannot
+be declared here, but `daft env DAFT_BRANCH_NAME` answers them from live
+worktree state alongside the declared set.
 
 ```yaml
 env:

@@ -44,6 +44,12 @@ This lets `post-clone` install foundational tools (pnpm, bun, uv, etc.) that
 Hooks receive context via environment variables. These are available to both
 YAML jobs and shell script hooks.
 
+To debug what a job will see, ask from your shell:
+[`daft env DAFT_BRANCH_NAME`](/reference/cli/daft-env) prints the live value of
+any variable that exists at rest (the universal and worktree sets below); asking
+for an event-scoped one — `DAFT_REMOVAL_REASON`, say — explains which operation
+sets it.
+
 ### Universal (all hooks)
 
 | Variable               | Description                                                                                                            |

@@ -6,6 +6,12 @@
 //! read path is a single in-process `gix::discover` plus one daft.yml read —
 //! no subprocesses, no settings load, no catalog open unless a repo is
 //! actually addressed, and stderr stays silent in the normal case.
+//!
+//! It also answers daft's own `DAFT_*` job variables (the ones hooks and
+//! tasks receive) from live worktree state. Those are inspection surfaces —
+//! the bare listing and explicit `DAFT_*` queries — which may open the
+//! addressed worktree's repo; the `--export`/`--write` eval path never
+//! computes them and keeps its single-discover budget.
 
 use crate::core::env_values::address::parse_address;
 use crate::core::env_values::{AdHocPolicy, EnvSpec, ResolvedValue, ValueContext, ValueSource};
@@ -31,6 +37,8 @@ Ports hash the worktree to a contiguous block (default 16 ports in 20000-32767) 
 The positional address is [repo:]VAR[@worktree] — 'daft env API_PORT', 'daft env backend:API_PORT' (that repo's worktree matching this one's name), 'daft env API_PORT@feat-x'. --repo/--worktree are the canonical spellings of the same qualifiers. Unlike other commands' bare --repo (which targets the default-branch worktree), env's cross-repo default is the worktree matching the current one's name: an address names a value's coordinate, not an execution target, and the matching-name convention is how one feature spans repos.
 
 Derivation knobs (--salt, --range, --block-size, --offset) answer \"what would it be\": overriding them computes a hypothetical — useful to preview a salt change before committing it — and daft notes on stderr when the answer differs from the configured one.
+
+Daft's own job variables are answered too: the bare listing shows the DAFT_* set a job would receive at rest (DAFT_BRANCH_NAME, DAFT_WORKTREE_PATH, DAFT_PROJECT_ROOT, ...) with live values, and 'daft env DAFT_BRANCH_NAME' prints one — useful for debugging what a hook or task will see. Event-scoped variables (DAFT_HOOK, DAFT_REMOVAL_REASON, DAFT_MERGE_*, ...) exist only while their operation runs; asking for one explains when it is set rather than guessing. These are read from worktree state, never derived — derivation flags do not apply to them — and --export/--write keep serializing the declared set only.
 
 Declare values under env: in daft.yml (see the yaml reference). Injection: hooks, tasks, and daft exec receive declared values automatically; shells via eval \"$(daft env --export)\" (direnv/mise); file-reading tools via daft env --write (dotenv). Injected values never override variables already set in the parent environment."
 )]
@@ -151,6 +159,17 @@ fn cmd_env(args: &Args, output: &mut dyn Output) -> Result<()> {
     let local = discover_local();
     let target = resolve_target(&local, repo_arg.as_deref(), wt_arg.as_deref(), output)?;
 
+    // Daft's own DAFT_* variables answer from worktree state, not
+    // derivation — routed before any spec work so derivation config and
+    // flags never shape the answer, a declared schema's strictness does not
+    // apply to daft's namespace, and no collision scan fires for a
+    // non-port question.
+    if let Some(name) = var
+        && name.starts_with("DAFT_")
+    {
+        return answer_context_var(args, &target, &local, name);
+    }
+
     // Effective spec: daft.yml (of the addressed repo) + CLI overrides.
     let config_env = load_env_config(&target, &local);
     let default_salt = dir_name(&target.root);
@@ -213,10 +232,17 @@ fn cmd_env(args: &Args, output: &mut dyn Output) -> Result<()> {
             if let Some(ref write) = args.write {
                 return write_dotenv(write, &spec, &resolved, &target);
             }
+            // Inspection surfaces also list daft's own variables. Computed
+            // only past the export/write returns above: the eval hot path
+            // never pays for the extra repo reads, and serialized output
+            // stays the declared set (context values are ambient state, and
+            // DAFT_COMMIT-style volatility would make a materialized copy
+            // silently stale).
+            let context = context_rows(&target, &local);
             if structured {
-                return emit_table(&resolved, &args.emit);
+                return emit_table(&resolved, &context, &args.emit);
             }
-            print_human_table(&spec, &target.slug, &resolved, output);
+            print_human_table(&spec, &target.slug, &resolved, &context, output);
             Ok(())
         }
     }
@@ -498,6 +524,146 @@ fn note_divergence(
     }
 }
 
+/// Answer a `DAFT_*` query: a live value for at-rest variables, an
+/// explanation of when it exists for event-scoped ones, and a suggestion
+/// for typos. Exit is non-zero whenever no value is printed, so a script
+/// probing for one fails the same way its own environment lookup would.
+fn answer_context_var(
+    args: &Args,
+    target: &Target,
+    local: &LocalContext,
+    name: &str,
+) -> Result<()> {
+    use crate::hooks::DaftVarKind;
+
+    if args.ad_hoc
+        || args.offset.is_some()
+        || args.salt.is_some()
+        || args.range.is_some()
+        || args.block_size.is_some()
+    {
+        bail!(
+            "'{name}' is one of daft's own variables, read from worktree state — \
+             derivation flags (--salt, --range, --block-size, --offset, --ad-hoc) \
+             do not apply"
+        );
+    }
+
+    match crate::hooks::daft_var_kind(name) {
+        DaftVarKind::Unknown => {
+            let similar =
+                crate::suggest::find_similar_commands(name, crate::hooks::daft_var_names());
+            let hint = similar
+                .first()
+                .map(|s| format!("\n  did you mean {s}?"))
+                .unwrap_or_default();
+            bail!(
+                "'{name}' is not a variable daft sets{hint}\n  \
+                 declared values use bare names (`{}`); daft's own variables are \
+                 listed in daft-env(1)",
+                cyan(&crate::daft_cmd("env WEBAPP_PORT"))
+            );
+        }
+        DaftVarKind::EventScoped { when } => {
+            bail!("'{name}' has no value at rest — it is set only {when}");
+        }
+        DaftVarKind::AtRest => {
+            let rows = context_rows(target, local);
+            let Some(row) = rows.into_iter().find(|r| r.name == name) else {
+                // AtRest but absent: say why, precisely.
+                if target.worktree_path.is_none() {
+                    bail!(
+                        "worktree '{}' does not exist yet — {name} exists once it is created",
+                        target.requested_name.as_deref().unwrap_or(&target.slug)
+                    );
+                }
+                if name == "DAFT_COMMIT" {
+                    bail!(
+                        "only branchless (detached-HEAD) worktrees receive DAFT_COMMIT; \
+                         '{}' is on a branch",
+                        target.slug
+                    );
+                }
+                bail!("could not determine {name} for worktree '{}'", target.slug);
+            };
+            if args.export {
+                println!("{}", export_line(&row));
+            } else {
+                println!("{}", row.value);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Daft's own `DAFT_*` variables as they stand for the addressed worktree —
+/// the environment a `daft run` task would receive, minus the variables
+/// that name the run itself (`daft_var_kind` event-scopes those). Rows
+/// whose source cannot be read (no repo handle, unknowable branch) are
+/// omitted rather than guessed; `answer_context_var` turns each specific
+/// absence into a specific message.
+fn context_rows(target: &Target, local: &LocalContext) -> Vec<ResolvedValue> {
+    let row = |name: &str, value: String| ResolvedValue {
+        name: name.to_string(),
+        value,
+        source: ValueSource::Context,
+    };
+    let mut rows = vec![row("DAFT_PROJECT_ROOT", target.root.display().to_string())];
+
+    // Reuse the initial discovery when it already describes the target;
+    // open the addressed worktree (or repo root) otherwise.
+    let same_worktree =
+        target.worktree_path.is_some() && target.worktree_path == local.worktree_path;
+    let same_repo_hypothetical = target.worktree_path.is_none()
+        && local.project_root.as_deref() == Some(target.root.as_path());
+    let repo: Option<gix::Repository> = if same_worktree || same_repo_hypothetical {
+        local.repo.clone()
+    } else if let Some(ref wt) = target.worktree_path {
+        gix::discover(wt).ok()
+    } else {
+        gix::discover(&target.root).ok()
+    };
+
+    if let Some(ref repo) = repo {
+        let common = repo.common_dir();
+        let common = std::fs::canonicalize(common).unwrap_or_else(|_| common.to_path_buf());
+        rows.push(row("DAFT_GIT_DIR", common.display().to_string()));
+    }
+    // Tasks receive the "origin" fallback; lifecycle hooks may carry their
+    // operation's remote instead. Kept in lockstep with the
+    // `HookContext::for_task` call in commands/run.rs.
+    rows.push(row("DAFT_REMOTE", "origin".to_string()));
+
+    let Some(ref wt) = target.worktree_path else {
+        return rows;
+    };
+    // At rest the worktree is both source and target, like `for_task`.
+    rows.push(row("DAFT_SOURCE_WORKTREE", wt.display().to_string()));
+    rows.push(row("DAFT_WORKTREE_PATH", wt.display().to_string()));
+    match repo {
+        Some(ref repo) => match crate::git::oxide::symbolic_ref_short_head(repo) {
+            Ok(branch) => rows.push(row("DAFT_BRANCH_NAME", branch)),
+            Err(_) => {
+                // The branchless contract (see hooks::environment): empty
+                // branch name, pinned commit carries the identity.
+                rows.push(row("DAFT_BRANCH_NAME", String::new()));
+                if let Ok(id) = repo.head_id() {
+                    rows.push(row("DAFT_COMMIT", id.to_string()));
+                }
+            }
+        },
+        // No handle (deleted dir, permissions): fall back to what the
+        // enumeration knew, or omit — never guess.
+        None => {
+            if let Some(ref branch) = target.branch {
+                rows.push(row("DAFT_BRANCH_NAME", branch.clone()));
+            }
+        }
+    }
+    rows.push(row("DAFT_IS_NEW_BRANCH", "false".to_string()));
+    rows
+}
+
 fn warn_on_block_collision(spec: &EnvSpec, target: &Target, output: &mut dyn Output) {
     if spec.ports.is_empty() || target.sibling_slugs.is_empty() {
         return;
@@ -627,14 +793,20 @@ fn write_dotenv(
     Ok(())
 }
 
-fn emit_table(resolved: &[ResolvedValue], emit_args: &EmitArgs) -> Result<()> {
+fn emit_table(
+    resolved: &[ResolvedValue],
+    context: &[ResolvedValue],
+    emit_args: &EmitArgs,
+) -> Result<()> {
     let mut table = Table::new(vec![
         "name".to_string(),
         "value".to_string(),
         "source".to_string(),
         "offset".to_string(),
     ]);
-    for value in resolved {
+    // Derived rows first (stable head for existing consumers), then daft's
+    // own context variables with source "context".
+    for value in resolved.iter().chain(context) {
         table.rows.push(vec![
             Cell::str(&value.name),
             Cell::str(&value.value),
@@ -658,8 +830,30 @@ fn print_human_table(
     spec: &EnvSpec,
     slug: &str,
     resolved: &[ResolvedValue],
+    context: &[ResolvedValue],
     output: &mut dyn Output,
 ) {
+    // Sections get their own column widths: context values are long paths,
+    // and one shared width would pad every port row out to them.
+    let print_rows = |rows: &[ResolvedValue], output: &mut dyn Output| {
+        let name_w = rows.iter().map(|v| v.name.len()).max().unwrap_or(4);
+        let value_w = rows.iter().map(|v| v.value.len()).max().unwrap_or(5);
+        for value in rows {
+            let kind = match value.source {
+                ValueSource::DeclaredPort { offset } => format!("port +{offset}"),
+                ValueSource::Value => "value".to_string(),
+                ValueSource::AdHoc => "ad-hoc".to_string(),
+                ValueSource::Context => "context".to_string(),
+            };
+            output.info(&format!(
+                "{:<name_w$}  {:<value_w$}  {}",
+                value.name,
+                value.value,
+                dim(&kind),
+            ));
+        }
+    };
+
     if resolved.is_empty() {
         output.info("No env values declared in daft.yml.");
         output.info(&format!(
@@ -667,32 +861,23 @@ fn print_human_table(
              for a stable block.",
             cyan(&crate::daft_cmd("env MY_PORT"))
         ));
-        return;
+    } else {
+        print_rows(resolved, output);
+        if !spec.ports.is_empty()
+            && let Ok(base) = spec.block_base(slug)
+        {
+            output.info(&dim(&format!(
+                "block {base}-{}  worktree '{slug}'  salt '{}'",
+                base + spec.block_size - 1,
+                spec.salt
+            )));
+        }
     }
-    let name_w = resolved.iter().map(|v| v.name.len()).max().unwrap_or(4);
-    let value_w = resolved.iter().map(|v| v.value.len()).max().unwrap_or(5);
-    for value in resolved {
-        let kind = match value.source {
-            ValueSource::DeclaredPort { offset } => format!("port +{offset}"),
-            ValueSource::Value => "value".to_string(),
-            ValueSource::AdHoc => "ad-hoc".to_string(),
-        };
-        output.info(&format!(
-            "{:<name_w$}  {:<value_w$}  {}",
-            value.name,
-            value.value,
-            dim(&kind),
-        ));
-    }
-    if spec.ports.is_empty() {
-        return;
-    }
-    if let Ok(base) = spec.block_base(slug) {
-        output.info(&dim(&format!(
-            "block {base}-{}  worktree '{slug}'  salt '{}'",
-            base + spec.block_size - 1,
-            spec.salt
-        )));
+
+    // Daft's own variables — what a job here would additionally receive.
+    if !context.is_empty() {
+        output.info("");
+        print_rows(context, output);
     }
 }
 
@@ -754,5 +939,118 @@ mod tests {
         let mut out = CliOutput::new(OutputConfig::default());
         let err = cmd_env(&args, &mut out).unwrap_err();
         assert!(err.to_string().contains("one spelling"));
+    }
+
+    fn fake_target(worktree: Option<&str>, branch: Option<&str>) -> Target {
+        Target {
+            root: PathBuf::from("/p"),
+            slug: "feat".into(),
+            worktree_path: worktree.map(PathBuf::from),
+            branch: branch.map(str::to_string),
+            sibling_slugs: Vec::new(),
+            requested_name: None,
+        }
+    }
+
+    fn no_local() -> LocalContext {
+        LocalContext {
+            project_root: None,
+            worktree_path: None,
+            branch: None,
+            repo: None,
+        }
+    }
+
+    /// Fake paths open no repo, so rows degrade honestly: identity and
+    /// remote stay, `DAFT_GIT_DIR` is omitted (never guessed), and the
+    /// branch falls back to what the enumeration knew.
+    #[test]
+    fn context_rows_without_a_repo_handle_fall_back_and_omit() {
+        let rows = context_rows(&fake_target(Some("/p/feat"), Some("feat")), &no_local());
+        let get = |name: &str| {
+            rows.iter()
+                .find(|r| r.name == name)
+                .map(|r| r.value.as_str())
+        };
+        assert_eq!(get("DAFT_PROJECT_ROOT"), Some("/p"));
+        assert_eq!(get("DAFT_REMOTE"), Some("origin"));
+        assert_eq!(get("DAFT_WORKTREE_PATH"), Some("/p/feat"));
+        assert_eq!(get("DAFT_SOURCE_WORKTREE"), Some("/p/feat"));
+        assert_eq!(get("DAFT_BRANCH_NAME"), Some("feat"));
+        assert_eq!(get("DAFT_IS_NEW_BRANCH"), Some("false"));
+        assert_eq!(get("DAFT_GIT_DIR"), None);
+        assert_eq!(get("DAFT_COMMIT"), None);
+        assert!(
+            rows.iter()
+                .all(|r| r.source == ValueSource::Context && r.name.starts_with("DAFT_"))
+        );
+    }
+
+    /// A hypothetical worktree answers only what exists without it.
+    #[test]
+    fn context_rows_for_a_hypothetical_worktree_stop_at_repo_facts() {
+        let rows = context_rows(&fake_target(None, None), &no_local());
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["DAFT_PROJECT_ROOT", "DAFT_REMOTE"]);
+    }
+
+    /// DAFT_* + a derivation flag is a category error, not a computation.
+    #[test]
+    fn daft_vars_refuse_derivation_flags() {
+        let args = Args::parse_from(["daft-env", "DAFT_BRANCH_NAME", "--ad-hoc"]);
+        let err = answer_context_var(
+            &args,
+            &fake_target(Some("/p/feat"), Some("feat")),
+            &no_local(),
+            "DAFT_BRANCH_NAME",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("do not apply"));
+    }
+
+    /// Event-scoped variables explain themselves instead of guessing.
+    #[test]
+    fn event_scoped_daft_vars_say_when_they_exist() {
+        let args = Args::parse_from(["daft-env", "DAFT_REMOVAL_REASON"]);
+        let err = answer_context_var(
+            &args,
+            &fake_target(Some("/p/feat"), Some("feat")),
+            &no_local(),
+            "DAFT_REMOVAL_REASON",
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no value at rest"), "{msg}");
+        assert!(msg.contains("remove hooks"), "{msg}");
+    }
+
+    /// A typo'd DAFT_ name suggests the nearest real one.
+    #[test]
+    fn unknown_daft_vars_suggest_the_nearest_real_one() {
+        let args = Args::parse_from(["daft-env", "DAFT_BRANCH_NAM"]);
+        let err = answer_context_var(
+            &args,
+            &fake_target(Some("/p/feat"), Some("feat")),
+            &no_local(),
+            "DAFT_BRANCH_NAM",
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not a variable daft sets"), "{msg}");
+        assert!(msg.contains("DAFT_BRANCH_NAME"), "{msg}");
+    }
+
+    /// DAFT_COMMIT on a branch worktree explains the branchless contract.
+    #[test]
+    fn daft_commit_on_a_branch_worktree_explains_itself() {
+        let args = Args::parse_from(["daft-env", "DAFT_COMMIT"]);
+        let err = answer_context_var(
+            &args,
+            &fake_target(Some("/p/feat"), Some("feat")),
+            &no_local(),
+            "DAFT_COMMIT",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("branchless"));
     }
 }

@@ -16,6 +16,8 @@ The positional address is [repo:]VAR[@worktree] — \*(Aqdaft env API_PORT\*(Aq,
 .PP
 Derivation knobs (\-\-salt, \-\-range, \-\-block\-size, \-\-offset) answer "what would it be": overriding them computes a hypothetical — useful to preview a salt change before committing it — and daft notes on stderr when the answer differs from the configured one.
 .PP
+Daft\*(Aqs own job variables are answered too: the bare listing shows the DAFT_* set a job would receive at rest (DAFT_BRANCH_NAME, DAFT_WORKTREE_PATH, DAFT_PROJECT_ROOT, ...) with live values, and \*(Aqdaft env DAFT_BRANCH_NAME\*(Aq prints one — useful for debugging what a hook or task will see. Event\-scoped variables (DAFT_HOOK, DAFT_REMOVAL_REASON, DAFT_MERGE_*, ...) exist only while their operation runs; asking for one explains when it is set rather than guessing. These are read from worktree state, never derived — derivation flags do not apply to them — and \-\-export/\-\-write keep serializing the declared set only.
+.PP
 Declare values under env: in daft.yml (see the yaml reference). Injection: hooks, tasks, and daft exec receive declared values automatically; shells via eval "$(daft env \-\-export)" (direnv/mise); file\-reading tools via daft env \-\-write (dotenv). Injected values never override variables already set in the parent environment.
 .SH OPTIONS
 .TP

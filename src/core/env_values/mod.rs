@@ -145,6 +145,14 @@ impl EnvSpec {
         ctx: &ValueContext<'_>,
         adhoc: AdHocPolicy,
     ) -> Result<ResolvedValue, DerivationError> {
+        // Daft's own variables are never derived. Validation already refuses
+        // declaring them, but without this guard an ad-hoc resolution would
+        // confidently hash DAFT_BRANCH_NAME into a meaningless port number.
+        if name.starts_with("DAFT_") {
+            return Err(DerivationError::ReservedName {
+                name: name.to_string(),
+            });
+        }
         if let Some(port) = self.declared_port(slug, name)? {
             let offset = port - self.block_base(slug)?;
             return Ok(ResolvedValue {
@@ -308,9 +316,15 @@ pub struct ValueContext<'a> {
 /// Where a resolved value came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueSource {
-    DeclaredPort { offset: u16 },
+    DeclaredPort {
+        offset: u16,
+    },
     Value,
     AdHoc,
+    /// One of daft's own `DAFT_*` job variables, read from worktree state.
+    /// Constructed by the `daft env` command only — the derivation core
+    /// never produces it (`resolve_one` refuses the prefix outright).
+    Context,
 }
 
 impl ValueSource {
@@ -320,6 +334,7 @@ impl ValueSource {
             ValueSource::DeclaredPort { .. } => "port",
             ValueSource::Value => "value",
             ValueSource::AdHoc => "ad-hoc",
+            ValueSource::Context => "context",
         }
     }
 }
@@ -339,6 +354,7 @@ pub struct ResolvedValue {
 pub enum DerivationError {
     DegenerateRange { range: (u16, u16), block_size: u16 },
     UnknownName { name: String },
+    ReservedName { name: String },
     UnknownPlaceholder { value: String, placeholder: String },
     UnknownPortRef { value: String, referenced: String },
     ValueReferencesValue { value: String, referenced: String },
@@ -356,6 +372,11 @@ impl std::fmt::Display for DerivationError {
             DerivationError::UnknownName { name } => {
                 write!(f, "'{name}' is not declared in this repo's env: section")
             }
+            DerivationError::ReservedName { name } => write!(
+                f,
+                "'{name}' is reserved; the DAFT_ prefix belongs to daft's own \
+                 variables, which are read from worktree state rather than derived"
+            ),
             DerivationError::UnknownPlaceholder { value, placeholder } => write!(
                 f,
                 "env.values.{value} references unknown placeholder '{{{placeholder}}}'"
@@ -452,6 +473,29 @@ mod tests {
             Some(23960)
         );
         assert_eq!(spec.declared_port("feature-new", "NOPE").unwrap(), None);
+    }
+
+    /// The DAFT_ prefix never derives — under any policy, even the
+    /// permissive ones. Without the guard, `--ad-hoc` (or a schema-less
+    /// repo) would hash DAFT_BRANCH_NAME into a confidently wrong port.
+    #[test]
+    fn reserved_daft_names_never_derive() {
+        let spec = spec_with(&[("WEBAPP_PORT", None)], &[]);
+        for policy in [
+            AdHocPolicy::Allow,
+            AdHocPolicy::Forbid,
+            AdHocPolicy::UnlessDeclaredSchema,
+        ] {
+            let err = spec
+                .resolve_one("feature-new", "DAFT_BRANCH_NAME", &ctx(), policy)
+                .unwrap_err();
+            assert_eq!(
+                err,
+                DerivationError::ReservedName {
+                    name: "DAFT_BRANCH_NAME".into()
+                }
+            );
+        }
     }
 
     #[test]
