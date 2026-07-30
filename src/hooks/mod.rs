@@ -53,6 +53,7 @@ mod executor;
 pub mod file_types;
 pub mod git_stage;
 pub mod groups;
+pub mod incumbent;
 pub mod job_adapter;
 pub mod manager_output;
 pub mod move_hooks;
