@@ -1701,8 +1701,10 @@ pub fn load_hooks_config_with(git: &GitCommand) -> Result<HooksConfig> {
         config.output.parse_managers = parse_bool(&value, true);
     }
 
-    // Load per-hook settings
-    for hook_type in HookType::all() {
+    // Load per-hook settings, git stages included. Each lookup is a read from
+    // the gitoxide snapshot the repo was opened with, so widening from 7 hooks
+    // to 23 costs no additional IO.
+    for hook_type in HookType::all_configurable() {
         let hook_config = config.get_hook_config_mut(*hook_type);
         load_hook_type_config(git, *hook_type, hook_config)?;
     }
@@ -1770,7 +1772,15 @@ pub fn load_hooks_config_global() -> Result<HooksConfig> {
         config.output.parse_managers = parse_bool(&value, true);
     }
 
-    // Load per-hook settings from global config
+    // Load per-hook settings from global config.
+    //
+    // Lifecycle hooks only, deliberately. This loader exists for commands that
+    // run before a repository exists, and no git stage can fire there — a
+    // stage needs a hooks directory to be dispatched from. Widening it would
+    // buy nothing and cost 32 more re-reads of `~/.gitconfig`, since
+    // `config_get_global` reparses the file per key. Once a repo exists, the
+    // repo-scoped loader above sees global values anyway: it reads git's
+    // merged view.
     for hook_type in HookType::all() {
         let hook_config = config.get_hook_config_mut(*hook_type);
         load_hook_type_config_global(&git, *hook_type, hook_config)?;

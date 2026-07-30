@@ -309,7 +309,7 @@ fn capped_list(names: &BTreeSet<String>, more_word: &str) -> String {
 fn capped_hook_list(names: &BTreeSet<String>, more_word: &str) -> String {
     let lifecycle_pos = |name: &str| {
         HookType::from_yaml_name(name)
-            .and_then(|ht| HookType::all().iter().position(|h| *h == ht))
+            .and_then(|ht| HookType::all_configurable().iter().position(|h| *h == ht))
             .unwrap_or(usize::MAX)
     };
     let mut ordered: Vec<&String> = names.iter().collect();

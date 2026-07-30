@@ -254,6 +254,11 @@ pub(crate) fn get_hook_source_worktree(ctx: &HookContext) -> PathBuf {
         // merge is (or was) taking place, and also where `daft.yml` is
         // most naturally located (the branch being merged into).
         HookType::PreMerge | HookType::PostMerge => ctx.worktree_path.clone(),
+        // A git stage runs where git invoked it: the worktree the commit,
+        // rebase or push is happening in. The dispatcher sets both paths to
+        // that worktree, so either field would do; naming `worktree_path`
+        // keeps it aligned with the other target-scoped phases.
+        HookType::Git(_) => ctx.worktree_path.clone(),
     }
 }
 
@@ -267,9 +272,13 @@ pub(crate) fn get_hook_source_worktree(ctx: &HookContext) -> PathBuf {
 /// because the title isn't tied to a single worktree.
 pub(crate) fn header_target_for_ctx(ctx: &HookContext) -> Option<&str> {
     match ctx.hook_type {
-        HookType::PreCreate | HookType::PostCreate | HookType::PreRemove | HookType::PostRemove => {
-            Some(ctx.worktree_label())
-        }
+        HookType::PreCreate
+        | HookType::PostCreate
+        | HookType::PreRemove
+        | HookType::PostRemove
+        // A stage gates one worktree's commit or push; naming it distinguishes
+        // the run from a sibling worktree's in a shared terminal.
+        | HookType::Git(_) => Some(ctx.worktree_label()),
         HookType::PreMerge | HookType::PostMerge | HookType::PostClone => None,
     }
 }
@@ -497,7 +506,10 @@ impl HookExecutor {
             )));
         }
 
-        // Fallback: legacy script execution
+        // Fallback: legacy script execution. Inert for git stages —
+        // `find_hooks` refuses to discover a script form for them, so this
+        // resolves to "nothing configured" rather than running a stray
+        // `.daft/hooks/pre-commit`.
         self.execute_legacy(ctx, hook_config, &hook_source_worktree, output, presenter)
     }
 

@@ -1,4 +1,4 @@
-//! Hooks system for worktree lifecycle events.
+//! Hooks system for worktree lifecycle events and git stages.
 //!
 //! This module provides a flexible, project-managed hooks system that allows
 //! arbitrary scripts to run at worktree lifecycle events.
@@ -14,6 +14,10 @@
 //! | `worktree-post-remove` | After worktree removed | Current worktree |
 //! | `pre-merge` | Before a merge operation, after pre-flight checks | Target worktree |
 //! | `post-merge` | After a merge operation completes | Target worktree |
+//!
+//! Plus git's own stages — `pre-commit`, `commit-msg`, `pre-push`, … — see
+//! [`git_stage`]. They share the `hooks:` block and everything downstream of
+//! it; what differs is that git triggers them, through a shim daft installs.
 //!
 //! # Security
 //!
@@ -109,6 +113,18 @@ pub enum HookType {
     /// Failure is logged but does not roll back the merge.
     /// Hook file is read from the target worktree.
     PostMerge,
+
+    /// A stage of git's own lifecycle — `pre-commit`, `commit-msg`,
+    /// `pre-push`, … — dispatched through a shim daft installs in the hooks
+    /// directory.
+    ///
+    /// One variant rather than sixteen so the hook machinery downstream of
+    /// config resolution treats a stage as just another hook: the same job
+    /// orchestration, trust gate, presenter, and `--skip-hooks` selectors.
+    /// What differs is upstream — where the definition is keyed, what payload
+    /// git supplies, and the fact that there is no script-file form (a stage
+    /// is defined in `daft.yml`, never as `.daft/hooks/pre-commit`).
+    Git(git_stage::GitStage),
 }
 
 impl HookType {
@@ -157,6 +173,18 @@ impl HookType {
             HookType::PostRemove => "worktree-post-remove",
             HookType::PreMerge => "pre-merge",
             HookType::PostMerge => "post-merge",
+            // git's spelling — this names the shim on disk, and git chooses
+            // that name. Note it is NOT the `daft.yml` key for
+            // `git-post-merge`; see `yaml_name`.
+            HookType::Git(stage) => stage.git_hook_filename(),
+        }
+    }
+
+    /// The git stage this hook type is, if it is one.
+    pub fn git_stage(&self) -> Option<git_stage::GitStage> {
+        match self {
+            HookType::Git(stage) => Some(*stage),
+            _ => None,
         }
     }
 
@@ -172,12 +200,15 @@ impl HookType {
             HookType::PostRemove => "worktree-post-remove",
             HookType::PreMerge => "pre-merge",
             HookType::PostMerge => "post-merge",
+            HookType::Git(stage) => stage.yaml_name(),
         }
     }
 
     /// Look up a HookType by its YAML config key name.
     ///
-    /// Returns `None` for git hooks (pre-commit, etc.) that are not daft lifecycle hooks.
+    /// Covers both namespaces — daft's lifecycle events and git's stages —
+    /// because `hooks:` is one registry. Returns `None` for a name that is
+    /// neither.
     pub fn from_yaml_name(name: &str) -> Option<Self> {
         match name {
             "post-clone" => Some(HookType::PostClone),
@@ -187,25 +218,33 @@ impl HookType {
             "worktree-post-remove" => Some(HookType::PostRemove),
             "pre-merge" => Some(HookType::PreMerge),
             "post-merge" => Some(HookType::PostMerge),
-            _ => None,
+            other => git_stage::GitStage::from_yaml_name(other).map(HookType::Git),
         }
     }
 
     /// Returns the deprecated filename for this hook type, if it was renamed.
     ///
     /// Returns `None` for hooks that were not renamed (`post-clone`,
-    /// `pre-merge`, `post-merge`).
+    /// `pre-merge`, `post-merge`) and for git stages, which have no legacy
+    /// spelling — they arrived with the canonical one.
     pub fn deprecated_filename(&self) -> Option<&'static str> {
         match self {
             HookType::PreCreate => Some("pre-create"),
             HookType::PostCreate => Some("post-create"),
             HookType::PreRemove => Some("pre-remove"),
             HookType::PostRemove => Some("post-remove"),
-            HookType::PostClone | HookType::PreMerge | HookType::PostMerge => None,
+            HookType::PostClone | HookType::PreMerge | HookType::PostMerge | HookType::Git(_) => {
+                None
+            }
         }
     }
 
-    /// Maps a filename (new or deprecated) to its `HookType`.
+    /// Maps a lifecycle hook filename (new or deprecated) to its `HookType`.
+    ///
+    /// Deliberately blind to git stages: this resolves names found in
+    /// `.daft/hooks/`, and a stage has no script-file form. A repo with a
+    /// stray `.daft/hooks/pre-commit` script gets no dispatch from it, which
+    /// is the honest answer — daft never installed anything that would run it.
     ///
     /// Returns `None` if the filename is not recognized.
     pub fn from_filename(name: &str) -> Option<HookType> {
@@ -231,25 +270,31 @@ impl HookType {
             HookType::PostRemove => "worktreePostRemove",
             HookType::PreMerge => "preMerge",
             HookType::PostMerge => "postMerge",
+            HookType::Git(stage) => stage.config_key(),
         }
     }
 
     /// Returns the deprecated config key for this hook type, if it was renamed.
     ///
     /// Returns `None` for hooks that were not renamed (`postClone`,
-    /// `preMerge`, `postMerge`).
+    /// `preMerge`, `postMerge`) and for git stages.
     pub fn deprecated_config_key(&self) -> Option<&'static str> {
         match self {
             HookType::PreCreate => Some("preCreate"),
             HookType::PostCreate => Some("postCreate"),
             HookType::PreRemove => Some("preRemove"),
             HookType::PostRemove => Some("postRemove"),
-            HookType::PostClone | HookType::PreMerge | HookType::PostMerge => None,
+            HookType::PostClone | HookType::PreMerge | HookType::PostMerge | HookType::Git(_) => {
+                None
+            }
         }
     }
 
     /// Returns the default fail mode for this hook type.
     pub fn default_fail_mode(&self) -> FailMode {
+        if let HookType::Git(stage) = self {
+            return stage.default_fail_mode();
+        }
         match self {
             // Pre-create and pre-merge hooks should abort by default
             // (setup / safety rails must succeed before the operation).
@@ -267,13 +312,20 @@ impl HookType {
 
     /// Returns whether this is a "pre" hook (runs before the operation).
     pub fn is_pre_hook(&self) -> bool {
-        matches!(
-            self,
-            HookType::PreCreate | HookType::PreRemove | HookType::PreMerge
-        )
+        match self {
+            HookType::PreCreate | HookType::PreRemove | HookType::PreMerge => true,
+            HookType::Git(stage) => stage.aborts_operation(),
+            _ => false,
+        }
     }
 
-    /// Returns all hook types.
+    /// Returns all lifecycle hook types.
+    ///
+    /// Deliberately excludes git stages: this drives `.daft/hooks/` script
+    /// discovery and the deprecated-name migration, neither of which a stage
+    /// participates in. Config surfaces that must cover every hook a user can
+    /// tune — the settings loaders, the settings registry — use
+    /// [`Self::all_configurable`] instead.
     pub fn all() -> &'static [HookType] {
         &[
             HookType::PostClone,
@@ -284,6 +336,24 @@ impl HookType {
             HookType::PreMerge,
             HookType::PostMerge,
         ]
+    }
+
+    /// Every hook type that has `enabled` / `failMode` config: the lifecycle
+    /// hooks followed by the git stages, in that reading order.
+    pub fn all_configurable() -> &'static [HookType] {
+        static ALL: std::sync::LazyLock<Vec<HookType>> = std::sync::LazyLock::new(|| {
+            HookType::all()
+                .iter()
+                .copied()
+                .chain(
+                    git_stage::GitStage::all()
+                        .iter()
+                        .copied()
+                        .map(HookType::Git),
+                )
+                .collect()
+        });
+        &ALL
     }
 }
 
@@ -420,6 +490,13 @@ pub struct HooksConfig {
     pub worktree_post_remove: HookConfig,
     pub pre_merge: HookConfig,
     pub post_merge: HookConfig,
+    /// Per-git-stage configuration.
+    ///
+    /// A map rather than sixteen more named fields — the stage set is a table
+    /// (`GitStage::all()`), and a field per stage would need the same table
+    /// spelled a third time in every accessor. Every stage is seeded in
+    /// [`Default`], so lookups are total.
+    pub git_stages: std::collections::BTreeMap<git_stage::GitStage, HookConfig>,
 }
 
 impl Default for HooksConfig {
@@ -437,6 +514,10 @@ impl Default for HooksConfig {
             worktree_post_remove: HookConfig::new(HookType::PostRemove),
             pre_merge: HookConfig::new(HookType::PreMerge),
             post_merge: HookConfig::new(HookType::PostMerge),
+            git_stages: git_stage::GitStage::all()
+                .iter()
+                .map(|&stage| (stage, HookConfig::new(HookType::Git(stage))))
+                .collect(),
         }
     }
 }
@@ -452,6 +533,10 @@ impl HooksConfig {
             HookType::PostRemove => &self.worktree_post_remove,
             HookType::PreMerge => &self.pre_merge,
             HookType::PostMerge => &self.post_merge,
+            HookType::Git(stage) => self
+                .git_stages
+                .get(&stage)
+                .expect("HooksConfig::default seeds every GitStage"),
         }
     }
 
@@ -465,6 +550,10 @@ impl HooksConfig {
             HookType::PostRemove => &mut self.worktree_post_remove,
             HookType::PreMerge => &mut self.pre_merge,
             HookType::PostMerge => &mut self.post_merge,
+            HookType::Git(stage) => self
+                .git_stages
+                .entry(stage)
+                .or_insert_with(|| HookConfig::new(HookType::Git(stage))),
         }
     }
 }
@@ -525,6 +614,17 @@ pub fn find_hooks(
 ) -> HookDiscovery {
     let mut hooks = Vec::new();
     let mut deprecation_warnings = Vec::new();
+
+    // Git stages have no script-file form. Discovering `.daft/hooks/pre-commit`
+    // here would execute a file daft never installed a dispatcher for, giving
+    // it a second, invisible way to run — and it would shadow the YAML
+    // definition, since script hooks take precedence.
+    if matches!(hook_type, HookType::Git(_)) {
+        return HookDiscovery {
+            hooks,
+            deprecation_warnings,
+        };
+    }
 
     // Project hook
     discover_hook_in_dir(
@@ -854,6 +954,99 @@ mod tests {
         assert!(all.contains(&HookType::PostRemove));
         assert!(all.contains(&HookType::PreMerge));
         assert!(all.contains(&HookType::PostMerge));
+    }
+
+    #[test]
+    fn git_stages_resolve_through_the_shared_hook_registry() {
+        use git_stage::GitStage;
+
+        // `hooks:` is one namespace: a stage key resolves the same way a
+        // lifecycle key does, which is what lets --skip-hooks, the trust
+        // notice, and `hooks run` widen for free.
+        assert_eq!(
+            HookType::from_yaml_name("pre-commit"),
+            Some(HookType::Git(GitStage::PreCommit))
+        );
+        assert_eq!(
+            HookType::from_yaml_name("git-post-merge"),
+            Some(HookType::Git(GitStage::PostMerge))
+        );
+        // …but the plain spelling still means daft's own merge hook.
+        assert_eq!(
+            HookType::from_yaml_name("post-merge"),
+            Some(HookType::PostMerge)
+        );
+        assert_eq!(HookType::from_yaml_name("pre-comit"), None);
+    }
+
+    #[test]
+    fn git_stages_have_no_script_form() {
+        // `from_filename` resolves names found in `.daft/hooks/`. A stage must
+        // not resolve there: daft installs no dispatcher for a script hook, so
+        // a file that "worked" would be a second, invisible definition — and
+        // scripts take precedence over YAML.
+        assert_eq!(HookType::from_filename("pre-commit"), None);
+        assert_eq!(HookType::from_filename("commit-msg"), None);
+        // The plain `post-merge` filename is daft's lifecycle hook, unchanged.
+        assert_eq!(
+            HookType::from_filename("post-merge"),
+            Some(HookType::PostMerge)
+        );
+    }
+
+    #[test]
+    fn find_hooks_never_discovers_a_stage_script() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+        create_executable_hook(&worktree, "pre-commit");
+
+        let config = HooksConfig::default();
+        let discovery = find_hooks(
+            HookType::Git(git_stage::GitStage::PreCommit),
+            &worktree,
+            &config,
+        );
+        assert!(discovery.hooks.is_empty());
+        assert!(discovery.deprecation_warnings.is_empty());
+    }
+
+    #[test]
+    fn every_stage_has_a_seeded_config_with_its_own_default() {
+        let config = HooksConfig::default();
+        for &stage in git_stage::GitStage::all() {
+            let hook_config = config.get_hook_config(HookType::Git(stage));
+            assert!(hook_config.enabled, "{stage}");
+            assert_eq!(hook_config.fail_mode, stage.default_fail_mode(), "{stage}");
+        }
+        assert_eq!(config.git_stages.len(), git_stage::GitStage::all().len());
+    }
+
+    #[test]
+    fn all_configurable_is_the_lifecycle_set_plus_every_stage() {
+        let all = HookType::all_configurable();
+        assert_eq!(all.len(), 7 + git_stage::GitStage::all().len());
+        // Lifecycle hooks lead, in their existing order — the settings
+        // registry and the trust notice both read in this order.
+        assert_eq!(&all[..7], HookType::all());
+        for &stage in git_stage::GitStage::all() {
+            assert!(all.contains(&HookType::Git(stage)), "{stage}");
+        }
+        // `all()` itself stays lifecycle-only: it drives script discovery and
+        // the deprecated-name migration, neither of which a stage joins.
+        assert_eq!(HookType::all().len(), 7);
+    }
+
+    #[test]
+    fn config_keys_are_unique_across_both_namespaces() {
+        let mut keys: Vec<&str> = HookType::all_configurable()
+            .iter()
+            .map(|h| h.config_key())
+            .collect();
+        keys.sort_unstable();
+        let total = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), total, "two hooks share a git-config subsection");
     }
 
     #[test]
