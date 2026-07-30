@@ -25,22 +25,29 @@ daft layout would be overkill.
 
 ## vs lefthook
 
-[Lefthook](https://github.com/evilmartians/lefthook) is a popular git hook
-manager focused on commit-stage hooks (pre-commit, commit-msg, pre-push).
+[Lefthook](https://github.com/evilmartians/lefthook) is a mature, widely-used
+git hook manager focused on the commit stage.
 
-Today, daft hooks are scoped to worktree-lifecycle stages — they don't replace
-lefthook. The full git-hooks drop-in
-([#468](https://github.com/avihut/daft/issues/468)) is on the roadmap; once
-shipped, daft will be a viable lefthook replacement.
+Daft now manages git hooks too, and its schema was forked from lefthook's
+documented interface — so most of a `lefthook.yml` means the same thing in
+`daft.yml`. Daft can also run your existing lefthook config directly, which
+makes trying it a reversible decision rather than a port. See
+[Migrating from lefthook](/hooks/lefthook-migration) for what translates and
+what does not.
 
-When that ships, the comparison will be:
+The comparison:
 
-- **daft** covers the full code-evolution lifecycle (worktree → commit → merge →
-  teardown) under one config and one trust model.
-- **lefthook** covers commit-stage only, but is mature and battle-tested.
+- **daft** covers the whole code-evolution lifecycle — worktree creation,
+  commit, merge, teardown — under one config, one trust model, and one job
+  history. Hooks in an unfamiliar clone do not run until you trust it. Stages
+  report per job, including during `daft push`.
+- **lefthook** covers the commit stage only, and does it well. It is mature,
+  battle-tested, and has no opinions about worktrees.
 
-When to pick lefthook today: you only need commit-stage hooks. Revisit when #468
-ships.
+When to pick lefthook: you want a commit-stage hook manager and nothing else,
+and you value years of production use over breadth. When to pick daft: you want
+one gate system across every boundary your code crosses, or you are already
+using daft for worktrees and would rather not run two tools.
 
 ## vs gitup / `gh worktree` / `git-town`
 
@@ -79,12 +86,9 @@ that is version binding, which the graph deliberately does not do.
 
 ## vs GitHub Actions PR checks
 
-(Speculative — fully realized once
-[#468](https://github.com/avihut/daft/issues/468) (commit-stage hooks) ships.
-Worktree and merge hooks already cover the boundaries they own.)
-
 GitHub Actions runs PR checks **after** code reaches the central repo. daft
-hooks (when the full set is shipped) run **before** code leaves your machine.
+hooks run **before** code leaves your machine — every boundary from worktree
+creation through commit, merge, and teardown.
 
 These are complementary: fast checks shift left to daft hooks (faster feedback,
 no minutes consumed); slow/secrets-bound checks stay in Actions.
