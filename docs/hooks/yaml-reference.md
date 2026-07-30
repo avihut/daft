@@ -142,9 +142,11 @@ the same worktree name yields the same values on every machine, even before the
 worktree exists. Query them with [`daft env`](/reference/cli/daft-env); hooks,
 tasks, and `daft exec` receive them in their environment automatically. The
 `DAFT_*` prefix is reserved for daft's own
-[job variables](/hooks/lifecycle#environment-provided-to-hooks) — those cannot
-be declared here, but `daft env DAFT_BRANCH_NAME` answers them from live
-worktree state alongside the declared set.
+[job variables](/hooks/lifecycle#environment-provided-to-hooks): a name in that
+namespace is refused here and never injected, because a derived port under
+`DAFT_BRANCH_NAME` would overwrite the real branch name in every job. Reading
+them is fine — `daft env DAFT_BRANCH_NAME` answers from live worktree state,
+alongside the declared set in the listing.
 
 ```yaml
 env:
