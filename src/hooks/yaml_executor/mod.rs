@@ -140,15 +140,6 @@ pub struct HookExecutionContext<'a> {
     /// phase. `Off` never reaches here — it is lowered to a `--skip-hooks
     /// all` selector before the executor is built.
     pub hook_mode: crate::hooks::HookMode,
-    /// The index git pointed this hook at, captured before daft's own `git`
-    /// invocations scrubbed it from the environment.
-    ///
-    /// `git commit -a` builds a temporary index and exports `GIT_INDEX_FILE`
-    /// at it; the real `.git/index` does not yet hold what is being
-    /// committed. `git_command_at` strips the variable so `-C` decides which
-    /// repository is read, which means the staged-file probe has to be handed
-    /// it back explicitly. `None` everywhere except the stage dispatcher.
-    pub index_file: Option<std::path::PathBuf>,
 
     /// Top-level `templates:` fragments from `daft.yml`, expanded in every
     /// job's `run:`.
@@ -182,7 +173,6 @@ pub fn execute_yaml_hook(
         // Callers wanting a different mode build the context themselves (or
         // export the env var); this convenience wrapper keeps the default.
         hook_mode: crate::hooks::HookMode::Auto,
-        index_file: None,
         templates: None,
     };
     execute_yaml_hook_with_rc(hook_name, hook_def, ctx, output, &cfg)
@@ -211,7 +201,7 @@ pub fn execute_yaml_hook_with_rc(
         ctx,
         working_dir,
         hook_def.files.as_deref(),
-        cfg.index_file.clone(),
+        ctx.index_file.clone(),
     );
     let changed_files = file_sources.default_provider();
 
@@ -1984,7 +1974,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
-            index_file: None,
             templates: None,
         };
 
@@ -2036,7 +2025,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
-            index_file: None,
             templates: None,
         };
 
@@ -2088,7 +2076,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
-            index_file: None,
             templates: None,
         };
 
@@ -2137,7 +2124,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
-            index_file: None,
             templates: None,
         };
 
@@ -2203,7 +2189,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Background,
-            index_file: None,
             templates: None,
         };
 
@@ -2252,7 +2237,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Background,
-            index_file: None,
             templates: None,
         };
 
@@ -2524,7 +2508,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
-            index_file: None,
             templates: None,
         };
         let result =
@@ -2558,7 +2541,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
-            index_file: None,
             templates: None,
         };
         let result =
@@ -2598,7 +2580,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
-            index_file: None,
             templates: None,
         };
         let result =
@@ -2665,7 +2646,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
-            index_file: None,
             templates: None,
         };
         let result =
@@ -2706,7 +2686,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
-            index_file: None,
             templates: None,
         };
         // Must NOT error (contrast with the include path's bail!).
@@ -2744,7 +2723,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
-            index_file: None,
             templates: None,
         };
         // hook_name == the selected hook type ⇒ the whole hook is skipped, but
@@ -2801,7 +2779,6 @@ mod tests {
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
-            index_file: None,
             templates: None,
         };
         let result =
@@ -2850,7 +2827,6 @@ mod tests {
             cancel: None,
             trigger_label: Some("run dev".to_string()),
             hook_mode: crate::hooks::HookMode::Auto,
-            index_file: None,
             templates: None,
         };
         execute_yaml_hook_with_rc("dev", &hook_def, &ctx, &mut output, &cfg).unwrap();

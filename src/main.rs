@@ -118,6 +118,9 @@ fn main() -> Result<()> {
                     "completions" => commands::completions::run(),
                     "doctor" => commands::doctor::run(),
                     "__complete" => commands::complete::run(),
+                    // Internal: what a shim in .git/hooks calls. argv[2] is
+                    // the git hook filename, argv[3..] git's own arguments.
+                    "__hook" => commands::git_hook::run(&args[2..]),
                     "__check-update" => {
                         let _ = daft::update_check::run_check_update();
                         return Ok(());

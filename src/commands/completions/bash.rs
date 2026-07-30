@@ -541,7 +541,7 @@ _daft() {
     if [[ $cword -ge 2 && "${words[1]}" == "hooks" ]]; then
         # hooks subcommand completion (position 2)
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=( $(compgen -W "trust prompt deny status migrate add validate dump run jobs" -- "$cur") )
+            COMPREPLY=( $(compgen -W "trust prompt deny status migrate add install uninstall validate dump run jobs" -- "$cur") )
             COMPREPLY+=( $(compgen -d -- "$cur") )
             return 0
         fi
