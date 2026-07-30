@@ -667,6 +667,31 @@ pub fn execute_yaml_hook_with_rc(
 
     let hook_start = std::time::Instant::now();
 
+    // `setup:` runs before any job and outside the job machinery — a step
+    // that could be glob-filtered or reordered by the scheduler would not be
+    // setup. Its failure fails the hook, because running gates against a
+    // half-prepared environment reports on something nobody asked about.
+    if let Some(ref steps) = hook_def.setup
+        && let Some(failure) = crate::hooks::hook_setup::run_setup(steps, working_dir, &hook_env)?
+    {
+        presenter.on_phase_complete(hook_start.elapsed());
+        return Ok(HookResult {
+            success: false,
+            exit_code: failure.exit_code,
+            stderr: failure.message,
+            ..HookResult::config_error("")
+        }
+        .with_invocation(&invocation_id));
+    }
+
+    // The before-picture for `fail_on_changes:`. Taken after setup, since
+    // setup is allowed to prepare the tree — it is the *jobs* whose edits
+    // this reports.
+    let tree_before = match hook_def.fail_on_changes {
+        Some(true) => crate::hooks::hook_setup::tree_snapshot(working_dir).ok(),
+        _ => None,
+    };
+
     // Execute foreground jobs via the generic runner (cancel-aware for tasks;
     // `cfg.cancel` is None for every hook caller, so behavior is unchanged).
     // Governed foreground fan-out (#775): a parallel phase runs under the
@@ -690,6 +715,22 @@ pub fn execute_yaml_hook_with_rc(
     // Stop the sampler and persist learned profiles before moving on.
     if let Some(run) = &governed {
         run.governor.shutdown();
+    }
+
+    // `fail_on_changes:` — the CI-parity switch. A formatter that rewrites
+    // the tree and passes is a gate that never tells you the code was wrong.
+    if let Some(before) = tree_before.as_ref()
+        && let Ok(after) = crate::hooks::hook_setup::tree_snapshot(working_dir)
+        && let Some(failure) = crate::hooks::hook_setup::changes_since(before, &after)
+    {
+        presenter.on_phase_complete(hook_start.elapsed());
+        return Ok(HookResult {
+            success: false,
+            exit_code: Some(1),
+            stderr: failure.message,
+            ..HookResult::config_error("")
+        }
+        .with_invocation(&invocation_id));
     }
 
     // If there are no background jobs, print summary and return.
