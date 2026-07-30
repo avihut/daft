@@ -49,7 +49,13 @@ pub struct StageOutcome {
 /// Trust gating lives behind this port too: an adapter must answer `false`
 /// for repos whose daft config is untrusted, degrading to Path A (git still
 /// runs the repo's own hooks; daft's stage is skipped).
-pub trait StageRunner {
+///
+/// `Send + Sync` because the real adapter is reached through a process-wide
+/// static (one config/stat cache shared by every push in the process) and the
+/// batched push paths hand the same runner to work on other threads. The
+/// bound costs the adapter nothing — it holds only locks and immutable
+/// config — and makes those uses possible without a second indirection.
+pub trait StageRunner: Send + Sync {
     /// Whether daft manages the given stage for the repo seen from
     /// `repo_cwd` (a directory inside the repo — normally the worktree the
     /// operation runs in; the adapter resolves git dirs itself).
