@@ -23,6 +23,7 @@ pub mod settings;
 pub mod settings_spec;
 pub mod shared;
 pub mod size_walk;
+pub mod slug;
 pub mod sort;
 pub mod stage;
 mod tui_bridge;
