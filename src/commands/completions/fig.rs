@@ -957,6 +957,22 @@ fn build_fig_layout_subcommand() -> FigSubcommand {
 /// slot pulls what that key accepts. Fig re-runs the script per slot, so the
 /// value generator reads the key back out of the command line the same way the
 /// shell wrappers do.
+/// The `--category` values, baked into the spec.
+///
+/// Static rather than a generator because the categories cannot change between
+/// generating the spec and using it — they are a const table, the same reason
+/// `--format` bakes its formats in. Spelled without spaces or ampersands, which
+/// is the form the filter accepts that a shell does not have to quote.
+fn category_suggestions() -> Vec<FigSuggestion> {
+    crate::core::settings_spec::Category::all()
+        .iter()
+        .map(|category| FigSuggestion {
+            name: category.label().replace([' ', '&'], ""),
+            description: format!("Settings under {}", category.label()),
+        })
+        .collect()
+}
+
 fn build_fig_config_subcommand() -> FigSubcommand {
     let key_arg = FigArgs::Single(FigArg {
         name: "key".to_string(),
@@ -972,10 +988,35 @@ fn build_fig_config_subcommand() -> FigSubcommand {
         }),
     });
 
-    let global_option = || FigOption {
-        name: FigName::Single("--global".into()),
-        description: "Write to global config instead of this repository".into(),
-        args: None,
+    // The layer pair, in both directions. One flag names one rung, and the same
+    // rung whether a verb reads it or writes it.
+    let write_scope_options = || {
+        vec![
+            FigOption {
+                name: FigName::Single("--global".into()),
+                description: "Write to global config instead of this repository".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--local".into()),
+                description: "Write to this repository — the default".into(),
+                args: None,
+            },
+        ]
+    };
+    let read_scope_options = || {
+        vec![
+            FigOption {
+                name: FigName::Single("--global".into()),
+                description: "Read the shared scope alone".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--local".into()),
+                description: "Read this worktree's own scope alone".into(),
+                args: None,
+            },
+        ]
     };
 
     let get = FigSubcommand {
@@ -984,11 +1025,16 @@ fn build_fig_config_subcommand() -> FigSubcommand {
         load_spec: None,
         subcommands: None,
         args: Some(key_arg.clone()),
-        options: Some(vec![FigOption {
-            name: FigName::Single("--origin".into()),
-            description: "Show every layer's value and which one won".into(),
-            args: None,
-        }]),
+        options: Some({
+            let mut opts = vec![FigOption {
+                name: FigName::Single("--origin".into()),
+                description: "Show every layer's value and which one won".into(),
+                args: None,
+            }];
+            opts.extend(read_scope_options());
+            opts.extend(build_emit_options("config get"));
+            opts
+        }),
     };
 
     let set = FigSubcommand {
@@ -1024,7 +1070,11 @@ fn build_fig_config_subcommand() -> FigSubcommand {
                 }),
             },
         ])),
-        options: Some(vec![global_option()]),
+        options: Some({
+            let mut opts = write_scope_options();
+            opts.extend(build_emit_options("config set"));
+            opts
+        }),
     };
 
     let unset = FigSubcommand {
@@ -1033,7 +1083,11 @@ fn build_fig_config_subcommand() -> FigSubcommand {
         load_spec: None,
         subcommands: None,
         args: Some(key_arg),
-        options: Some(vec![global_option()]),
+        options: Some({
+            let mut opts = write_scope_options();
+            opts.extend(build_emit_options("config unset"));
+            opts
+        }),
     };
 
     let list = FigSubcommand {
@@ -1042,21 +1096,26 @@ fn build_fig_config_subcommand() -> FigSubcommand {
         load_spec: None,
         subcommands: None,
         args: None,
-        options: Some(vec![
-            FigOption {
-                name: FigName::Single("--modified".into()),
-                description: "Only settings something actually sets".into(),
-                args: None,
-            },
-            FigOption {
-                name: FigName::Single("--category".into()),
-                description: "Only settings in this category".into(),
-                args: Some(FigOptionArg {
-                    suggestions: None,
-                    template: None,
-                }),
-            },
-        ]),
+        options: Some({
+            let mut opts = vec![
+                FigOption {
+                    name: FigName::Single("--modified".into()),
+                    description: "Only settings something actually sets".into(),
+                    args: None,
+                },
+                FigOption {
+                    name: FigName::Single("--category".into()),
+                    description: "Only settings in this category".into(),
+                    args: Some(FigOptionArg {
+                        suggestions: Some(category_suggestions()),
+                        template: None,
+                    }),
+                },
+            ];
+            opts.extend(read_scope_options());
+            opts.extend(build_emit_options("config list"));
+            opts
+        }),
     };
 
     FigSubcommand {

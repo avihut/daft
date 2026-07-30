@@ -40,8 +40,6 @@ daft config unset daft.autocd        # reveal whatever it was masking
 
 `get` prints the value and nothing else, exiting non-zero when there is none —
 the same contract `git config --get` has, so it drops into scripts.
-`list --format json` carries the whole read model, including each setting's
-type, default, and description.
 
 Values are checked before anything is written, so a bad enum or an unknown
 column is refused where you typed it rather than at the next command that reads
@@ -57,6 +55,60 @@ Git's own commands still work for the Git-backed settings:
 git config daft.autocd false
 git config --global daft.autocd false
 ```
+
+### Choosing a layer
+
+`--local` and `--global` take Git's spelling, and every verb accepts both. The
+flag names one layer, and the same layer whether you are reading or writing —
+`get --local` prints exactly what `set --local` would replace:
+
+```bash
+daft config get daft.remote --global   # what the shared layer says
+daft config get daft.remote --local    # what this worktree's own layer says
+daft config set --local daft.remote up # the default; spelling it changes nothing
+daft config list --global              # the contents of the shared layer
+```
+
+That matters most for the settings Git does not store. For a `daft.yml` setting,
+`--local` is the `daft.local.yml` overlay and `--global` is the repository's
+committed `daft.yml`; for the worktree layout, `--local` is the repository's own
+entry and `--global` is the default in the global config. Every write says which
+store it landed in, so "global" never quietly means "the team's file".
+
+A read narrowed to a layer exits 1 when that layer says nothing, which is how a
+script asks whether something is set _here_ rather than only what it resolves
+to. It reports what the layer stores, which is not always what daft reads: a
+value outranked from above still prints, and `list --global` marks such a row
+`outranked by local`. `--origin` remains the way to see every layer at once, and
+so cannot be combined with a layer flag.
+
+Two layers Git has are readable but never writable — `system` needs privileges
+daft should not ask for, and `worktree` needs an extension most repositories
+have off. They appear in `get --origin` and have no flag.
+
+### Machine-readable output
+
+Every verb takes `--format json|yaml|toon|markdown` (and `list`, being rows,
+also takes `ndjson|tsv|csv`) plus `--template`:
+
+```bash
+daft config list --format json              # every setting as rows
+daft config get daft.remote --format json   # one setting, with its whole chain
+daft config set remote-sync on --format json
+```
+
+Two properties hold so a consumer never has to know which flags were passed:
+
+- **A read always carries the ladder.** `--origin` changes how much a person is
+  shown and nothing else, so `get --format json` includes every layer, the
+  diagnostics, and which scopes accept a write — without asking for it.
+- **`--format` never changes the exit code.** A narrowed read that finds nothing
+  still exits 1 _and_ emits its document, so the status and the `value` field
+  always agree.
+
+A write's record names every key it touched, which is the only place the
+individual writes behind a behavior are reported — including, when a sequence
+fails part-way, which ones landed and the state it left the behavior in.
 
 ## Behaviors
 
@@ -98,6 +150,21 @@ Three things worth knowing:
 
 `custom` is a state you can read, never one you can ask for. To leave it, pick a
 real state or change the individual settings until they agree.
+
+A behavior can also be read at one layer, because its write surface is
+all-or-nothing — `set remote-sync on --local` writes every member there, and
+`unset remote-sync --local` clears every one:
+
+```bash
+daft config get remote-sync --local   # the state this layer's own values name
+```
+
+A layer that sets only _some_ members names no state, and the command exits 1
+rather than reporting the nearest one. That refusal is the point: guessing from
+a partial layer is how the retired `remote-sync --status` came to report "Local
+only" while daft was fetching, having read one scope and inferred the members it
+could not see. `get remote-sync --origin` shows each member with its own chain,
+which is the answer to what a partial layer actually holds.
 
 ## General Settings
 
@@ -435,7 +502,7 @@ reference, including the [Tasks](/hooks/yaml-reference#tasks) section.
 
 ```bash
 # Enable remote sync (fetch on checkout, push on start, delete remote on remove)
-daft config remote-sync --on
+daft config set remote-sync on
 
 # Or enable individual settings
 git config daft.checkout.fetch true
@@ -527,7 +594,8 @@ Pass `--no-verify` to skip the hook for one invocation: `daft push`,
 post-merge cleanup delete is governed by `daft.pushVerify` alone.
 
 Remote operations are disabled by default. When enabled (via
-`daft config remote-sync --on` or by setting the individual keys), this affects:
+`daft config set remote-sync on` or by setting the individual keys), this
+affects:
 
 - **`daft start` / `git worktree-checkout -b`** -- pushes the new branch to set
   upstream tracking (controlled by `daft.checkout.push`; pre-push hook gating

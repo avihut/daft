@@ -110,11 +110,11 @@ fn perform(state: &mut ScreenState, apply: Apply) {
         Apply::Set { key, scope, value } => resolve::lookup(key)
             .map_err(anyhow::Error::msg)
             .and_then(|spec| write::set(&spec, *scope, value, &state.config))
-            .map(|narration| (narration, None)),
+            .map(|applied| (applied.message, None)),
         Apply::Unset { key, scope } => resolve::lookup(key)
             .map_err(anyhow::Error::msg)
             .and_then(|spec| write::unset(&spec, *scope))
-            .map(|narration| (narration, None)),
+            .map(|applied| (applied.message, None)),
         Apply::SetBehavior {
             name,
             preset,

@@ -10,6 +10,7 @@
 //! the bare command opens the full-screen browser. Agents and scripts use the
 //! verbs; the screen is for people.
 
+pub mod document;
 pub mod resolve;
 pub mod screen;
 pub mod write;
@@ -18,9 +19,9 @@ use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 use crate::core::settings_spec::{Backend, BehaviorSpec, Category, Preset, ValueType};
-use crate::git::GitCommand;
+use crate::git::{ConfigEntry, GitCommand};
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
-use crate::styles::{bold, dim, dim_underline};
+use crate::styles::{bold, dim, dim_underline, yellow};
 use resolve::{Diagnostic, Origin, Resolved, ResolvedBehavior, ResolvedSet, Snapshot};
 use write::WriteScope;
 
@@ -38,11 +39,23 @@ precedence chains; this command hides that split behind one list of keys.
   daft config                    Open the settings browser
   daft config list               Every setting, its value, and where it came from
   daft config list --modified    Only the settings something sets
+  daft config list --global      Only what the shared scope sets
   daft config get <key>          Print one effective value
   daft config get <key> --origin Print it with the full layer-by-layer chain
+  daft config get <key> --local  Print what this worktree's own scope sets
   daft config set <key> <value>  Change it for this worktree
   daft config set --global ...   Change it at the shared scope instead
   daft config unset <key>        Remove it, revealing whatever it was masking
+
+--local and --global name one layer, and name the same layer whether you are
+reading or writing: `get --local` prints what `set --local` would replace. For
+a git-config setting those are the two files git gives the same flags for; for
+a daft.yml setting they are the local overlay and the committed config; for the
+worktree layout, the repository's own entry and the global default.
+
+A read narrowed to one layer exits 1 when that layer is silent, the way
+`git config --get` does, so a script can ask whether something is set here
+rather than only what it resolves to.
 
 Some settings only make sense together, and travel as a named behavior — one
 name for the group and for the states it can be in:
@@ -71,6 +84,83 @@ enum ConfigCommand {
     Unset(UnsetArgs),
 }
 
+/// The two layer flags on a verb that reads.
+///
+/// [`WriteScope`] is the return type on purpose. The flag names the rung a
+/// write at that scope would land in, which is what lets one pair of words
+/// mean something for all three backends: `--local` is local git config for
+/// the 77 git-config keys, the `daft.local.yml` overlay for a daft.yml key,
+/// and the repository's own entry for the layout row. Read and write resolve
+/// it through the same mapping, so `get --local` prints what `set --local`
+/// would replace — and cannot drift into naming a different file than the
+/// write does.
+#[derive(Args, Default)]
+struct ReadScopeArgs {
+    /// Read the shared scope alone, rather than what daft resolves
+    ///
+    /// Global git config, the repository's committed daft.yml, or the global
+    /// layout file, depending on what stores the setting.
+    #[arg(long, conflicts_with = "local")]
+    global: bool,
+
+    /// Read this worktree's own scope alone, rather than what daft resolves
+    ///
+    /// Local git config, the daft.local.yml overlay, or the repository's layout
+    /// entry. What comes back is what that layer stores, which is not always
+    /// what daft reads: a value outranked from a higher layer still counts, and
+    /// so does one daft only ever reads from global config. Use --origin to see
+    /// whether a value is in force.
+    #[arg(long)]
+    local: bool,
+}
+
+impl ReadScopeArgs {
+    /// The layer to read, or `None` to resolve the whole chain.
+    fn selected(&self) -> Option<WriteScope> {
+        match (self.global, self.local) {
+            (true, _) => Some(WriteScope::Global),
+            (_, true) => Some(WriteScope::Local),
+            _ => None,
+        }
+    }
+}
+
+/// The two layer flags on a verb that writes. Local is the default.
+///
+/// "Target" rather than "write to", because `unset` shares this struct and does
+/// not write anything — a help line that says it does would be wrong on a third
+/// of the surface it appears on.
+#[derive(Args)]
+struct WriteScopeArgs {
+    /// Target the shared scope rather than this worktree's own
+    ///
+    /// Where that is depends on what stores the setting: the user's global git
+    /// config, the repository's committed daft.yml, or the global layout file.
+    /// A daft.yml setting is the one to watch — its shared scope is a tracked
+    /// file, so a change there lands in the repository's diff rather than
+    /// user-wide. Every change says which file it went to.
+    #[arg(long, conflicts_with = "local")]
+    global: bool,
+
+    /// Target this worktree's own scope — the default
+    ///
+    /// Local git config, the daft.local.yml overlay, or the repository's
+    /// layout entry. Spelling it out changes nothing; it is here because a
+    /// script that says which layer it means is one nobody has to guess about.
+    #[arg(long)]
+    local: bool,
+}
+
+impl WriteScopeArgs {
+    fn target(&self) -> WriteScope {
+        if self.global {
+            WriteScope::Global
+        } else {
+            WriteScope::Local
+        }
+    }
+}
+
 #[derive(Args)]
 pub struct ListArgs {
     /// Only settings something actually sets
@@ -80,6 +170,9 @@ pub struct ListArgs {
     /// Only settings in this category (checkout, merge, hooks, ...)
     #[arg(long, value_name = "NAME")]
     category: Option<String>,
+
+    #[command(flatten)]
+    scope: ReadScopeArgs,
 
     #[command(flatten)]
     emit: EmitArgs,
@@ -96,8 +189,17 @@ pub struct GetArgs {
     key: String,
 
     /// Show every layer's value and which one won
+    ///
+    /// A human affordance only: `--format` always carries the whole ladder, so
+    /// a script never has to remember this flag to get a complete answer.
     #[arg(long)]
     origin: bool,
+
+    #[command(flatten)]
+    scope: ReadScopeArgs,
+
+    #[command(flatten)]
+    emit: EmitArgs,
 }
 
 #[derive(Args)]
@@ -119,15 +221,11 @@ pub struct SetArgs {
     #[arg(value_name = "VALUE", allow_hyphen_values = true)]
     value: String,
 
-    /// Write at the shared scope rather than this worktree's own
-    ///
-    /// Where that is depends on what stores the setting: the user's global git
-    /// config, the repository's committed daft.yml, or the global layout file.
-    /// A daft.yml setting is the one to watch — its shared scope is a tracked
-    /// file, so the change lands in the repository's diff rather than
-    /// user-wide. Every write says which file it went to.
-    #[arg(long)]
-    global: bool,
+    #[command(flatten)]
+    scope: WriteScopeArgs,
+
+    #[command(flatten)]
+    emit: EmitArgs,
 }
 
 #[derive(Args)]
@@ -139,12 +237,11 @@ pub struct UnsetArgs {
     #[arg(value_name = "KEY")]
     key: String,
 
-    /// Remove at the shared scope rather than this worktree's own
-    ///
-    /// The same three stores `set --global` writes: global git config, the
-    /// committed daft.yml, or the global layout file.
-    #[arg(long)]
-    global: bool,
+    #[command(flatten)]
+    scope: WriteScopeArgs,
+
+    #[command(flatten)]
+    emit: EmitArgs,
 }
 
 pub fn run() -> Result<()> {
@@ -173,6 +270,7 @@ fn cmd_default() -> Result<()> {
     cmd_list(&ListArgs {
         modified: false,
         category: None,
+        scope: ReadScopeArgs::default(),
         emit: EmitArgs::default(),
     })
 }
@@ -219,12 +317,53 @@ fn resolved() -> Result<ResolvedSet> {
     Ok(resolve::resolve_all(&snapshot))
 }
 
-fn scope_from_flag(global: bool) -> WriteScope {
-    if global {
-        WriteScope::Global
-    } else {
-        WriteScope::Local
+/// Refuse `--local` where there is no local layer to act on.
+///
+/// A read needs this as much as a write does, and for a sharper reason: with
+/// no repository there is no local rung, so a narrowed read would exit 1 —
+/// which means "nothing is set here" and would be reporting a fact about a
+/// layer that does not exist. git draws the same line.
+fn require_repo_for_local(scope: WriteScope, verb: Verb) -> Result<()> {
+    if scope != WriteScope::Local || crate::is_git_repository().unwrap_or(false) {
+        return Ok(());
     }
+
+    bail!(
+        "not inside a git repository — there is no local config to {}.\n{}",
+        match verb {
+            Verb::Read => "read",
+            Verb::Write => "write",
+        },
+        match verb {
+            Verb::Read =>
+                "Use --global to read the shared scope, or drop the flag \
+                           for the resolved value.",
+            Verb::Write => "Use --global to change the setting for every repository.",
+        }
+    )
+}
+
+/// Which side of the flag pair a refusal is talking about.
+#[derive(Clone, Copy)]
+enum Verb {
+    Read,
+    Write,
+}
+
+/// Emit one object through the shared formatter.
+///
+/// Every verb but `list` produces a single document rather than a table, the
+/// way `repo info` does — a setting's ladder and a write's record are both one
+/// thing with nested detail, and flattening either into rows would lose the
+/// nesting that makes them worth reading.
+fn emit_document(command: &str, value: serde_json::Value, emit: &EmitArgs) -> Result<()> {
+    emit::emit_and_handle(
+        command,
+        EmitPayload::Document(value),
+        emit,
+        &mut std::io::stdout(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -232,6 +371,11 @@ fn scope_from_flag(global: bool) -> WriteScope {
 // ─────────────────────────────────────────────────────────────────────────
 
 fn cmd_list(args: &ListArgs) -> Result<()> {
+    let scope = args.scope.selected();
+    if let Some(scope) = scope {
+        require_repo_for_local(scope, Verb::Read)?;
+    }
+
     let set = resolved()?;
 
     let category = match &args.category {
@@ -244,12 +388,20 @@ fn cmd_list(args: &ListArgs) -> Result<()> {
         .iter()
         .filter(|r| !args.modified || r.is_set())
         .filter(|r| category.is_none_or(|c| r.spec.category == c))
+        // A scope-narrowed listing is the contents of one layer, so a row
+        // earns its place by having a value *there* — not by resolving to
+        // one. That subsumes --modified, which is why passing both is a
+        // no-op rather than a contradiction.
+        .filter(|r| scope.is_none_or(|s| r.value_written_at(&r.spec, s).is_some()))
         .collect();
 
     // Behaviors are the entry point — "turn remote sync off" is what someone
     // arrives wanting, and the three keys underneath are the detail. A
-    // category filter is asking about settings, so they drop out of it.
-    let behaviors: Vec<&ResolvedBehavior> = if category.is_some() {
+    // category filter is asking about settings, so they drop out of it. So
+    // does a scope filter, and for a stronger reason: a behavior's state is
+    // defined over what daft reads across every layer, so there is no such
+    // thing as its state at one of them.
+    let behaviors: Vec<&ResolvedBehavior> = if category.is_some() || scope.is_some() {
         Vec::new()
     } else {
         set.behaviors
@@ -261,7 +413,7 @@ fn cmd_list(args: &ListArgs) -> Result<()> {
     if args.emit.is_structured() {
         return emit::emit_and_handle(
             "config list",
-            EmitPayload::Tabular(build_table(&rows, &behaviors, &set.settings)),
+            EmitPayload::Tabular(build_table(&rows, &behaviors, &set.settings, scope)),
             &args.emit,
             &mut std::io::stdout(),
         )
@@ -298,14 +450,7 @@ fn cmd_list(args: &ListArgs) -> Result<()> {
 
     if rows.is_empty() {
         if behaviors.is_empty() {
-            println!(
-                "{}",
-                if args.modified {
-                    "Nothing is set — every setting is running on its default."
-                } else {
-                    "No settings matched."
-                }
-            );
+            println!("{}", nothing_matched(args, scope));
         }
         return Ok(());
     }
@@ -317,7 +462,7 @@ fn cmd_list(args: &ListArgs) -> Result<()> {
         .unwrap_or(0);
     let value_width = rows
         .iter()
-        .map(|r| r.effective_display().chars().count())
+        .map(|r| shown_value(r, scope).chars().count())
         .max()
         .unwrap_or(0)
         .min(32);
@@ -332,33 +477,44 @@ fn cmd_list(args: &ListArgs) -> Result<()> {
             current = Some(row.spec.category);
         }
 
-        let value = row.effective_display();
+        let value = shown_value(row, scope);
         // Bold marks "something set this", which is the question the list is
-        // most often scanned for.
-        let shown = if row.is_set() {
-            bold(value)
-        } else {
-            value.to_string()
+        // most often scanned for. Narrowed to one layer that is every row, so
+        // the emphasis would mark nothing and the column that earns the space
+        // is the one saying whether the value is actually in force.
+        let shown = match scope {
+            Some(_) => value.to_string(),
+            None if row.is_set() => bold(value),
+            None => value.to_string(),
         };
         let pad = value_width.saturating_sub(value.chars().count());
+        let note = match scope {
+            Some(scope) => row
+                .masked_above(&row.spec, scope)
+                .map(|layer| yellow(&format!("outranked by {}", layer.label())))
+                .unwrap_or_default(),
+            None => dim(&row.origin.label()),
+        };
 
-        println!(
-            "  {:key_width$}  {shown}{:pad$}  {}",
-            row.spec.key,
-            "",
-            dim(&row.origin.label()),
-        );
+        println!("  {:key_width$}  {shown}{:pad$}  {note}", row.spec.key, "");
     }
 
     // Unrecognized keys belong to no row, so `get <key> --origin` cannot
     // explain them — they have to be named here or the advice is unactionable.
-    if !set.unrecognized.is_empty() {
+    // A narrowed listing shows only the ones in the layer it is reporting on,
+    // for the same reason it drops rows set elsewhere.
+    let unrecognized: Vec<&ConfigEntry> = set
+        .unrecognized
+        .iter()
+        .filter(|entry| scope.is_none_or(|s| entry.scope == s.as_config_scope()))
+        .collect();
+    if !unrecognized.is_empty() {
         println!();
         println!(
             "{}",
             dim_underline("Set in config, but not settings daft knows")
         );
-        for entry in &set.unrecognized {
+        for entry in &unrecognized {
             println!(
                 "  {}  {}",
                 entry.key,
@@ -371,7 +527,10 @@ fn cmd_list(args: &ListArgs) -> Result<()> {
         );
     }
 
-    let attached = set.issue_count() - set.unrecognized.len();
+    // Counted over the rows on screen, not the whole configuration: a listing
+    // narrowed to one layer promising attention for a diagnostic in another
+    // sends the reader looking for a row that is not there.
+    let attached: usize = rows.iter().map(|r| r.diagnostics.len()).sum();
     if attached > 0 {
         println!();
         println!(
@@ -383,6 +542,24 @@ fn cmd_list(args: &ListArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The value a listing shows for a row: the layer's own, or the resolved one.
+fn shown_value(row: &Resolved, scope: Option<WriteScope>) -> &str {
+    match scope {
+        Some(scope) => row.value_written_at(&row.spec, scope).unwrap_or("—"),
+        None => row.effective_display(),
+    }
+}
+
+fn nothing_matched(args: &ListArgs, scope: Option<WriteScope>) -> String {
+    match scope {
+        Some(scope) => format!("Nothing is set at {}.", scope.label()),
+        None if args.modified => {
+            "Nothing is set — every setting is running on its default.".to_string()
+        }
+        None => "No settings matched.".to_string(),
+    }
 }
 
 fn parse_category(name: &str) -> Result<Category> {
@@ -422,10 +599,32 @@ fn parse_category(name: &str) -> Result<Category> {
 /// from the settings named in `members`. Rather than leave a consumer to infer
 /// that from empty cells, `kind` says which shape a row is and `backend` says
 /// `derived` outright.
-fn build_table(rows: &[&Resolved], behaviors: &[&ResolvedBehavior], all: &[Resolved]) -> Table {
+///
+/// `scope` changes what `value` holds — the layer's own value rather than the
+/// resolved one — which is what the caller asked for and the whole point of a
+/// narrowed listing. `origin` still names the layer in force, so the two
+/// disagreeing is information rather than a contradiction; `outranked_by`
+/// spells that out so a consumer does not have to compare them.
+fn build_table(
+    rows: &[&Resolved],
+    behaviors: &[&ResolvedBehavior],
+    all: &[Resolved],
+    scope: Option<WriteScope>,
+) -> Table {
     let mut table = Table::new([
-        "kind", "key", "label", "category", "value", "origin", "is_set", "type", "default",
-        "backend", "members", "help",
+        "kind",
+        "key",
+        "label",
+        "category",
+        "value",
+        "origin",
+        "is_set",
+        "type",
+        "default",
+        "backend",
+        "members",
+        "outranked_by",
+        "help",
     ]);
 
     for behavior in behaviors {
@@ -441,23 +640,30 @@ fn build_table(rows: &[&Resolved], behaviors: &[&ResolvedBehavior], all: &[Resol
             Cell::str(behavior.spec.presets[0].name),
             Cell::str("derived"),
             Cell::str(behavior.spec.members.join(",")),
+            Cell::str(""),
             Cell::str(behavior.spec.help),
         ]);
     }
 
     for row in rows {
+        let outranked = scope
+            .and_then(|s| row.masked_above(&row.spec, s))
+            .map(|layer| layer.label())
+            .unwrap_or_default();
+
         table = table.row([
             Cell::str("setting"),
             Cell::str(row.spec.key.as_ref()),
             Cell::str(row.spec.label.as_ref()),
             Cell::str(row.spec.category.label()),
-            Cell::str(row.effective_display()),
+            Cell::str(shown_value(row, scope)),
             Cell::str(row.origin.label()),
             Cell::bool(row.is_set()),
             Cell::str(type_name(&row.spec.ty)),
             Cell::str(row.spec.default.value().unwrap_or("")),
             Cell::str(backend_name(&row.spec.backend)),
             Cell::str(""),
+            Cell::str(outranked),
             Cell::str(row.spec.help.as_ref()),
         ]);
     }
@@ -496,49 +702,124 @@ fn backend_name(backend: &Backend) -> &'static str {
 // ─────────────────────────────────────────────────────────────────────────
 
 fn cmd_get(args: &GetArgs) -> Result<()> {
+    let scope = args.scope.selected();
+
+    // --origin is the answer to "which layers set this" — it prints all of
+    // them and marks the one daft reads. Narrowing it to a single layer would
+    // leave a ladder with one rung, which answers nothing the plain form does
+    // not already answer better.
+    if args.origin && scope.is_some() {
+        bail!(
+            "--origin already shows every layer, including this one. Use it alone, \
+             or use --global/--local alone to print just that layer's value."
+        );
+    }
+
     let spec = match resolve::lookup_target(&args.key).map_err(|e| anyhow::anyhow!("{e}"))? {
-        resolve::Target::Behavior(behavior) => return get_behavior(behavior, args.origin),
+        resolve::Target::Behavior(behavior) => return get_behavior(behavior, scope, args),
         resolve::Target::Setting(spec) => spec,
     };
+
+    if let Some(scope) = scope {
+        require_repo_for_local(scope, Verb::Read)?;
+    }
+
     let set = resolved()?;
     let Some(row) = set.get(&spec.key) else {
         bail!("{} did not resolve", spec.key);
     };
 
-    if !args.origin {
-        // Bare `get` is for scripts: the value on stdout, nothing else, and a
-        // non-zero exit when there is no value — the same contract
-        // `git config --get` has.
-        match &row.effective {
-            Some(value) => {
-                println!("{value}");
-                return Ok(());
-            }
-            None => std::process::exit(1),
-        }
+    // Narrowed to one layer, the value is that layer's own and "unset" means
+    // that layer stores nothing — which is the literal question, so a value
+    // here that daft never reads still counts. `--origin`, and the document's
+    // `outranked_by`, are what say whether it is in force.
+    let value = match scope {
+        Some(scope) => row.value_written_at(&row.spec, scope),
+        None => row.effective.as_deref(),
+    };
+
+    if args.emit.is_structured() {
+        emit_document("config get", document::setting(row, scope), &args.emit)?;
+    } else if args.origin {
+        print_detail(row);
+        return Ok(());
+    } else if let Some(value) = value {
+        // Bare `get` is for scripts: the value on stdout and nothing else.
+        println!("{value}");
     }
 
-    print_detail(row);
-    Ok(())
+    // The same contract `git config --get` has, and the same one whether the
+    // caller took the value off stdout or out of a document.
+    match value {
+        Some(_) => Ok(()),
+        // `--origin` printed a whole ladder, including the reason there is no
+        // value. Exiting 1 after that would report failure for a question that
+        // was answered.
+        None if args.origin && !args.emit.is_structured() => Ok(()),
+        None => std::process::exit(1),
+    }
 }
 
 /// `get` for a behavior.
 ///
-/// Unlike a setting, this never exits 1: a behavior always has a state, even
-/// when nothing sets a single member — that state is its default preset. The
-/// one value it prints that cannot be set back is `custom`, which is what
-/// "someone has been setting members individually" is called.
-fn get_behavior(behavior: &'static BehaviorSpec, origin: bool) -> Result<()> {
+/// Unnarrowed this never exits 1: a behavior always has a state, even when
+/// nothing sets a single member — that state is its default preset. The one
+/// value it prints that cannot be set back is `custom`, which is what "someone
+/// has been setting members individually" is called.
+///
+/// Narrowed to a layer it can exit 1, because a layer need not name a state at
+/// all. A behavior has no rung of its own, so "its state here" is only
+/// meaningful through its write surface, which is all-or-nothing: `set
+/// <behavior> <state> --local` writes every member there and `unset` clears
+/// every one. This answers the question those two pose — did such a write
+/// happen here, and what did it leave. A layer with only *some* members set
+/// names nothing, and saying so is the point: guessing the nearest preset from
+/// a partial layer is exactly how the retired `remote-sync --status` came to
+/// report "Local only" while daft was fetching.
+fn get_behavior(
+    behavior: &'static BehaviorSpec,
+    scope: Option<WriteScope>,
+    args: &GetArgs,
+) -> Result<()> {
+    if let Some(scope) = scope {
+        require_repo_for_local(scope, Verb::Read)?;
+    }
+
     let set = resolved()?;
     let Some(resolved) = set.behavior(behavior.name) else {
         bail!("{} did not resolve", behavior.name);
     };
+    let state = match scope {
+        Some(scope) => resolved.state_at(scope, &set.settings),
+        None => Some(resolved.state.clone()),
+    };
 
-    if !origin {
-        println!("{}", resolved.state_name());
+    if args.emit.is_structured() {
+        emit_document(
+            "config get",
+            document::behavior(resolved, &set, scope, state.as_ref()),
+            &args.emit,
+        )?;
+    } else if args.origin {
+        print_behavior_detail(behavior, resolved, &set);
         return Ok(());
+    } else if let Some(state) = &state {
+        println!("{}", state.name(behavior));
     }
 
+    match state {
+        Some(_) => Ok(()),
+        None => std::process::exit(1),
+    }
+}
+
+/// The CLI form of a behavior's detail: its states, its members' ladders, and
+/// where it currently stands.
+fn print_behavior_detail(
+    behavior: &'static BehaviorSpec,
+    resolved: &ResolvedBehavior,
+    set: &ResolvedSet,
+) {
     println!("{}  {}", bold(behavior.label), dim(behavior.name));
     println!("{}", behavior.help);
     println!();
@@ -579,8 +860,6 @@ fn get_behavior(behavior: &'static BehaviorSpec, origin: bool) -> Result<()> {
     if let Some(note) = resolved.divergence_note(&set.settings) {
         println!("    {}", dim(&note));
     }
-
-    Ok(())
 }
 
 /// The CLI form of the settings screen's detail panel.
@@ -606,8 +885,14 @@ fn print_detail(row: &Resolved) {
     }
 
     println!("{}", dim_underline("Where it comes from"));
+    // `reads_from`, not `winner`, and for the reason the screen's ladder uses
+    // it too: `winner` is `None` for every setting nothing sets, which is most
+    // of them, so this marked nothing on the common row — and where a layer
+    // holds an unparseable value it marked that layer while the effective line
+    // underneath named the default the loaders actually fell back to.
+    let reads_from = row.reads_from();
     for (index, rung) in row.rungs.iter().enumerate() {
-        let marker = if row.winner == Some(index) {
+        let marker = if reads_from == Some(index) {
             "●"
         } else {
             " "
@@ -674,36 +959,111 @@ pub fn describe(diagnostic: &Diagnostic) -> String {
 
 fn cmd_set(args: &SetArgs) -> Result<()> {
     let target = resolve::lookup_target(&args.key).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let scope = scope_from_flag(args.global);
-    require_repo_for_local(scope)?;
+    let scope = args.scope.target();
+    require_repo_for_local(scope, Verb::Write)?;
 
     let set = resolved()?;
-    let message = match target {
+    match target {
         resolve::Target::Behavior(behavior) => {
             let preset = pick_preset(behavior, &args.value)?;
-            write::set_behavior(behavior, preset, scope, &set, resolved)?.message
+            let done = write::set_behavior(behavior, preset, scope, &set, resolved)?;
+            report(
+                document::Action::Set,
+                behavior_target(behavior, &done),
+                scope,
+                &done.written,
+                &done.message,
+                &args.emit,
+            )
         }
-        resolve::Target::Setting(spec) => write::set(&spec, scope, &args.value, &set)?,
-    };
-
-    println!("{message}");
-    Ok(())
+        resolve::Target::Setting(spec) => {
+            let done = write::set(&spec, scope, &args.value, &set)?;
+            report(
+                document::Action::Set,
+                document::Target::Setting(&spec),
+                scope,
+                &done.written,
+                &done.message,
+                &args.emit,
+            )
+        }
+    }
 }
 
 fn cmd_unset(args: &UnsetArgs) -> Result<()> {
     let target = resolve::lookup_target(&args.key).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let scope = scope_from_flag(args.global);
-    require_repo_for_local(scope)?;
+    let scope = args.scope.target();
+    require_repo_for_local(scope, Verb::Write)?;
 
-    let message = match target {
+    match target {
         resolve::Target::Behavior(behavior) => {
-            write::unset_behavior(behavior, scope, resolved)?.message
+            let done = write::unset_behavior(behavior, scope, resolved)?;
+            report(
+                document::Action::Unset,
+                behavior_target(behavior, &done),
+                scope,
+                &done.written,
+                &done.message,
+                &args.emit,
+            )
         }
-        resolve::Target::Setting(spec) => write::unset(&spec, scope)?,
+        resolve::Target::Setting(spec) => {
+            let done = write::unset(&spec, scope)?;
+            report(
+                document::Action::Unset,
+                document::Target::Setting(&spec),
+                scope,
+                &done.written,
+                &done.message,
+                &args.emit,
+            )
+        }
+    }
+}
+
+fn behavior_target<'a>(
+    behavior: &'a BehaviorSpec,
+    done: &'a write::BehaviorWrite,
+) -> document::Target<'a> {
+    document::Target::Behavior {
+        spec: behavior,
+        state: done.state,
+    }
+}
+
+/// Narrate a write, as prose or as a record.
+///
+/// One path for both, so the two cannot describe different writes: the
+/// document's `message` is the same sentence the text form prints.
+fn report(
+    action: document::Action,
+    target: document::Target<'_>,
+    scope: WriteScope,
+    written: &[write::Written],
+    message: &str,
+    emit: &EmitArgs,
+) -> Result<()> {
+    if !emit.is_structured() {
+        println!("{message}");
+        return Ok(());
+    }
+
+    // The store, not just the scope: a daft.yml setting's "global" is the
+    // repository's committed file, and a consumer told only "global" would
+    // record a user-wide change when the edit is in the team's diff.
+    let store = match &target {
+        document::Target::Setting(spec) => scope.label_for(spec),
+        // A behavior's members can sit in different backends, so there is no
+        // one store to name — each entry carries its own file where the backend
+        // knows one.
+        document::Target::Behavior { .. } => scope.label(),
     };
 
-    println!("{message}");
-    Ok(())
+    emit_document(
+        "config write",
+        document::write_record(action, target, scope, store, written, message),
+        emit,
+    )
 }
 
 /// The preset a user named, or a refusal that lists the real ones.
@@ -730,16 +1090,6 @@ fn pick_preset(behavior: &'static BehaviorSpec, value: &str) -> Result<&'static 
     )
 }
 
-fn require_repo_for_local(scope: WriteScope) -> Result<()> {
-    if scope == WriteScope::Local && !crate::is_git_repository().unwrap_or(false) {
-        bail!(
-            "not inside a git repository — there is no local config to write.\n\
-             Use --global to change the setting for every repository."
-        );
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,7 +1110,9 @@ mod tests {
 
         let parsed = ConfigArgs::parse_from(["config", "unset", "--global", "daft.autocd"]);
         match parsed.command {
-            Some(ConfigCommand::Unset(args)) => assert!(args.global),
+            Some(ConfigCommand::Unset(args)) => {
+                assert_eq!(args.scope.target(), WriteScope::Global)
+            }
             _ => panic!("expected unset"),
         }
 
@@ -768,6 +1120,78 @@ mod tests {
         match parsed.command {
             Some(ConfigCommand::List(args)) => assert!(args.modified),
             _ => panic!("expected list"),
+        }
+    }
+
+    /// git's spelling, on every verb, in both directions — and the pair is
+    /// mutually exclusive, since a write cannot land in two places.
+    #[test]
+    fn every_verb_takes_the_same_two_layer_flags() {
+        for verb in [
+            vec!["config", "get", "daft.remote", "--local"],
+            vec!["config", "list", "--local"],
+            vec!["config", "set", "--local", "daft.remote", "up"],
+            vec!["config", "unset", "--local", "daft.remote"],
+        ] {
+            let selected = match ConfigArgs::parse_from(verb.clone()).command {
+                Some(ConfigCommand::Get(args)) => args.scope.selected(),
+                Some(ConfigCommand::List(args)) => args.scope.selected(),
+                Some(ConfigCommand::Set(args)) => Some(args.scope.target()),
+                Some(ConfigCommand::Unset(args)) => Some(args.scope.target()),
+                None => panic!("expected a verb from {verb:?}"),
+            };
+            assert_eq!(selected, Some(WriteScope::Local), "{verb:?}");
+        }
+
+        for verb in [
+            vec!["config", "get", "daft.remote", "--local", "--global"],
+            vec!["config", "list", "--global", "--local"],
+            vec!["config", "set", "--global", "--local", "daft.remote", "up"],
+            vec!["config", "unset", "--local", "--global", "daft.remote"],
+        ] {
+            assert!(
+                ConfigArgs::try_parse_from(verb.clone()).is_err(),
+                "{verb:?} names two layers for one act"
+            );
+        }
+    }
+
+    /// Absent both flags the two shapes part ways: a read resolves the whole
+    /// chain, a write lands locally.
+    #[test]
+    fn no_flag_means_resolve_for_a_read_and_local_for_a_write() {
+        match ConfigArgs::parse_from(["config", "get", "daft.remote"]).command {
+            Some(ConfigCommand::Get(args)) => assert_eq!(args.scope.selected(), None),
+            _ => panic!("expected get"),
+        }
+        match ConfigArgs::parse_from(["config", "set", "daft.remote", "up"]).command {
+            Some(ConfigCommand::Set(args)) => {
+                assert_eq!(args.scope.target(), WriteScope::Local)
+            }
+            _ => panic!("expected set"),
+        }
+    }
+
+    /// Every verb emits, and the shape decides the formats: `list` is rows,
+    /// the other three are one document each. A row format offered for a
+    /// document would be a completion that cannot be accepted.
+    #[test]
+    fn every_verb_is_registered_as_emit_enabled_in_its_own_shape() {
+        use crate::commands::completions::emit_formats_for;
+
+        let list = emit_formats_for("config list").expect("config list emits");
+        assert!(
+            list.contains(&"tsv"),
+            "rows carry the row formats: {list:?}"
+        );
+
+        for path in ["config get", "config set", "config unset"] {
+            let formats = emit_formats_for(path).unwrap_or_else(|| panic!("{path} emits"));
+            assert!(formats.contains(&"json"), "{path}: {formats:?}");
+            assert!(
+                !formats.contains(&"tsv"),
+                "{path} emits one document, which has no rows to tabulate: {formats:?}"
+            );
         }
     }
 
@@ -790,7 +1214,7 @@ mod tests {
             Some(ConfigCommand::Set(args)) => {
                 assert_eq!(args.key, "remote-sync");
                 assert_eq!(args.value, "on");
-                assert!(args.global);
+                assert_eq!(args.scope.target(), WriteScope::Global);
             }
             _ => panic!("expected set"),
         }

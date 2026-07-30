@@ -473,11 +473,14 @@ _daft() {
             fi
         done
         case "$_fmt_path" in
-            list|worktree-list|"hooks trust list"|"hooks jobs"|"layout list"|"shared status")
+            list|worktree-list|"hooks trust list"|"hooks jobs"|"layout list"|"shared status"|"config list")
                 COMPREPLY=( $(compgen -W "json ndjson tsv csv yaml toon markdown" -- "$cur") )
                 return 0
                 ;;
-            release-notes|"multi-remote status"|"hooks run")
+            # The config read and write verbs emit one document rather than
+            # rows, so the row formats are not among their options. The trailing
+            # glob is because three of them take a key before the flag.
+            release-notes|"multi-remote status"|"hooks run"|"config get"*|"config set"*|"config unset"*)
                 COMPREPLY=( $(compgen -W "json yaml toon markdown" -- "$cur") )
                 return 0
                 ;;
@@ -824,13 +827,21 @@ _daft() {
             return 0
         fi
         local config_sub="${words[2]}"
+        # --category takes a value, and the categories are a const table, so
+        # this answers without opening anything.
+        if [[ "${words[cword-1]}" == "--category" ]]; then
+            local __cfg_cats=()
+            mapfile -t __cfg_cats < <(daft __complete config-category "$cur" 2>/dev/null | cut -f1)
+            COMPREPLY=( $(compgen -W "${__cfg_cats[*]}" -- "$cur") )
+            return 0
+        fi
         case "$config_sub" in
             get|set|unset)
                 if [[ "$cur" == -* ]]; then
                     if [[ "$config_sub" == "get" ]]; then
-                        COMPREPLY=( $(compgen -W "--origin -h --help" -- "$cur") )
+                        COMPREPLY=( $(compgen -W "--origin --global --local --format --template --no-headers -h --help" -- "$cur") )
                     else
-                        COMPREPLY=( $(compgen -W "--global -h --help" -- "$cur") )
+                        COMPREPLY=( $(compgen -W "--global --local --format --template --no-headers -h --help" -- "$cur") )
                     fi
                     return 0
                 fi
@@ -856,7 +867,7 @@ _daft() {
                 ;;
             list)
                 if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "--modified --category --format --template --no-headers -h --help" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "--modified --category --global --local --format --template --no-headers -h --help" -- "$cur") )
                 fi
                 return 0
                 ;;

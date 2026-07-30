@@ -124,6 +124,48 @@ cd $(mktemp -d) && git init -q . && daft config
 - [ ] `daft config get daft.merge.stile` suggests `daft.merge.style`
 - [ ] `daft config <TAB>` completes the verbs; `daft config set <TAB>` completes
       keys; `daft config set daft.merge.style <TAB>` completes its variants
+- [ ] `daft config list --category <TAB>` completes the category names, and
+      `daft config list --format <TAB>` completes the seven row formats while
+      `daft config get x --format <TAB>` completes only the four document ones
+- [ ] `daft config get x --local <TAB>` and `--global` complete on all four
+      verbs
+
+## Choosing a layer
+
+- [ ] With `daft.remote` set globally to one value and locally to another, `get`
+      prints the local one, `get --global` the global one, and `get --local` the
+      local one
+- [ ] `get <key> --local` exits 1 for a key that layer does not set, while the
+      same `get` without the flag still prints the resolved default
+- [ ] `--local --global` together is refused, and so is `--origin --local`
+- [ ] `list --global` shows only what global sets, showing global's own values,
+      and marks the row local outranks with `outranked by local`
+- [ ] For a `daft.yml` setting, `set --global` edits the committed file
+      (comments intact) and `set --local` creates `daft.local.yml`; reading each
+      layer back returns the right one of the two
+- [ ] For the layout row, `--local` is the repo's own entry and `--global` the
+      default in the global config, and each write says which store it used
+- [ ] From outside a repository, `--local` is an error naming the reason, while
+      `--global` still answers
+- [ ] `get daft.updateCheck --local` prints a value set there even though daft
+      never reads it, and `list --local` counts it in the attention line
+
+## Machine-readable output
+
+- [ ] `get <key> --format json` includes `layers`, `diagnostics`, and
+      `writable_scopes` without `--origin` being passed
+- [ ] `get <key> --local --format json` sets `value` to that layer's own,
+      `effective` to the resolved one, and `outranked_by` when something is
+      above
+- [ ] `get <key> --local --format json` on a silent layer still prints a
+      document **and** exits 1
+- [ ] `set remote-sync on --format json` lists all three keys in `written` and
+      the resulting `state`
+- [ ] `unset <key> --format json` for a key that was not set reports
+      `changed: false` and exits 0
+- [ ] `set --local rc x --format json` names `daft.local.yml` in `file` and
+      `local overlay` in `store`
+- [ ] `list --global --format json` carries an `outranked_by` column
 
 ## Behaviors
 
@@ -131,6 +173,9 @@ cd $(mktemp -d) && git init -q . && daft config
 - [ ] `daft config get remote-sync` prints `off` in an untouched repository
 - [ ] `daft config set remote-sync on` writes all three settings in one line,
       and says which state it left the behavior in
+- [ ] `daft config get remote-sync --local` exits 1 when local sets only one of
+      the three members, and prints the state once a behavior write made it
+      whole
 - [ ] Setting one member alone flips the row to `Custom`, and the detail panel
       names which member is out of step
 - [ ] `space` on the behavior row steps to the state the panel says it is

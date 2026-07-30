@@ -602,30 +602,77 @@ pub enum BehaviorState {
     },
 }
 
-impl ResolvedBehavior {
-    /// The preset this is in, when it is in one.
-    pub fn preset(&self) -> Option<&'static Preset> {
-        match self.state {
-            BehaviorState::Preset(index) => Some(&self.spec.presets[index]),
-            BehaviorState::Custom { .. } => None,
+impl BehaviorState {
+    /// The preset this is, when it is one.
+    pub fn preset_of(&self, spec: &'static BehaviorSpec) -> Option<&'static Preset> {
+        match self {
+            Self::Preset(index) => Some(&spec.presets[*index]),
+            Self::Custom { .. } => None,
         }
     }
 
     /// The name a script gets from `daft config get` — a preset name, or
     /// `custom`, which is a state and never something you can set.
+    ///
+    /// On [`BehaviorState`] rather than on the resolved behavior because a
+    /// layer's own state is one of these too, and two spellings of "custom"
+    /// is one more than the word deserves.
+    pub fn name(&self, spec: &'static BehaviorSpec) -> &'static str {
+        self.preset_of(spec).map_or("custom", |preset| preset.name)
+    }
+
+    /// The state as a row renders it.
+    pub fn label(&self, spec: &'static BehaviorSpec) -> &'static str {
+        self.preset_of(spec).map_or("Custom", |preset| preset.label)
+    }
+}
+
+impl ResolvedBehavior {
+    /// The preset this is in, when it is in one.
+    pub fn preset(&self) -> Option<&'static Preset> {
+        self.state.preset_of(self.spec)
+    }
+
+    /// The name a script gets from `daft config get`.
     pub fn state_name(&self) -> &'static str {
-        self.preset().map_or("custom", |preset| preset.name)
+        self.state.name(self.spec)
     }
 
     /// The state as a row renders it.
     pub fn state_label(&self) -> &'static str {
-        self.preset().map_or("Custom", |preset| preset.label)
+        self.state.label(self.spec)
     }
 
     /// Whether anything sets any member, for the "Modified" filter. A behavior
     /// sitting on its members' defaults is no more modified than they are.
     pub fn is_set(&self, settings: &[Resolved]) -> bool {
         self.members.iter().any(|index| settings[*index].is_set())
+    }
+
+    /// The state one layer's own values name — `None` when they name none.
+    ///
+    /// A behavior has no rung of its own, so "its state at a layer" only means
+    /// something because its write surface is all-or-nothing: `set <behavior>
+    /// <state> --local` writes every member there, `unset <behavior> --local`
+    /// clears every one. This answers the question those two pose — did such a
+    /// write happen here, and what did it leave.
+    ///
+    /// Which is why a layer setting only *some* members names nothing. That
+    /// case is not a rounding error to paper over with the nearest preset: it
+    /// is exactly how the old `remote-sync --status` came to report "Local
+    /// only" while daft was fetching, having read one scope and inferred the
+    /// members it could not see. A partial layer has no answer, so it gives
+    /// none, and the caller falls back to the resolved reading or says so.
+    pub fn state_at(&self, scope: WriteScope, settings: &[Resolved]) -> Option<BehaviorState> {
+        let mut values = Vec::with_capacity(self.members.len());
+        for index in &self.members {
+            let member = &settings[*index];
+            values.push((
+                &member.spec,
+                Some(member.value_written_at(&member.spec, scope)?),
+            ));
+        }
+        Some(classify(self.spec, &values))
     }
 
     /// What stands between this configuration and its nearest preset, as a
@@ -677,34 +724,49 @@ fn resolve_behaviors(settings: &[Resolved]) -> Vec<ResolvedBehavior> {
                 return None;
             }
 
-            // How far each preset is from what daft actually does.
-            let divergences = |preset: &Preset| -> Vec<String> {
-                members
-                    .iter()
-                    .map(|index| &settings[*index])
-                    .filter(|resolved| {
-                        let wanted = preset.value_for(&resolved.spec.key);
-                        !values_agree(&resolved.spec.ty, resolved.effective.as_deref(), wanted)
-                    })
-                    .map(|resolved| resolved.spec.key.to_string())
-                    .collect()
-            };
-
-            let (nearest, diverging) = pick_nearest(spec.presets.iter().map(divergences).collect());
-
-            let state = if diverging.is_empty() {
-                BehaviorState::Preset(nearest)
-            } else {
-                BehaviorState::Custom { nearest, diverging }
-            };
+            let values: Vec<(&SettingSpec, Option<&str>)> = members
+                .iter()
+                .map(|index| {
+                    (
+                        &settings[*index].spec,
+                        settings[*index].effective.as_deref(),
+                    )
+                })
+                .collect();
 
             Some(ResolvedBehavior {
                 spec,
+                state: classify(spec, &values),
                 members,
-                state,
             })
         })
         .collect()
+}
+
+/// Which state a set of member values adds up to.
+///
+/// Shared by the two readings a behavior has — its members' effective values,
+/// and one layer's own — so the two cannot disagree about what counts as being
+/// in a preset. Every preset assigns a value to every member (the registry
+/// test enforces it), so a member with no value here diverges from all of them.
+fn classify(spec: &BehaviorSpec, values: &[(&SettingSpec, Option<&str>)]) -> BehaviorState {
+    let divergences = |preset: &Preset| -> Vec<String> {
+        values
+            .iter()
+            .filter(|(member, have)| {
+                !values_agree(&member.ty, *have, preset.value_for(&member.key))
+            })
+            .map(|(member, _)| member.key.to_string())
+            .collect()
+    };
+
+    let (nearest, diverging) = pick_nearest(spec.presets.iter().map(divergences).collect());
+
+    if diverging.is_empty() {
+        BehaviorState::Preset(nearest)
+    } else {
+        BehaviorState::Custom { nearest, diverging }
+    }
 }
 
 /// The preset with the fewest divergences, given one divergence list per
@@ -1336,6 +1398,57 @@ mod tests {
 
         let note = behavior.divergence_note(&set.settings).unwrap();
         assert_eq!(note, "closest to Full sync — daft.checkout.push is false");
+    }
+
+    /// `get <behavior> --local` answers the question `set --local` poses, so it
+    /// answers only when a layer's own values name a whole state.
+    #[test]
+    fn a_layer_names_a_state_only_when_it_sets_every_member() {
+        let (set, behavior) = remote_sync(all_three("true", ConfigScope::Local));
+        assert_eq!(
+            behavior
+                .state_at(WriteScope::Local, &set.settings)
+                .map(|state| state.name(behavior.spec)),
+            Some("on"),
+        );
+        assert_eq!(
+            behavior.state_at(WriteScope::Global, &set.settings),
+            None,
+            "global sets nothing, so it names no state"
+        );
+
+        // The case the whole rule exists for. Effective reads `on`, because
+        // global supplies the two members local leaves alone — so a local read
+        // that guessed would print `on` about a layer that says almost nothing.
+        let (set, behavior) = remote_sync(vec![
+            entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Global),
+            entry(keys::CHECKOUT_PUSH, "true", ConfigScope::Local),
+            entry(keys::BRANCH_DELETE_REMOTE, "true", ConfigScope::Global),
+        ]);
+        assert_eq!(behavior.state_name(), "on");
+        assert_eq!(
+            behavior.state_at(WriteScope::Local, &set.settings),
+            None,
+            "one member out of three is not a state, however tempting the guess"
+        );
+    }
+
+    /// A layer that sets every member to values no preset names is `custom`
+    /// there — which is a real answer, unlike the partial case.
+    #[test]
+    fn a_layer_that_sets_every_member_incoherently_is_custom_there() {
+        let (set, behavior) = remote_sync(vec![
+            entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Local),
+            entry(keys::CHECKOUT_PUSH, "false", ConfigScope::Local),
+            entry(keys::BRANCH_DELETE_REMOTE, "true", ConfigScope::Local),
+        ]);
+
+        assert_eq!(
+            behavior
+                .state_at(WriteScope::Local, &set.settings)
+                .map(|state| state.name(behavior.spec)),
+            Some("custom"),
+        );
     }
 
     /// git accepts six spellings for a boolean and people type all of them by

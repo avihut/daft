@@ -636,11 +636,14 @@ _daft() {
             fi
         done
         case "$_fmt_path" in
-            list|worktree-list|"hooks trust list"|"hooks jobs"|"layout list"|"shared status")
+            list|worktree-list|"hooks trust list"|"hooks jobs"|"layout list"|"shared status"|"config list")
                 compadd json ndjson tsv csv yaml toon markdown
                 return
                 ;;
-            release-notes|"multi-remote status"|"hooks run")
+            # The config read and write verbs emit one document rather than
+            # rows, so the row formats are not among their options. The trailing
+            # glob is because three of them take a key before the flag.
+            release-notes|"multi-remote status"|"hooks run"|"config get"*|"config set"*|"config unset"*)
                 compadd json yaml toon markdown
                 return
                 ;;
@@ -1027,13 +1030,21 @@ _daft() {
             return
         fi
         local config_sub="$words[3]"
+        # --category takes a value, and the categories are a const table, so
+        # this answers without opening anything.
+        if [[ "$words[$((CURRENT-1))]" == "--category" ]]; then
+            local -a cfg_cats
+            cfg_cats=( ${(f)"$(daft __complete config-category "$curword" 2>/dev/null | cut -f1)"} )
+            (( ${#cfg_cats} )) && compadd -- "${cfg_cats[@]}"
+            return
+        fi
         case "$config_sub" in
             get|set|unset)
                 if [[ "$curword" == -* ]]; then
                     if [[ "$config_sub" == "get" ]]; then
-                        compadd -- --origin -h --help
+                        compadd -- --origin --global --local --format --template --no-headers -h --help
                     else
-                        compadd -- --global -h --help
+                        compadd -- --global --local --format --template --no-headers -h --help
                     fi
                     return
                 fi
@@ -1059,7 +1070,7 @@ _daft() {
                 ;;
             list)
                 if [[ "$curword" == -* ]]; then
-                    compadd -- --modified --category --format --template --no-headers -h --help
+                    compadd -- --modified --category --global --local --format --template --no-headers -h --help
                 fi
                 return
                 ;;

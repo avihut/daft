@@ -19,11 +19,23 @@ precedence chains; this command hides that split behind one list of keys.
   daft config                    Open the settings browser
   daft config list               Every setting, its value, and where it came from
   daft config list --modified    Only the settings something sets
+  daft config list --global      Only what the shared scope sets
   daft config get <key>          Print one effective value
   daft config get <key> --origin Print it with the full layer-by-layer chain
+  daft config get <key> --local  Print what this worktree's own scope sets
   daft config set <key> <value>  Change it for this worktree
   daft config set --global ...   Change it at the shared scope instead
   daft config unset <key>        Remove it, revealing whatever it was masking
+
+--local and --global name one layer, and name the same layer whether you are
+reading or writing: `get --local` prints what `set --local` would replace. For
+a git-config setting those are the two files git gives the same flags for; for
+a daft.yml setting they are the local overlay and the committed config; for the
+worktree layout, the repository's own entry and the global default.
+
+A read narrowed to one layer exits 1 when that layer is silent, the way
+`git config --get` does, so a script can ask whether something is set here
+rather than only what it resolves to.
 
 Some settings only make sense together, and travel as a named behavior — one
 name for the group and for the states it can be in:
@@ -57,6 +69,8 @@ daft config list [OPTIONS]
 |--------|-------------|----------|
 | `--modified` | Only settings something actually sets |  |
 | `--category <NAME>` | Only settings in this category (checkout, merge, hooks, ...) |  |
+| `--global` | Read the shared scope alone, rather than what daft resolves |  |
+| `--local` | Read this worktree's own scope alone, rather than what daft resolves |  |
 | `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
 | `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
 | `--no-headers` | Omit header row (tsv/csv only) |  |
@@ -80,6 +94,11 @@ daft config get [OPTIONS] <KEY>
 | Option | Description | Default |
 |--------|-------------|----------|
 | `--origin` | Show every layer's value and which one won |  |
+| `--global` | Read the shared scope alone, rather than what daft resolves |  |
+| `--local` | Read this worktree's own scope alone, rather than what daft resolves |  |
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 
 ### set
 
@@ -100,7 +119,11 @@ daft config set [OPTIONS] <KEY> <VALUE>
 
 | Option | Description | Default |
 |--------|-------------|----------|
-| `--global` | Write at the shared scope rather than this worktree's own |  |
+| `--global` | Target the shared scope rather than this worktree's own |  |
+| `--local` | Target this worktree's own scope — the default |  |
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 
 ### unset
 
@@ -120,7 +143,11 @@ daft config unset [OPTIONS] <KEY>
 
 | Option | Description | Default |
 |--------|-------------|----------|
-| `--global` | Remove at the shared scope rather than this worktree's own |  |
+| `--global` | Target the shared scope rather than this worktree's own |  |
+| `--local` | Target this worktree's own scope — the default |  |
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 
 ## Global Options
 

@@ -641,9 +641,19 @@ complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcomm
 complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from set; and test (count (commandline -opc | string match -rv '^-')) -le 3' -f -a "(daft __complete config-key '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from set; and test (count (commandline -opc | string match -rv '^-')) -eq 4' -f -a "(set -l cfgkey (commandline -opc | string match -rv '^-' | tail -n1); DAFT_COMPLETE_CONFIG_KEY=\$cfgkey daft __complete config-value '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from get' -l origin -d 'Show every layer'"'"'s value and which one won'
+# The layer flags: the same rung read or written, on all four verbs.
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from get list' -l global -d 'Read the shared scope alone'
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from get list' -l local -d 'Read this worktree'"'"'s own scope alone'
 complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from set unset' -l global -d 'Write to global config instead of this repository'
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from set unset' -l local -d 'Write to this repository — the default'
 complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from list' -l modified -d 'Only settings something actually sets'
-complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from list' -l category -x -d 'Only settings in this category'
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from list' -l category -x -a "(daft __complete config-category '' 2>/dev/null)" -d 'Only settings in this category'
+# Every config verb emits, but not in the same shape: list is rows, while the
+# other three are one document each, which the row formats cannot carry.
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from list' -l format -x -a 'json ndjson tsv csv yaml toon markdown' -d 'Output format'
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from get set unset' -l format -x -a 'json yaml toon markdown' -d 'Output format'
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from get list set unset' -l template -x -d 'Tera template string'
+complete -c daft -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from get list set unset' -l no-headers -d 'Omit header row (tsv/csv only)'
 # file: subcommands
 complete -c daft -n '__fish_seen_subcommand_from file; and not __fish_seen_subcommand_from merge' -f -a 'merge' -d 'Merge a source daft.yml into a target daft.yml'
 # file merge: file completion + flags

@@ -269,6 +269,9 @@ fn complete(
         // carries only the word under the cursor.
         ("config-value", _) => complete_config_values(word),
 
+        // config list --category <NAME>: the functional groupings.
+        ("config-category", _) => complete_config_categories(word),
+
         // shared-files: complete declared shared file paths from daft.yml
         ("shared-files", _) => complete_shared_files(word),
 
@@ -327,6 +330,31 @@ fn complete_config_keys(prefix: &str) -> Result<Vec<String>> {
                 .filter(|spec| spec.key.starts_with(prefix))
                 .map(|spec| format!("{}\t{}", spec.key, spec.help)),
         )
+        .collect())
+}
+
+/// The categories `--category` accepts, with how many settings each holds.
+///
+/// Spelled the way the filter matches: `parse_category` also accepts the label
+/// with spaces and ampersands stripped, but offering "Push & Sync" would put a
+/// word the shell has to quote under the cursor. The count is the gloss because
+/// "which of these is worth filtering to" is the question at this prompt.
+///
+/// Const table only — same Tab-path budget as the key completer.
+fn complete_config_categories(prefix: &str) -> Result<Vec<String>> {
+    let specs = crate::core::settings_spec::all_specs();
+    Ok(crate::core::settings_spec::Category::all()
+        .iter()
+        .map(|category| (category, category.label().replace([' ', '&'], "")))
+        .filter(|(_, name)| name.to_lowercase().starts_with(&prefix.to_lowercase()))
+        .map(|(category, name)| {
+            let count = specs
+                .iter()
+                .filter(|spec| spec.category == *category)
+                .count();
+            let plural = if count == 1 { "setting" } else { "settings" };
+            format!("{name}\t{count} {plural}")
+        })
         .collect())
 }
 

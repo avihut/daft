@@ -115,7 +115,7 @@ never keeps an identity ink.
   `← origin/x` (created from the remote), `→ origin/x` (pushed),
   `tracking origin/x`, or remove's dim `no remote branch` note when remote
   deletion is on but the branch has no upstream. When configuration takes
-  remotes out of scope — `daft config remote-sync` set to local only,
+  remotes out of scope — the `remote-sync` behavior set to `off`,
   `daft.branchDelete.remote` off (the default), or `--local` — the rail never
   mentions them, exactly as an unconfigured push plans no row.
 - [Shared files](../cli/daft-shared.md) get their own section under a

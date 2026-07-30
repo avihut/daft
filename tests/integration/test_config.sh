@@ -528,6 +528,182 @@ test_config_cli_list_shows_origin() {
     return 0
 }
 
+# Reading one layer: the same rung a write at that layer would land in
+#
+# The property worth an integration test rather than a unit one is that the two
+# directions agree against real git config — `get --local` reporting what
+# `set --local` put there, and exit 1 standing for "this layer is silent"
+# rather than "no value anywhere".
+test_config_cli_reads_one_layer() {
+    if [[ -z "$GIT_CONFIG_GLOBAL" ]]; then
+        log_error "GIT_CONFIG_GLOBAL is unset — refusing to touch the real global config"
+        return 1
+    fi
+
+    local remote_repo=$(create_test_remote "test-repo-cli-layers" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-cli-layers" || return 1
+
+    daft config set --global daft.remote shared || return 1
+    daft config set --local daft.remote mine || return 1
+
+    local got
+    got=$(daft config get daft.remote)
+    if [[ "$got" != "mine" ]]; then
+        log_error "the resolved read should be the local value; got '$got'"
+        return 1
+    fi
+    got=$(daft config get daft.remote --global)
+    if [[ "$got" != "shared" ]]; then
+        log_error "--global should read the global file alone; got '$got'"
+        return 1
+    fi
+    got=$(daft config get daft.remote --local)
+    if [[ "$got" != "mine" ]]; then
+        log_error "--local should read the local file alone; got '$got'"
+        return 1
+    fi
+    log_success "each layer reads its own value"
+
+    # Silent layer: exit 1, the same contract `git config --get` has. The key
+    # resolves to a default, so a read that fell back would exit 0 and hide it.
+    if daft config get daft.merge.style --local >/dev/null 2>&1; then
+        log_error "--local on a layer that sets nothing should exit non-zero"
+        return 1
+    fi
+    if [[ -z "$(daft config get daft.merge.style)" ]]; then
+        log_error "the unnarrowed read should still resolve to the default"
+        return 1
+    fi
+    log_success "a silent layer exits 1 while the resolved read still answers"
+
+    # The pair is exclusive, and --origin already shows every layer.
+    if daft config get daft.remote --local --global >/dev/null 2>&1; then
+        log_error "--local and --global together should be refused"
+        return 1
+    fi
+    if daft config get daft.remote --origin --local >/dev/null 2>&1; then
+        log_error "--origin with a layer flag should be refused"
+        return 1
+    fi
+    log_success "the flags refuse the combinations that mean nothing"
+
+    # And a narrowed list is the contents of that layer, with a warning where
+    # the layer is not the one in force.
+    local output
+    output=$(daft config list --global 2>/dev/null)
+    if [[ "$output" != *"shared"* ]]; then
+        log_error "list --global omitted the global value; got: $output"
+        return 1
+    fi
+    if [[ "$output" != *"outranked by local"* ]]; then
+        log_error "list --global did not warn that local outranks it; got: $output"
+        return 1
+    fi
+    if [[ "$output" == *"mine"* ]]; then
+        log_error "list --global showed the local value; got: $output"
+        return 1
+    fi
+    log_success "list --global is the global layer, and says what outranks it"
+
+    daft config unset --global daft.remote || return 1
+    return 0
+}
+
+# A behavior is readable at a layer only when that layer names a whole state
+#
+# `set <behavior> --local` writes every member, so "what state is set here" has
+# an answer. A layer holding only some members has none, and reporting the
+# nearest preset there is the single-scope claim this command exists to avoid.
+test_config_cli_behavior_at_one_layer() {
+    local remote_repo=$(create_test_remote "test-repo-cli-behavior-layer" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-cli-behavior-layer" || return 1
+
+    # One member of three: effective reads custom, and local names no state.
+    daft config set --local daft.checkout.push true || return 1
+    local got
+    got=$(daft config get remote-sync)
+    if [[ "$got" != "custom" ]]; then
+        log_error "one member out of step should read custom; got '$got'"
+        return 1
+    fi
+    if daft config get remote-sync --local >/dev/null 2>&1; then
+        log_error "a layer with one of three members should name no state"
+        return 1
+    fi
+    log_success "a partial layer names no state rather than guessing"
+
+    # A behavior write makes it whole, and then the layer does name one.
+    daft config set remote-sync on --local >/dev/null || return 1
+    got=$(daft config get remote-sync --local)
+    if [[ "$got" != "on" ]]; then
+        log_error "--local should name the state the behavior write left; got '$got'"
+        return 1
+    fi
+    if daft config get remote-sync --global >/dev/null 2>&1; then
+        log_error "global sets no member, so it should name no state"
+        return 1
+    fi
+    log_success "a whole layer names the state its write left"
+
+    return 0
+}
+
+# Every verb emits a machine-readable form, and --format never moves the exit code
+test_config_cli_structured_output() {
+    local remote_repo=$(create_test_remote "test-repo-cli-json" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-cli-json" || return 1
+
+    # A read carries the ladder whether or not --origin was passed, so a script
+    # never needs a verbosity flag to get a complete answer.
+    local json
+    json=$(daft config get daft.remote --format json 2>/dev/null)
+    for needle in '"layers"' '"diagnostics"' '"writable_scopes"' '"effective"'; do
+        if [[ "$json" != *"$needle"* ]]; then
+            log_error "get --format json omitted $needle; got: $json"
+            return 1
+        fi
+    done
+    log_success "get --format json carries the whole ladder without --origin"
+
+    # Exit code unchanged by --format: a silent layer still exits 1, and still
+    # emits its document, so either signal answers.
+    json=$(daft config get daft.merge.style --local --format json 2>/dev/null)
+    local status=$?
+    if [[ $status -eq 0 ]]; then
+        log_error "--format must not turn a silent layer into a success"
+        return 1
+    fi
+    if [[ "$json" != *'"daft.merge.style"'* ]]; then
+        log_error "a silent layer should still emit its document; got: $json"
+        return 1
+    fi
+    log_success "--format leaves the exit code alone"
+
+    # A write reports what landed. A behavior write is several keys behind one
+    # command, and the record is the only place that says which.
+    json=$(daft config set remote-sync on --format json 2>/dev/null)
+    for needle in '"action": "set"' '"state": "on"' 'daft.checkout.fetch' 'daft.branchDelete.remote'; do
+        if [[ "$json" != *"$needle"* ]]; then
+            log_error "set --format json omitted $needle; got: $json"
+            return 1
+        fi
+    done
+    log_success "a behavior write records every key and the resulting state"
+
+    # An unset that removed nothing is a success that changed nothing.
+    json=$(daft config unset daft.remote --format json 2>/dev/null) || return 1
+    if [[ "$json" != *'"changed": false'* ]]; then
+        log_error "an unset of an absent key should report changed=false; got: $json"
+        return 1
+    fi
+    log_success "a write that changed nothing says so"
+
+    return 0
+}
+
 # Run all config tests
 run_config_tests() {
     log "Running git config settings integration tests..."
@@ -549,6 +725,9 @@ run_config_tests() {
     run_test "config_cli_global_only_key_refuses_local" "test_config_cli_global_only_key_refuses_local"
     run_test "config_cli_unknown_key_suggests" "test_config_cli_unknown_key_suggests"
     run_test "config_cli_list_shows_origin" "test_config_cli_list_shows_origin"
+    run_test "config_cli_reads_one_layer" "test_config_cli_reads_one_layer"
+    run_test "config_cli_behavior_at_one_layer" "test_config_cli_behavior_at_one_layer"
+    run_test "config_cli_structured_output" "test_config_cli_structured_output"
 }
 
 # Main execution

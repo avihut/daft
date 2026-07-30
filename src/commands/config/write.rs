@@ -12,6 +12,8 @@
 //! exact typo the unrecognized-key diagnostic exists to report. The registry's
 //! spelling is the one that goes in the file.
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, bail};
 
 use super::resolve::ResolvedSet;
@@ -68,6 +70,44 @@ impl WriteScope {
     }
 }
 
+/// One key a write touched.
+///
+/// Here rather than in [`super::document`] because these are the facts of the
+/// write; the JSON is one rendering of them. A `set` produces one of these, a
+/// behavior produces one per member, and the shape does not change between the
+/// two — so a consumer that handled the singular case handles both.
+#[derive(Debug)]
+pub struct Written {
+    pub key: String,
+    /// What it now holds; `None` for a removal.
+    pub value: Option<String>,
+    /// Whether anything actually changed. An unset of something already absent
+    /// is a success that did nothing, and the two are worth telling apart.
+    pub changed: bool,
+    /// The file, where the backend computed one — the `daft.yml` writer does,
+    /// because which of the two files it picked is not derivable from the scope
+    /// alone. Git config and the layout stores leave this empty; the scope's
+    /// own label names those.
+    pub file: Option<std::path::PathBuf>,
+}
+
+/// What a write did: the line to narrate, and the keys behind it.
+#[derive(Debug)]
+pub struct Applied {
+    pub message: String,
+    pub written: Vec<Written>,
+}
+
+/// Whether a write at `scope` would be accepted, without attempting one.
+///
+/// [`check_writable`]'s refusals as a predicate, for the structured output that
+/// reports which scopes a consumer may write to. Derived from the real check so
+/// a document claiming `["global"]` cannot drift from the command that refuses
+/// `--local`.
+pub fn would_accept(spec: &SettingSpec, scope: WriteScope) -> bool {
+    check_writable(spec, scope).is_ok()
+}
+
 /// The spelling a value is stored as.
 ///
 /// Bools become `true`/`false` whichever of git's six spellings was typed, and
@@ -98,7 +138,7 @@ pub fn canonical_value(ty: &ValueType, input: &str) -> String {
 /// round-trip (see [`yaml_scalar_edit`]), and the file is replaced atomically
 /// with its permissions preserved, so a crash mid-write cannot leave a
 /// half-written config that fails to parse on the next hook.
-fn write_yaml(scope: WriteScope, path: &str, value: Option<&str>) -> Result<bool> {
+fn write_yaml(scope: WriteScope, path: &str, value: Option<&str>) -> Result<(bool, PathBuf)> {
     use crate::hooks::{yaml_config_loader, yaml_scalar_edit};
 
     let worktree = crate::get_current_worktree_path()
@@ -136,11 +176,11 @@ fn write_yaml(scope: WriteScope, path: &str, value: Option<&str>) -> Result<bool
         None => yaml_scalar_edit::unset_scalar(&before, path)?,
     };
     let Some(after) = after else {
-        return Ok(false);
+        return Ok((false, target));
     };
 
     write_atomically(&target, &after)?;
-    Ok(true)
+    Ok((true, target))
 }
 
 /// `daft.yml` → `daft.local.yml`, keeping whichever extension is in use.
@@ -326,7 +366,7 @@ pub fn set(
     scope: WriteScope,
     raw: &str,
     config: &ResolvedSet,
-) -> Result<String> {
+) -> Result<Applied> {
     check_writable(spec, scope)?;
 
     let value = canonical_value(&spec.ty, raw);
@@ -340,54 +380,82 @@ pub fn set(
         bail!("{reason}");
     }
 
-    store(spec, scope, &value)?;
+    let file = store(spec, scope, &value)?;
 
-    Ok(format!(
-        "Set {} = {value} ({})",
-        spec.key,
-        scope.label_for(spec)
-    ))
+    Ok(Applied {
+        message: format!("Set {} = {value} ({})", spec.key, scope.label_for(spec)),
+        written: vec![Written {
+            key: spec.key.to_string(),
+            value: Some(value),
+            changed: true,
+            file,
+        }],
+    })
 }
 
-/// Put an already-validated value in its backend.
+/// Put an already-validated value in its backend, returning the file it landed
+/// in where the backend names one.
 ///
 /// Split out so a behavior applying several members at once goes through the
 /// identical write for each, rather than a second dispatch that could drift
 /// from this one.
-fn store(spec: &SettingSpec, scope: WriteScope, value: &str) -> Result<()> {
+fn store(spec: &SettingSpec, scope: WriteScope, value: &str) -> Result<Option<PathBuf>> {
     let git = GitCommand::new(false);
-    match spec.backend {
-        Backend::GitConfig => match scope {
-            WriteScope::Global => git.config_set_global(&spec.key, value)?,
-            WriteScope::Local => git.config_set(&spec.key, value)?,
-        },
-        Backend::DaftYml { path, .. } => {
-            write_yaml(scope, path, Some(value))?;
+    Ok(match spec.backend {
+        Backend::GitConfig => {
+            match scope {
+                WriteScope::Global => git.config_set_global(&spec.key, value)?,
+                WriteScope::Local => git.config_set(&spec.key, value)?,
+            }
+            None
         }
-        Backend::LayoutChain => set_layout(scope, value)?,
-    }
-    Ok(())
+        Backend::DaftYml { path, .. } => Some(write_yaml(scope, path, Some(value))?.1),
+        Backend::LayoutChain => {
+            set_layout(scope, value)?;
+            None
+        }
+    })
+}
+
+/// Take `spec`'s value out of its backend. Reports whether anything was there,
+/// and the file it came out of where the backend names one.
+fn clear(spec: &SettingSpec, scope: WriteScope) -> Result<(bool, Option<PathBuf>)> {
+    let git = GitCommand::new(false);
+    Ok(match spec.backend {
+        Backend::GitConfig => (
+            match scope {
+                WriteScope::Global => git.config_unset_global(&spec.key)?,
+                WriteScope::Local => git.config_unset(&spec.key)?,
+            },
+            None,
+        ),
+        Backend::DaftYml { path, .. } => {
+            let (removed, file) = write_yaml(scope, path, None)?;
+            (removed, Some(file))
+        }
+        Backend::LayoutChain => (unset_layout(scope)?, None),
+    })
 }
 
 /// Remove `spec`'s value at `scope`, returning the line to narrate.
-pub fn unset(spec: &SettingSpec, scope: WriteScope) -> Result<String> {
+pub fn unset(spec: &SettingSpec, scope: WriteScope) -> Result<Applied> {
     check_writable(spec, scope)?;
     check_removable(spec)?;
 
-    let git = GitCommand::new(false);
-    let removed = match spec.backend {
-        Backend::GitConfig => match scope {
-            WriteScope::Global => git.config_unset_global(&spec.key)?,
-            WriteScope::Local => git.config_unset(&spec.key)?,
-        },
-        Backend::DaftYml { path, .. } => write_yaml(scope, path, None)?,
-        Backend::LayoutChain => unset_layout(scope)?,
-    };
+    let (removed, file) = clear(spec, scope)?;
 
-    Ok(if removed {
-        format!("Unset {} ({})", spec.key, scope.label_for(spec))
-    } else {
-        format!("{} was not set ({})", spec.key, scope.label_for(spec))
+    Ok(Applied {
+        message: if removed {
+            format!("Unset {} ({})", spec.key, scope.label_for(spec))
+        } else {
+            format!("{} was not set ({})", spec.key, scope.label_for(spec))
+        },
+        written: vec![Written {
+            key: spec.key.to_string(),
+            value: None,
+            changed: removed,
+            file,
+        }],
     })
 }
 
@@ -402,6 +470,13 @@ pub struct BehaviorWrite {
     /// Everything re-resolved after the write, so a caller that needs to
     /// redraw does not pay for a second resolution.
     pub config: ResolvedSet,
+    /// The members, in `spec.members` order.
+    pub written: Vec<Written>,
+    /// The state the behavior reads in *after* the write, which is the whole
+    /// reason a behavior write re-resolves: clearing three local keys can
+    /// reveal a global Full sync, and a sequence that failed part-way through
+    /// leaves it custom.
+    pub state: &'static str,
 }
 
 /// The configuration as it *would* read once a preset is applied.
@@ -473,8 +548,9 @@ pub fn set_behavior(
         }
     }
 
+    let mut written = Vec::with_capacity(plan.len());
     for (done, (spec, value)) in plan.iter().enumerate() {
-        store(spec, scope, value).map_err(|error| {
+        let file = store(spec, scope, value).map_err(|error| {
             let landed: Vec<&str> = plan[..done].iter().map(|(s, _)| s.key.as_ref()).collect();
             anyhow::anyhow!(
                 "{error}\n\n{} is now half-applied: {}. It reads Custom until the \
@@ -487,6 +563,12 @@ pub fn set_behavior(
                 }
             )
         })?;
+        written.push(Written {
+            key: spec.key.to_string(),
+            value: Some(value.clone()),
+            changed: true,
+            file,
+        });
     }
 
     let fresh = reresolve()?;
@@ -499,7 +581,9 @@ pub fn set_behavior(
     );
     Ok(BehaviorWrite {
         message: with_resulting_state(&fresh, behavior, &action),
+        state: resulting_state(&fresh, behavior),
         config: fresh,
+        written,
     })
 }
 
@@ -523,38 +607,46 @@ pub fn unset_behavior(
         specs.push(spec);
     }
 
-    let git = GitCommand::new(false);
-    let mut removed = Vec::new();
+    let mut written = Vec::with_capacity(specs.len());
     for spec in &specs {
-        let gone = match spec.backend {
-            Backend::GitConfig => match scope {
-                WriteScope::Global => git.config_unset_global(&spec.key)?,
-                WriteScope::Local => git.config_unset(&spec.key)?,
-            },
-            Backend::DaftYml { path, .. } => write_yaml(scope, path, None)?,
-            Backend::LayoutChain => unset_layout(scope)?,
-        };
-        if gone {
-            removed.push(spec.key.as_ref());
-        }
+        let (gone, file) = clear(spec, scope)?;
+        written.push(Written {
+            key: spec.key.to_string(),
+            value: None,
+            changed: gone,
+            file,
+        });
     }
 
+    let cleared = written.iter().filter(|entry| entry.changed).count();
     let fresh = reresolve()?;
-    let action = if removed.is_empty() {
+    let action = if cleared == 0 {
         format!("{} was not set ({})", behavior.name, scope.label())
     } else {
         format!(
             "Unset {} ({}) — {} of {} keys",
             behavior.name,
             scope.label(),
-            removed.len(),
+            cleared,
             specs.len()
         )
     };
     Ok(BehaviorWrite {
         message: with_resulting_state(&fresh, behavior, &action),
+        state: resulting_state(&fresh, behavior),
         config: fresh,
+        written,
     })
+}
+
+/// The state the behavior reads in now, or `custom` when it cannot be read.
+///
+/// A behavior that failed to re-resolve is genuinely in no nameable state, and
+/// `custom` is the word for that — the same word the narration uses.
+fn resulting_state(fresh: &ResolvedSet, behavior: &BehaviorSpec) -> &'static str {
+    fresh
+        .behavior(behavior.name)
+        .map_or("custom", |resolved| resolved.state_name())
 }
 
 /// Append where the behavior actually landed, whenever that is not what the
