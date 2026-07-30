@@ -712,14 +712,14 @@ complete -c daft -n '__fish_seen_subcommand_from file; and not __fish_seen_subco
 complete -c daft -n '__fish_seen_subcommand_from file; and __fish_seen_subcommand_from merge' -F
 complete -c daft -n '__fish_seen_subcommand_from file; and __fish_seen_subcommand_from merge' -l keep-source -d 'Keep the source file after merging'
 complete -c daft -n '__fish_seen_subcommand_from file; and __fish_seen_subcommand_from merge' -s y -l yes -d 'Skip confirmation prompt when target is untracked'
-complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate add validate dump run jobs' -f -a 'trust prompt deny status migrate add validate dump run jobs'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate add install uninstall validate dump run jobs' -f -a 'trust prompt deny status migrate add install uninstall validate dump run jobs'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -f -a "(daft __complete hooks-run '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l job -d 'Run only the named job' -r -f -a "(set -l hook (commandline -opc | string match -rv '^-' | tail -n1); DAFT_COMPLETE_HOOK=\$hook daft __complete hooks-run-job '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l tag -d 'Run only jobs with this tag'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l dry-run -d 'Preview what would run'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -s v -l verbose -d 'Show verbose output'
 # hooks: also allow path completion alongside subcommands
-complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate add validate dump run jobs' -F
+complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate add install uninstall validate dump run jobs' -F
 # hooks status: path + flags
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from status' -F
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from status' -s s -l short -d 'Show compact one-line summary'
