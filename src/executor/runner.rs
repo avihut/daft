@@ -4,7 +4,7 @@
 //! execution mode to dispatch to the appropriate strategy: sequential,
 //! piped (stop-on-failure sequential), parallel, or DAG-ordered.
 
-use super::command::{CommandResult, run_command, run_command_interactive};
+use super::command::{CommandResult, run_command_interactive, run_command_with_stdin};
 use super::dag::DagGraph;
 use super::log_sink::LogSink;
 use super::presenter::JobPresenter;
@@ -661,7 +661,7 @@ fn execute_one_chunk(
             None => (None, None),
         };
 
-        let result = run_command(
+        let result = run_command_with_stdin(
             cmd,
             env,
             &job.working_dir,
@@ -669,6 +669,7 @@ fn execute_one_chunk(
             Some(tx),
             pid_sender,
             cancel,
+            job.stdin.as_deref(),
         );
 
         // Wait for the reader to drain all output before returning.
