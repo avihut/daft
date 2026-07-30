@@ -566,8 +566,45 @@ fn execute_single_job_supervised(
     guard: Option<&Arc<crate::governor::UnitGuard>>,
     jobserver_env: Option<&(String, String)>,
 ) -> Result<CommandResult> {
+    // A chunked job is still one job: run its parts in sequence under the
+    // same row and log stream, stopping at the first failure. The common
+    // case has no extra chunks and takes the loop once.
+    let mut merged: Option<CommandResult> = None;
+    for command in std::iter::once(&job.command).chain(job.extra_chunks.iter()) {
+        let result =
+            execute_one_chunk(job, command, presenter, sink, cancel, guard, jobserver_env)?;
+        let stop = !result.success;
+        merged = Some(match merged {
+            None => result,
+            Some(prior) => CommandResult {
+                success: result.success,
+                exit_code: result.exit_code,
+                stdout: prior.stdout + &result.stdout,
+                stderr: prior.stderr + &result.stderr,
+                cancelled: prior.cancelled || result.cancelled,
+            },
+        });
+        if stop {
+            break;
+        }
+    }
+    // `once(&job.command)` guarantees at least one iteration.
+    Ok(merged.expect("at least one chunk"))
+}
+
+/// One `sh -c` of a job — the whole job when it was not chunked.
+#[allow(clippy::too_many_arguments)]
+fn execute_one_chunk(
+    job: &JobSpec,
+    cmd: &str,
+    presenter: &Arc<dyn JobPresenter>,
+    sink: Option<&Arc<dyn LogSink>>,
+    cancel: Option<&CancelFlag>,
+    guard: Option<&Arc<crate::governor::UnitGuard>>,
+    jobserver_env: Option<&(String, String)>,
+) -> Result<CommandResult> {
     if job.interactive {
-        run_command_interactive(&job.command, &job.env, &job.working_dir, cancel)
+        run_command_interactive(cmd, &job.env, &job.working_dir, cancel)
     } else {
         let (tx, rx) = mpsc::channel::<(OutputKind, String)>();
 
@@ -625,7 +662,7 @@ fn execute_single_job_supervised(
         };
 
         let result = run_command(
-            &job.command,
+            cmd,
             env,
             &job.working_dir,
             job.timeout,
@@ -884,6 +921,74 @@ mod tests {
             timeout: Some(Duration::from_secs(10)),
             ..Default::default()
         }
+    }
+
+    // ── Chunked jobs ───────────────────────────────────────────────────
+
+    #[test]
+    fn chunks_run_in_sequence_under_one_job_row() {
+        let presenter = RecordingPresenter::new();
+        let dyn_presenter: Arc<dyn JobPresenter> = presenter.clone();
+        let job = JobSpec {
+            extra_chunks: vec!["echo second".into(), "echo third".into()],
+            ..make_job("split", "echo first")
+        };
+
+        let results = run_jobs(
+            std::slice::from_ref(&job),
+            ExecutionMode::Sequential,
+            &dyn_presenter,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1, "a chunked job is still one job");
+        assert_eq!(results[0].status, NodeStatus::Succeeded);
+        // All three ran, and their output arrived on the one stream.
+        let events = presenter.events();
+        for line in ["first", "second", "third"] {
+            assert!(
+                events.contains(&format!("job_output:split:{line}")),
+                "missing {line} in {events:?}"
+            );
+        }
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.starts_with("job_start:"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_failing_chunk_stops_the_rest() {
+        // Continuing past a failure would run later chunks against a state
+        // the earlier one rejected, and report the last chunk's exit code as
+        // the job's — turning a red gate green.
+        let presenter = RecordingPresenter::new();
+        let dyn_presenter: Arc<dyn JobPresenter> = presenter.clone();
+        let job = JobSpec {
+            extra_chunks: vec!["echo boom; exit 3".into(), "echo never".into()],
+            ..make_job("split", "echo first")
+        };
+
+        let results = run_jobs(
+            std::slice::from_ref(&job),
+            ExecutionMode::Sequential,
+            &dyn_presenter,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(results[0].status, NodeStatus::Failed);
+        assert_eq!(results[0].exit_code, Some(3));
+        let events = presenter.events();
+        assert!(events.contains(&"job_output:split:boom".to_string()));
+        assert!(
+            !events.contains(&"job_output:split:never".to_string()),
+            "chunks after a failure must not run: {events:?}"
+        );
     }
 
     // ── Empty job list ─────────────────────────────────────────────────
