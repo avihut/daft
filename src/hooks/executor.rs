@@ -291,6 +291,16 @@ pub struct HookExecutor {
     bypass_trust: bool,
     job_filter: JobFilter,
     hook_mode: crate::hooks::HookMode,
+
+    /// A config the caller already resolved, used instead of loading
+    /// `daft.yml` from the worktree.
+    ///
+    /// Exists for takeover: the stage dispatcher may have translated a config
+    /// daft did not write, and there is no file on disk for the executor to
+    /// re-read that would produce it. Without this the executor would look
+    /// for a `daft.yml` that is not there and conclude, correctly but
+    /// uselessly, that no hook is defined.
+    resolved_config: Option<crate::hooks::yaml_config::YamlConfig>,
 }
 
 impl HookExecutor {
@@ -304,6 +314,7 @@ impl HookExecutor {
             bypass_trust: false,
             job_filter: JobFilter::default(),
             hook_mode: crate::hooks::HookMode::Auto,
+            resolved_config: None,
         })
     }
 
@@ -316,6 +327,7 @@ impl HookExecutor {
             bypass_trust: false,
             job_filter: JobFilter::default(),
             hook_mode: crate::hooks::HookMode::Auto,
+            resolved_config: None,
         }
     }
 
@@ -360,6 +372,12 @@ impl HookExecutor {
     /// 300s must not start succeeding just because someone is watching.
     pub fn with_hook_execution_mode(mut self, mode: crate::hooks::HookMode) -> Self {
         self.hook_mode = mode;
+        self
+    }
+
+    /// Run against a config the caller already has, instead of loading one.
+    pub fn with_resolved_config(mut self, config: crate::hooks::yaml_config::YamlConfig) -> Self {
+        self.resolved_config = Some(config);
         self
     }
 
@@ -529,7 +547,9 @@ impl HookExecutor {
         output: &mut dyn Output,
         presenter: &Arc<dyn JobPresenter>,
     ) -> Result<Option<(HookResult, FailMode)>> {
-        let yaml_config = if ctx.hook_type == HookType::PreCreate {
+        let yaml_config = if let Some(ref resolved) = self.resolved_config {
+            resolved.clone()
+        } else if ctx.hook_type == HookType::PreCreate {
             // For PreCreate, the target worktree doesn't exist yet.
             // Load config from the target branch via git show, falling back
             // to the base branch and then the default branch.
