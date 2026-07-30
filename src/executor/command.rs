@@ -68,6 +68,34 @@ pub fn run_command(
     pid_sender: Option<std::sync::mpsc::Sender<u32>>,
     cancel: Option<&crate::git::cancel::CancelFlag>,
 ) -> Result<CommandResult> {
+    run_command_with_stdin(
+        cmd,
+        env,
+        working_dir,
+        timeout,
+        line_sender,
+        pid_sender,
+        cancel,
+        None,
+    )
+}
+
+/// [`run_command`] with a payload written to the child's stdin.
+///
+/// `stdin_text` is `Some` only for jobs that declared `use_stdin:` — daft
+/// replaying the block git handed a `pre-push` or `post-rewrite` hook, which
+/// the dispatcher had to drain before any job could see it.
+#[allow(clippy::too_many_arguments)]
+pub fn run_command_with_stdin(
+    cmd: &str,
+    env: &HashMap<String, String>,
+    working_dir: &Path,
+    timeout: Option<Duration>,
+    line_sender: Option<std::sync::mpsc::Sender<(OutputKind, String)>>,
+    pid_sender: Option<std::sync::mpsc::Sender<u32>>,
+    cancel: Option<&crate::git::cancel::CancelFlag>,
+    stdin_text: Option<&str>,
+) -> Result<CommandResult> {
     let mut command = Command::new("sh");
     command.args(["-c", cmd]);
     command.current_dir(working_dir);
@@ -83,7 +111,12 @@ pub fn run_command(
 
     // Non-interactive commands must not inherit stdin -- a child process
     // (e.g. mise, cargo) might block waiting for input that will never come.
-    command.stdin(Stdio::null());
+    // A job that asked for the stage payload gets a pipe instead, written and
+    // closed below so it still sees EOF.
+    command.stdin(match stdin_text {
+        Some(_) => Stdio::piped(),
+        None => Stdio::null(),
+    });
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
@@ -111,6 +144,22 @@ pub fn run_command(
     if let Some(tx) = pid_sender {
         let _ = tx.send(child.id());
     }
+
+    // Write the payload and drop the handle so the child sees EOF. Done on a
+    // thread: a payload larger than the pipe buffer would otherwise block
+    // here while the child blocked writing output nobody is reading yet.
+    let stdin_writer = match (stdin_text, child.stdin.take()) {
+        (Some(text), Some(mut pipe)) => {
+            let text = text.to_string();
+            Some(std::thread::spawn(move || {
+                use std::io::Write;
+                // A child that exits without reading (`head -1`) gives EPIPE;
+                // that is its business, not a job failure.
+                let _ = pipe.write_all(text.as_bytes());
+            }))
+        }
+        _ => None,
+    };
 
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
@@ -160,6 +209,9 @@ pub fn run_command(
 
     let stdout_content = stdout_thread.join().unwrap_or_default();
     let stderr_content = stderr_thread.join().unwrap_or_default();
+    if let Some(writer) = stdin_writer {
+        writer.join().ok();
+    }
 
     match outcome {
         WaitOutcome::Exited(status) => Ok(CommandResult {
