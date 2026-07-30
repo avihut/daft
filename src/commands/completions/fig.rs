@@ -547,6 +547,7 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
             fig_subcommand("add", "Scaffold hooks config"),
             fig_subcommand("install", "Install git hook shims"),
             fig_subcommand("uninstall", "Remove git hook shims"),
+            fig_subcommand("import", "Import an existing hooks config"),
             fig_subcommand("validate", "Validate hooks config"),
             fig_subcommand("dump", "Show merged config"),
             hooks_run,
