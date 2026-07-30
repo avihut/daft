@@ -92,6 +92,12 @@ pub struct JobSpec {
     /// payloads written before this field still parse.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_chunks: Vec<String>,
+    /// Text written to the command's stdin, for jobs that declared
+    /// `use_stdin:`. `None` — the overwhelming default — keeps the existing
+    /// behaviour of giving non-interactive jobs `/dev/null`, so a child that
+    /// reads stdin gets EOF instead of blocking forever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<String>,
     /// Working directory for the command.
     pub working_dir: PathBuf,
     /// Extra environment variables to set.
@@ -155,6 +161,7 @@ impl Default for JobSpec {
             name: String::new(),
             command: String::new(),
             extra_chunks: Vec::new(),
+            stdin: None,
             working_dir: PathBuf::new(),
             env: HashMap::new(),
             description: None,
@@ -272,6 +279,7 @@ mod tests {
 
         let spec = JobSpec {
             extra_chunks: Vec::new(),
+            stdin: None,
             name: "install".into(),
             command: "pnpm install".into(),
             working_dir: PathBuf::from("/project"),
