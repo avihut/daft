@@ -773,6 +773,17 @@ pub struct HookDef {
     /// `resolve_fail_mode`). Has no effect on `tasks:` entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fail_mode: Option<super::FailMode>,
+
+    /// Shell command producing this hook's file list, replacing whatever the
+    /// hook would otherwise offer (the staged files for a commit stage, the
+    /// merge range for a merge hook).
+    ///
+    /// Resolved once and shared by every job, unlike the job-level `files:`
+    /// which runs per job. Declaring it is a statement about what the hook
+    /// gates, so it replaces rather than unions with git's answer — a union
+    /// would make the declaration mean less than it says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<String>,
 }
 
 /// Target operating system for platform constraints.

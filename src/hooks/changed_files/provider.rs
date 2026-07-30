@@ -35,6 +35,30 @@ enum Source {
         target: String,
         source_shas: Vec<String>,
     },
+    /// What is staged for the commit being made: `git diff --cached`
+    /// restricted to added/copied/modified/renamed paths, so a job never
+    /// receives a path it cannot open.
+    Staged {
+        worktree: PathBuf,
+        /// The index git pointed the hook at. Load-bearing — see
+        /// [`staged_files`].
+        index_file: Option<PathBuf>,
+    },
+    /// What a push would send: the diff between each ref's remote tip and its
+    /// local tip, unioned across refs.
+    PushRange {
+        worktree: PathBuf,
+        remote: String,
+        /// `(remote_oid, local_oid)` per non-delete ref.
+        ranges: Vec<(String, String)>,
+    },
+    /// Every tracked file. The escape hatch for a stage with no natural
+    /// change set (`post-checkout` after a branch switch, say) where the job
+    /// wants to look at the whole tree.
+    AllTracked { worktree: PathBuf },
+    /// A hook-level `files:` command — one list shared by every job in the
+    /// hook, resolved once.
+    Command { command: String, dir: PathBuf },
     /// A pre-resolved list. Test seam, and the natural variant for future
     /// providers that already hold their list in memory.
     Fixed(Vec<String>),
@@ -92,6 +116,74 @@ impl ChangedFilesProvider {
         }
     }
 
+    /// Files staged for the commit in progress.
+    pub fn staged(worktree: &Path, index_file: Option<PathBuf>) -> Self {
+        Self {
+            source: Source::Staged {
+                worktree: worktree.to_path_buf(),
+                index_file,
+            },
+            cache: OnceLock::new(),
+        }
+    }
+
+    /// Files a push would send, from the refs git named on the hook's stdin.
+    ///
+    /// Deletes carry the zero OID on the local side and contribute nothing —
+    /// there is no content to inspect. A ref new to the remote also carries
+    /// the zero OID, on the *remote* side, and is handled in
+    /// [`diff_push_range`].
+    ///
+    /// Returns `None` when no ref carries content (a delete-only push). That
+    /// is deliberately distinct from a provider resolving to an empty list:
+    /// "there is no such source here" makes a file-aware job skip with a
+    /// reason, where an empty list would read as "the diff came back empty"
+    /// and be indistinguishable from a broken probe.
+    pub fn push_range(
+        worktree: &Path,
+        remote: &str,
+        refs: &[crate::core::worktree::ports::PushRef],
+    ) -> Option<Self> {
+        let ranges: Vec<(String, String)> = refs
+            .iter()
+            .filter(|r| !is_zero_oid(&r.local_oid))
+            .map(|r| (r.remote_oid.clone(), r.local_oid.clone()))
+            .collect();
+        if ranges.is_empty() {
+            return None;
+        }
+        Some(Self {
+            source: Source::PushRange {
+                worktree: worktree.to_path_buf(),
+                remote: remote.to_string(),
+                ranges,
+            },
+            cache: OnceLock::new(),
+        })
+    }
+
+    /// Every tracked file in the worktree.
+    pub fn all_tracked(worktree: &Path) -> Self {
+        Self {
+            source: Source::AllTracked {
+                worktree: worktree.to_path_buf(),
+            },
+            cache: OnceLock::new(),
+        }
+    }
+
+    /// A hook-level `files:` command, resolved once and shared by the hook's
+    /// jobs.
+    pub fn from_command(command: &str, dir: &Path) -> Self {
+        Self {
+            source: Source::Command {
+                command: command.to_string(),
+                dir: dir.to_path_buf(),
+            },
+            cache: OnceLock::new(),
+        }
+    }
+
     /// The changed-file list, resolved on first call and cached (including a
     /// failed resolution — a broken diff fails every consumer identically
     /// rather than retrying per job).
@@ -120,7 +212,149 @@ fn resolve(source: &Source) -> Result<Vec<String>> {
             }
             Ok(union.into_iter().collect())
         }
+        Source::Staged {
+            worktree,
+            index_file,
+        } => staged_files(worktree, index_file.as_deref()),
+        Source::PushRange {
+            worktree,
+            remote,
+            ranges,
+        } => {
+            let mut union = BTreeSet::new();
+            for (remote_oid, local_oid) in ranges {
+                union.extend(diff_push_range(worktree, remote, remote_oid, local_oid)?);
+            }
+            Ok(union.into_iter().collect())
+        }
+        Source::AllTracked { worktree } => all_tracked_files(worktree),
+        Source::Command { command, dir } => run_files_command(command, dir),
     }
+}
+
+/// git's all-zeroes OID, meaning "this side does not exist" in a `pre-push`
+/// ref line: on the local side a delete, on the remote side a new branch.
+fn is_zero_oid(oid: &str) -> bool {
+    !oid.is_empty() && oid.chars().all(|c| c == '0')
+}
+
+/// Files staged for the commit in progress.
+///
+/// `--diff-filter=ACMR` drops deletions: a `pre-commit` job is handed paths to
+/// open, and a deleted path fails every linter it is passed.
+///
+/// **`GIT_INDEX_FILE` is load-bearing here.** During `git commit -a` (and
+/// `commit <paths>`, and `--amend` with paths) git builds a *temporary* index,
+/// exports `GIT_INDEX_FILE` pointing at it, and runs the hook. The real
+/// `.git/index` at that moment does not contain the changes being committed.
+/// [`crate::utils::git_command_at`] deliberately strips the `GIT_*` discovery
+/// variables so `-C` is authoritative — which strips this one too — so the
+/// dispatcher captures the value on entry and it is re-exported here. Without
+/// it a `pre-commit` gate reads the wrong index and silently checks the wrong
+/// set of files.
+fn staged_files(worktree: &Path, index_file: Option<&Path>) -> Result<Vec<String>> {
+    let mut cmd = crate::utils::git_command_at(worktree);
+    cmd.args([
+        "diff",
+        "--cached",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        "--diff-filter=ACMR",
+    ]);
+    if let Some(index) = index_file {
+        cmd.env("GIT_INDEX_FILE", index);
+    }
+    let output = cmd
+        .output()
+        .context("failed to run git diff --cached for staged files")?;
+    if !output.status.success() {
+        bail!(
+            "git diff --cached failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(parse_nul_delimited(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+/// Files one ref of a push would carry.
+///
+/// A ref already on the remote diffs `<remote_oid>..<local_oid>`. A ref new to
+/// the remote has no such endpoint — git supplies the zero OID — so the
+/// question becomes "what does this branch add that no other remote branch
+/// already has", which is `git log --name-only <local> --not --remotes=<remote>`.
+/// Diffing a new branch against its whole history instead would hand a
+/// `pre-push` gate every file the repository has ever contained.
+fn diff_push_range(
+    worktree: &Path,
+    remote: &str,
+    remote_oid: &str,
+    local_oid: &str,
+) -> Result<Vec<String>> {
+    let mut cmd = crate::utils::git_command_at(worktree);
+    let range;
+    let not_remotes;
+    let new_branch = is_zero_oid(remote_oid);
+    if new_branch {
+        not_remotes = format!("--remotes={remote}");
+        cmd.args([
+            "log",
+            "--name-only",
+            "--pretty=format:",
+            "-z",
+            "--no-renames",
+            local_oid,
+            "--not",
+            &not_remotes,
+        ]);
+    } else {
+        range = format!("{remote_oid}..{local_oid}");
+        cmd.args(["diff", "--name-only", "-z", "--no-renames", &range]);
+    }
+    let output = cmd
+        .output()
+        .context("failed to resolve the files a push would send")?;
+    if !output.status.success() {
+        bail!(
+            "resolving pushed files for {local_oid} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let raw = String::from_utf8_lossy(&output.stdout);
+    if new_branch {
+        // `git log` interleaves per-commit blocks, so entries can carry the
+        // newline that separated a (here empty) commit header from its file
+        // list, and the same path appears once per commit that touched it.
+        let mut seen = BTreeSet::new();
+        Ok(raw
+            .split('\0')
+            .map(|s| s.trim_matches('\n'))
+            .filter(|s| !s.is_empty())
+            .filter(|s| seen.insert(s.to_string()))
+            .map(str::to_string)
+            .collect())
+    } else {
+        Ok(parse_nul_delimited(&raw))
+    }
+}
+
+/// Every tracked file, repository-root-relative.
+fn all_tracked_files(worktree: &Path) -> Result<Vec<String>> {
+    let output = crate::utils::git_command_at(worktree)
+        .args(["ls-files", "-z", "--cached"])
+        .output()
+        .context("failed to run git ls-files")?;
+    if !output.status.success() {
+        bail!(
+            "git ls-files failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(parse_nul_delimited(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
 }
 
 /// `git diff --name-only -z --no-renames <target>...<source>` in `worktree`.
