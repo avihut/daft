@@ -2,9 +2,13 @@
 
 ## Current Direction
 
-The selected brand direction for **daft** is a minimalist dodo-based logo mark named **Donut**.
+The selected brand direction for **daft** is a minimalist dodo-based logo mark
+named **Donut**.
 
-The logo represents daft as a friendly but mature developer tool: playful enough to be memorable, simple enough to work as a CLI/project icon, and structured enough to feel credible in a docs site, GitHub repo, package listing, and terminal-oriented workflow.
+The logo represents daft as a friendly but mature developer tool: playful enough
+to be memorable, simple enough to work as a CLI/project icon, and structured
+enough to feel credible in a docs site, GitHub repo, package listing, and
+terminal-oriented workflow.
 
 ## Product Context
 
@@ -14,7 +18,10 @@ Core idea:
 
 > Stop switching branches. Give every branch its own clean working nest.
 
-The product helps developers manage multiple isolated worktrees so they can work on several branches, hotfixes, reviews, and experiments simultaneously without constantly stashing, switching branches, reinstalling dependencies, or losing IDE/build context.
+The product helps developers manage multiple isolated worktrees so they can work
+on several branches, hotfixes, reviews, and experiments simultaneously without
+constantly stashing, switching branches, reinstalling dependencies, or losing
+IDE/build context.
 
 ## Brand Metaphor
 
@@ -26,14 +33,18 @@ It works because:
 
 - **daft** already has a playful name.
 - A dodo is distinctive, charming, and slightly silly without being generic.
-- The dodo can become a recognizable symbol for the tool even when the name is not shown.
-- It creates room for a friendly open-source personality without making the product feel unserious.
+- The dodo can become a recognizable symbol for the tool even when the name is
+  not shown.
+- It creates room for a friendly open-source personality without making the
+  product feel unserious.
 
 ### Companion Metaphor: Nest
 
 The nest is the secondary metaphor.
 
-In daft, each worktree is like a managed nest: a clean, isolated place where a branch can live with its own dependencies, build artifacts, IDE state, and context.
+In daft, each worktree is like a managed nest: a clean, isolated place where a
+branch can live with its own dependencies, build artifacts, IDE state, and
+context.
 
 Potential tagline ideas:
 
@@ -51,7 +62,8 @@ Potential tagline ideas:
 
 ### Description
 
-Donut is an abstract dodo mark built from bold black-and-white shapes. The form combines:
+Donut is an abstract dodo mark built from bold black-and-white shapes. The form
+combines:
 
 - a simplified dodo head
 - a stronger hooked beak
@@ -63,7 +75,8 @@ Donut is an abstract dodo mark built from bold black-and-white shapes. The form 
 
 ### Why Donut Works
 
-Donut is the current best logo candidate because it has the strongest balance of personality, maturity, and functionality.
+Donut is the current best logo candidate because it has the strongest balance of
+personality, maturity, and functionality.
 
 It passes the most important logo criteria:
 
@@ -71,7 +84,8 @@ It passes the most important logo criteria:
 - memorable due to the hidden negative-space **d**
 - usable without the wordmark
 - works in black and white
-- strong enough for GitHub avatars, docs navbars, package pages, terminal contexts, and stickers
+- strong enough for GitHub avatars, docs navbars, package pages, terminal
+  contexts, and stickers
 - simple enough to be redrawn from memory
 - playful without becoming too childish
 
@@ -91,9 +105,12 @@ Not:
 
 **Doodle**
 
-Doodle was another strong candidate. It was friendlier and more child-drawable, but less mature and less ownable than Donut.
+Doodle was another strong candidate. It was friendlier and more child-drawable,
+but less mature and less ownable than Donut.
 
-Doodle should remain a useful emotional reference: warm, simple, and charming. Future refinements of Donut should preserve some of Doodle’s softness while keeping Donut’s stronger structure and negative-space **d**.
+Doodle should remain a useful emotional reference: warm, simple, and charming.
+Future refinements of Donut should preserve some of Doodle’s softness while
+keeping Donut’s stronger structure and negative-space **d**.
 
 ## Logo Design Guidelines
 
@@ -154,7 +171,8 @@ Test the mark at:
 - 16px
 - 12px
 
-At very small sizes, the eye and beak may become fragile. If needed, create a small-size optimized variant with:
+At very small sizes, the eye and beak may become fragile. If needed, create a
+small-size optimized variant with:
 
 - slightly larger eye
 - more open beak cut
@@ -192,13 +210,16 @@ This is especially important for GitHub avatars and social icons.
 
 ### 6. Silhouette Test
 
-Remove the internal eye and negative-space **d** and inspect only the outer shape.
+Remove the internal eye and negative-space **d** and inspect only the outer
+shape.
 
 Question:
 
-> Does it still feel like a dodo/bird-like mark, or does it become a generic blob?
+> Does it still feel like a dodo/bird-like mark, or does it become a generic
+> blob?
 
-Donut depends strongly on its negative space, which is okay, but the outer contour should still feel intentional.
+Donut depends strongly on its negative space, which is okay, but the outer
+contour should still feel intentional.
 
 ### 7. One-Color Print Test
 
@@ -257,13 +278,15 @@ Suggested rule:
 
 > Clear space should be at least the diameter of the eye on all sides.
 
-For cramped icon contexts, use an optical adjustment rather than scaling the mark to touch the edges.
+For cramped icon contexts, use an optical adjustment rather than scaling the
+mark to touch the edges.
 
 ## Color Direction
 
 The primary logo should remain black and white.
 
-Color should be used as an accent in docs, UI highlights, buttons, stickers, favicons, and secondary brand assets.
+Color should be used as an accent in docs, UI highlights, buttons, stickers,
+favicons, and secondary brand assets.
 
 ### Recommended Core Palette
 
@@ -547,7 +570,9 @@ The selected Donut candidate is strong, but before finalizing as SVG, check:
 
 Proceed with **Donut** as the primary logo direction.
 
-Use the current black-on-white Donut mark as the basis for a clean SVG redraw. Keep the structure and negative-space **d**, but refine the geometry manually rather than relying on generated-image output.
+Use the current black-on-white Donut mark as the basis for a clean SVG redraw.
+Keep the structure and negative-space **d**, but refine the geometry manually
+rather than relying on generated-image output.
 
 The final brand system should be:
 
@@ -556,4 +581,3 @@ The final brand system should be:
 - **Companion metaphor:** nest
 - **Primary accent:** Dodo Beak Gold `#D99A21`
 - **Tone:** mature devtool with a playful open-source mascot edge
-
