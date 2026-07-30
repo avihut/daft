@@ -14,7 +14,6 @@ use crate::{
         stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec},
         worktree::{
             branch_delete::display_path,
-            ports::NoopStageRunner,
             push::{PushAction, push_with_hooks},
         },
     },
@@ -345,7 +344,7 @@ fn run_push(
         action,
         &cwd,
         verify,
-        &NoopStageRunner,
+        crate::hooks::git_stage::stage_runner::runner(),
         presenter.as_ref(),
         Some(hook_present),
     ) {

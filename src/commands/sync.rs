@@ -847,7 +847,29 @@ fn run_tui(
     let shared_memory_reserve = settings.governor_memory_reserve;
     let shared_jobserver_mode = settings.governor_jobserver;
     let cores_for_jobserver = cores;
-    let shared_push_strategy = settings.sync_push_hook_strategy;
+    // Batched pushes every branch in one `git push`, trading per-branch hook
+    // semantics for one hook run. That trade is only available when the hook
+    // is opaque to daft. A daft-managed `pre-push` reports per job and per
+    // ref, and `push_batched` has no stage parameter to carry them — so a
+    // batched run would silently skip the gate entirely. Per-branch is the
+    // honest answer until the batched path learns to run a stage (specced
+    // separately); the log line says so rather than leaving a configured
+    // setting quietly ignored.
+    let shared_push_strategy = {
+        let configured = settings.sync_push_hook_strategy;
+        use crate::core::worktree::ports::StageRunner;
+        let managed = crate::hooks::git_stage::stage_runner::runner()
+            .manages_stage("pre-push", &project_root);
+        if managed && configured == crate::settings::PushHookStrategy::Batched {
+            eprintln!(
+                "note: daft manages the pre-push stage, so branches push one at a \
+                 time (daft.sync.pushHookStrategy=batched cannot carry a staged gate)"
+            );
+            crate::settings::PushHookStrategy::PerBranch
+        } else {
+            configured
+        }
+    };
     // Branches the batched push must NOT carry — a rebase conflict OR a
     // hard-failed update/rebase. The batch node is a single barrier over every
     // branch, so (unlike per-branch mode, where each Push depends only on its
@@ -2074,7 +2096,7 @@ fn execute_push_task(
         branch_name,
         &params,
         &mut sink,
-        &crate::core::worktree::ports::NoopStageRunner,
+        crate::hooks::git_stage::stage_runner::runner(),
         presenter.as_ref(),
         Some(hook_present),
     );
@@ -2689,7 +2711,7 @@ fn run_push_phase(
                 &project_root,
                 &mut sink,
                 skip_branches,
-                &crate::core::worktree::ports::NoopStageRunner,
+                crate::hooks::git_stage::stage_runner::runner(),
                 presenter.as_ref(),
             )
         }
