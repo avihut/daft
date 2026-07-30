@@ -587,7 +587,7 @@ fn answer_context_var(
             bail!(
                 "'{name}' is not a variable daft sets{hint}\n  \
                  declared values use bare names (`{}`); daft's own are listed by \
-                 `{}` and in daft-hooks(5)",
+                 `{}` and named in daft-env(1)",
                 cyan(&crate::daft_cmd("env WEBAPP_PORT")),
                 cyan(&crate::daft_cmd("env"))
             );
