@@ -165,22 +165,24 @@ Use cases:
 When run from an untrusted repository, a hint is shown suggesting
 `git daft hooks trust`, but hooks still execute.
 
-### install
+### add
 
-Scaffold a `daft.yml` configuration with hook definitions. If the file already
-exists, it is not modified — instead, a YAML snippet is printed for any missing
-hooks so you can add them manually.
+Scaffold a `daft.yml` configuration with worktree lifecycle hook definitions. If
+the file already exists, it is not modified — instead, a YAML snippet is printed
+for any missing hooks so you can add them manually.
 
 ```
-git daft hooks install [HOOKS...]
+git daft hooks add [HOOKS...]
 ```
 
-| Argument     | Description                                 |
-| ------------ | ------------------------------------------- |
-| `[HOOKS...]` | Hook names to scaffold (omit for all hooks) |
+| Argument     | Description                                      |
+| ------------ | ------------------------------------------------ |
+| `[HOOKS...]` | Lifecycle hook names to scaffold (omit for all)  |
 
 Valid hook names: `post-clone`, `worktree-pre-create`, `worktree-post-create`,
 `worktree-pre-remove`, `worktree-post-remove`.
+
+This writes definitions only; it installs nothing.
 
 ### validate
 
@@ -242,7 +244,7 @@ git daft hooks migrate [OPTIONS]
 
 ```bash
 # Quick setup: scaffold, edit, trust
-git daft hooks install
+git daft hooks add
 # Edit daft.yml with your commands...
 git daft hooks trust -f
 
