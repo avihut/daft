@@ -269,6 +269,36 @@ A core.hooksPath that --force unset is restored.
 daft hooks uninstall
 ```
 
+### import
+
+Convert an existing hooks config into daft.yml entries
+
+Convert an existing hooks config into daft.yml entries.
+
+Where `hooks install` lets daft run another tool's config as-is, this
+writes the same definitions in daft's own vocabulary so the gates stop
+depending on a second file. Comments and formatting in an existing
+daft.yml are preserved — the entries are appended, not reserialized.
+
+Custom hook names (ones that are not git events) become tasks, run
+with daft run <name>.
+
+The original file is never deleted: a native git stage in daft.yml
+already takes precedence over it, and removing someone's config is
+their decision. The command prints the `git rm` for when you are ready.
+
+Use --dry-run to see the result without writing it.
+
+```
+daft hooks import [OPTIONS]
+```
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--dry-run` | Preview the import without writing |  |
+
 ### validate
 
 Validate the YAML hooks configuration
