@@ -40,7 +40,10 @@ pub(super) fn output_suppressed() -> bool {
 /// timeline (#651). The bottom corner stays `└`: the banner closes, and the
 /// job blocks below hang beneath it unwelded.
 ///
-/// NOTE(preserved): only the embedded path welds, and nothing constructs an
+/// NOTE: nothing welds today — the timeline renders its own embeds. The
+/// parameter is kept because the corner-weld geometry is the one piece of
+/// this that is genuinely hard to rediscover, and reintroducing it should
+/// not mean re-deriving it. NOTE(previously preserved): nothing constructs an
 /// embedded block today (see `HookRenderer::embedded`) — every live caller
 /// passes `false`. Kept for possible reuse by full git hooks rendering.
 pub(super) fn format_header_lines(

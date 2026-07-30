@@ -6,7 +6,6 @@ use crate::config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT};
 use crate::core::layout::{Layout, auto_gitignore_if_needed};
 use crate::core::settings::PushVerify;
 use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
-use crate::core::worktree::ports::NoopStageRunner;
 use crate::core::worktree::push::{
     HookVerdict, PushAction, PushPayload, push_with_hooks, resolve_pre_push_plan,
 };
@@ -942,7 +941,7 @@ fn push_if_enabled(
         },
         worktree_path,
         verify,
-        &NoopStageRunner,
+        crate::hooks::git_stage::stage_runner::runner(),
         presenter,
         hook_present,
     );

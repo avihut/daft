@@ -556,6 +556,10 @@ pub fn push_with_hooks(
         let stage_presenter = presenter
             .map(Arc::clone)
             .unwrap_or_else(|| crate::executor::presenter::NullPresenter::arc());
+        // The rows about to arrive are daft's own jobs, not an opaque tool's
+        // output to be recognized. Saying so here covers every site that
+        // wrapped this presenter, and is the only place that actually knows.
+        stage_presenter.stand_down();
         let outcome = stage.run_stage("pre-push", Some(cwd), &refs, stage_presenter)?;
         if !outcome.success {
             return Ok(PushOutcome {

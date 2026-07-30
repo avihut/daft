@@ -7,7 +7,6 @@ use crate::core::multi_remote::path::{
     calculate_worktree_path, extract_remote_from_path, resolve_remote_for_branch,
 };
 use crate::core::settings::PushVerify;
-use crate::core::worktree::ports::NoopStageRunner;
 use crate::core::worktree::push::{
     HookVerdict, PushAction, delete_failure_escalates, push_with_hooks, resolve_delete_pre_push,
 };
@@ -449,7 +448,7 @@ fn run_remote_rename_push(
         action,
         cwd,
         verify,
-        &NoopStageRunner,
+        crate::hooks::git_stage::stage_runner::runner(),
         presenter,
         hook_present,
     ) {
