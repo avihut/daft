@@ -578,6 +578,7 @@ impl DagHookPhase {
             DagHookPhase::Lifecycle(HookType::PostClone) => "post-clone",
             DagHookPhase::Lifecycle(HookType::PreMerge) => "pre-merge",
             DagHookPhase::Lifecycle(HookType::PostMerge) => "post-merge",
+            DagHookPhase::Lifecycle(HookType::Git(stage)) => stage.yaml_name(),
             DagHookPhase::PrePush => "pre-push",
         }
     }

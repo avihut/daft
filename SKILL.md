@@ -716,7 +716,7 @@ daft hooks trust        # Allow hooks to run
 daft hooks prompt       # Prompt before each execution
 daft hooks deny         # Never run hooks (default)
 daft hooks status       # Check current trust level
-daft hooks install      # Scaffold a daft.yml with placeholders
+daft hooks add          # Scaffold a daft.yml with placeholders
 daft hooks validate     # Validate configuration syntax
 daft hooks dump         # Show fully merged configuration
 daft hooks run <type>   # Manually run a hook (bypasses trust)

@@ -155,6 +155,11 @@ impl StageId {
             HookType::PostClone => Some(Self::PostCloneHooks),
             HookType::PreMerge => Some(Self::PreMergeHooks),
             HookType::PostMerge => Some(Self::PostMergeHooks),
+            // Git stages have no plan stage: they are not a phase of a daft
+            // command's plan, they are the whole of a `daft __hook` run. The
+            // one exception — a daft-managed `pre-push` during `daft push` —
+            // already has `StageId::Push` and reports through it.
+            HookType::Git(_) => None,
         }
     }
 }
