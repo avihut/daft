@@ -177,6 +177,7 @@ pub fn merge_hook_defs(base: HookDef, overlay: HookDef) -> HookDef {
         jobs,
         commands,
         fail_mode,
+        files,
     } = overlay;
 
     let mut merged = base;
@@ -208,6 +209,9 @@ pub fn merge_hook_defs(base: HookDef, overlay: HookDef) -> HookDef {
     }
     if fail_mode.is_some() {
         merged.fail_mode = fail_mode;
+    }
+    if files.is_some() {
+        merged.files = files;
     }
 
     // Jobs: merge named jobs by name, append unnamed
@@ -589,6 +593,7 @@ fn merge3_hook_defs(
         jobs: b_jobs,
         commands: b_commands,
         fail_mode: b_fail_mode,
+        files: b_files,
     } = base;
 
     HookDef {
@@ -663,6 +668,13 @@ fn merge3_hook_defs(
             b_fail_mode,
             &ours.fail_mode,
             &theirs.fail_mode,
+            tally,
+        ),
+        files: pick3(
+            &format!("{prefix}.files"),
+            b_files,
+            &ours.files,
+            &theirs.files,
             tally,
         ),
     }
