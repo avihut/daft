@@ -30,6 +30,19 @@ pub trait JobPresenter: Send + Sync {
     /// A running job produced an output line.
     fn on_job_output(&self, name: &str, line: &str);
 
+    /// The events about to arrive are daft's own, not another tool's output
+    /// to be parsed.
+    ///
+    /// Only the manager-output recognizer overrides this. It exists because
+    /// `pre-push` is both the name of the synthetic row Path A emits around
+    /// an opaque `git push` *and* a name a user may give a job inside their
+    /// own `pre-push` hook. The recognizer holds the former, waiting to see
+    /// whether the stream turns out to be a manager's; holding the latter
+    /// would leave a real job's row missing. Path B knows the difference and
+    /// says so, which is cheaper and more truthful than probing for it at
+    /// every site that wraps a presenter.
+    fn stand_down(&self) {}
+
     /// A job completed successfully.
     fn on_job_success(&self, name: &str, duration: Duration);
 
