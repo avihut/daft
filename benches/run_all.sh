@@ -19,7 +19,10 @@ log_success() { echo -e "${GREEN}[+]${NC} $*"; }
 log_warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
 log_error()   { echo -e "${RED}[-]${NC} $*"; }
 
-# All scenarios except vs_competition (opt-in only)
+# All scenarios except vs_competition and copy_warm (opt-in only): both cost
+# far more than the sub-second git operations below — copy_warm generates a
+# multi-hundred-MB fixture and copies it dozens of times — and copy_warm also
+# needs python3, which the rest of the suite does not.
 SCENARIOS=(
     clone
     clone_with_hooks
@@ -31,7 +34,6 @@ SCENARIOS=(
     branch_delete
     workflow_full
     complete
-    copy_warm
 )
 
 # Parse arguments
@@ -48,6 +50,7 @@ while [[ $# -gt 0 ]]; do
                 echo "  $s"
             done
             echo "  vs_competition (opt-in, use --only vs_competition)"
+            echo "  copy_warm (opt-in, use --only copy_warm — or mise run bench:copy)"
             exit 0
             ;;
         --help|-h)

@@ -3,11 +3,16 @@
 # against the platform's own fast copy — the regression bench #801's
 # acceptance asked for.
 #
-# Two arms, because the copier has two paths with different scaling:
+# Up to two arms, because on macOS the copier has two paths with different
+# scaling:
 #   copy-warm        the default path (whole-tree clonefile on macOS/APFS,
 #                    walking copy elsewhere), vs `cp -cR` / `cp -R --reflink=auto`
 #   copy-warm-walk   the portable walking path, pinned via DAFT_COPY_FORCE_WALK,
-#                    vs plain byte-copy `cp -R` — what Linux/ext4 users run
+#                    vs plain byte-copy `cp -R` — macOS only, because
+#                    DAFT_COPY_FORCE_WALK is read only inside the macOS-gated
+#                    clone dispatch. Everywhere else the walking path IS the
+#                    default path, so arm 1 already measures it and a second
+#                    arm would time the identical command twice.
 #
 # SCALE=small|medium|large (default small) sizes the fixture; see
 # fixtures/gen_pnpm_tree.py for what each generates.
@@ -68,12 +73,19 @@ bench_compare --two-way \
     "cd $WORK && daft warm" \
     "$CP_FAST $ROOT/bench/main/node_modules $WORK/node_modules"
 
-# The portable walking path, measurable on any filesystem via the pin.
-bench_compare --two-way \
-    "copy-warm-walk-${SCALE}" \
-    "$PREPARE" \
-    "cd $WORK && DAFT_COPY_FORCE_WALK=1 daft warm" \
-    "cp -R $ROOT/bench/main/node_modules $WORK/node_modules"
+# The portable walking path. Only worth a second arm where it is not already
+# what arm 1 ran — say so rather than silently emitting one row, since a
+# summary with a missing arm otherwise reads as a measurement that was taken.
+if [[ "$(uname)" == "Darwin" ]]; then
+    bench_compare --two-way \
+        "copy-warm-walk-${SCALE}" \
+        "$PREPARE" \
+        "cd $WORK && DAFT_COPY_FORCE_WALK=1 daft warm" \
+        "cp -R $ROOT/bench/main/node_modules $WORK/node_modules"
+else
+    log "Skipping the copy-warm-walk arm: the walking path is the default path"
+    log "on this platform, so the arm above already measured it."
+fi
 
 log_success "Copy benchmark ($SCALE) done"
 cleanup_bench
