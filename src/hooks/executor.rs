@@ -564,6 +564,26 @@ impl HookExecutor {
         let source_dir = yaml_config.source_dir.as_deref().unwrap_or(".daft");
         let rc = yaml_config.rc.as_deref();
 
+        // Derived per-worktree env values (#388): ride the context's
+        // extra_env so DAFT_* injection, job process env, and template
+        // lookups all inherit them. Extends (never replaces) — DAFT_MERGE_*
+        // entries a merge command threaded in survive. Legacy script hooks
+        // (execute_legacy) deliberately get no injection: declaring env:
+        // implies a daft.yml, whose hooks run through this path.
+        let ctx_with_derived;
+        let ctx = {
+            let (derived, warnings) = super::environment::derived_injection(&yaml_config, ctx);
+            for warning in &warnings {
+                output.warning(warning);
+            }
+            if derived.is_empty() {
+                ctx
+            } else {
+                ctx_with_derived = ctx.clone().with_derived_env(derived);
+                &ctx_with_derived
+            }
+        };
+
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
 

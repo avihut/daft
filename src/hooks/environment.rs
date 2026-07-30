@@ -8,6 +8,58 @@ use crate::hooks::tracking::TrackedAttribute;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+/// Derived per-worktree env values (#388) for a hook/task context, ready to
+/// ride [`HookContext::with_derived_env`]. Returns the injection map (already
+/// filtered by the never-clobber rule: names set in daft's own environment
+/// are dropped) plus human-readable warnings for anything that could not be
+/// derived.
+///
+/// Best-effort by design: a broken `values:` template must not silently kill
+/// a lifecycle hook the way a config parse error would, so on a values error
+/// the ports still inject and the warning names the failing template. No
+/// `env:` section means no work and no warnings.
+pub(crate) fn derived_injection(
+    config: &crate::hooks::yaml_config::YamlConfig,
+    ctx: &HookContext,
+) -> (BTreeMap<String, String>, Vec<String>) {
+    use crate::core::env_values::{EnvSpec, ValueContext, spawn_injection};
+
+    let Some(env_cfg) = config.env.as_ref() else {
+        return (BTreeMap::new(), Vec::new());
+    };
+    let repo_name = ctx
+        .project_root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".to_string());
+    let spec = EnvSpec::from_config(Some(env_cfg), &repo_name);
+    let slug = crate::core::slug::worktree_slug_from(&ctx.worktree_path, &ctx.project_root);
+    let vctx = ValueContext {
+        repo: &repo_name,
+        worktree_path: ctx.worktree_path.to_str(),
+        worktree_root: ctx.project_root.to_str(),
+        branch: (!ctx.branch_name.is_empty()).then_some(ctx.branch_name.as_str()),
+    };
+
+    let mut warnings = Vec::new();
+    let resolved = match spec.resolve_all(&slug, &vctx) {
+        Ok(resolved) => resolved,
+        Err(e) => {
+            warnings.push(format!("derived env values partially skipped: {e}"));
+            let mut ports_only = spec.clone();
+            ports_only.values.clear();
+            match ports_only.resolve_all(&slug, &vctx) {
+                Ok(resolved) => resolved,
+                Err(e) => {
+                    warnings.push(format!("derived env values not injected: {e}"));
+                    return (BTreeMap::new(), warnings);
+                }
+            }
+        }
+    };
+    (spawn_injection(&resolved), warnings)
+}
+
 /// Context information for hook execution.
 ///
 /// This struct captures all the relevant context about a worktree operation
@@ -186,8 +238,23 @@ impl HookContext {
     /// merge hooks). Merged into the hook environment after the universal
     /// vars, so later calls win over earlier ones — a no-op here since
     /// `new()` starts with an empty map.
+    ///
+    /// NOTE: this **replaces** the whole map (its callers own it outright).
+    /// Derived env values must use [`Self::with_derived_env`], which extends
+    /// instead — replacing here would destroy `DAFT_MERGE_*` entries a merge
+    /// command threaded in earlier.
     pub fn with_extra_env(mut self, extra: BTreeMap<String, String>) -> Self {
         self.extra_env = extra;
+        self
+    }
+
+    /// Extend `extra_env` with derived per-worktree values (#388) so they
+    /// ride the same channel as `DAFT_MERGE_*`: applied last in
+    /// [`HookEnvironment::from_context`], inherited by every job's process
+    /// env, still overridable by an explicit per-job `env:`. Contrast with
+    /// [`Self::with_extra_env`], which replaces the map.
+    pub fn with_derived_env(mut self, derived: BTreeMap<String, String>) -> Self {
+        self.extra_env.extend(derived);
         self
     }
 
@@ -385,6 +452,94 @@ mod tests {
             "/project/feature/new",
             "feature/new",
         )
+    }
+
+    fn env_yaml_config(yaml: &str) -> crate::hooks::yaml_config::YamlConfig {
+        serde_yaml::from_str(yaml).expect("test yaml parses")
+    }
+
+    /// `with_derived_env` EXTENDS: the DAFT_MERGE_* entries a merge command
+    /// threaded in earlier must survive derived-value injection, and both
+    /// must reach the hook environment (extra_env is applied last).
+    #[test]
+    fn derived_env_extends_and_merge_entries_survive() {
+        let merge_extra: BTreeMap<String, String> =
+            [("DAFT_MERGE_SOURCE_PATH".to_string(), "/p/feat".to_string())].into();
+        let derived: BTreeMap<String, String> =
+            [("WEBAPP_PORT".to_string(), "23952".to_string())].into();
+        let ctx = make_test_context()
+            .with_extra_env(merge_extra)
+            .with_derived_env(derived);
+        assert_eq!(
+            ctx.extra_env
+                .get("DAFT_MERGE_SOURCE_PATH")
+                .map(String::as_str),
+            Some("/p/feat")
+        );
+        let env = HookEnvironment::from_context(&ctx);
+        assert_eq!(env.get("WEBAPP_PORT"), Some("23952"));
+        assert_eq!(env.get("DAFT_MERGE_SOURCE_PATH"), Some("/p/feat"));
+    }
+
+    /// A derived value carrying template-looking braces reaches the hook
+    /// environment verbatim — computed env is never re-substituted (the
+    /// job_adapter guards this end-to-end; this pins the extra_env leg).
+    #[test]
+    fn derived_env_values_with_braces_stay_literal() {
+        let derived: BTreeMap<String, String> =
+            [("TRICKY".to_string(), "{branch}-literal".to_string())].into();
+        let ctx = make_test_context().with_derived_env(derived);
+        let env = HookEnvironment::from_context(&ctx);
+        assert_eq!(env.get("TRICKY"), Some("{branch}-literal"));
+    }
+
+    /// End-to-end helper behavior: declared ports inject; a name already set
+    /// in daft's own environment is dropped (never-clobber); a broken
+    /// values: template downgrades to ports-only with a warning instead of
+    /// killing the hook.
+    #[test]
+    fn derived_injection_filters_and_degrades() {
+        let ctx = make_test_context();
+
+        // Plain declared port injects (slug feature-new, salt pinned).
+        let config = env_yaml_config("env:\n  salt: myapp\n  ports:\n    - WEBAPP_PORT\n");
+        let (derived, warnings) = derived_injection(&config, &ctx);
+        assert_eq!(
+            derived.get("WEBAPP_PORT").map(String::as_str),
+            Some("23952")
+        );
+        assert!(warnings.is_empty());
+
+        // Never-clobber: a parent-set name is filtered out. set_var is
+        // `unsafe fn` in edition 2024; tests may wrap it (Critical Rule 4).
+        let config =
+            env_yaml_config("env:\n  salt: myapp\n  ports:\n    - DAFTTEST_CLOBBERED_PORT\n");
+        unsafe { std::env::set_var("DAFTTEST_CLOBBERED_PORT", "999") };
+        let (derived, _) = derived_injection(&config, &ctx);
+        unsafe { std::env::remove_var("DAFTTEST_CLOBBERED_PORT") };
+        assert!(
+            !derived.contains_key("DAFTTEST_CLOBBERED_PORT"),
+            "parent env wins over derived"
+        );
+
+        // Broken values: template → warning + ports still inject.
+        let config = env_yaml_config(
+            "env:\n  salt: myapp\n  ports:\n    - WEBAPP_PORT\n  values:\n    BAD: \"{typo}\"\n",
+        );
+        let (derived, warnings) = derived_injection(&config, &ctx);
+        assert_eq!(
+            derived.get("WEBAPP_PORT").map(String::as_str),
+            Some("23952")
+        );
+        assert!(!derived.contains_key("BAD"));
+        assert!(
+            warnings.iter().any(|w| w.contains("typo")),
+            "warning names the failing template: {warnings:?}"
+        );
+
+        // No env: section → nothing, silently.
+        let (derived, warnings) = derived_injection(&env_yaml_config("hooks: {}"), &ctx);
+        assert!(derived.is_empty() && warnings.is_empty());
     }
 
     /// Branch worktrees label their background-job invocations by branch

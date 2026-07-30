@@ -62,6 +62,7 @@ pub mod yaml_config_validate;
 pub mod yaml_executor;
 pub mod yaml_scalar_edit;
 
+pub(crate) use environment::derived_injection;
 pub use environment::{HookContext, HookEnvironment, RemovalReason};
 pub use executor::{HookAborted, HookExecutor, HookResult};
 pub use trust::{TrustDatabase, TrustEntry, TrustLevel, get_remote_url_for_git_dir};
