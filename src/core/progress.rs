@@ -391,6 +391,7 @@ pub struct TimelineBridge<'a> {
     executor: HookExecutor,
     output_config: HookOutputConfig,
     prompts_enabled: bool,
+    plan_suffix: Vec<crate::core::stage::Row>,
 }
 
 impl<'a> TimelineBridge<'a> {
@@ -406,7 +407,24 @@ impl<'a> TimelineBridge<'a> {
             executor,
             output_config,
             prompts_enabled: true,
+            plan_suffix: Vec::new(),
         }
+    }
+
+    /// Append `rows` to whatever plan the core commits, as its tail.
+    ///
+    /// For work the command layer plans AND runs itself, after the core is
+    /// done but before the receipt closes: `-x` commands (#812) run after the
+    /// post-create hooks, which is exactly where the core's plan ends. The
+    /// core never learns about them — teaching it to plan steps someone else
+    /// executes is how a plan and its receipt drift apart.
+    ///
+    /// A core that returns without committing (the early-exit navigations)
+    /// never renders these rows, which is the wanted behaviour: there is no
+    /// rail to put them on.
+    pub fn with_plan_suffix(mut self, rows: Vec<crate::core::stage::Row>) -> Self {
+        self.plan_suffix = rows;
+        self
     }
 
     /// Answer the consolidation prompts from the [`ConsolidationPrompter`]
@@ -440,7 +458,8 @@ impl ProgressSink for TimelineBridge<'_> {
         route_debug(self.output, self.timeline, msg);
     }
 
-    fn on_plan(&mut self, plan: crate::core::stage::PlanCommit) {
+    fn on_plan(&mut self, mut plan: crate::core::stage::PlanCommit) {
+        plan.rows.append(&mut self.plan_suffix);
         route_plan(self.output, self.timeline, plan);
     }
 

@@ -862,23 +862,27 @@ fn run_start_fork(args: StartArgs, base: Option<String>, count: u32) -> Result<(
                 &mut timeline,
                 executor,
                 hook_output_config.clone(),
-            );
+            )
+            .with_plan_suffix(crate::exec::plan_section(&args.exec));
             sandbox::execute_create(&params, &git, &project_root, &mut bridge)
         };
         timeline.abandon_planning();
         match create_result {
             Ok(result) => {
+                // Per-fork exec, inside the fork (core chdir'd there). On the
+                // rail it is the plan's tail (#812) and runs before the
+                // receipt closes; the path record still follows the footer,
+                // and off the rail the whole order is unchanged.
+                let exec_tail = crate::exec::run_on_rail(&args.exec, &mut timeline);
+                let footer = ready_footer(&exec_tail, &timeline);
                 if timeline.region_live() {
-                    timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
+                    timeline.finish(&footer);
                 }
                 // The path is the record: bare on stdout, exactly once, in
                 // every mode (rail, plain, quiet, redirected).
                 output.raw(&format!("{}\n", result.worktree_path.display()));
-                // Per-fork exec, inside the fork (core chdir'd there). A
-                // failed command marks this fork failed; the worktree stays.
-                if !args.exec.is_empty()
-                    && let Err(e) = crate::exec::run_exec_commands(&args.exec, &mut output)
-                {
+                // A failed command marks this fork failed; the worktree stays.
+                if let Err(e) = run_exec_tail(exec_tail, &args.exec, &mut output) {
                     failures.push((dirname.clone(), e));
                 }
                 completed.push(result);
@@ -2187,7 +2191,8 @@ fn run_checkout(
 
     timeline.open_planning();
     let checkout_result = {
-        let mut bridge = TimelineBridge::new(output, &mut timeline, executor, hook_output_config);
+        let mut bridge = TimelineBridge::new(output, &mut timeline, executor, hook_output_config)
+            .with_plan_suffix(crate::exec::plan_section(&args.exec));
         checkout::execute(&params, git, &project_root, &mut bridge)
     };
     timeline.abandon_planning();
@@ -2197,13 +2202,19 @@ fn run_checkout(
             // With a committed plan (fetch-on branch not found, step
             // failures) this closes the rail into a Failed receipt; a
             // resolve-phase error left no region behind and this no-ops.
+            // Planned `-x` rows persist as dim `(not run)` — true: the
+            // sequence is skipped whenever the creation fails.
             timeline.abort(&format!("Failed after {}", timeline.elapsed_display()));
             return Err(e);
         }
     };
 
+    // The `-x` sequence is the plan's tail (#812): run it while the region is
+    // still live, so the rows that promised it are the rows that resolve it.
+    let exec_tail = crate::exec::run_on_rail(&args.exec, &mut timeline);
+    let footer = ready_footer(&exec_tail, &timeline);
     if timeline.region_live() {
-        timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
+        timeline.finish(&footer);
     }
     // On the rail, the header + footer are the record; Plain/Hidden (and the
     // no-rail early exits) keep the result line byte-identical to before —
@@ -2212,8 +2223,9 @@ fn run_checkout(
         render_checkout_result(&result, output);
     }
 
-    // Run exec commands (after hooks, before cd_path)
-    let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+    // Off the rail, the commands run here — after the record line, exactly
+    // where they always have.
+    let exec_result = run_exec_tail(exec_tail, &args.exec, output);
 
     output.cd_path(&result.cd_target);
     maybe_show_shell_hint(output)?;
@@ -2222,6 +2234,33 @@ fn run_checkout(
     exec_result?;
 
     Ok(result.already_existed)
+}
+
+/// The receipt footer for a creation journey whose `-x` rows ran on the rail.
+///
+/// A failed `-x` never renders a Failed receipt: the worktree exists, the
+/// shell is about to cd into it, and the red row above already names what
+/// broke. The footer only stops claiming an unqualified success (#812).
+fn ready_footer(tail: &crate::exec::ExecTail, timeline: &Timeline) -> String {
+    let elapsed = timeline.elapsed_display();
+    if tail.failed() {
+        format!("Ready with failures in {elapsed}")
+    } else {
+        format!("Ready in {elapsed}")
+    }
+}
+
+/// Settle a creation journey's `-x` sequence: the rail already ran it, or it
+/// runs here off the rail with its legacy `Executing: <cmd>` lines.
+fn run_exec_tail(
+    tail: crate::exec::ExecTail,
+    commands: &[String],
+    output: &mut dyn Output,
+) -> Result<()> {
+    match tail {
+        crate::exec::ExecTail::OnRail(result) => result,
+        crate::exec::ExecTail::OffRail => crate::exec::run_exec_commands(commands, output),
+    }
 }
 
 /// Shared shell for both sandbox-rung entrances (#53): run the visit, then
@@ -2304,7 +2343,8 @@ fn run_sandbox_visit(
 
     timeline.open_planning();
     let visit_result = {
-        let mut bridge = TimelineBridge::new(output, &mut timeline, executor, hook_output_config);
+        let mut bridge = TimelineBridge::new(output, &mut timeline, executor, hook_output_config)
+            .with_plan_suffix(crate::exec::plan_section(&args.exec));
         sandbox::execute_visit(&params, git, &project_root, &mut bridge)
     };
     timeline.abandon_planning();
@@ -2316,15 +2356,19 @@ fn run_sandbox_visit(
         }
     };
 
+    // The `-x` sequence is the plan's tail (#812) — see `run_checkout`. A
+    // visit that navigated to an EXISTING sandbox committed no plan, so it
+    // carries no rows and the commands run off the rail below, unchanged.
+    let exec_tail = crate::exec::run_on_rail(&args.exec, &mut timeline);
+    let footer = ready_footer(&exec_tail, &timeline);
     if timeline.region_live() {
-        timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
+        timeline.finish(&footer);
     }
     if !timeline.replaces_stdout_record() || result.already_existed {
         render_sandbox_result(&result, output);
     }
 
-    // Run exec commands (after hooks, before cd_path)
-    let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+    let exec_result = run_exec_tail(exec_tail, &args.exec, output);
 
     output.cd_path(&result.cd_target);
     maybe_show_shell_hint(output)?;
@@ -2372,10 +2416,13 @@ fn run_create_branch(
     git: &GitCommand,
     output: &mut dyn Output,
 ) -> Result<()> {
-    let result = run_create_branch_core(args, settings, git, output)?;
+    // The `-x` sequence belongs to this rail (#812), so it runs inside the
+    // core — the timeline lives and closes there.
+    let (result, exec_tail) = run_create_branch_core(args, settings, git, output, &args.exec)?;
 
-    // Run exec commands (after hooks, before cd_path)
-    let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+    // Off the rail, the commands run here — after the record line, exactly
+    // where they always have.
+    let exec_result = run_exec_tail(exec_tail, &args.exec, output);
 
     output.cd_path(&result.cd_target);
     maybe_show_shell_hint(output)?;
@@ -2386,14 +2433,22 @@ fn run_create_branch(
     Ok(())
 }
 
-/// The create-branch machinery without the terminal tail (exec commands,
-/// cd redirect, shell hint) — reusable per-repo by `--with-related`.
+/// The create-branch machinery without the terminal tail (cd redirect, shell
+/// hint) — reusable per-repo by `--with-related`.
+///
+/// `exec_on_rail` is the `-x` sequence to plan and run as this rail's tail,
+/// before its receipt closes. Callers that run the sequence themselves, later,
+/// pass none: `--with-related` runs it once every sibling repo is created, so
+/// its commands are not this rail's work, and a sibling repo never runs `-x`
+/// at all. The returned [`crate::exec::ExecTail`] says whether the commands
+/// ran here; its error is the caller's to propagate, after the cd is written.
 fn run_create_branch_core(
     args: &Args,
     settings: &DaftSettings,
     git: &GitCommand,
     output: &mut dyn Output,
-) -> Result<checkout_branch::CheckoutBranchResult> {
+    exec_on_rail: &[String],
+) -> Result<(checkout_branch::CheckoutBranchResult, crate::exec::ExecTail)> {
     // A forge PR/MR reference names an existing PR, not a new branch to create.
     // This is the single choke point for the create family (`daft start`,
     // `checkout -b`, `go -b`, `--with-related`).
@@ -2519,7 +2574,8 @@ fn run_create_branch_core(
     timeline.open_planning();
     let checkout_result = {
         let mut bridge =
-            TimelineBridge::new(output, &mut timeline, executor, hook_output_config.clone());
+            TimelineBridge::new(output, &mut timeline, executor, hook_output_config.clone())
+                .with_plan_suffix(crate::exec::plan_section(exec_on_rail));
         checkout_branch::execute(
             &params,
             git,
@@ -2537,14 +2593,17 @@ fn run_create_branch_core(
         }
     };
 
+    // The `-x` sequence is the plan's tail (#812) — see `run_checkout`.
+    let exec_tail = crate::exec::run_on_rail(exec_on_rail, &mut timeline);
+    let footer = ready_footer(&exec_tail, &timeline);
     if timeline.region_live() {
-        timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
+        timeline.finish(&footer);
     }
     if !timeline.replaces_stdout_record() {
         render_create_result(&result, output);
     }
 
-    Ok(result)
+    Ok((result, exec_tail))
 }
 
 /// `daft start <branch> --with-related`: create `branch` in the primary
@@ -2609,9 +2668,11 @@ fn run_start_with_related(
     let autocd = settings.autocd && !args.no_cd;
     let mut output = CliOutput::new(OutputConfig::with_autocd(args.quiet, args.verbose, autocd));
 
+    // No `-x` on this rail: the sequence runs once the whole fan-out is done
+    // (below), so it is not the primary repo's own work to plan (#812).
     let (current_cd_target, current_post_create_failed) =
-        match run_create_branch_core(&args, &settings, &git, &mut output) {
-            Ok(result) => (result.cd_target, false),
+        match run_create_branch_core(&args, &settings, &git, &mut output, &[]) {
+            Ok((result, _)) => (result.cd_target, false),
             Err(e) => match e.downcast::<crate::core::worktree::PostCreateHookFailed>() {
                 // Worktree created here — only the post-create hook failed.
                 // Surface its recovery hint, then carry on to the fan-out.
@@ -2750,7 +2811,7 @@ fn create_branch_in_related_repo(
             ));
         }
 
-        run_create_branch_core(&repo_args, &settings, &git, output).map(|_| ())
+        run_create_branch_core(&repo_args, &settings, &git, output, &[]).map(|_| ())
     })();
 
     change_directory(&restore).ok();

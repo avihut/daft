@@ -1,0 +1,94 @@
+name: The -x sequence is the creation plan's tail
+description:
+  "`daft start -x cmd -x cmd` runs its commands in the order typed, after the
+  worktree-post-create hooks — the position the rail plans them in (#812). Two
+  identical commands are two runs; a failing one stops the rest while the
+  worktree itself survives; a fork runs the sequence inside the fork it just
+  made."
+
+repos:
+  - name: test-exec-tail
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Exec tail test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: mark
+              run: printf hook >> "$DAFT_WORKTREE_PATH/order.txt"
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_EXEC_TAIL
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-exec-tail/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-exec-tail/main"
+    expect:
+      exit_code: 0
+
+  - name: The sequence runs in the order typed, after the post-create hooks
+    run:
+      daft start feat-tail -x 'printf +one >> order.txt' -x 'printf +two >>
+      order.txt' 2>&1
+    cwd: "$WORK_DIR/test-exec-tail/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-exec-tail/feat-tail/order.txt"
+          content: "hook+one+two"
+
+  - name: Two identical commands are two runs, not one
+    run:
+      daft start feat-twice -x 'printf x >> twice.txt' -x 'printf x >>
+      twice.txt' 2>&1
+    cwd: "$WORK_DIR/test-exec-tail/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-exec-tail/feat-twice/twice.txt"
+          content: "xx"
+
+  - name: A failing command stops the sequence, and the worktree survives it
+    run:
+      daft start feat-broken -x 'printf one >> broken.txt' -x false -x 'printf
+      three >> broken.txt' 2>&1
+    cwd: "$WORK_DIR/test-exec-tail/main"
+    expect:
+      exit_code: 1
+      dirs_exist:
+        - "$WORK_DIR/test-exec-tail/feat-broken"
+      file_contains:
+        - path: "$WORK_DIR/test-exec-tail/feat-broken/broken.txt"
+          content: "one"
+      file_not_contains:
+        - path: "$WORK_DIR/test-exec-tail/feat-broken/broken.txt"
+          content: "three"
+
+  - name: A fork runs the sequence inside the fork it just made
+    run: daft start --fork -x 'printf forked >> fork-marker.txt' 2>&1
+    cwd: "$WORK_DIR/test-exec-tail/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-exec-tail/main-fork/fork-marker.txt"
+          content: "forked"
+
+  - name: Navigating to an existing worktree still runs the sequence
+    run: daft go feat-tail -x 'printf again >> revisit.txt' 2>&1
+    cwd: "$WORK_DIR/test-exec-tail/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-exec-tail/feat-tail/revisit.txt"
+          content: "again"

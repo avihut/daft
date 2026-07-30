@@ -165,6 +165,18 @@ never keeps an identity ink.
   `↓` rows; jobs skipped by their own `skip:`/`only:` conditions leave no trace,
   and a whole phase skipped that way vanishes with them. Background jobs get a
   blue `↻ name  background` receipt — `daft hooks jobs` manages them from there.
+- `-x`/`--exec` commands are planned where they run: last, after the post-create
+  hooks. One row per `-x` occurrence, labelled with the command exactly as you
+  typed it, under an `├─ exec` anchor once there are two or more — so two
+  identical commands stay two rows. A command owns the terminal for its whole
+  run (`-x` inherits stdio and may be interactive), so its own output prints
+  above the rail and its row then resolves green, or red with the exit status
+  (`✗ npm ci  exit 1`). A failure stops the sequence, and the commands that
+  never got their turn say so (`↓ cargo test  not run`). The worktree exists and
+  your shell still moves into it, so the footer reads
+  `Ready with failures in 2.4s` rather than claiming the creation failed.
+  Navigating to an **existing** worktree commits no plan and so has no rail: the
+  commands still run, with the single-line output that path has always had.
 - The `pre-push` gate is git's hook, not daft's — git dispatches it inside
   `git push` and daft sees one output stream. When that stream is a **hook
   manager** (lefthook 2.x — every released 2.x version is covered), daft
