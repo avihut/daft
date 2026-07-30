@@ -2442,6 +2442,33 @@ fn run_create_branch(
 /// its commands are not this rail's work, and a sibling repo never runs `-x`
 /// at all. The returned [`crate::exec::ExecTail`] says whether the commands
 /// ran here; its error is the caller's to propagate, after the cd is written.
+/// [`run_create_branch_core`] for the callers that plan no `-x` of their own —
+/// `--with-related`, whose sequence runs once the whole fan-out is done, and
+/// the sibling repos it creates, which never run one.
+///
+/// The single place an [`ExecTail`] is legitimately discarded, and it is
+/// discarded because it is provably empty: passing `&[]` makes
+/// [`run_on_rail`] return `OffRail` without running anything, so there is no
+/// outcome to lose. Routing both callers through here keeps that reasoning in
+/// one commented place instead of two silent `_` bindings — a non-empty
+/// sequence added at either site would otherwise swallow its own failure.
+///
+/// [`ExecTail`]: crate::exec::ExecTail
+/// [`run_on_rail`]: crate::exec::run_on_rail
+fn create_branch_without_exec(
+    args: &Args,
+    settings: &DaftSettings,
+    git: &GitCommand,
+    output: &mut dyn Output,
+) -> Result<checkout_branch::CheckoutBranchResult> {
+    let (result, tail) = run_create_branch_core(args, settings, git, output, &[])?;
+    debug_assert!(
+        matches!(tail, crate::exec::ExecTail::OffRail),
+        "an empty sequence must never claim the rail"
+    );
+    Ok(result)
+}
+
 fn run_create_branch_core(
     args: &Args,
     settings: &DaftSettings,
@@ -2671,8 +2698,8 @@ fn run_start_with_related(
     // No `-x` on this rail: the sequence runs once the whole fan-out is done
     // (below), so it is not the primary repo's own work to plan (#812).
     let (current_cd_target, current_post_create_failed) =
-        match run_create_branch_core(&args, &settings, &git, &mut output, &[]) {
-            Ok((result, _)) => (result.cd_target, false),
+        match create_branch_without_exec(&args, &settings, &git, &mut output) {
+            Ok(result) => (result.cd_target, false),
             Err(e) => match e.downcast::<crate::core::worktree::PostCreateHookFailed>() {
                 // Worktree created here — only the post-create hook failed.
                 // Surface its recovery hint, then carry on to the fan-out.
@@ -2811,7 +2838,7 @@ fn create_branch_in_related_repo(
             ));
         }
 
-        run_create_branch_core(&repo_args, &settings, &git, output, &[]).map(|_| ())
+        create_branch_without_exec(&repo_args, &settings, &git, output).map(|_| ())
     })();
 
     change_directory(&restore).ok();
