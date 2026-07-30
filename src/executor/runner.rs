@@ -572,8 +572,93 @@ fn execute_single_job_supervised(
     guard: Option<&Arc<crate::governor::UnitGuard>>,
     jobserver_env: Option<&(String, String)>,
 ) -> Result<CommandResult> {
+    // A chunked job is still one job: run its parts in sequence under the
+    // same row and log stream, stopping at the first failure. The common
+    // case has no extra chunks and takes the loop once.
+    //
+    // It is also one job to its time limit. Chunking is daft working around
+    // ARG_MAX, not something the author declared, so `timeout:` bounds the
+    // whole job: each chunk gets what the earlier ones left, never a fresh
+    // limit of its own.
+    let started = Instant::now();
+    let mut merged: Option<CommandResult> = None;
+    for command in std::iter::once(&job.command).chain(job.extra_chunks.iter()) {
+        let budget = match job.timeout {
+            None => None,
+            Some(limit) => match limit.checked_sub(started.elapsed()) {
+                Some(left) if !left.is_zero() => Some(left),
+                _ => {
+                    merged = Some(out_of_time(merged, limit));
+                    break;
+                }
+            },
+        };
+        let mut result = execute_one_chunk(
+            job,
+            command,
+            budget,
+            presenter,
+            sink,
+            cancel,
+            guard,
+            jobserver_env,
+        )?;
+        // A chunk stopped at the remaining budget hit the job's limit: report
+        // the limit the author set, not what was left of it.
+        if result.timed_out.is_some() {
+            result.timed_out = job.timeout;
+        }
+        let stop = !result.success;
+        merged = Some(match merged {
+            None => result,
+            Some(prior) => CommandResult {
+                success: result.success,
+                exit_code: result.exit_code,
+                stdout: prior.stdout + &result.stdout,
+                stderr: prior.stderr + &result.stderr,
+                cancelled: prior.cancelled || result.cancelled,
+                // A timeout stops the loop, so only the last chunk run can
+                // carry one.
+                timed_out: result.timed_out,
+            },
+        });
+        if stop {
+            break;
+        }
+    }
+    // `once(&job.command)` guarantees at least one iteration.
+    Ok(merged.expect("at least one chunk"))
+}
+
+/// A chunked job whose earlier chunks spent its whole limit before the next
+/// one could start: it timed out, keeping what those chunks printed.
+fn out_of_time(prior: Option<CommandResult>, limit: Duration) -> CommandResult {
+    let (stdout, stderr) = prior.map_or_else(Default::default, |p| (p.stdout, p.stderr));
+    CommandResult {
+        success: false,
+        exit_code: Some(super::command::TIMED_OUT_EXIT_CODE),
+        stdout,
+        stderr,
+        cancelled: false,
+        timed_out: Some(limit),
+    }
+}
+
+/// One `sh -c` of a job — the whole job when it was not chunked — limited to
+/// `timeout` (the job's remaining budget).
+#[allow(clippy::too_many_arguments)]
+fn execute_one_chunk(
+    job: &JobSpec,
+    cmd: &str,
+    timeout: Option<Duration>,
+    presenter: &Arc<dyn JobPresenter>,
+    sink: Option<&Arc<dyn LogSink>>,
+    cancel: Option<&CancelFlag>,
+    guard: Option<&Arc<crate::governor::UnitGuard>>,
+    jobserver_env: Option<&(String, String)>,
+) -> Result<CommandResult> {
     if job.interactive {
-        run_command_interactive(&job.command, &job.env, &job.working_dir, cancel)
+        run_command_interactive(cmd, &job.env, &job.working_dir, cancel)
     } else {
         let (tx, rx) = mpsc::channel::<(OutputKind, String)>();
 
@@ -631,10 +716,10 @@ fn execute_single_job_supervised(
         };
 
         let result = run_command(
-            &job.command,
+            cmd,
             env,
             &job.working_dir,
-            job.timeout,
+            timeout,
             Some(tx),
             pid_sender,
             cancel,
@@ -904,6 +989,74 @@ mod tests {
         }
     }
 
+    // ── Chunked jobs ───────────────────────────────────────────────────
+
+    #[test]
+    fn chunks_run_in_sequence_under_one_job_row() {
+        let presenter = RecordingPresenter::new();
+        let dyn_presenter: Arc<dyn JobPresenter> = presenter.clone();
+        let job = JobSpec {
+            extra_chunks: vec!["echo second".into(), "echo third".into()],
+            ..make_job("split", "echo first")
+        };
+
+        let results = run_jobs(
+            std::slice::from_ref(&job),
+            ExecutionMode::Sequential,
+            &dyn_presenter,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1, "a chunked job is still one job");
+        assert_eq!(results[0].status, NodeStatus::Succeeded);
+        // All three ran, and their output arrived on the one stream.
+        let events = presenter.events();
+        for line in ["first", "second", "third"] {
+            assert!(
+                events.contains(&format!("job_output:split:{line}")),
+                "missing {line} in {events:?}"
+            );
+        }
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.starts_with("job_start:"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_failing_chunk_stops_the_rest() {
+        // Continuing past a failure would run later chunks against a state
+        // the earlier one rejected, and report the last chunk's exit code as
+        // the job's — turning a red gate green.
+        let presenter = RecordingPresenter::new();
+        let dyn_presenter: Arc<dyn JobPresenter> = presenter.clone();
+        let job = JobSpec {
+            extra_chunks: vec!["echo boom; exit 3".into(), "echo never".into()],
+            ..make_job("split", "echo first")
+        };
+
+        let results = run_jobs(
+            std::slice::from_ref(&job),
+            ExecutionMode::Sequential,
+            &dyn_presenter,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(results[0].status, NodeStatus::Failed);
+        assert_eq!(results[0].exit_code, Some(3));
+        let events = presenter.events();
+        assert!(events.contains(&"job_output:split:boom".to_string()));
+        assert!(
+            !events.contains(&"job_output:split:never".to_string()),
+            "chunks after a failure must not run: {events:?}"
+        );
+    }
+
     // ── Empty job list ─────────────────────────────────────────────────
 
     #[test]
@@ -1054,6 +1207,50 @@ mod tests {
         assert_eq!(slow.timed_out, Some(LIMIT));
         let dependent = results.iter().find(|r| r.name == "after-slow").unwrap();
         assert_eq!(dependent.status, NodeStatus::DepFailed);
+    }
+
+    /// A chunked job is one job to its limit: chunks that each fit inside it
+    /// still time the job out once together they outrun it. Giving every
+    /// chunk a fresh limit would let a job split N ways run N times as long
+    /// as its author allowed.
+    #[test]
+    fn a_chunked_job_shares_one_time_limit() {
+        const CHUNK_LIMIT: Duration = Duration::from_millis(600);
+        let presenter = RecordingPresenter::new();
+        let dyn_presenter: Arc<dyn JobPresenter> = presenter.clone();
+        let job = JobSpec {
+            extra_chunks: vec!["sleep 0.41; echo two".into(), "echo three".into()],
+            ..make_timed_job("split", "echo one; sleep 0.42", CHUNK_LIMIT)
+        };
+
+        let results = run_jobs(
+            std::slice::from_ref(&job),
+            ExecutionMode::Sequential,
+            &dyn_presenter,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(results[0].status, NodeStatus::Failed);
+        assert_eq!(
+            results[0].timed_out,
+            Some(CHUNK_LIMIT),
+            "the job's limit, not the remainder"
+        );
+        assert_eq!(results[0].exit_code, TIMED_OUT);
+        let events = presenter.events();
+        assert!(
+            events.contains(&"job_output:split:one".to_string()),
+            "{events:?}"
+        );
+        assert!(
+            !events.contains(&"job_output:split:three".to_string()),
+            "nothing runs past the job's limit: {events:?}"
+        );
+        assert!(
+            events.contains(&"message:Job 'split' timed out after 600ms".to_string()),
+            "{events:?}"
+        );
     }
 
     #[test]
