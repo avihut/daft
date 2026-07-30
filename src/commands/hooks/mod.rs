@@ -12,6 +12,7 @@
 //! - `add` - Scaffold a daft.yml with lifecycle hook definitions
 //! - `install` - Install git hook shims so git calls daft
 //! - `uninstall` - Remove the shims and restore what they displaced
+//! - `import` - Convert an existing hooks config into daft.yml
 //! - `validate` - Validate YAML hook configuration
 //! - `dump` - Dump merged YAML hook configuration
 //! - `run` - Manually run a hook (bypasses trust checks)
@@ -19,6 +20,7 @@
 mod add;
 mod dump;
 mod formatting;
+mod import;
 mod install;
 // `pub(crate)` so `commands::merge` can reuse the jobs listing's payload
 // builder: merge's `--format` job rows must match `hooks jobs --format`
@@ -276,6 +278,30 @@ fn uninstall_long_about() -> String {
     .join("\n")
 }
 
+fn import_long_about() -> String {
+    [
+        "Convert an existing hooks config into daft.yml entries.",
+        "",
+        "Where `hooks install` lets daft run another tool's config as-is, this",
+        "writes the same definitions in daft's own vocabulary so the gates stop",
+        "depending on a second file. Comments and formatting in an existing",
+        "daft.yml are preserved — the entries are appended, not reserialized.",
+        "",
+        "Custom hook names (ones that are not git events) become tasks, run",
+        &format!("with {}.", bold("daft run <name>")),
+        "",
+        "The original file is never deleted: a native git stage in daft.yml",
+        "already takes precedence over it, and removing someone's config is",
+        "their decision. The command prints the `git rm` for when you are ready.",
+        "",
+        &format!(
+            "Use {} to see the result without writing it.",
+            bold("--dry-run")
+        ),
+    ]
+    .join("\n")
+}
+
 fn validate_long_about() -> String {
     [
         "Validate the YAML hooks configuration file.",
@@ -432,6 +458,14 @@ enum HooksCommand {
     /// Remove daft's git hook shims and restore what they displaced
     #[command(long_about = uninstall_long_about())]
     Uninstall,
+
+    /// Convert an existing hooks config into daft.yml entries
+    #[command(long_about = import_long_about())]
+    Import {
+        /// Show what would be written without writing it
+        #[arg(long, help = "Preview the import without writing")]
+        dry_run: bool,
+    },
 
     /// Validate the YAML hooks configuration
     #[command(long_about = validate_long_about())]
@@ -591,6 +625,7 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Add { hooks }) => add::cmd_add(&hooks, &mut output),
         Some(HooksCommand::Install { force }) => install::cmd_install(force, &mut output),
         Some(HooksCommand::Uninstall) => install::cmd_uninstall(&mut output),
+        Some(HooksCommand::Import { dry_run }) => import::cmd_import(dry_run, &mut output),
         Some(HooksCommand::Validate) => validate::cmd_validate(&mut output),
         Some(HooksCommand::Dump) => dump::cmd_dump(&mut output),
         Some(HooksCommand::Jobs(jobs_args)) => jobs::run(jobs_args, &args.path, &mut output),
