@@ -24,13 +24,13 @@ one trust model, one job orchestrator.
 
 ## The boundaries
 
-| Stage                             | Hook type                                      | Boundary semantics                                                                             | Status                                                      |
-| --------------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| End of clone setup                | `post-clone`                                   | One-shot bootstrap of a fresh repo                                                             | Shipped                                                     |
-| Start of isolated dev             | Worktree hooks (`worktree-pre/post-create`)    | Set up local dev env (deps, services)                                                          | Shipped                                                     |
-| Sealing a unit of change          | Commit hooks                                   | Progressive code-replication boundary — format, lint, fast tests before the change is recorded | Roadmap ([#468](https://github.com/avihut/daft/issues/468)) |
-| Letting a change escape isolation | Merge hooks (`pre-merge`, `post-merge`)        | PR-check parity — full tests, integration, security gates before code leaves the branch        | Shipped                                                     |
-| Reclaiming an isolated env        | Worktree teardown (`worktree-pre/post-remove`) | Teardown, persist artifacts, sync state                                                        | Shipped                                                     |
+| Stage                             | Hook type                                                       | Boundary semantics                                                                             | Status  |
+| --------------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------- |
+| End of clone setup                | `post-clone`                                                    | One-shot bootstrap of a fresh repo                                                             | Shipped |
+| Start of isolated dev             | Worktree hooks (`worktree-pre/post-create`)                     | Set up local dev env (deps, services)                                                          | Shipped |
+| Sealing a unit of change          | [Git stages](/hooks/git-stages) (`pre-commit`, `commit-msg`, …) | Progressive code-replication boundary — format, lint, fast tests before the change is recorded | Shipped |
+| Letting a change escape isolation | Merge hooks (`pre-merge`, `post-merge`)                         | PR-check parity — full tests, integration, security gates before code leaves the branch        | Shipped |
+| Reclaiming an isolated env        | Worktree teardown (`worktree-pre/post-remove`)                  | Teardown, persist artifacts, sync state                                                        | Shipped |
 
 "PR-check parity" on the merge row is meant literally, and it is a thing you
 maintain rather than a thing you get: the jobs in a `pre-merge` gate should be
@@ -41,18 +41,16 @@ merge through daft and no one else. See
 [Merge gate parity](/recipes/merge-gate-parity) for the mapping and the rules
 that keep it honest.
 
-## How daft hooks differ from lefthook
+## Where CI runs
 
-Two distinctions:
+CI traditionally runs _after_ code reaches the central repo; daft hooks run
+before. Every boundary above is a gate on your own machine, using the same job
+orchestrator, the same trust model, and the same `daft.yml` — so the check that
+blocks a merge locally is the check you can read, run by hand, and change in the
+same commit as the code it guards.
 
-1. **Lefthook is commit-time-only.** daft covers the full code-evolution
-   lifecycle. Commit hooks are one stage among many — they share the trust
-   model, the YAML schema, and the job orchestrator with worktree-lifecycle
-   hooks. (See [#468](https://github.com/avihut/daft/issues/468) for the
-   lefthook drop-in plan.)
-2. **Boundaries before changes leave your machine.** CI traditionally runs
-   _after_ code reaches the central repo; daft hooks run _before_. CI shifts
-   left.
+Coming from another hooks manager, see
+[Migrating from lefthook](/hooks/lefthook-migration).
 
 ## daft and your existing git hooks
 
