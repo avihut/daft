@@ -176,7 +176,7 @@ fn eval_only_rule(
     }
 }
 
-/// Evaluate named conditions: "merge", "rebase".
+/// Evaluate named conditions: "merge", "rebase", "merge-commit".
 fn eval_named_condition(name: &str, worktree: &Path) -> Option<String> {
     match name {
         "merge" => {
@@ -193,8 +193,42 @@ fn eval_named_condition(name: &str, worktree: &Path) -> Option<String> {
                 None
             }
         }
+        // Distinct from "merge", which asks whether a merge is *in progress*.
+        // This asks what HEAD is, and exists for the commit stages: a merge
+        // commit's content is the merge, not the author's work, so linting it
+        // reports on files nobody in this commit touched.
+        "merge-commit" => {
+            if head_is_merge_commit(worktree) {
+                Some("skip: HEAD is a merge commit".to_string())
+            } else {
+                None
+            }
+        }
         _ => None, // Unknown named condition — don't skip
     }
+}
+
+/// Whether HEAD has more than one parent.
+///
+/// `rev-list --parents -1 HEAD` prints the commit and its parents on one
+/// line, so three or more fields means a merge. An unborn HEAD (no commits
+/// yet) or any other failure answers "no" — the question is about a commit
+/// that exists, and refusing to run a gate because a probe failed would be
+/// the wrong way to be wrong.
+fn head_is_merge_commit(worktree: &Path) -> bool {
+    let Ok(output) = crate::utils::git_command_at(worktree)
+        .args(["rev-list", "--parents", "-1", "HEAD"])
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .count()
+        > 2
 }
 
 /// Evaluate structured skip rule (ref, env, run, changed).
