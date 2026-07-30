@@ -52,8 +52,6 @@ pub struct HookProgressRenderer {
     /// this by handing out a pending-row or spacer bar that only leaves the
     /// region at teardown.
     insert_anchor: Option<ProgressBar>,
-    /// Weld the header box's left corners onto the rail (`┌`/`└` → `├`).
-    welded: bool,
 }
 
 impl HookProgressRenderer {
@@ -71,20 +69,6 @@ impl HookProgressRenderer {
             MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden()),
             false,
         )
-    }
-
-    /// Render inside a plan-execute timeline's live region (#651): share its
-    /// `MultiProgress`, insert job bars above `anchor` (a live rail bar),
-    /// and weld the rail into the header box's top corner.
-    ///
-    /// NOTE(preserved, currently unused): see `HookRenderer::embedded` —
-    /// kept for possible reuse by full git hooks rendering; delete after
-    /// git hooks land if still unused.
-    pub fn new_embedded(config: &HookOutputConfig, mp: MultiProgress, anchor: ProgressBar) -> Self {
-        let mut renderer = Self::create(config, mp, styles::colors_enabled_stderr());
-        renderer.insert_anchor = Some(anchor);
-        renderer.welded = true;
-        renderer
     }
 
     fn create(config: &HookOutputConfig, mp: MultiProgress, use_color: bool) -> Self {
@@ -138,7 +122,6 @@ impl HookProgressRenderer {
             trailer_style,
             name_column_width: super::formatting::DEFAULT_NAME_COLUMN_WIDTH,
             insert_anchor: None,
-            welded: false,
         }
     }
 
@@ -164,7 +147,7 @@ impl HookProgressRenderer {
             hook_name,
             target,
             self.use_color,
-            self.welded,
+            false,
         ) {
             self.mp.println(line).ok();
         }
