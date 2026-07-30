@@ -37,12 +37,19 @@ pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()
         }
     };
 
-    // Parse hook type
+    // Parse hook type — both namespaces: worktree lifecycle events and git
+    // stages. Firing `daft hooks run pre-commit` by hand is how you iterate on
+    // a gate without making a commit each time.
     let hook_type = HookType::from_yaml_name(&hook_type_str).ok_or_else(|| {
         anyhow::anyhow!(
-            "Unknown hook type: '{}'\nValid hook types: {}",
+            "Unknown hook type: '{}'\nWorktree lifecycle hooks: {}\nGit stages: {}",
             hook_type_str,
-            yaml_config::KNOWN_HOOK_NAMES.join(", ")
+            yaml_config::LIFECYCLE_HOOK_NAMES.join(", "),
+            crate::hooks::git_stage::GitStage::all()
+                .iter()
+                .map(|s| s.yaml_name())
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     })?;
 

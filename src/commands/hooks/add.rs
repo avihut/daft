@@ -5,19 +5,24 @@ use crate::styles::{bold, cyan, dim, green};
 use anyhow::{Context, Result};
 
 /// Scaffold a daft.yml configuration with hook definitions.
-pub(super) fn cmd_install(hooks: &[String], output: &mut dyn Output) -> Result<()> {
+///
+/// Lifecycle hooks only. Git stages are scaffolded by
+/// [`super::import`](crate::commands::hooks) when there is an incumbent config
+/// to translate, and written by hand otherwise — a stage's body is a gate the
+/// team chooses, and an empty placeholder gate is worse than no key at all.
+pub(super) fn cmd_add(hooks: &[String], output: &mut dyn Output) -> Result<()> {
     let worktree_root = find_worktree_root()?;
 
     // Determine which hooks to scaffold
     let hook_names: Vec<&str> = if hooks.is_empty() {
-        yaml_config::KNOWN_HOOK_NAMES.to_vec()
+        yaml_config::LIFECYCLE_HOOK_NAMES.to_vec()
     } else {
         // Validate all provided names
         for name in hooks {
-            if !yaml_config::KNOWN_HOOK_NAMES.contains(&name.as_str()) {
+            if !yaml_config::LIFECYCLE_HOOK_NAMES.contains(&name.as_str()) {
                 anyhow::bail!(
                     "Unknown hook name: '{name}'. Valid hooks: {}",
-                    yaml_config::KNOWN_HOOK_NAMES.join(", ")
+                    yaml_config::LIFECYCLE_HOOK_NAMES.join(", ")
                 );
             }
         }
