@@ -8,8 +8,13 @@ use std::collections::HashMap;
 
 use super::tracking::TrackedAttribute;
 
-/// Known hook names that are recognized by the system.
-pub const KNOWN_HOOK_NAMES: &[&str] = &[
+/// The hook names that fire on daft's own worktree lifecycle.
+///
+/// One of the two namespaces `hooks:` accepts; the other is
+/// [`crate::hooks::git_stage::GitStage`]'s stage names. They are kept as
+/// separate tables because only these have a script-file form under
+/// `.daft/hooks/` and a deprecated pre-`worktree-` spelling.
+pub const LIFECYCLE_HOOK_NAMES: &[&str] = &[
     "post-clone",
     "worktree-pre-create",
     "worktree-post-create",
