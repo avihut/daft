@@ -32,23 +32,25 @@ Additionally:
 
 ## Top-level keys
 
-| Field              | Type        | Description                                                                        |
-| ------------------ | ----------- | ---------------------------------------------------------------------------------- |
-| `min_version`      | string      | Minimum daft version required (e.g., `"1.5.0"`)                                    |
-| `colors`           | bool        | Enable/disable colored output                                                      |
-| `no_tty`           | bool        | Disable TTY detection                                                              |
-| `rc`               | string      | Shell RC file to source before running hooks                                       |
-| `output`           | bool / list | `false` to suppress all output, or list of hook names to show output for           |
-| `extends`          | list        | Additional config files to merge (e.g., `["shared.yml"]`)                          |
-| `source_dir`       | string      | Directory for script files (default: `".daft"`)                                    |
-| `source_dir_local` | string      | Directory for local (gitignored) script files (default: `".daft-local"`)           |
-| `copy`             | list / map  | Gitignored paths copied into each new worktree (see [Copied paths](#copied-paths)) |
-| `env`              | object      | Derived per-worktree env values (see [Environment values](#environment-values))    |
-| `hooks`            | map         | Hook definitions, keyed by hook name                                               |
-| `tasks`            | map         | Named, user-invoked task definitions (see [Tasks](#tasks))                         |
-| `log`              | object      | Log configuration (see [Log configuration](#log-configuration))                    |
-| `relations`        | list        | Related repositories (see [Relations](#relations))                                 |
-| `merge`            | object      | Committed merge gate policy (see [Merge gate policy](#merge-gate-policy))          |
+| Field              | Type        | Description                                                                                            |
+| ------------------ | ----------- | ------------------------------------------------------------------------------------------------------ |
+| `min_version`      | string      | Minimum daft version required (e.g., `"1.5.0"`)                                                        |
+| `colors`           | bool        | Enable/disable colored output                                                                          |
+| `no_tty`           | bool        | Disable TTY detection                                                                                  |
+| `rc`               | string      | Shell RC file to source before running hooks                                                           |
+| `output`           | bool / list | `false` to suppress all output, or list of hook names to show output for                               |
+| `extends`          | list        | Additional config files to merge (e.g., `["shared.yml"]`)                                              |
+| `source_dir`       | string      | Directory for script files (default: `".daft"`)                                                        |
+| `source_dir_local` | string      | Directory for local (gitignored) script files (default: `".daft-local"`)                               |
+| `copy`             | list / map  | Gitignored paths copied into each new worktree (see [Copied paths](#copied-paths))                     |
+| `env`              | object      | Derived per-worktree env values (see [Environment values](#environment-values))                        |
+| `templates`        | map         | Reusable command fragments, expanded as `{name}` in any job's `run` (see [Templates](#templates))      |
+| `skip_lfs`         | bool        | Opt out of chaining `git lfs <stage>` before daft's jobs (see [Git stages](/hooks/git-stages#git-lfs)) |
+| `hooks`            | map         | Hook definitions, keyed by hook name                                                                   |
+| `tasks`            | map         | Named, user-invoked task definitions (see [Tasks](#tasks))                                             |
+| `log`              | object      | Log configuration (see [Log configuration](#log-configuration))                                        |
+| `relations`        | list        | Related repositories (see [Relations](#relations))                                                     |
+| `merge`            | object      | Committed merge gate policy (see [Merge gate policy](#merge-gate-policy))                              |
 
 ## Copied paths
 
@@ -318,18 +320,21 @@ hooks:
         run: npm run build
 ```
 
-| Field          | Type                 | Default | Description                                                                |
-| -------------- | -------------------- | ------- | -------------------------------------------------------------------------- |
-| `parallel`     | bool                 | `true`  | Run jobs in parallel                                                       |
-| `piped`        | bool                 |         | Run jobs sequentially, stop on first failure                               |
-| `follow`       | bool                 |         | Run jobs sequentially, continue on failure                                 |
-| `background`   | bool                 |         | Default background execution for all jobs in this hook                     |
-| `exclude_tags` | list                 |         | Tags to exclude at hook level                                              |
-| `exclude`      | list                 |         | Glob patterns appended to every file-aware job's `exclude` list            |
-| `skip`         | bool / string / list |         | Skip condition (see [Skip and only conditions](#skip-and-only-conditions)) |
-| `only`         | bool / string / list |         | Only condition (see [Skip and only conditions](#skip-and-only-conditions)) |
-| `jobs`         | list                 |         | Jobs to execute                                                            |
-| `fail_mode`    | `abort` / `warn`     | varies  | Behavior when this hook fails (see [Failure mode](#failure-mode))          |
+| Field             | Type                 | Default | Description                                                                                                  |
+| ----------------- | -------------------- | ------- | ------------------------------------------------------------------------------------------------------------ |
+| `parallel`        | bool                 | `true`  | Run jobs in parallel                                                                                         |
+| `piped`           | bool                 |         | Run jobs sequentially, stop on first failure                                                                 |
+| `follow`          | bool                 |         | Run jobs sequentially, continue on failure                                                                   |
+| `background`      | bool                 |         | Default background execution for all jobs in this hook                                                       |
+| `exclude_tags`    | list                 |         | Tags to exclude at hook level                                                                                |
+| `exclude`         | list                 |         | Glob patterns appended to every file-aware job's `exclude` list                                              |
+| `skip`            | bool / string / list |         | Skip condition (see [Skip and only conditions](#skip-and-only-conditions))                                   |
+| `only`            | bool / string / list |         | Only condition (see [Skip and only conditions](#skip-and-only-conditions))                                   |
+| `jobs`            | list                 |         | Jobs to execute                                                                                              |
+| `files`           | string               |         | Shell command producing this hook's file list, replacing whatever it would otherwise offer                   |
+| `setup`           | list                 |         | Commands run once before the jobs, in order, stopping at the first failure (see [Setup steps](#setup-steps)) |
+| `fail_on_changes` | bool                 |         | Fail the hook if its jobs left the working tree modified (see [Failing on changes](#failing-on-changes))     |
+| `fail_mode`       | `abort` / `warn`     | varies  | Behavior when this hook fails (see [Failure mode](#failure-mode))                                            |
 
 Only one of `parallel`, `piped`, or `follow` can be set at a time.
 
@@ -364,32 +369,35 @@ job regardless.
 
 Each job in the `jobs` list supports:
 
-| Field               | Type                 | Description                                                                                                  |
-| ------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `name`              | string               | Job name (used for display, merging, and dependency references)                                              |
-| `description`       | string               | Human-readable description (shown in dry-run and completions)                                                |
-| `run`               | string               | Inline shell command to execute                                                                              |
-| `script`            | string               | Script file to run (relative to `source_dir`)                                                                |
-| `runner`            | string               | Interpreter for script files (e.g., `"bash"`, `"python"`)                                                    |
-| `args`              | string               | Arguments to pass to the script                                                                              |
-| `root`              | string               | Working directory / cwd, relative to worktree root (see [Working directory](#working-directory-root))        |
-| `tags`              | list                 | Tags for filtering with `exclude_tags`                                                                       |
-| `glob`              | string / list        | Changed-file patterns gating this job (see [Changed-file filters](#changed-file-filters-glob-exclude-files)) |
-| `exclude`           | list                 | Changed-file patterns removed from this job's list                                                           |
-| `files`             | string               | Shell command producing this job's file list (one path per line)                                             |
-| `skip`              | bool / string / list | Skip condition                                                                                               |
-| `only`              | bool / string / list | Only condition                                                                                               |
-| `arch`              | string / list        | Target architecture (`x86_64`, `aarch64`); skips if no match                                                 |
-| `env`               | map                  | Extra environment variables                                                                                  |
-| `fail_text`         | string               | Custom failure message                                                                                       |
-| `interactive`       | bool                 | Job needs TTY/stdin (forces sequential execution)                                                            |
-| `priority`          | int                  | Execution ordering (lower runs first)                                                                        |
-| `needs`             | list                 | Names of jobs that must complete before this job runs                                                        |
-| `tracks`            | list                 | Worktree attributes this job depends on: `path`, `branch`                                                    |
-| `group`             | object               | Nested group of jobs (see [Groups](#groups))                                                                 |
-| `background`        | bool                 | Run this job in the background (see [Background jobs](#background-jobs))                                     |
-| `background_output` | `log` / `silent`     | Output behavior for background jobs (default: `log`)                                                         |
-| `log`               | object               | Log configuration (`retention`, `max_log_size`) for this job                                                 |
+| Field               | Type                 | Description                                                                                                                    |
+| ------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `name`              | string               | Job name (used for display, merging, and dependency references)                                                                |
+| `description`       | string               | Human-readable description (shown in dry-run and completions)                                                                  |
+| `run`               | string               | Inline shell command to execute                                                                                                |
+| `script`            | string               | Script file to run (relative to `source_dir`)                                                                                  |
+| `runner`            | string               | Interpreter for script files (e.g., `"bash"`, `"python"`)                                                                      |
+| `args`              | string               | Arguments to pass to the script                                                                                                |
+| `root`              | string               | Working directory / cwd, relative to worktree root (see [Working directory](#working-directory-root))                          |
+| `tags`              | list                 | Tags for filtering with `exclude_tags`                                                                                         |
+| `glob`              | string / list        | Changed-file patterns gating this job (see [Changed-file filters](#changed-file-filters-glob-exclude-files))                   |
+| `exclude`           | list                 | Changed-file patterns removed from this job's list                                                                             |
+| `files`             | string               | Shell command producing this job's file list (one path per line)                                                               |
+| `file_types`        | string / list        | Narrow the file list by what the paths are: `text`, `binary`, `executable`, `not executable`, `symlink`, `not symlink` (ANDed) |
+| `stage_fixed`       | bool                 | Re-stage this job's files after it runs, so a formatter's edits land in the commit (commit stages only)                        |
+| `use_stdin`         | bool                 | Feed the stage's stdin to this job (`pre-push`, `post-rewrite`); invalid with `interactive` or `background`                    |
+| `skip`              | bool / string / list | Skip condition                                                                                                                 |
+| `only`              | bool / string / list | Only condition                                                                                                                 |
+| `arch`              | string / list        | Target architecture (`x86_64`, `aarch64`); skips if no match                                                                   |
+| `env`               | map                  | Extra environment variables                                                                                                    |
+| `fail_text`         | string               | Custom failure message                                                                                                         |
+| `interactive`       | bool                 | Job needs TTY/stdin (forces sequential execution)                                                                              |
+| `priority`          | int                  | Execution ordering (lower runs first)                                                                                          |
+| `needs`             | list                 | Names of jobs that must complete before this job runs                                                                          |
+| `tracks`            | list                 | Worktree attributes this job depends on: `path`, `branch`                                                                      |
+| `group`             | object               | Nested group of jobs (see [Groups](#groups))                                                                                   |
+| `background`        | bool                 | Run this job in the background (see [Background jobs](#background-jobs))                                                       |
+| `background_output` | `log` / `silent`     | Output behavior for background jobs (default: `log`)                                                                           |
+| `log`               | object               | Log configuration (`retention`, `max_log_size`) for this job                                                                   |
 
 A job must have exactly one of `run`, `script`, or `group`.
 
@@ -460,6 +468,19 @@ Semantics:
 - `exclude` alone (no `glob`) selects every changed file outside the excluded
   paths: the job runs unless _only_ excluded paths changed, which makes it the
   natural "skip on docs-only changes" spelling.
+
+### Git-stage placeholders
+
+Inside a [git stage](/hooks/git-stages), a job says which file list it means:
+`{files}` (whatever the stage is about), `{staged_files}`, `{push_files}`,
+`{all_files}`, and `{changed_files}` as an exact synonym of `{files}`. Wrapping
+one in quotes changes how its paths are rendered — `"{files}"` double-quotes
+each, `'{files}'` single-quotes each.
+
+Git's own hook arguments are available as `{1}`, `{2}`, … using git's numbering,
+so a job written for another hook manager translates directly (`$1` becomes
+`{1}`); `{0}` is all of them. An index git did not supply expands empty, exactly
+as an unset `$2` would.
 
 ### Template variables
 
@@ -589,6 +610,13 @@ configuration error.
 A job can contain a nested `group` of sub-jobs instead of a `run` or `script`.
 The group runs as a unit with its own execution mode.
 
+Groups are flattened before execution: each child becomes a job named
+`<group>/<child>`, and a `piped:` group becomes a dependency chain among them.
+Another job's `needs: <group>` waits for the whole group, not just its first
+child. Nesting is one level deep — a group inside a group is a configuration
+error rather than a recursion, since the flattened name stops being readable and
+nothing needs it.
+
 ```yaml
 hooks:
   worktree-post-create:
@@ -611,6 +639,73 @@ hooks:
 | `parallel`  | bool | Run group jobs in parallel                         |
 | `piped`     | bool | Run group jobs sequentially, stop on first failure |
 | `jobs`      | list | Jobs within the group                              |
+
+### Setup steps
+
+`setup:` runs commands once before the hook's jobs, in order, stopping at the
+first failure. They are for preparation no single job owns — starting a
+container, generating a fixture.
+
+```yaml
+hooks:
+  pre-commit:
+    setup:
+      - docker compose up -d test-db
+    jobs:
+      - name: test
+        run: cargo test
+```
+
+They are deliberately not jobs: they get no rows, no file filtering, and no
+parallelism, because a setup step that could be skipped by a glob or reordered
+by the scheduler would not be setup. A failure fails the hook — running gates
+against a half-prepared environment reports on something nobody asked about.
+
+### Failing on changes
+
+`fail_on_changes: true` fails the hook when its jobs left the working tree
+modified.
+
+```yaml
+hooks:
+  pre-commit:
+    fail_on_changes: true
+    jobs:
+      - name: format
+        run: cargo fmt
+```
+
+This is the CI-parity switch. Locally, a formatter fixing files is convenient
+(`stage_fixed:` even puts the fix in the commit). In CI, a gate that silently
+rewrites the tree and passes is a gate that never tells you the code was wrong.
+Turning this on makes "the check changed something" a failure, with the changed
+paths named.
+
+The snapshot is taken after `setup:` runs, since setup is allowed to prepare the
+tree — it is the _jobs'_ edits this reports.
+
+### Templates
+
+`templates:` defines reusable command fragments, expanded wherever `{name}`
+appears in a job's `run`:
+
+```yaml
+templates:
+  lint: eslint --max-warnings 0
+
+hooks:
+  pre-commit:
+    jobs:
+      - name: lint
+        run: "{lint} {staged_files}"
+```
+
+The point is that a repository's gate and its CI can run the same string, so the
+flags cannot drift between them. Expansion is a single pass with no recursion —
+a fragment naming another fragment gets the second one's literal placeholder,
+because recursive expansion turns a config typo into a hang. A fragment named
+after a built-in placeholder (`{branch}`, `{staged_files}`, a digit) is refused
+rather than silently shadowing it.
 
 ### Background jobs
 
