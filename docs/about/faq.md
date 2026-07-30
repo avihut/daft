@@ -50,8 +50,11 @@ in PowerShell, Git Bash, WSL, and Cmd (limited). See
 
 ## Does daft replace lefthook?
 
-Today: no — daft hooks are scoped to worktree lifecycle. The lefthook drop-in is
-on the roadmap ([#468](https://github.com/avihut/daft/issues/468)).
+Yes — daft manages git hooks (`pre-commit`, `commit-msg`, `pre-push`, and the
+rest) alongside its worktree-lifecycle hooks, from one `daft.yml`. It can also
+run an existing `lefthook.yml` directly, so you can try it without porting
+anything. See [Git stages](/hooks/git-stages) and
+[Migrating from lefthook](/hooks/lefthook-migration).
 
 ## Does daft replace GitHub Actions?
 
