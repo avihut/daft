@@ -9,6 +9,85 @@ use crate::{get_current_worktree_path, get_git_common_dir, is_git_repository};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+/// Report whether git will call daft, and what it displaced.
+///
+/// Silent when nothing is installed *and* nothing suggests it should be —
+/// the overwhelming majority of repositories, which use daft for worktrees
+/// only and should not be nagged about a pillar they did not adopt.
+fn report_stage_shims(cwd: &Path, output: &mut dyn Output) {
+    use crate::hooks::git_stage::install::Sentinel;
+    use crate::hooks::git_stage::{GitStage, gitdir, shim};
+
+    let Some(dirs) = gitdir::discover(cwd) else {
+        return;
+    };
+    let hooks_dir = dirs.default_hooks_dir();
+
+    let mut installed: Vec<&str> = Vec::new();
+    let mut foreign: Vec<&str> = Vec::new();
+    for &stage in GitStage::all() {
+        let name = stage.git_hook_filename();
+        match std::fs::read_to_string(hooks_dir.join(name)) {
+            Ok(contents) if shim::is_daft_shim(&contents) => installed.push(name),
+            Ok(_) => foreign.push(name),
+            Err(_) => {}
+        }
+    }
+
+    if installed.is_empty() && foreign.is_empty() {
+        return;
+    }
+
+    output.info(&format!(
+        "{} {}",
+        bold("Git hooks:"),
+        dim(&hooks_dir.display().to_string())
+    ));
+    if installed.is_empty() {
+        output.info(&format!(
+            "  {} — run {} so git calls daft",
+            yellow("no daft shims installed"),
+            cyan(&crate::daft_cmd("hooks install"))
+        ));
+    } else {
+        let sentinel = Sentinel::load(&dirs);
+        let drifted = sentinel
+            .as_ref()
+            .is_none_or(|s| s.stages.len() != installed.len());
+        output.info(&format!(
+            "  {} {} of {} stages{}",
+            green("installed:"),
+            installed.len(),
+            GitStage::all().len(),
+            if drifted {
+                format!(" {}", dim("(record is stale — reinstall to refresh)"))
+            } else {
+                String::new()
+            }
+        ));
+        if let Some(sentinel) = sentinel
+            && !sentinel.backups.is_empty()
+        {
+            let mut names: Vec<&str> = sentinel.backups.keys().map(String::as_str).collect();
+            names.sort_unstable();
+            output.info(&format!(
+                "  {} {}",
+                dim("displaced (restored on uninstall):"),
+                names.join(", ")
+            ));
+        }
+    }
+    if !foreign.is_empty() {
+        output.info(&format!(
+            "  {} {} — daft does not manage {}",
+            yellow("other hooks present:"),
+            foreign.join(", "),
+            if foreign.len() == 1 { "it" } else { "them" }
+        ));
+    }
+    output.info("");
+}
+
 /// Show trust status and available hooks.
 pub(super) fn cmd_status(path: &Path, short: bool, output: &mut dyn Output) -> Result<()> {
     // Resolve the path to absolute
@@ -127,6 +206,14 @@ pub(super) fn cmd_status(path: &Path, short: bool, output: &mut dyn Output) -> R
             ));
             output.info(&format!("  {}", dim(trust_level_description(trust_level))));
             output.info("");
+
+            // Git-stage shims: whether git will call daft at all.
+            //
+            // Reported before the definitions because it is the question that
+            // makes them mean anything: a `pre-commit:` block with no shim
+            // installed is a gate nobody will ever hit, and nothing else on
+            // this screen would say so.
+            report_stage_shims(&abs_path, output);
 
             // YAML hooks section
             if !yaml_hook_names.is_empty() {
