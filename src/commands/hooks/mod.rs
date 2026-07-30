@@ -9,14 +9,14 @@
 //! - `deny` - Revoke trust from a repository
 //! - `status` - Show trust status and available hooks
 //! - `migrate` - Rename deprecated hook files to their new names
-//! - `install` - Scaffold a daft.yml with hook definitions
+//! - `add` - Scaffold a daft.yml with lifecycle hook definitions
 //! - `validate` - Validate YAML hook configuration
 //! - `dump` - Dump merged YAML hook configuration
 //! - `run` - Manually run a hook (bypasses trust checks)
 
+mod add;
 mod dump;
 mod formatting;
-mod install;
 // `pub(crate)` so `commands::merge` can reuse the jobs listing's payload
 // builder: merge's `--format` job rows must match `hooks jobs --format`
 // column for column, and the only way to guarantee that is to share the
@@ -218,9 +218,10 @@ fn migrate_long_about() -> String {
     .join("\n")
 }
 
-fn install_long_about() -> String {
+fn add_long_about() -> String {
     [
-        "Scaffold a daft.yml configuration with hook definitions.",
+        "Scaffold a daft.yml configuration with worktree lifecycle hook",
+        "definitions.",
         "",
         "Creates a daft.yml file with placeholder jobs for the specified hooks.",
         "If no hook names are provided, all daft lifecycle hooks are scaffolded.",
@@ -231,6 +232,9 @@ fn install_long_about() -> String {
         "Valid hook names:",
         "  post-clone, worktree-pre-create, worktree-post-create,",
         "  worktree-pre-remove, worktree-post-remove",
+        "",
+        "This scaffolds definitions only; it installs nothing. To make git call",
+        "daft for stages like pre-commit, use `git daft hooks install`.",
     ]
     .join("\n")
 }
@@ -370,12 +374,12 @@ enum HooksCommand {
     #[command(long_about = run_long_about())]
     Run(HooksRunArgs),
 
-    /// Scaffold a daft.yml configuration with hook definitions
-    #[command(long_about = install_long_about())]
-    Install {
+    /// Scaffold a daft.yml configuration with lifecycle hook definitions
+    #[command(long_about = add_long_about())]
+    Add {
         /// Hook names to scaffold (e.g., post-clone worktree-post-create).
         /// If omitted, scaffolds all hooks.
-        #[arg(help = "Hook names to add (omit for all hooks)")]
+        #[arg(help = "Lifecycle hook names to add (omit for all)")]
         hooks: Vec<String>,
     },
 
@@ -534,7 +538,7 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Deny { path, force }) => trust::cmd_deny(&path, force, &mut output),
         Some(HooksCommand::Status { path, short }) => status::cmd_status(&path, short, &mut output),
         Some(HooksCommand::Migrate { dry_run }) => migrate::cmd_migrate(dry_run, &mut output),
-        Some(HooksCommand::Install { hooks }) => install::cmd_install(&hooks, &mut output),
+        Some(HooksCommand::Add { hooks }) => add::cmd_add(&hooks, &mut output),
         Some(HooksCommand::Validate) => validate::cmd_validate(&mut output),
         Some(HooksCommand::Dump) => dump::cmd_dump(&mut output),
         Some(HooksCommand::Jobs(jobs_args)) => jobs::run(jobs_args, &args.path, &mut output),
