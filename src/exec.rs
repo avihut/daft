@@ -248,6 +248,17 @@ fn capture_aliases() -> Option<AliasCache> {
 /// spawn site for both paths, so the rail cannot drift from the legacy one in
 /// how a command is built or what it can reach.
 fn spawn(cmd: &str, alias_cache: Option<&AliasCache>) -> std::io::Result<std::process::ExitStatus> {
+    // The command shares daft's process group, so a terminal Ctrl-C aimed at
+    // `-x 'pnpm dev'` hits daft too — and dying *from* the signal is what
+    // costs the user the cd. bash and zsh abandon the enclosing function when
+    // a foreground child is signal-killed, so `__daft_wrapper` never reaches
+    // its `cd` and the target written before the sequence is read by nobody
+    // (#811). Arming the dispatcher makes that an ordinary exit(130) instead.
+    // A live region arms it as a side effect of its own collapse behavior;
+    // doing it here is what carries the guarantee through `-q`, redirected
+    // stderr, and every other path that opens no region at all.
+    crate::interrupt::arm_default_exit();
+
     let spec = CommandSpec::Shell(cmd.to_string());
     build_command(&spec, alias_cache)
         // `DAFT_CD_FILE` is the wrapper's private channel for *this*

@@ -49,6 +49,21 @@ fn ensure_installed() {
     });
 }
 
+/// Install the dispatcher without arming a phase behavior, so a Ctrl-C that
+/// arrives while the slot is empty exits *normally* with 130 instead of
+/// killing the process by signal.
+///
+/// The distinction is invisible in daft's own output and load-bearing for the
+/// shell wrapper (#811). bash and zsh abort the enclosing function when a
+/// foreground child dies from SIGINT, so a signal-killed daft never reaches
+/// `__daft_wrapper`'s `cd` — the cd target is written but never read, and the
+/// user is left behind in the old worktree. An ordinary exit lets the tail
+/// run. A live timeline region installs this as a side effect of arming its
+/// collapse; callers that must not depend on the rail being live say so here.
+pub fn arm_default_exit() {
+    ensure_installed();
+}
+
 /// A previously installed behavior, saved by [`swap_behavior`] so a nested
 /// phase can put it back. Opaque: the only thing to do with one is hand it
 /// to [`restore_behavior`].

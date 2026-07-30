@@ -1,0 +1,62 @@
+name: A hook cannot hijack the cd target
+description: DAFT_CD_FILE is the shell wrapper's private channel for one
+  invocation's destination. A lifecycle hook is automation, never the arbiter of
+  where the user's shell ends up, so hook commands must not inherit it —
+  otherwise a hook that shells out to daft writes the outer invocation's
+  redirect. Most paths mask that by writing the real target afterwards; the ones
+  that deliberately write nothing (a failed post-create hook, #765) do not.
+
+repos:
+  - name: test-hook-cd-scrub
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# hook cd scrub test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/scrubbed
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: report-cd-file
+              run: echo "HOOK_SEES=[$DAFT_CD_FILE]" > "$DAFT_WORKTREE_PATH/cd-observed.txt"
+
+steps:
+  - name: Clone the repository with --trust-hooks
+    run:
+      git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_HOOK_CD_SCRUB 2>&1
+    expect:
+      exit_code: 0
+
+  - name: The post-create hook sees no DAFT_CD_FILE
+    # The hook records what it saw to a file rather than stdout — hook output
+    # is rendered through the timeline and does not reach the step's captured
+    # stdout, so an `output_contains` assertion on it would be vacuous.
+    #
+    # An unscrubbed hook records the outer invocation's tempfile path, and
+    # anything it can name it can write. The outer redirect must still land:
+    # scrubbing the child must not cost the parent its own cd target.
+    run: |
+      cd_file=$(mktemp)
+      DAFT_CD_FILE="$cd_file" daft go feature/scrubbed 2>&1
+      observed=$(cat "$WORK_DIR/test-hook-cd-scrub/feature/scrubbed/cd-observed.txt")
+      echo "$observed"
+      test "$observed" = "HOOK_SEES=[]" || { echo "FAIL: hook inherited DAFT_CD_FILE — $observed"; exit 1; }
+      target=$(cat "$cd_file")
+      test -n "$target" || { echo "FAIL: outer cd target not written"; exit 1; }
+      expected=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$WORK_DIR/test-hook-cd-scrub/feature/scrubbed")
+      resolved=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$target")
+      test "$resolved" = "$expected" || { echo "FAIL: cd target '$resolved' != '$expected'"; exit 1; }
+      echo OK
+      rm -f "$cd_file"
+    cwd: "$WORK_DIR/test-hook-cd-scrub/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "HOOK_SEES=[]"
+        - "OK"

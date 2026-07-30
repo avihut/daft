@@ -40,9 +40,21 @@ steps:
   - name: Bulk forks still leave the shell where it was
     # The `count == 1` gate on the pre-exec write: -n N has no single
     # destination, so nothing may be written.
+    #
+    # The empty-cd-file assertion is only worth anything once the forks are
+    # known to have happened: `mktemp` yields an empty file, so on its own
+    # `test ! -s` also passes when the command aborted before creating
+    # anything — a green step for a command that did nothing. Pin the exit
+    # code and count the worktrees (by delta, so the fork-naming scheme stays
+    # free to change) before concluding the shell was deliberately left put.
     run: |
       cd_file=$(mktemp)
-      DAFT_CD_FILE="$cd_file" daft start --fork -n 2 >/dev/null 2>&1
+      rc=0
+      before=$(git worktree list | wc -l | tr -d ' ')
+      DAFT_CD_FILE="$cd_file" daft start --fork -n 2 >/dev/null 2>&1 || rc=$?
+      after=$(git worktree list | wc -l | tr -d ' ')
+      test "$rc" -eq 0 || { echo "FAIL: bulk fork exited $rc"; exit 1; }
+      test $((after - before)) -eq 2 || { echo "FAIL: expected 2 new worktrees, got $((after - before))"; exit 1; }
       test ! -s "$cd_file" || { echo "FAIL: bulk fork wrote a cd target: $(cat "$cd_file")"; exit 1; }
       echo OK
       rm -f "$cd_file"

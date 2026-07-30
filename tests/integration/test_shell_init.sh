@@ -911,35 +911,48 @@ test_go_exec_cd_through_wrapper() {
     local project_root="$PWD/test-go-exec-wrapper"
 
     # `-x` runs through a `$SHELL -c` daft spawns directly, so `$PPID` inside
-    # the command is daft's own pid: `kill -INT $PPID` is the signal a terminal
-    # Ctrl-C delivers, with no timing race.
+    # the command is daft's own pid and `kill -INT $PPID` interrupts daft with
+    # no timing race. Each case pins daft's exit code as well as the landing
+    # directory: without that, the interrupt case is indistinguishable from a
+    # `$PPID` the spawned shell does not support, where `kill` simply fails,
+    # the -x command exits 1, and the wrapper cds anyway — a green test for
+    # the one path it exists to cover. 130 is the interrupt, 1 is a plain
+    # command failure.
     local -a cases=(
-        "true:develop"
-        "false:release-x"
-        'kill -INT $PPID:hotfix-x'
+        "true|develop|0"
+        "false|release-x|1"
+        'kill -INT $PPID|hotfix-x|130'
     )
-    local case_spec cmd branch out
+    local case_spec cmd branch want_rc out got_rc got_pwd
     for case_spec in "${cases[@]}"; do
-        cmd="${case_spec%:*}"
-        branch="${case_spec##*:}"
+        IFS='|' read -r cmd branch want_rc <<< "$case_spec"
         # `develop` exists on the remote; the other two are created locally so
         # each case gets a worktree of its own.
         out=$(MAIN_WT="$project_root/main" CMD="$cmd" BRANCH="$branch" bash -c '
             eval "$(daft shell-init bash)"
             builtin cd "$MAIN_WT" || exit 11
+            rc=0
             if [ "$BRANCH" = "develop" ]; then
-                daft go "$BRANCH" -x "$CMD" >/dev/null 2>&1
+                daft go "$BRANCH" -x "$CMD" >/dev/null 2>&1 || rc=$?
             else
-                daft start "$BRANCH" -x "$CMD" >/dev/null 2>&1
+                daft start "$BRANCH" -x "$CMD" >/dev/null 2>&1 || rc=$?
             fi
+            echo "RC=$rc"
             builtin pwd
         ' 2>&1) || true
 
-        if [[ "$(basename "$out")" != "$branch" ]]; then
-            log_error "-x '$cmd' did not cd the shell into '$branch' (pwd: $out)"
+        got_rc=$(echo "$out" | grep '^RC=' | head -1 | cut -d= -f2)
+        got_pwd=$(echo "$out" | tail -1)
+
+        if [[ "$got_rc" != "$want_rc" ]]; then
+            log_error "-x '$cmd' exited $got_rc, expected $want_rc (no signal delivered?)"
             return 1
         fi
-        log_success "-x '$cmd' landed the shell at: $out"
+        if [[ "$(basename "$got_pwd")" != "$branch" ]]; then
+            log_error "-x '$cmd' did not cd the shell into '$branch' (pwd: $got_pwd)"
+            return 1
+        fi
+        log_success "-x '$cmd' exited $got_rc and landed the shell at: $got_pwd"
     done
 
     log_success "go/start -x cd contract holds across success, failure and interrupt"

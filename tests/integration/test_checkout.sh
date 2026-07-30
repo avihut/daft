@@ -944,6 +944,98 @@ test_go_fetch_hop_no_rail_receipt() {
     return 0
 }
 
+# #811: a real terminal Ctrl-C during `-x` must still leave the shell in the
+# new worktree. Two things have to hold and only a pty can test either:
+#
+#   1. daft writes the cd target *before* the exec sequence, so the signal
+#      cannot arrive between the command and the write; and
+#   2. daft *exits* on SIGINT (130) instead of dying from it (pty_run reports
+#      a signal death as 254, Python's -2). This is the load-bearing half:
+#      bash and zsh abandon the enclosing function when a foreground child is
+#      signal-killed, so a signal-killed daft never reaches `__daft_wrapper`'s
+#      `cd` and the target it wrote is read by nobody.
+#
+# `--ctty` makes daft a session leader owning the pty, so writing \x03 raises
+# SIGINT in the foreground process group exactly as a keyboard Ctrl-C does —
+# the group-wide delivery a `kill -INT <pid>` cannot reproduce. The cue is
+# emitted by the -x command itself: daft's own "Executing" step never reaches
+# the pty under the rail, and pty_run splits a cue on its first colon, so a
+# self-authored colon-free marker is the only reliable trigger.
+#
+# The cue must be ASSEMBLED AT RUNTIME, never a literal in the command text.
+# Since #812 the rail plans each `-x` command as a row labelled with the
+# command exactly as typed, so a literal marker is painted on screen while the
+# row is still pending — the Ctrl-C then lands during planning, before the
+# worktree exists, and the test interrupts the wrong thing while still
+# reporting 130. `printf 'XCUE%s\n' READY` keeps `XCUEREADY` out of the label
+# and puts it only in the output the command produces when it actually runs.
+_X_CUE_CMD="printf 'XCUE%s\n' READY; sleep 10"
+_assert_interrupted_go_kept_cd() {
+    local branch="$1" log="$2" cd_file="$3" status="$4"
+
+    if [ "$status" != "130" ]; then
+        log_error "expected exit 130 (interrupted, exited cleanly), got $status"
+        # 254 is pty_run relaying Python's -2: daft died *from* SIGINT, which
+        # is precisely the state that strands the shell.
+        [ "$status" = "254" ] && log_error "daft was signal-killed — the wrapper would abandon its cd"
+        return 1
+    fi
+    if ! grep -q "XCUEREADY" "$log"; then
+        log_error "-x never started; the interrupt proved nothing"
+        return 1
+    fi
+    assert_directory_exists "../$branch" || return 1
+    if [ ! -s "$cd_file" ]; then
+        log_error "DAFT_CD_FILE empty after interrupt — the shell would stay put"
+        return 1
+    fi
+    local want got
+    want=$(cd "../$branch" && pwd -P)
+    got=$(cd "$(cat "$cd_file")" && pwd -P)
+    if [ "$got" != "$want" ]; then
+        log_error "cd target '$got' != '$want'"
+        return 1
+    fi
+    return 0
+}
+
+test_go_exec_interrupt_keeps_cd() {
+    local remote_repo=$(create_test_remote "test-repo-x-interrupt" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-x-interrupt/main"
+
+    local log="$PWD/go-x-interrupt.log"
+    local cd_file="$PWD/go-x-interrupt.cd"
+    : > "$cd_file"
+    local status=0
+    DAFT_CD_FILE="$cd_file" _rail_daft "$CHECKOUT_PTY_RUN" --ctty \
+        --send-after 'XCUEREADY:\x03' "$log" \
+        daft go develop -x "$_X_CUE_CMD" || status=$?
+
+    _assert_interrupted_go_kept_cd develop "$log" "$cd_file" "$status"
+}
+
+# The same guarantee without a rail. Before #811's interrupt arming this was
+# the case that failed even with the cd target written early: with no live
+# timeline region nothing installed a SIGINT handler, daft died from the
+# signal, and the wrapper abandoned its `cd`. Keep both — the rail path can
+# pass on the timeline's handler alone and hide a regression here.
+test_go_exec_interrupt_quiet_keeps_cd() {
+    local remote_repo=$(create_test_remote "test-repo-x-interrupt-q" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-x-interrupt-q/main"
+
+    local log="$PWD/go-x-interrupt-q.log"
+    local cd_file="$PWD/go-x-interrupt-q.cd"
+    : > "$cd_file"
+    local status=0
+    DAFT_CD_FILE="$cd_file" _rail_daft "$CHECKOUT_PTY_RUN" --ctty \
+        --send-after 'XCUEREADY:\x03' "$log" \
+        daft go develop -q -x "$_X_CUE_CMD" || status=$?
+
+    _assert_interrupted_go_kept_cd develop "$log" "$cd_file" "$status"
+}
+
 # The counterpart guard: when resolution does warrant a worktree, the
 # collapsed face must expand into the full rail — persisted header, the
 # probe fetch as a pre-completed receipt row, and a Ready footer.
@@ -1151,6 +1243,10 @@ run_checkout_tests() {
     run_test "start_exec_rows_on_rail" "test_start_exec_rows_on_rail"
     run_test "start_exec_failure_on_rail" "test_start_exec_failure_on_rail"
     run_test "start_exec_multiline_label_stays_one_row" "test_start_exec_multiline_label_stays_one_row"
+
+    # Interrupted -x keeps the cd redirect (#811)
+    run_test "go_exec_interrupt_keeps_cd" "test_go_exec_interrupt_keeps_cd"
+    run_test "go_exec_interrupt_quiet_keeps_cd" "test_go_exec_interrupt_quiet_keeps_cd"
 }
 
 # Main execution
