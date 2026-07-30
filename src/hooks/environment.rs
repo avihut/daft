@@ -183,6 +183,16 @@ pub struct HookContext {
     ///
     /// [`GitStage::expects_stdin`]: crate::hooks::git_stage::GitStage::expects_stdin
     pub stage_stdin: Option<String>,
+
+    /// The index git pointed this hook at, captured before daft's own `git`
+    /// invocations scrubbed it from the environment.
+    ///
+    /// `git commit -a` builds a temporary index and exports `GIT_INDEX_FILE`
+    /// at it; the real `.git/index` does not yet hold what is being
+    /// committed. `git_command_at` strips the variable so `-C` decides which
+    /// repository is read, which means the staged-file probe has to be handed
+    /// it back explicitly. `None` everywhere except the stage dispatcher.
+    pub index_file: Option<PathBuf>,
 }
 
 /// Reason why a worktree is being removed.
@@ -241,6 +251,7 @@ impl HookContext {
             task_name: None,
             stage_argv: Vec::new(),
             stage_stdin: None,
+            index_file: None,
         }
     }
 
@@ -373,6 +384,14 @@ impl HookContext {
     ) -> Self {
         self.stage_argv = argv;
         self.stage_stdin = stdin.map(Into::into);
+        self
+    }
+
+    /// Pin the index a stage hook must read, captured from `GIT_INDEX_FILE`
+    /// on entry. See the field's own note for why this cannot be recovered
+    /// later.
+    pub fn with_index_file(mut self, index_file: Option<PathBuf>) -> Self {
+        self.index_file = index_file;
         self
     }
 }
@@ -826,6 +845,13 @@ static DAFT_VARS: &[(&str, DaftVarKind)] = {
             EventScoped {
                 when: "during the pre-push stage (the refs being pushed, one \
                        '<local-ref> <local-oid> <remote-ref> <remote-oid>' per line)",
+            },
+        ),
+        (
+            "DAFT_STAGE_GUARD",
+            EventScoped {
+                when: "while a git stage runs, naming it, so a shim re-entered \
+                       by one of that stage's own jobs stands down",
             },
         ),
         (
@@ -1453,6 +1479,7 @@ mod tests {
             task_name: None,
             stage_argv: Vec::new(),
             stage_stdin: None,
+            index_file: None,
         };
         let env = HookEnvironment::from_context(&ctx);
         assert_eq!(env.vars.get("DAFT_IS_MOVE").unwrap(), "true");
@@ -1492,6 +1519,7 @@ mod tests {
             task_name: None,
             stage_argv: Vec::new(),
             stage_stdin: None,
+            index_file: None,
         };
         let env = HookEnvironment::from_context(&ctx);
         assert!(!env.vars.contains_key("DAFT_IS_MOVE"));

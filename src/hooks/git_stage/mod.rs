@@ -11,7 +11,10 @@
 //! (writing shims into the hooks directory so git will call daft) and inward
 //! (dispatching a stage when git does).
 
+pub mod dispatch;
 pub mod gitdir;
+pub mod install;
+pub mod shim;
 
 use crate::hooks::FailMode;
 

@@ -10,6 +10,8 @@
 //! - `status` - Show trust status and available hooks
 //! - `migrate` - Rename deprecated hook files to their new names
 //! - `add` - Scaffold a daft.yml with lifecycle hook definitions
+//! - `install` - Install git hook shims so git calls daft
+//! - `uninstall` - Remove the shims and restore what they displaced
 //! - `validate` - Validate YAML hook configuration
 //! - `dump` - Dump merged YAML hook configuration
 //! - `run` - Manually run a hook (bypasses trust checks)
@@ -17,6 +19,7 @@
 mod add;
 mod dump;
 mod formatting;
+mod install;
 // `pub(crate)` so `commands::merge` can reuse the jobs listing's payload
 // builder: merge's `--format` job rows must match `hooks jobs --format`
 // column for column, and the only way to guarantee that is to share the
@@ -239,6 +242,40 @@ fn add_long_about() -> String {
     .join("\n")
 }
 
+fn install_long_about() -> String {
+    [
+        "Install thin shim scripts into the repository's hooks directory so",
+        "git calls daft for the stages it dispatches (pre-commit, commit-msg,",
+        "pre-push, and the rest).",
+        "",
+        "Everything installed lives under .git/ — nothing is added to the",
+        "tracked tree, so trying daft as your hooks manager commits you to",
+        "nothing and 'hooks uninstall' puts the repository back.",
+        "",
+        "Shims are installed for every supported stage, not only the ones you",
+        "have defined. A stage with no definition costs a fast no-op, and the",
+        "alternative is editing daft.yml and silently having no effect until",
+        "you remember to reinstall.",
+        "",
+        "A hook from a manager daft recognises is moved aside (and restored on",
+        "uninstall). An unrecognised hook stops that stage and is reported —",
+        &format!("{} backs it up and installs anyway.", bold("--force")),
+    ]
+    .join("\n")
+}
+
+fn uninstall_long_about() -> String {
+    [
+        "Remove daft's hook shims and restore whatever they displaced.",
+        "",
+        "Only files daft wrote are removed, proven by a marker inside them.",
+        "A hook replaced by hand since installing is reported and left alone.",
+        "",
+        "A core.hooksPath that --force unset is restored.",
+    ]
+    .join("\n")
+}
+
 fn validate_long_about() -> String {
     [
         "Validate the YAML hooks configuration file.",
@@ -382,6 +419,19 @@ enum HooksCommand {
         #[arg(help = "Lifecycle hook names to add (omit for all)")]
         hooks: Vec<String>,
     },
+
+    /// Install git hook shims so git calls daft
+    #[command(long_about = install_long_about())]
+    Install {
+        /// Back up an unrecognised hook (or unset core.hooksPath) instead of
+        /// stopping.
+        #[arg(long, help = "Displace hooks daft does not recognise")]
+        force: bool,
+    },
+
+    /// Remove daft's git hook shims and restore what they displaced
+    #[command(long_about = uninstall_long_about())]
+    Uninstall,
 
     /// Validate the YAML hooks configuration
     #[command(long_about = validate_long_about())]
@@ -539,6 +589,8 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Status { path, short }) => status::cmd_status(&path, short, &mut output),
         Some(HooksCommand::Migrate { dry_run }) => migrate::cmd_migrate(dry_run, &mut output),
         Some(HooksCommand::Add { hooks }) => add::cmd_add(&hooks, &mut output),
+        Some(HooksCommand::Install { force }) => install::cmd_install(force, &mut output),
+        Some(HooksCommand::Uninstall) => install::cmd_uninstall(&mut output),
         Some(HooksCommand::Validate) => validate::cmd_validate(&mut output),
         Some(HooksCommand::Dump) => dump::cmd_dump(&mut output),
         Some(HooksCommand::Jobs(jobs_args)) => jobs::run(jobs_args, &args.path, &mut output),
