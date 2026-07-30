@@ -511,6 +511,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'start' -d 'Create new branch wor
 complete -c daft -n '__fish_use_subcommand' -a 'carry' -d 'Transfer uncommitted changes'
 complete -c daft -n '__fish_use_subcommand' -a 'exec' -d 'Run a command across one or more worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'run' -d 'Run a named task defined in daft.yml'
+complete -c daft -n '__fish_use_subcommand' -a 'env' -d 'Print deterministic per-worktree env values'
 complete -c daft -n '__fish_use_subcommand' -a 'update' -d 'Update worktree branches'
 complete -c daft -n '__fish_use_subcommand' -a 'prune' -d 'Remove stale worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'rename' -d 'Rename branch and move worktree'
@@ -549,6 +550,9 @@ complete -c daft -n '__fish_seen_subcommand_from warm' -f -a "(daft __complete g
 complete -c daft -n '__fish_seen_subcommand_from warm' -l from -x -a "(daft __complete git-worktree-warm (commandline -ct) --position 1 2>/dev/null | cut -f1)"
 # run: task names from daft.yml (plain names, no descriptions)
 complete -c daft -n '__fish_seen_subcommand_from run' -f -a "(daft __complete daft-run (commandline -ct) --position 1 2>/dev/null | cut -f1)"
+# env: declared env var names from daft.yml (plain names, no descriptions)
+complete -c daft -n '__fish_seen_subcommand_from env' -f -a "(daft __complete daft-env (commandline -ct) --position 1 2>/dev/null | cut -f1)"
+complete -c daft -n '__fish_seen_subcommand_from env' -l format -x -a 'json ndjson tsv csv yaml toon markdown'
 complete -c daft -n '__fish_seen_subcommand_from update' -f -a "(daft __complete git-worktree-fetch (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(env DAFT_COMPLETE_REPO_FLAG=(__daft_verb_repo_flag) daft __complete daft-remove (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from remove' -a "(__fish_complete_directories (commandline -ct))"

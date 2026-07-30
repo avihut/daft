@@ -1229,6 +1229,12 @@ _daft() {
                 __daft_run_impl
                 return
                 ;;
+            env)
+                words=("daft-env" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __daft_env_impl
+                return
+                ;;
             update)
                 words=("git-worktree-fetch" "${(@)words[3,-1]}")
                 CURRENT=$((CURRENT - 1))
@@ -1298,7 +1304,7 @@ _daft() {
             compadd -- --version -V --help -h -C
         else
             compadd activate hooks shell-init multi-remote release-notes doctor layout shared \
-                    config file repo skill clone init install go start carry exec run warm update list prune rename sync push remove \
+                    config file repo skill clone init install go start carry exec run env warm update list prune rename sync push remove \
                     merge worktree-merge adopt eject
         fi
         return
