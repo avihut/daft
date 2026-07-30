@@ -101,9 +101,8 @@ pub fn run_git_stage(
     // loading the hooks configuration opens the repository. The common case
     // in a repository with shims installed is a stage nobody defined, and it
     // must cost the file read and nothing more.
-    let config = match crate::hooks::yaml_config_loader::load_merged_config(&dirs.worktree_root) {
-        Ok(Some(config)) => config,
-        Ok(None) => return Ok(StageRun::nothing("no daft.yml")),
+    let native = match crate::hooks::yaml_config_loader::load_merged_config(&dirs.worktree_root) {
+        Ok(config) => config,
         Err(e) => {
             // A broken config must not brick commits. Warn and stand down —
             // the same stance the legacy-script fallback takes, and the
@@ -113,6 +112,12 @@ pub fn run_git_stage(
             ));
             return Ok(StageRun::nothing("hooks config could not be read"));
         }
+    };
+    let mut unsupported = Vec::new();
+    let Some((config, took_over)) =
+        resolve_config(&dirs.worktree_root, native, output, &mut unsupported)?
+    else {
+        return Ok(StageRun::nothing("no hooks config"));
     };
     let payload_for_lfs = payload.clone();
 
@@ -130,6 +135,15 @@ pub fn run_git_stage(
     let Some(hook_def) = config.hooks.get(stage.yaml_name()).cloned() else {
         return Ok(StageRun::nothing(format!("no {stage} definition")));
     };
+
+    // A takeover that quietly runs less than the file says is worse than one
+    // that refuses: the repository believes it has the gates its config
+    // describes. Reported here rather than at resolution time so the notes
+    // appear once, on the stage that is actually running, instead of four
+    // times per commit as each stage of the commit dispatches.
+    for note in &unsupported {
+        output.warning(note);
+    }
 
     // ── there is work; set up properly ─────────────────────────────────
 
@@ -160,9 +174,29 @@ pub fn run_git_stage(
     );
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
-    let executor = HookExecutor::new(hooks_config)?.with_bypass_trust(bypass_trust);
+    let mut executor = HookExecutor::new(hooks_config)?.with_bypass_trust(bypass_trust);
+    // The incumbent's own job-exclusion variable, honoured only while running
+    // its config — someone mid-assessment still has it in their shell, and it
+    // should keep meaning what it meant.
+    if took_over {
+        let excluded = crate::hooks::incumbent::lefthook::excluded_jobs();
+        if !excluded.is_empty() {
+            executor = executor.with_job_filter(crate::hooks::yaml_executor::JobFilter {
+                skip: crate::hooks::job_adapter::SkipSelectors {
+                    names: excluded.clone(),
+                    raw: excluded,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        }
+    }
 
     let _ = hook_def;
+    // The executor is handed the resolved config rather than re-reading the
+    // worktree: in takeover mode there is no `daft.yml` on disk that would
+    // reproduce it.
+    let executor = executor.with_resolved_config(config);
     match executor.execute(&ctx, output, presenter) {
         Ok(result) => Ok(into_run(result)),
         // A gate that failed under `abort` arrives as an error carrying the
@@ -180,6 +214,48 @@ pub fn run_git_stage(
             }),
             None => Err(e),
         },
+    }
+}
+
+/// Which config the stages come from: daft's own, or an incumbent taken over.
+///
+/// Reaching this function is itself the consent: a shim only exists in the
+/// hooks directory because someone ran `daft hooks install`. The paths that
+/// have no such proof — `manages_stage`, deciding whether a push should take
+/// daft's route — check the install sentinel instead, because there a
+/// `lefthook.yml` alone must never make daft start running it.
+fn resolve_config(
+    root: &Path,
+    native: Option<crate::hooks::yaml_config::YamlConfig>,
+    output: &mut dyn Output,
+    unsupported: &mut Vec<String>,
+) -> Result<Option<(crate::hooks::yaml_config::YamlConfig, bool)>> {
+    use crate::hooks::incumbent::{self, StageSource};
+
+    match incumbent::resolve_stage_source(root, native.as_ref()) {
+        StageSource::Native | StageSource::None => Ok(native.map(|c| (c, false))),
+        StageSource::Incumbent(path) => {
+            // Its own kill switch is honoured here and only here: a
+            // repository that has migrated to daft's keys should not still be
+            // steerable by the old tool's variables.
+            if incumbent::lefthook::disabled_by_env() {
+                return Ok(None);
+            }
+            let spec = match incumbent::detect(root) {
+                Ok(Some(spec)) => spec,
+                Ok(None) => return Ok(native.map(|c| (c, false))),
+                Err(e) => {
+                    output.warning(&format!("daft: could not read {}: {e:#}", path.display()));
+                    return Ok(None);
+                }
+            };
+            unsupported.extend(
+                spec.unsupported
+                    .iter()
+                    .map(|note| format!("{}: {note}", spec.path.display())),
+            );
+            Ok(Some((spec.config, true)))
+        }
     }
 }
 
@@ -349,7 +425,7 @@ mod tests {
         let run = run_in(&root, GitStage::PreCommit);
         assert!(!run.ran);
         assert!(run.success);
-        assert_eq!(run.skip_reason.as_deref(), Some("no daft.yml"));
+        assert_eq!(run.skip_reason.as_deref(), Some("no hooks config"));
     }
 
     #[test]
@@ -398,6 +474,37 @@ mod tests {
             "{:?}",
             output.warnings()
         );
+    }
+
+    #[test]
+    #[serial]
+    fn a_taken_over_config_actually_reaches_the_executor() {
+        // Regression: the dispatcher resolved the incumbent config and then
+        // let the executor load its own, which found no `daft.yml` and
+        // concluded no hook was defined — a takeover that installed cleanly,
+        // reported the right source, and gated nothing.
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(
+            root.join("lefthook.yml"),
+            "pre-commit:\n  jobs:\n    - name: t\n      run: \"true\"\n",
+        )
+        .unwrap();
+
+        let run = run_git_stage(
+            GitStage::PreCommit,
+            &root,
+            StagePayload::default(),
+            NullPresenter::arc(),
+            &mut TestOutput::new(),
+            // Explicit-invocation semantics: the trust gate is not what is
+            // under test here.
+            true,
+        )
+        .unwrap();
+        assert!(run.ran, "the incumbent's pre-commit job must run: {run:?}");
+        assert!(run.success);
     }
 
     #[test]
