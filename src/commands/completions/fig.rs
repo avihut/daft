@@ -1475,6 +1475,50 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
 /// Generate the daft.js umbrella spec with subcommands
 /// Build the `daft run` subcommand: a task-name positional completed from
 /// daft.yml, plus the `--list`/`--job`/`--tag` options.
+fn build_fig_env_subcommand() -> FigSubcommand {
+    FigSubcommand {
+        name: "env".to_string(),
+        description: Some("Print deterministic per-worktree env values".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Single(FigArg {
+            name: "var".to_string(),
+            description: Some("Value address: [repo:]VAR[@worktree]".to_string()),
+            generators: Some(FigGenerator {
+                script: vec![
+                    "daft".into(),
+                    "__complete".into(),
+                    "daft-env".into(),
+                    String::new(),
+                ],
+                split_on: "\n".to_string(),
+            }),
+        })),
+        options: Some(vec![
+            FigOption {
+                name: FigName::Single("--export".into()),
+                description: "Emit export lines for the shell".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--write".into()),
+                description: "Write the declared values as a dotenv file".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--repo".into()),
+                description: "Read another cataloged repository's values".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--worktree".into()),
+                description: "Address a specific worktree by name".into(),
+                args: None,
+            },
+        ]),
+    }
+}
+
 fn build_fig_run_subcommand() -> FigSubcommand {
     FigSubcommand {
         name: "run".to_string(),
@@ -1531,6 +1575,7 @@ pub(super) fn generate_fig_daft_spec() -> Result<String> {
         build_fig_merge_subcommand("merge"),
         build_fig_merge_subcommand("worktree-merge"),
         build_fig_run_subcommand(),
+        build_fig_env_subcommand(),
     ];
     subcommands.extend(
         simple_subcommands

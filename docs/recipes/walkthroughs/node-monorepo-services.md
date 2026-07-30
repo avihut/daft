@@ -100,40 +100,43 @@ Sharing the pnpm **store** is safe (content-addressed, immutable). Sharing
 ## Step 2: allocate ports + DATABASE_URL
 
 Two worktrees both running `pnpm dev` would fight for port 3000. Their backing
-services would fight for 5432, 6379, 9000. Apply the branch-name-hash idea from
-[Env vars & secrets](/recipes/env-vars-and-secrets#per-worktree-derived-values)
-— and write `DATABASE_URL` at the same time, derived from the port:
+services would fight for 5432, 6379, 9000. Apply
+[Env vars & secrets → per-worktree derived values](/recipes/env-vars-and-secrets#per-worktree-derived-values):
+declare the ports once, and derive `DATABASE_URL` from one of them:
 
 ```yaml
 # daft.yml
-- name: allocate-ports
-  run: |
-    BASE=$((30000 + $(echo -n "$DAFT_BRANCH_NAME" | cksum | cut -d' ' -f1) % 1000 * 10))
-    cat > .envrc <<EOF
-    # Allocated by daft for branch $DAFT_BRANCH_NAME
-    export PORT_WEB=$BASE
-    export PORT_API=$((BASE + 1))
-    export PORT_POSTGRES=$((BASE + 2))
-    export PORT_REDIS=$((BASE + 3))
-    export PORT_MINIO=$((BASE + 4))
-    export DATABASE_URL="postgres://dev:dev@localhost:\$PORT_POSTGRES/app"
-    EOF
-    direnv allow .
+env:
+  salt: app
+  ports:
+    - PORT_WEB
+    - PORT_API
+    - PORT_POSTGRES
+    - PORT_REDIS
+    - PORT_MINIO
+  values:
+    DATABASE_URL: "postgres://dev:dev@localhost:{env:PORT_POSTGRES}/app"
 
-- name: install-deps
-  run: pnpm install --frozen-lockfile
-  needs: [allocate-ports]
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: install-deps
+        run: pnpm install --frozen-lockfile
 ```
 
-Two things are happening here that are easy to miss:
+The worktree hashes to its own port block; the five names take consecutive
+offsets inside it. There is no allocation job to sequence after — hooks and
+tasks receive the values automatically, and your interactive shell picks them up
+through direnv:
 
-1. The `.envrc` is generated, not committed — it's per-worktree and gitignored
-   (`echo .envrc >> .gitignore` once).
-2. `DATABASE_URL` references `\$PORT_POSTGRES` (note the backslash) so the
-   `.envrc` contains a literal `$PORT_POSTGRES` reference. When direnv loads the
-   file, the shell expands it against the already-exported `PORT_POSTGRES`. App
-   code reads `DATABASE_URL` once; you don't have to build it from PORT_POSTGRES
-   every time.
+```bash
+# .envrc — committed; nothing is generated per worktree
+eval "$(daft env --export)"
+watch_file daft.yml daft.local.yml
+```
+
+App code reads `DATABASE_URL` once; you don't have to build it from
+PORT_POSTGRES every time.
 
 Update `apps/web/next.config.js` and `apps/api/src/server.ts` to read their port
 from `process.env.PORT_WEB` / `PORT_API`.
@@ -141,8 +144,8 @@ from `process.env.PORT_WEB` / `PORT_API`.
 ## Step 3: boot the services
 
 Wire up the compose stack. The compose file uses env-var interpolation for
-ports; `COMPOSE_PROJECT_NAME` keeps containers namespaced. This is
-[Services with ports](/recipes/services-with-ports) applied to the project's
+ports; a declared `COMPOSE_PROJECT_NAME` value keeps containers namespaced. This
+is [Services with ports](/recipes/services-with-ports) applied to the project's
 three-service stack:
 
 ```yaml
@@ -179,15 +182,10 @@ volumes:
 ```
 
 ```yaml
-# daft.yml — add to worktree-post-create
+# daft.yml — add COMPOSE_PROJECT_NAME to env.values, then:
 - name: services-up
   run: docker compose up -d --wait
-  needs: [allocate-ports, install-deps]
-  env:
-    COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME:-app}-${DAFT_BRANCH_NAME//\//-}
-    PORT_POSTGRES: ${PORT_POSTGRES}
-    PORT_REDIS: ${PORT_REDIS}
-    PORT_MINIO: ${PORT_MINIO}
+  needs: [install-deps]
 ```
 
 `COMPOSE_PROJECT_NAME` makes feature-A's containers `app-feature-a-postgres-1`
@@ -247,40 +245,31 @@ docker volume ls --filter name=app-feature-scratch  # empty
 
 ```yaml
 # daft.yml
+env:
+  salt: app
+  ports:
+    - PORT_WEB
+    - PORT_API
+    - PORT_POSTGRES
+    - PORT_REDIS
+    - PORT_MINIO
+  values:
+    COMPOSE_PROJECT_NAME: "app-{worktree_slug}"
+    DATABASE_URL: "postgres://dev:dev@localhost:{env:PORT_POSTGRES}/app"
+
 hooks:
   worktree-post-create:
     jobs:
-      - name: allocate-ports
-        run: |
-          BASE=$((30000 + $(echo -n "$DAFT_BRANCH_NAME" | cksum | cut -d' ' -f1) % 1000 * 10))
-          cat > .envrc <<EOF
-          export PORT_WEB=$BASE
-          export PORT_API=$((BASE + 1))
-          export PORT_POSTGRES=$((BASE + 2))
-          export PORT_REDIS=$((BASE + 3))
-          export PORT_MINIO=$((BASE + 4))
-          export DATABASE_URL="postgres://dev:dev@localhost:\$PORT_POSTGRES/app"
-          EOF
-          direnv allow .
-
       - name: install-deps
         run: pnpm install --frozen-lockfile
-        needs: [allocate-ports]
 
       - name: services-up
         run: docker compose up -d --wait
-        needs: [allocate-ports, install-deps]
-        env:
-          COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME:-app}-${DAFT_BRANCH_NAME//\//-}
-          PORT_POSTGRES: ${PORT_POSTGRES}
-          PORT_REDIS: ${PORT_REDIS}
-          PORT_MINIO: ${PORT_MINIO}
+        needs: [install-deps]
 
       - name: migrate
         run: pnpm --filter @app/db migrate:latest
         needs: [services-up]
-        env:
-          DATABASE_URL: postgres://dev:dev@localhost:${PORT_POSTGRES}/app
 
   worktree-pre-remove:
     jobs:

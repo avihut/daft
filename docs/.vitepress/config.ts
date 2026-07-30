@@ -464,6 +464,7 @@ export default defineConfig({
                   { text: "warm", link: "/reference/cli/daft-warm" },
                   { text: "exec", link: "/reference/cli/daft-exec" },
                   { text: "run", link: "/reference/cli/daft-run" },
+                  { text: "env", link: "/reference/cli/daft-env" },
                   { text: "eject", link: "/reference/cli/daft-eject" },
                   {
                     text: "repo add",

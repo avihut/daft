@@ -13,6 +13,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "config",
     "doctor",
     "eject",
+    "env",
     "file",
     "go",
     "hooks",

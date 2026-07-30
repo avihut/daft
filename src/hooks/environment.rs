@@ -8,6 +8,84 @@ use crate::hooks::tracking::TrackedAttribute;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+/// Derived per-worktree env values (#388) for a hook/task context, ready to
+/// ride [`HookContext::with_derived_env`]. Returns the injection map (already
+/// filtered by the never-clobber rule: names set in daft's own environment
+/// are dropped) plus human-readable warnings for anything that could not be
+/// derived.
+///
+/// Best-effort by design: a broken `values:` template must not silently kill
+/// a lifecycle hook the way a config parse error would, so on a values error
+/// the ports still inject and the warning names the failing template. No
+/// `env:` section means no work and no warnings.
+pub(crate) fn derived_injection(
+    config: &crate::hooks::yaml_config::YamlConfig,
+    ctx: &HookContext,
+) -> (BTreeMap<String, String>, Vec<String>) {
+    derived_injection_at(
+        config,
+        &ctx.worktree_path,
+        &ctx.project_root,
+        (!ctx.branch_name.is_empty()).then_some(ctx.branch_name.as_str()),
+    )
+}
+
+/// [`derived_injection`] on raw coordinates, for callers without a
+/// [`HookContext`] (exec targets carry only a path and branch).
+pub(crate) fn derived_injection_at(
+    config: &crate::hooks::yaml_config::YamlConfig,
+    worktree_path: &Path,
+    project_root: &Path,
+    branch: Option<&str>,
+) -> (BTreeMap<String, String>, Vec<String>) {
+    use crate::core::env_values::{EnvSpec, ValueContext, spawn_injection};
+
+    let Some(env_cfg) = config.env.as_ref() else {
+        return (BTreeMap::new(), Vec::new());
+    };
+    let repo_name = project_root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".to_string());
+    let spec = EnvSpec::from_config(Some(env_cfg), &repo_name);
+    let slug = crate::core::slug::worktree_slug_from(worktree_path, project_root);
+    let vctx = ValueContext {
+        repo: &repo_name,
+        worktree_path: worktree_path.to_str(),
+        worktree_root: project_root.to_str(),
+        branch,
+    };
+
+    let mut warnings = Vec::new();
+    // `resolve_all` drops declarations in daft's own namespace rather than
+    // letting a derived port overwrite the real DAFT_* value. Silent
+    // dropping would read as "daft ignored my config", so name them.
+    let reserved = spec.reserved_names();
+    if !reserved.is_empty() {
+        warnings.push(format!(
+            "daft.yml declares {} in daft's reserved DAFT_* namespace; not injected \
+             (rename, or the real value would be overwritten)",
+            reserved.join(", ")
+        ));
+    }
+    let resolved = match spec.resolve_all(&slug, &vctx) {
+        Ok(resolved) => resolved,
+        Err(e) => {
+            warnings.push(format!("derived env values partially skipped: {e}"));
+            let mut ports_only = spec.clone();
+            ports_only.values.clear();
+            match ports_only.resolve_all(&slug, &vctx) {
+                Ok(resolved) => resolved,
+                Err(e) => {
+                    warnings.push(format!("derived env values not injected: {e}"));
+                    return (BTreeMap::new(), warnings);
+                }
+            }
+        }
+    };
+    (spawn_injection(&resolved), warnings)
+}
+
 /// Context information for hook execution.
 ///
 /// This struct captures all the relevant context about a worktree operation
@@ -186,8 +264,23 @@ impl HookContext {
     /// merge hooks). Merged into the hook environment after the universal
     /// vars, so later calls win over earlier ones — a no-op here since
     /// `new()` starts with an empty map.
+    ///
+    /// NOTE: this **replaces** the whole map (its callers own it outright).
+    /// Derived env values must use [`Self::with_derived_env`], which extends
+    /// instead — replacing here would destroy `DAFT_MERGE_*` entries a merge
+    /// command threaded in earlier.
     pub fn with_extra_env(mut self, extra: BTreeMap<String, String>) -> Self {
         self.extra_env = extra;
+        self
+    }
+
+    /// Extend `extra_env` with derived per-worktree values (#388) so they
+    /// ride the same channel as `DAFT_MERGE_*`: applied last in
+    /// [`HookEnvironment::from_context`], inherited by every job's process
+    /// env, still overridable by an explicit per-job `env:`. Contrast with
+    /// [`Self::with_extra_env`], which replaces the map.
+    pub fn with_derived_env(mut self, derived: BTreeMap<String, String>) -> Self {
+        self.extra_env.extend(derived);
         self
     }
 
@@ -370,6 +463,170 @@ impl HookEnvironment {
     }
 }
 
+/// How a `DAFT_*` variable relates to a job that is *not* currently running.
+///
+/// Welded to [`HookEnvironment::from_context`] above: every variable that
+/// function can emit must classify as `AtRest` or `EventScoped` — the
+/// `every_emitted_daft_var_is_classified` test enforces it, so adding a
+/// `env.set("DAFT_…")` there without a classification here fails the suite.
+/// `daft env` routes on this to answer daft's own namespace: at-rest
+/// variables with a value, event-scoped ones with an explanation of when
+/// they exist instead of a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaftVarKind {
+    /// Present in every job's environment with a value determined by the
+    /// worktree alone — exactly the set a task receives, which is why
+    /// `daft env` can answer it without running anything.
+    AtRest,
+    /// Only meaningful while a specific operation runs; `when` says which.
+    EventScoped {
+        /// When the variable is present, phrased to follow "it is set only".
+        ///
+        /// Must not name the daft executable: these render into runtime
+        /// errors, where the binary has to be spelled the way the user
+        /// invoked it (`cli_label()`/`daft_cmd`, per CLAUDE.md), and a
+        /// `&'static str` cannot do that. Describe the operation instead —
+        /// the render site interpolates the command when it wants one.
+        when: &'static str,
+    },
+    /// Not a variable daft sets.
+    Unknown,
+}
+
+/// Shared `when` for the `DAFT_MERGE_*` family.
+const WHEN_MERGE: &str = "during merge hooks (the merge command stamps them)";
+
+/// Every `DAFT_*` name daft can set, paired with its classification.
+///
+/// Single source of truth: [`daft_var_kind`] looks names up here and
+/// [`daft_var_names`] lists them, so a name can neither outlive its
+/// classification nor go missing from typo suggestions. Names are matched
+/// exactly — no prefix rule — because a near-miss inside a family
+/// (`DAFT_MERGE_SOURCE` for `DAFT_MERGE_SOURCE_PATH`) must fall through to
+/// `Unknown` and get a suggestion, not be affirmed as real.
+static DAFT_VARS: &[(&str, DaftVarKind)] = {
+    use DaftVarKind::{AtRest, EventScoped};
+    &[
+        // At rest: determined by the worktree alone.
+        ("DAFT_PROJECT_ROOT", AtRest),
+        ("DAFT_GIT_DIR", AtRest),
+        ("DAFT_REMOTE", AtRest),
+        ("DAFT_SOURCE_WORKTREE", AtRest),
+        ("DAFT_WORKTREE_PATH", AtRest),
+        ("DAFT_BRANCH_NAME", AtRest),
+        ("DAFT_IS_NEW_BRANCH", AtRest),
+        // Event-scoped: naming the run itself.
+        (
+            "DAFT_HOOK",
+            EventScoped {
+                when: "while a lifecycle hook runs (it names the hook type)",
+            },
+        ),
+        (
+            "DAFT_TASK",
+            EventScoped {
+                when: "while a task runs (it names the task)",
+            },
+        ),
+        (
+            "DAFT_COMMAND",
+            EventScoped {
+                when: "while a job runs (the daft command that launched it)",
+            },
+        ),
+        // Event-scoped: set by one operation's hooks.
+        (
+            "DAFT_BASE_BRANCH",
+            EventScoped {
+                when: "during create hooks (the branch the worktree was based on)",
+            },
+        ),
+        (
+            "DAFT_COMMIT",
+            EventScoped {
+                when: "during the create/remove hooks of a branchless (anonymous) \
+                       worktree, which it pins to a commit — tasks never receive it",
+            },
+        ),
+        (
+            "DAFT_REPOSITORY_URL",
+            EventScoped {
+                when: "during post-clone hooks",
+            },
+        ),
+        (
+            "DAFT_DEFAULT_BRANCH",
+            EventScoped {
+                when: "during post-clone hooks",
+            },
+        ),
+        (
+            "DAFT_REMOVAL_REASON",
+            EventScoped {
+                when: "during remove hooks",
+            },
+        ),
+        (
+            "DAFT_IS_MOVE",
+            EventScoped {
+                when: "during hooks fired by a worktree move (rename, layout \
+                       transform, or adopt)",
+            },
+        ),
+        (
+            "DAFT_OLD_WORKTREE_PATH",
+            EventScoped {
+                when: "during hooks fired by a worktree move (rename, layout \
+                       transform, or adopt)",
+            },
+        ),
+        (
+            "DAFT_OLD_BRANCH_NAME",
+            EventScoped {
+                when: "during hooks fired by a worktree rename",
+            },
+        ),
+        // The merge family, spelled out so misspellings inside it still miss.
+        ("DAFT_MERGE_SOURCES", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_SOURCE_SHAS", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_SOURCE_PATHS", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_SOURCE_PATH", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_TARGET_BRANCH", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_TARGET_PATH", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_TARGET_SHA", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_MODE", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_STRATEGY", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_EPHEMERAL", EventScoped { when: WHEN_MERGE }),
+        (
+            "DAFT_MERGE_CROSS_WORKTREE",
+            EventScoped { when: WHEN_MERGE },
+        ),
+        ("DAFT_MERGE_RESULT", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_COMMIT_SHA", EventScoped { when: WHEN_MERGE }),
+        (
+            "DAFT_MERGE_CONFLICTED_FILES",
+            EventScoped { when: WHEN_MERGE },
+        ),
+        (
+            "DAFT_MERGE_PROMOTED_FROM_EPHEMERAL",
+            EventScoped { when: WHEN_MERGE },
+        ),
+    ]
+};
+
+/// Classify a `DAFT_*` name. See [`DaftVarKind`].
+pub fn daft_var_kind(name: &str) -> DaftVarKind {
+    DAFT_VARS
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map_or(DaftVarKind::Unknown, |(_, kind)| *kind)
+}
+
+/// Every concrete `DAFT_*` name daft can set, for typo suggestions.
+pub fn daft_var_names() -> Vec<&'static str> {
+    DAFT_VARS.iter().map(|(name, _)| *name).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +642,200 @@ mod tests {
             "/project/feature/new",
             "feature/new",
         )
+    }
+
+    fn env_yaml_config(yaml: &str) -> crate::hooks::yaml_config::YamlConfig {
+        serde_yaml::from_str(yaml).expect("test yaml parses")
+    }
+
+    /// The weld between `from_context` and `daft_var_kind`: a maxed-out
+    /// context (every conditional branch forced on) plus a task context must
+    /// emit only names the classifier knows. Adding a `DAFT_*` emission
+    /// without classifying it — or without listing it in `daft_var_names` —
+    /// fails here, not in the field.
+    #[test]
+    fn every_emitted_daft_var_is_classified() {
+        let mut maxed = HookContext::new(
+            HookType::PreRemove,
+            "rename",
+            "/p",
+            "/p/.git",
+            "origin",
+            "/p/main",
+            "/p/feat",
+            "feat",
+        )
+        .with_commit("abc123")
+        .with_new_branch(true)
+        .with_base_branch("main")
+        .with_repository_url("git@example.com:x/y.git")
+        .with_default_branch("main")
+        .with_removal_reason(RemovalReason::Manual)
+        .with_extra_env([("DAFT_MERGE_SOURCE_PATH".to_string(), "/p/feat".to_string())].into());
+        maxed.is_move = true;
+        maxed.old_worktree_path = Some("/p/old".into());
+        maxed.old_branch_name = Some("old".into());
+        let task = HookContext::for_task("dev", "/p", "/p/.git", "origin", "/p/main", "main");
+
+        for ctx in [&maxed, &task] {
+            for key in HookEnvironment::from_context(ctx).vars().keys() {
+                assert_ne!(
+                    daft_var_kind(key),
+                    DaftVarKind::Unknown,
+                    "{key} is emitted but unclassified — add it to DAFT_VARS"
+                );
+                assert!(
+                    daft_var_names().contains(&key.as_str()),
+                    "{key} is emitted but missing from daft_var_names"
+                );
+            }
+        }
+    }
+
+    /// The at-rest set is exactly a task's environment minus the vars that
+    /// name the run itself — no exemptions. Every key a bare task receives
+    /// classifies `AtRest` except `DAFT_TASK`/`DAFT_COMMAND`, and every
+    /// `AtRest` name is present in it.
+    ///
+    /// The equality is the point: `daft env` presents the at-rest set as
+    /// "what a job will see", so a name classified `AtRest` that no task
+    /// actually receives is a lie the command would tell with a live value
+    /// beside it. `DAFT_COMMIT` used to be exempted here and was exactly
+    /// that (only sandbox create/remove hooks set it) — it is now
+    /// `EventScoped`, and this test refuses to grow the exemption back.
+    #[test]
+    fn at_rest_is_the_task_surface() {
+        let task = HookContext::for_task("dev", "/p", "/p/.git", "origin", "/p/main", "main");
+        let env = HookEnvironment::from_context(&task);
+
+        for key in env.vars().keys() {
+            match key.as_str() {
+                "DAFT_TASK" | "DAFT_COMMAND" => {}
+                other => assert_eq!(
+                    daft_var_kind(other),
+                    DaftVarKind::AtRest,
+                    "{other} is in a task's env but not classified AtRest"
+                ),
+            }
+        }
+        for name in daft_var_names() {
+            if daft_var_kind(name) == DaftVarKind::AtRest {
+                assert!(
+                    env.get(name).is_some(),
+                    "{name} classifies AtRest but a task does not receive it"
+                );
+            }
+        }
+    }
+
+    /// A near-miss inside the merge family must miss. The prefix rule this
+    /// replaced answered "it is set only during merge hooks" for any
+    /// `DAFT_MERGE_*` string, which reads as confirmation that a misspelled
+    /// name is real — the user then writes it into a hook and it expands
+    /// empty forever.
+    #[test]
+    fn merge_family_typos_fall_through_to_unknown() {
+        assert_eq!(daft_var_kind("DAFT_MERGE_SOURCE"), DaftVarKind::Unknown);
+        assert_eq!(daft_var_kind("DAFT_MERGE_"), DaftVarKind::Unknown);
+        assert_eq!(daft_var_kind("DAFT_MERGE_NOPE"), DaftVarKind::Unknown);
+        assert!(matches!(
+            daft_var_kind("DAFT_MERGE_SOURCE_PATH"),
+            DaftVarKind::EventScoped { .. }
+        ));
+        // …and the real names are suggestible, so the miss is recoverable.
+        let names = daft_var_names();
+        for real in [
+            "DAFT_MERGE_SOURCE_PATH",
+            "DAFT_MERGE_SOURCE_PATHS",
+            "DAFT_MERGE_SOURCES",
+            "DAFT_MERGE_RESULT",
+        ] {
+            assert!(names.contains(&real), "{real} is unsuggestible");
+        }
+    }
+
+    /// `with_derived_env` EXTENDS: the DAFT_MERGE_* entries a merge command
+    /// threaded in earlier must survive derived-value injection, and both
+    /// must reach the hook environment (extra_env is applied last).
+    #[test]
+    fn derived_env_extends_and_merge_entries_survive() {
+        let merge_extra: BTreeMap<String, String> =
+            [("DAFT_MERGE_SOURCE_PATH".to_string(), "/p/feat".to_string())].into();
+        let derived: BTreeMap<String, String> =
+            [("WEBAPP_PORT".to_string(), "23952".to_string())].into();
+        let ctx = make_test_context()
+            .with_extra_env(merge_extra)
+            .with_derived_env(derived);
+        assert_eq!(
+            ctx.extra_env
+                .get("DAFT_MERGE_SOURCE_PATH")
+                .map(String::as_str),
+            Some("/p/feat")
+        );
+        let env = HookEnvironment::from_context(&ctx);
+        assert_eq!(env.get("WEBAPP_PORT"), Some("23952"));
+        assert_eq!(env.get("DAFT_MERGE_SOURCE_PATH"), Some("/p/feat"));
+    }
+
+    /// A derived value carrying template-looking braces reaches the hook
+    /// environment verbatim — computed env is never re-substituted (the
+    /// job_adapter guards this end-to-end; this pins the extra_env leg).
+    #[test]
+    fn derived_env_values_with_braces_stay_literal() {
+        let derived: BTreeMap<String, String> =
+            [("TRICKY".to_string(), "{branch}-literal".to_string())].into();
+        let ctx = make_test_context().with_derived_env(derived);
+        let env = HookEnvironment::from_context(&ctx);
+        assert_eq!(env.get("TRICKY"), Some("{branch}-literal"));
+    }
+
+    /// End-to-end helper behavior: declared ports inject; a name already set
+    /// in daft's own environment is dropped (never-clobber); a broken
+    /// values: template downgrades to ports-only with a warning instead of
+    /// killing the hook.
+    #[test]
+    fn derived_injection_filters_and_degrades() {
+        let ctx = make_test_context();
+
+        // Plain declared port injects (slug feature-new, salt pinned).
+        let config = env_yaml_config("env:\n  salt: myapp\n  ports:\n    - WEBAPP_PORT\n");
+        let (derived, warnings) = derived_injection(&config, &ctx);
+        assert_eq!(
+            derived.get("WEBAPP_PORT").map(String::as_str),
+            Some("23952")
+        );
+        assert!(warnings.is_empty());
+
+        // Never-clobber: a parent-set name is filtered out. set_var is
+        // `unsafe fn` in edition 2024; tests may wrap it (Critical Rule 4).
+        let config =
+            env_yaml_config("env:\n  salt: myapp\n  ports:\n    - DAFTTEST_CLOBBERED_PORT\n");
+        unsafe { std::env::set_var("DAFTTEST_CLOBBERED_PORT", "999") };
+        let (derived, _) = derived_injection(&config, &ctx);
+        unsafe { std::env::remove_var("DAFTTEST_CLOBBERED_PORT") };
+        assert!(
+            !derived.contains_key("DAFTTEST_CLOBBERED_PORT"),
+            "parent env wins over derived"
+        );
+
+        // Broken values: template → warning + ports still inject.
+        let config = env_yaml_config(
+            "env:\n  salt: myapp\n  ports:\n    - WEBAPP_PORT\n  values:\n    BAD: \"{typo}\"\n",
+        );
+        let (derived, warnings) = derived_injection(&config, &ctx);
+        assert_eq!(
+            derived.get("WEBAPP_PORT").map(String::as_str),
+            Some("23952")
+        );
+        assert!(!derived.contains_key("BAD"));
+        assert!(
+            warnings.iter().any(|w| w.contains("typo")),
+            "warning names the failing template: {warnings:?}"
+        );
+
+        // No env: section → nothing, silently.
+        let (derived, warnings) = derived_injection(&env_yaml_config("hooks: {}"), &ctx);
+        assert!(derived.is_empty() && warnings.is_empty());
     }
 
     /// Branch worktrees label their background-job invocations by branch

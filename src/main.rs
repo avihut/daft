@@ -227,6 +227,7 @@ fn main() -> Result<()> {
                     "adopt" => commands::flow_adopt::run(),
                     "eject" => commands::flow_eject::run(),
                     "exec" => commands::exec::run(),
+                    "env" => commands::env::run(),
                     "run" => commands::run::run(),
                     "warm" => commands::warm::run(),
                     "file" => commands::file::run(),

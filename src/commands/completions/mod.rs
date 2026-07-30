@@ -39,6 +39,7 @@ pub(super) const VERB_ALIAS_GROUPS: &[(&[&str], &str)] = &[
     (&["shared"], "daft-shared"),
     (&["exec"], "git-worktree-exec"),
     (&["run"], "daft-run"),
+    (&["env"], "daft-env"),
     (&["push"], "git-worktree-push"),
     (&["warm"], "git-worktree-warm"),
 ];
@@ -65,6 +66,7 @@ pub(super) const COMMANDS: &[&str] = &[
     "daft-install",
     "daft-file",
     "daft-run",
+    "daft-env",
     "git-worktree-warm",
 ];
 
@@ -91,6 +93,7 @@ pub(super) fn get_command_for_name(command_name: &str) -> Option<Command> {
         "daft-install" => Some(crate::commands::install::Args::command()),
         "daft-file" => Some(crate::commands::file::merge::Args::command()),
         "daft-run" => Some(crate::commands::run::Args::command()),
+        "daft-env" => Some(crate::commands::env::Args::command()),
         "git-worktree-warm" => Some(crate::commands::warm::Args::command()),
         _ => None,
     }
@@ -132,6 +135,7 @@ pub(super) fn command_has_repo_flag(command_name: &str) -> bool {
             | "git-worktree-fetch"
             | "git-worktree-exec"
             | "git-worktree-prune"
+            | "daft-env"
     )
 }
 
@@ -324,6 +328,7 @@ pub(super) fn emit_formats_for(command_path: &str) -> Option<Vec<&'static str>> 
 
     let shape = match command_path {
         "git-worktree-list" | "list" => Shape::Tabular,
+        "daft-env" | "env" => Shape::Tabular,
         "release-notes" => Shape::Document,
         "hooks trust list" => Shape::Tabular,
         "hooks jobs" => Shape::Tabular,
@@ -1711,6 +1716,8 @@ before adding flags (zsh flag-leak regression)"
         for path in [
             "git-worktree-list",
             "list",
+            "daft-env",
+            "env",
             "release-notes",
             "hooks trust list",
             "hooks jobs",

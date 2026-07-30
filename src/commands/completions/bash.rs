@@ -1011,6 +1011,12 @@ _daft() {
                 _daft_run
                 return 0
                 ;;
+            env)
+                COMP_WORDS=("daft-env" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _daft_env
+                return 0
+                ;;
             update)
                 COMP_WORDS=("git-worktree-fetch" "${COMP_WORDS[@]:2}")
                 COMP_CWORD=$((COMP_CWORD - 1))
@@ -1079,7 +1085,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h -C" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo skill clone init install go start carry exec run warm update list prune rename sync push remove merge worktree-merge adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo skill clone init install go start carry exec run env warm update list prune rename sync push remove merge worktree-merge adopt eject" -- "$cur") )
         fi
         return 0
     fi

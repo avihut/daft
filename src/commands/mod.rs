@@ -13,6 +13,7 @@ pub mod config;
 pub mod docs;
 pub mod doctor;
 pub mod dump_store;
+pub mod env;
 pub mod exec;
 pub mod fetch;
 pub mod file;

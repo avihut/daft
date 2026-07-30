@@ -201,7 +201,7 @@ pub fn run() -> Result<()> {
         None => None,
     };
 
-    let (targets, orphans): (Vec<core::ResolvedTarget>, Vec<String>) = if args.all_repos {
+    let (mut targets, orphans): (Vec<core::ResolvedTarget>, Vec<String>) = if args.all_repos {
         (collect_all_repos_targets(&mut output)?, Vec::new())
     } else if args.related {
         (collect_related_targets(&mut output)?, Vec::new())
@@ -230,6 +230,9 @@ pub fn run() -> Result<()> {
     if targets.is_empty() {
         anyhow::bail!("no matching worktrees to run in");
     }
+
+    inject_derived_env(&mut targets, &mut output);
+    let targets = targets;
 
     let pipeline: Vec<core::CommandSpec> = if !args.trailing.is_empty() {
         vec![core::CommandSpec::Argv(args.trailing.clone())]
@@ -272,6 +275,7 @@ pub fn run() -> Result<()> {
         for spec in &pipeline {
             let mut cmd = core::build_command(spec, alias_cache.as_ref());
             cmd.current_dir(&target.worktree_path)
+                .envs(&target.env)
                 .env("DAFT_WORKTREE_PATH", &target.worktree_path)
                 .env("DAFT_BRANCH_NAME", &target.branch_name)
                 .env("DAFT_COMMAND", "exec")
@@ -549,6 +553,7 @@ fn find_worktree_for_branch(
             worktree_path: w.path.clone(),
             branch_name: branch.to_string(),
             display,
+            ..Default::default()
         })
 }
 
@@ -573,6 +578,51 @@ fn default_branch_target(
     find_worktree_for_branch(snaps, &branch, None).ok_or_else(|| {
         anyhow::anyhow!("no worktree for default branch '{branch}'; pass a target or --all")
     })
+}
+
+/// Populate each target's derived env values (#388) from its own repo's
+/// config. Command-layer only: repo identity derives from the target's path,
+/// never the ambient cwd (which is wrong under --all-repos / --related).
+/// Non-fatal by design — exec never had a config-load failure mode and must
+/// not gain one: a broken daft.yml warns once per repo and injects nothing.
+fn inject_derived_env(
+    targets: &mut [crate::core::worktree::exec::ResolvedTarget],
+    output: &mut dyn Output,
+) {
+    let mut warned: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
+    for target in targets.iter_mut() {
+        let Some(common) = crate::core::repo::git_common_dir_at(&target.worktree_path) else {
+            continue;
+        };
+        let Some(root) = common.parent().map(std::path::Path::to_path_buf) else {
+            continue;
+        };
+        let config =
+            match crate::hooks::yaml_config_loader::load_merged_config(&target.worktree_path) {
+                Ok(Some(config)) => config,
+                Ok(None) => continue,
+                Err(e) => {
+                    if warned.insert(common) {
+                        output.warning(&format!(
+                            "daft.yml in {} failed to load ({e:#}); derived env values \
+                             not injected there",
+                            root.display()
+                        ));
+                    }
+                    continue;
+                }
+            };
+        let branch = (!target.branch_name.is_empty()).then_some(target.branch_name.as_str());
+        let (derived, warnings) =
+            crate::hooks::derived_injection_at(&config, &target.worktree_path, &root, branch);
+        for warning in &warnings {
+            if warned.insert(common.join(warning)) {
+                output.warning(warning);
+            }
+        }
+        target.env = derived;
+    }
 }
 
 /// `--all-repos`: one target per live catalog repo — its default-branch
@@ -646,6 +696,7 @@ fn collect_related_targets(
             current_repo_catalog_name(),
             current_branch
         )),
+        ..Default::default()
     }];
 
     let original = get_current_directory()?;

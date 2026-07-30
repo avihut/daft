@@ -98,54 +98,12 @@ pub fn substitute(command: &str, ctx: &HookContext, job_name: Option<&str>) -> S
 /// Sanitized slug for the worktree, safe to embed in docker compose project
 /// names, DB schema names, DNS labels, and temp-dir names.
 ///
-/// The raw name is the worktree path relative to the project root when the
-/// worktree lives under it (so a nested worktree like `feature/new` slugs to
-/// `feature-new`), otherwise the final path component. It is then lowercased,
-/// every run of non-`[a-z0-9]` characters collapses to a single `-`, leading
-/// and trailing `-` are trimmed, and the result is capped at 63 characters
-/// (the DNS-label limit). An empty result falls back to `"worktree"`.
+/// Thin context adapter over [`crate::core::slug::worktree_slug_from`] — the
+/// algorithm lives there so the `{worktree_slug}` template variable and the
+/// derived env values (`daft env`) can never disagree about a worktree's
+/// identity.
 pub fn worktree_slug(ctx: &HookContext) -> String {
-    let raw = ctx
-        .worktree_path
-        .strip_prefix(&ctx.project_root)
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            ctx.worktree_path
-                .file_name()
-                .map(|f| f.to_string_lossy().into_owned())
-        })
-        .unwrap_or_default();
-    slugify(&raw)
-}
-
-/// Lowercase, collapse non-alphanumeric runs to single `-`, trim `-`, cap at
-/// 63 chars. Empty input (or input that reduces to nothing) yields
-/// `"worktree"`.
-fn slugify(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut prev_dash = false;
-    for ch in raw.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            prev_dash = false;
-        } else if !out.is_empty() && !prev_dash {
-            // Collapse any run of separators/other chars into one dash.
-            // Leading separators are suppressed (out is still empty).
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    // Cap at the DNS-label length, then trim any trailing dash the cap or the
-    // collapse may have left.
-    out.truncate(63);
-    let trimmed = out.trim_end_matches('-');
-    if trimmed.is_empty() {
-        "worktree".to_string()
-    } else {
-        trimmed.to_string()
-    }
+    crate::core::slug::worktree_slug_from(&ctx.worktree_path, &ctx.project_root)
 }
 
 #[cfg(test)]
@@ -303,24 +261,6 @@ mod tests {
             "feature/x",
         );
         assert_eq!(worktree_slug(&ctx), "my-wt");
-    }
-
-    #[test]
-    fn test_slugify_cases() {
-        assert_eq!(slugify("Feature/New"), "feature-new");
-        assert_eq!(slugify("API_Server 2"), "api-server-2");
-        assert_eq!(slugify("feat/ABC-123"), "feat-abc-123");
-        // Pure-separator and empty inputs fall back.
-        assert_eq!(slugify("---"), "worktree");
-        assert_eq!(slugify(""), "worktree");
-        assert_eq!(slugify("!!!@@@"), "worktree");
-        // Unicode reduces to the fallback (no ascii-alphanumerics).
-        assert_eq!(slugify("日本語"), "worktree");
-        // 63-char DNS-label cap.
-        assert_eq!(slugify(&"a".repeat(100)).len(), 63);
-        // A trailing dash left by the cap is trimmed.
-        let capped = format!("{}-tail", "a".repeat(62));
-        assert_eq!(slugify(&capped), "a".repeat(62));
     }
 
     #[test]

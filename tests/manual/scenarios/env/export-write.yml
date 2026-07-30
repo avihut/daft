@@ -1,0 +1,74 @@
+name: "daft env --export and --write serialize the declared set"
+description:
+  "--export emits eval-safe export lines for shells (the direnv/mise hot path);
+  --write materializes a dotenv file for tools that read disk (docker compose
+  auto-reads .env). The write refuses tracked targets — a generated file must
+  never clobber committed content."
+
+repos:
+  - name: env-serialize
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# serialize"
+          - path: tracked.env
+            content: "COMMITTED=yes"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      env:
+        salt: myapp
+        ports:
+          - WEBAPP_PORT
+        values:
+          COMPOSE_PROJECT_NAME: "myapp-{worktree_slug}"
+        write: .env
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_ENV_SERIALIZE
+    expect:
+      exit_code: 0
+
+  - name: --export emits shell export lines
+    run: daft env --export
+    cwd: "$WORK_DIR/env-serialize/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "export WEBAPP_PORT='20960'"
+        - "export COMPOSE_PROJECT_NAME='myapp-main'"
+
+  - name: The export output is eval-clean (values land in the shell)
+    run: 'eval "$(daft env --export)" && echo "got=$WEBAPP_PORT"'
+    cwd: "$WORK_DIR/env-serialize/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "got=20960"
+
+  - name: Bare --write uses the declared env.write target
+    run: daft env --write 2>&1
+    cwd: "$WORK_DIR/env-serialize/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/env-serialize/main/.env"
+      file_contains:
+        - path: "$WORK_DIR/env-serialize/main/.env"
+          content: "WEBAPP_PORT=20960"
+        - path: "$WORK_DIR/env-serialize/main/.env"
+          content: "COMPOSE_PROJECT_NAME=myapp-main"
+
+  - name: A tracked target is refused
+    run: daft env --write tracked.env 2>&1
+    cwd: "$WORK_DIR/env-serialize/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "tracked"
+      file_contains:
+        - path: "$WORK_DIR/env-serialize/main/tracked.env"
+          content: "COMMITTED=yes"

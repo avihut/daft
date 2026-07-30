@@ -6,7 +6,7 @@ description: Structured output via --format and --template across daft commands
 # Output Formats
 
 Eleven daft commands can emit machine-readable output via the shared `--format`
-flag: `list`, `merge`, `release-notes`, `hooks jobs`, `hooks trust list`,
+flag: `list`, `env`, `merge`, `release-notes`, `hooks jobs`, `hooks trust list`,
 `hooks run` (when called without a specific hook), `layout list`, `repo list`,
 `repo info`, `shared status`, and `multi-remote status`.
 
@@ -27,6 +27,7 @@ Not every format applies to every command. The supported sets:
 | Command                 | json | ndjson | tsv | csv | yaml | toon | markdown | template |
 | ----------------------- | :--: | :----: | :-: | :-: | :--: | :--: | :------: | :------: |
 | `list`                  |  ✓   |   ✓    |  ✓  |  ✓  |  ✓   |  ✓   |    ✓     |    ✓     |
+| `env`                   |  ✓   |   ✓    |  ✓  |  ✓  |  ✓   |  ✓   |    ✓     |    ✓     |
 | `hooks jobs`            |  ✓   |   ✓    |  ✓  |  ✓  |  ✓   |  ✓   |    ✓     |    ✓     |
 | `hooks trust list`      |  ✓   |   ✓    |  ✓  |  ✓  |  ✓   |  ✓   |    ✓     |    ✓     |
 | `layout list`           |  ✓   |   ✓    |  ✓  |  ✓  |  ✓   |  ✓   |    ✓     |    ✓     |

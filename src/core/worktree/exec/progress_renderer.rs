@@ -275,6 +275,7 @@ mod tests {
             worktree_path: dir.path().to_path_buf(),
             branch_name: "master".into(),
             display: Some("repo:master".into()),
+            ..Default::default()
         }];
         let pipeline = vec![CommandSpec::Argv(vec!["true".into()])];
         let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
@@ -299,6 +300,7 @@ mod tests {
             worktree_path: dir.path().to_path_buf(),
             branch_name: "master".into(),
             display: None,
+            ..Default::default()
         }];
         let pipeline = vec![CommandSpec::Argv(vec!["echo".into(), "hi".into()])];
         let report = run_with_progress(
@@ -330,11 +332,13 @@ mod tests {
                 worktree_path: dir1.path().to_path_buf(),
                 branch_name: "a".into(),
                 display: None,
+                ..Default::default()
             },
             ResolvedTarget {
                 worktree_path: dir2.path().to_path_buf(),
                 branch_name: "b".into(),
                 display: None,
+                ..Default::default()
             },
         ];
         let pipeline = vec![

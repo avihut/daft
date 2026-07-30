@@ -6,7 +6,7 @@
 //! `daft file merge` command, and cross-worktree visitor propagation can all
 //! share one definition of "what merging two configs means".
 
-use crate::hooks::yaml_config::{HookDef, JobDef, LogConfig, MergeConfig, YamlConfig};
+use crate::hooks::yaml_config::{EnvConfig, HookDef, JobDef, LogConfig, MergeConfig, YamlConfig};
 
 /// Merge two configs, with `overlay` taking precedence over `base`.
 pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
@@ -32,6 +32,7 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
         log,
         relations,
         merge,
+        env,
         hooks,
         tasks,
     } = overlay;
@@ -92,6 +93,24 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
         (Some(b), Some(o)) => Some(MergeConfig {
             ff: o.ff.or(b.ff),
             source_worktree: o.source_worktree.or(b.source_worktree),
+        }),
+        (b, o) => o.or(b),
+    };
+
+    // Derived env values: scalar knobs merge field-level (so daft.local.yml
+    // can override just `salt:` — the local reroll lever), while `ports:` and
+    // `values:` replace wholesale when the overlay declares them — an
+    // element-wise merge of the ports list would scramble its enum-semantics
+    // offsets into an assignment neither file wrote.
+    merged.env = match (merged.env, env) {
+        (Some(b), Some(o)) => Some(EnvConfig {
+            salt: o.salt.or(b.salt),
+            scheme: o.scheme.or(b.scheme),
+            range: o.range.or(b.range),
+            block_size: o.block_size.or(b.block_size),
+            ports: o.ports.or(b.ports),
+            values: o.values.or(b.values),
+            write: o.write.or(b.write),
         }),
         (b, o) => o.or(b),
     };
@@ -293,6 +312,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         log: b_log,
         relations: b_relations,
         merge: b_merge,
+        env: b_env,
         hooks: b_hooks,
         tasks: b_tasks,
     } = base;
@@ -311,6 +331,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         log: o_log,
         relations: o_relations,
         merge: o_merge,
+        env: o_env,
         hooks: o_hooks,
         tasks: o_tasks,
     } = ours;
@@ -329,6 +350,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         log: t_log,
         relations: t_relations,
         merge: t_merge,
+        env: t_env,
         hooks: t_hooks,
         tasks: t_tasks,
     } = theirs;
@@ -376,6 +398,10 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
             &mut tally,
         ),
         merge: pick3("merge", b_merge, o_merge, t_merge, &mut tally),
+        // Whole-section granularity like `copy`: the block is one
+        // declaration (offsets are positional), so a two-sided edit is one
+        // conflict, never a spliced ports list neither side wrote.
+        env: pick3("env", b_env, o_env, t_env, &mut tally),
         hooks: merge3_hook_maps("hooks", b_hooks, o_hooks, t_hooks, &mut tally),
         tasks: merge3_hook_maps("tasks", b_tasks, o_tasks, t_tasks, &mut tally),
     };
@@ -741,6 +767,100 @@ mod tests {
     use crate::hooks::yaml_config::{JobDef, RunCommand};
     use std::collections::HashMap;
 
+    fn env_config(
+        salt: Option<&str>,
+        block_size: Option<u16>,
+        ports: Option<Vec<&str>>,
+    ) -> crate::hooks::yaml_config::EnvConfig {
+        crate::hooks::yaml_config::EnvConfig {
+            salt: salt.map(String::from),
+            block_size,
+            ports: ports.map(|names| {
+                names
+                    .into_iter()
+                    .map(|n| crate::hooks::yaml_config::PortEntry {
+                        name: n.to_string(),
+                        offset: None,
+                    })
+                    .collect()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn merge_env_scalars_field_level_ports_wholesale() {
+        // A local overlay overriding only `salt:` (the reroll lever) must keep
+        // the base's ports; an overlay declaring `ports:` replaces them whole.
+        let base = YamlConfig {
+            env: Some(env_config(
+                Some("team"),
+                Some(16),
+                Some(vec!["A_PORT", "B_PORT"]),
+            )),
+            ..Default::default()
+        };
+        let overlay = YamlConfig {
+            env: Some(env_config(Some("mine"), None, None)),
+            ..Default::default()
+        };
+        let merged = merge_configs(base, overlay);
+        let env = merged.env.unwrap();
+        assert_eq!(env.salt.as_deref(), Some("mine"), "overlay scalar wins");
+        assert_eq!(env.block_size, Some(16), "base scalar survives");
+        assert_eq!(env.resolved_ports().len(), 2, "base ports survive");
+
+        let base = YamlConfig {
+            env: Some(env_config(
+                Some("team"),
+                None,
+                Some(vec!["A_PORT", "B_PORT"]),
+            )),
+            ..Default::default()
+        };
+        let overlay = YamlConfig {
+            env: Some(env_config(None, None, Some(vec!["C_PORT"]))),
+            ..Default::default()
+        };
+        let env = merge_configs(base, overlay).env.unwrap();
+        assert_eq!(env.salt.as_deref(), Some("team"));
+        assert_eq!(
+            env.resolved_ports(),
+            vec![("C_PORT".to_string(), 0)],
+            "overlay ports replace wholesale, offsets restart"
+        );
+    }
+
+    #[test]
+    fn merge_env_absent_overlay_keeps_base() {
+        let base = YamlConfig {
+            env: Some(env_config(Some("team"), None, Some(vec!["A_PORT"]))),
+            ..Default::default()
+        };
+        let merged = merge_configs(base.clone(), YamlConfig::default());
+        assert_eq!(merged.env, base.env);
+    }
+
+    #[test]
+    fn merge3_env_two_sided_edit_is_one_conflict() {
+        let base = YamlConfig {
+            env: Some(env_config(Some("team"), None, None)),
+            ..Default::default()
+        };
+        let ours = YamlConfig {
+            env: Some(env_config(Some("ours"), None, None)),
+            ..Default::default()
+        };
+        let theirs = YamlConfig {
+            env: Some(env_config(Some("theirs"), None, None)),
+            ..Default::default()
+        };
+        let outcome = merge3(&base, &ours, &theirs);
+        assert_eq!(outcome.conflicts, vec!["env".to_string()]);
+        // Ours wins the conflicted section (same policy as every pick3 key).
+        assert_eq!(outcome.merged.env.unwrap().salt.as_deref(), Some("ours"));
+    }
+
     #[test]
     fn test_merge_configs_scalar_override() {
         let base = YamlConfig {
@@ -909,6 +1029,18 @@ mod tests {
             merge: Some(crate::hooks::yaml_config::MergeConfig {
                 ff: Some(crate::hooks::yaml_config::FfPolicy::Only),
                 source_worktree: Some(crate::hooks::yaml_config::SourceWorktreePolicy::Clean),
+            }),
+            env: Some(crate::hooks::yaml_config::EnvConfig {
+                salt: Some("myapp".to_string()),
+                scheme: Some(1),
+                range: Some("20000-32767".to_string()),
+                block_size: Some(16),
+                ports: Some(vec![crate::hooks::yaml_config::PortEntry {
+                    name: "WEBAPP_PORT".to_string(),
+                    offset: None,
+                }]),
+                values: Some([("PROJECT".to_string(), "x-{worktree_slug}".to_string())].into()),
+                write: Some(".daft-env".to_string()),
             }),
             hooks,
             tasks,
@@ -1484,6 +1616,18 @@ mod tests {
             merge: Some(crate::hooks::yaml_config::MergeConfig {
                 ff: Some(crate::hooks::yaml_config::FfPolicy::Only),
                 source_worktree: Some(crate::hooks::yaml_config::SourceWorktreePolicy::Clean),
+            }),
+            env: Some(crate::hooks::yaml_config::EnvConfig {
+                salt: Some("myapp".to_string()),
+                scheme: Some(1),
+                range: Some("20000-32767".to_string()),
+                block_size: Some(16),
+                ports: Some(vec![crate::hooks::yaml_config::PortEntry {
+                    name: "WEBAPP_PORT".to_string(),
+                    offset: None,
+                }]),
+                values: Some([("PROJECT".to_string(), "x-{worktree_slug}".to_string())].into()),
+                write: Some(".daft-env".to_string()),
             }),
             hooks,
             tasks,

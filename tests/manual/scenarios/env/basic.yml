@@ -1,0 +1,71 @@
+name: "daft env derives stable per-worktree ports"
+description:
+  "With a pinned salt the derivation is a pure function of the worktree slug, so
+  the scenario can assert literal ports: salt 'myapp' + slug 'main' hashes to
+  block 20960, and declared offsets index into it. Two invocations must agree —
+  determinism is the whole feature."
+
+repos:
+  - name: env-basic
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# env basic"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      env:
+        salt: myapp
+        ports:
+          - WEBAPP_PORT
+          - STORYBOOK_PORT
+          - API_PORT: 8
+        values:
+          COMPOSE_PROJECT_NAME: "myapp-{worktree_slug}"
+          API_URL: "http://localhost:{env:API_PORT}"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_ENV_BASIC
+    expect:
+      exit_code: 0
+
+  - name: A single var prints the bare value
+    run: daft env WEBAPP_PORT
+    cwd: "$WORK_DIR/env-basic/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "20960"
+
+  - name: Offsets are consecutive within the block
+    run: daft env STORYBOOK_PORT && daft env API_PORT
+    cwd: "$WORK_DIR/env-basic/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "20961"
+        - "20968"
+
+  - name: The bare table lists ports and rendered values
+    run: daft env
+    cwd: "$WORK_DIR/env-basic/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "WEBAPP_PORT"
+        - "20960"
+        - "myapp-main"
+        - "http://localhost:20968"
+
+  - name: Two invocations agree (record both, compare)
+    run:
+      "daft env WEBAPP_PORT > .first && daft env WEBAPP_PORT > .second && cmp
+      .first .second && echo same > .stable"
+    cwd: "$WORK_DIR/env-basic/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/env-basic/main/.stable"

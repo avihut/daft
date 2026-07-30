@@ -44,6 +44,22 @@ This lets `post-clone` install foundational tools (pnpm, bun, uv, etc.) that
 Hooks receive context via environment variables. These are available to both
 YAML jobs and shell script hooks.
 
+To debug what a job will see without running it, ask from your shell:
+[`daft env`](/reference/cli/daft-env) lists the variables that have a value at
+rest, and `daft env DAFT_BRANCH_NAME` prints one. Seven qualify — the ones a
+worktree determines on its own:
+
+`DAFT_PROJECT_ROOT`, `DAFT_GIT_DIR`, `DAFT_REMOTE`, `DAFT_SOURCE_WORKTREE`,
+`DAFT_WORKTREE_PATH`, `DAFT_BRANCH_NAME`, `DAFT_IS_NEW_BRANCH`.
+
+Every other variable on this page is event-scoped: it exists only while its
+operation runs, so asking for one explains which operation sets it rather than
+printing a value. Two of the seven differ for hooks in ways the command cannot
+know in advance — `DAFT_REMOTE` is the triggering operation's remote
+(`daft.remote`, when configured), and for create and remove hooks
+`DAFT_SOURCE_WORKTREE` is the worktree the command was invoked from, not the one
+being created or removed.
+
 ### Universal (all hooks)
 
 | Variable               | Description                                                                                                            |

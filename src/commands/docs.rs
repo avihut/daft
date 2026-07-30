@@ -9,9 +9,9 @@ use clap::{Command, CommandFactory};
 use std::path::Path;
 
 use crate::commands::{
-    carry, checkout, clone, config, doctor, exec, fetch, file, flow_adopt, flow_eject, hooks, init,
-    install, layout, list, merge, multi_remote, prune, push, release_notes, repo, run, shared,
-    shell_init, shortcuts, skill, sync, warm, worktree_branch,
+    carry, checkout, clone, config, doctor, env, exec, fetch, file, flow_adopt, flow_eject, hooks,
+    init, install, layout, list, merge, multi_remote, prune, push, release_notes, repo, run,
+    shared, shell_init, shortcuts, skill, sync, warm, worktree_branch,
 };
 use crate::styles;
 
@@ -125,6 +125,14 @@ fn get_daft_categories() -> Vec<CommandCategory> {
             commands: vec![CommandEntry {
                 display_name: "run",
                 command: run::Args::command(),
+            }],
+        },
+        CommandCategory {
+            title: "derived per-worktree env values",
+            layout: CategoryLayout::List,
+            commands: vec![CommandEntry {
+                display_name: "env",
+                command: env::Args::command(),
             }],
         },
         CommandCategory {

@@ -249,6 +249,9 @@ fn complete(
         // daft run: complete task names defined in daft.yml
         ("daft-run", 1) => complete_task_names(word),
 
+        // daft env: complete declared env value names from daft.yml
+        ("daft-env", 1) => complete_env_names(word),
+
         // hooks run --job: complete job names for a hook type
         ("hooks-run-job", 1) => complete_hook_jobs(word, verbose),
 
@@ -1242,6 +1245,31 @@ fn complete_task_names(prefix: &str) -> Result<Vec<String>> {
         }
         None => Ok(vec![]),
     }
+}
+
+/// Complete declared env value names (ports and values) from the current
+/// worktree's daft.yml `env:` section. Ad-hoc names are unenumerable by
+/// definition, so an undeclared schema completes to nothing.
+fn complete_env_names(prefix: &str) -> Result<Vec<String>> {
+    let Some(root) = find_worktree_root().ok() else {
+        return Ok(vec![]);
+    };
+    let config = yaml_config_loader::load_merged_config(root.as_path())
+        .ok()
+        .flatten();
+    let Some(env) = config.and_then(|c| c.env) else {
+        return Ok(vec![]);
+    };
+    let mut names: Vec<String> = env
+        .resolved_ports()
+        .into_iter()
+        .map(|(name, _)| name)
+        .chain(env.values.unwrap_or_default().into_keys())
+        .filter(|name| name.starts_with(prefix))
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
 }
 
 /// Complete `--skip-hooks` selector values from the current worktree's

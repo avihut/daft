@@ -216,6 +216,17 @@ fn cmd_run(args: &Args, forced_args: bool, output: &mut dyn Output) -> Result<()
         &branch_name,
     );
 
+    // Derived per-worktree env values (#388): tasks get WEBAPP_PORT and
+    // friends in their process env with no template ceremony. Warnings (a
+    // broken values: template) go to stderr like the trust hint above.
+    let ctx = {
+        let (derived, warnings) = crate::hooks::derived_injection(&config, &ctx);
+        for warning in &warnings {
+            output.warning(warning);
+        }
+        ctx.with_derived_env(derived)
+    };
+
     // Tasks stream full output live (like docker compose / foreman); the
     // knobs also shape the non-TTY hook-block fallback, which prints a
     // compact per-job row on finish/cancel rather than re-dumping a dev
