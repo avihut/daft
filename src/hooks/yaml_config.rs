@@ -805,6 +805,28 @@ pub struct HookDef {
     /// would make the declaration mean less than it says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub files: Option<String>,
+
+    /// Commands run once before the hook's jobs, in order, stopping at the
+    /// first failure.
+    ///
+    /// For the preparation a gate needs but no single job owns — starting a
+    /// container, generating a fixture. Not jobs: they get no rows, no
+    /// filtering, and no parallelism, because a setup step that could be
+    /// skipped by a glob or reordered by the scheduler would not be setup.
+    /// A failure fails the hook, since running gates against a
+    /// half-prepared environment reports on something nobody asked about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup: Option<Vec<String>>,
+
+    /// Fail the hook if its jobs left the working tree modified.
+    ///
+    /// The CI-parity switch: locally a formatter fixing files is convenient
+    /// (`stage_fixed:` even commits the fix), but in CI a gate that silently
+    /// rewrites the tree and passes is a gate that never tells you the code
+    /// was wrong. Turning this on makes "the check changed something" a
+    /// failure with the changed paths named.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fail_on_changes: Option<bool>,
 }
 
 /// Target operating system for platform constraints.
