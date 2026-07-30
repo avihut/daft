@@ -672,6 +672,7 @@ impl HookExecutor {
             cancel: None,
             trigger_label: None,
             hook_mode: self.hook_mode,
+            index_file: None,
         };
         // An Err from the yaml executor here is an execution-preparation
         // failure (invalid glob, unresolvable root: template, failing files:
