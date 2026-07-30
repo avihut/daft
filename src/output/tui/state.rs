@@ -231,6 +231,7 @@ impl TuiState {
             // pattern as `unowned_start_index` below).
             forge_prs: None,
             forge_prs_loading: false,
+            forge_prs_stale: crate::output::tui::live_table::ForgePrStaleness::Fresh,
         };
         let mut live = LiveTable::new(worktree_infos, cfg);
         live.unowned_start_index = unowned_start_index;

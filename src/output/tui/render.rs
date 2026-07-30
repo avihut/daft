@@ -113,7 +113,10 @@ pub fn render_footer(state: &TuiState, frame: &mut Frame, area: Rect) {
 }
 
 /// Render the worktree status table.
-pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
+///
+/// `final_frame` marks the last draw of the run, settling animated cells so
+/// nothing freezes mid-animation — see `stale_cell`.
+pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect, final_frame: bool) {
     let now = chrono::Utc::now().timestamp();
     let ctx = ColumnContext {
         project_root: &state.live.cfg.project_root,
@@ -394,6 +397,8 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                             |fs| state.live.is_cell_loading(row_idx, fs),
                             |fs| state.live.is_cell_unloaded(row_idx, fs),
                             |fs| state.live.is_cell_stale(row_idx, fs),
+                            |fs| state.live.is_cell_stale_settled(fs),
+                            final_frame,
                         )
                     } else {
                         Cell::from("")
@@ -416,6 +421,8 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                         |fs| state.live.is_cell_loading(row_idx, fs),
                         |fs| state.live.is_cell_unloaded(row_idx, fs),
                         |fs| state.live.is_cell_stale(row_idx, fs),
+                        |fs| state.live.is_cell_stale_settled(fs),
+                        final_frame,
                     )
                 })
                 .collect()
@@ -689,8 +696,9 @@ fn render_remote_cell(info: &WorktreeInfo, stat: Stat) -> Cell<'static> {
 
 /// Frames in one full breath (dim → bright → dim). At the driver's 80ms tick
 /// rate, 16 frames = ~1.3s full cycle. Halve for a snappier pulse, double
-/// for a slower one.
-const SKELETON_BREATH_FRAMES: usize = 16;
+/// for a slower one. Shared by the loading skeleton and the stale-value
+/// breath so both animate on one cadence.
+pub(super) const SKELETON_BREATH_FRAMES: usize = 16;
 
 /// xterm 256-color grayscale ramp endpoints. Indices 232 (near-black) through
 /// 255 (white) form a 24-step ramp — supported by every terminal that does
@@ -748,16 +756,33 @@ pub(super) fn not_loaded_cell(width: u16) -> Cell<'static> {
     Cell::from(Span::styled(padded, Style::default().fg(Color::Gray)))
 }
 
+/// Tick that renders a stale value settled — phase 0 of the breath, i.e. the
+/// darkest point of the ramp. Used on the final frame so a value the walk
+/// never refreshed cannot freeze mid-breath at near-full brightness and pass
+/// for a fresh figure.
+const STALE_SETTLED_TICK: usize = 0;
+
 /// Render a persisted (stale) cell value — a last-known figure shown while a
-/// fresh walk runs in the background. Styled `DIM` and nothing else: never
-/// colored, never the loading shimmer, so it reads as "real but not yet
-/// refreshed" and supersedes cleanly (to the plain, full-brightness value)
-/// the moment the fresh patch lands. Shared by the worktree and catalog
-/// tables so the stale convention lives in one place.
-pub(super) fn stale_cell(value: &str) -> Cell<'static> {
+/// fresh walk runs in the background. The value stays fully legible (it is a
+/// real figure) but breathes along the same grayscale ramp, cadence, and
+/// shared `tick` as the loading skeleton, so it reads as "real, and actively
+/// refreshing" rather than merely dim. It is never colored and never the
+/// loading shimmer, and supersedes cleanly (to the plain, full-brightness
+/// value) the moment the fresh patch lands.
+///
+/// When `settled` the breath rests at its darkest phase instead of moving (or
+/// freezing wherever the tick happened to land). That covers both the last
+/// draw of the run and a refresh that concluded without superseding the value:
+/// either way the figure is cached-and-unverified, so it keeps its muted ink
+/// but stops advertising activity that is not happening.
+///
+/// Shared by the worktree and catalog tables so the stale convention lives in
+/// one place — any column rendered through it inherits the breath for free.
+pub(super) fn stale_cell(value: &str, tick: usize, settled: bool) -> Cell<'static> {
+    let phase = if settled { STALE_SETTLED_TICK } else { tick };
     Cell::from(Span::styled(
         value.to_string(),
-        Style::default().add_modifier(Modifier::DIM),
+        Style::default().fg(Color::Indexed(skeleton_pulse_color(phase))),
     ))
 }
 
@@ -769,6 +794,9 @@ pub(super) fn stale_cell(value: &str) -> Cell<'static> {
 /// patch arrived; takes precedence over `is_cell_loading`.
 /// `is_cell_stale` returns true when the cell holds a persisted value awaiting
 /// a fresh walk; applies only to cells that already have a value to show.
+/// `is_cell_stale_settled` narrows that: the awaited refresh has concluded
+/// without superseding the value, so it stays muted but stops breathing.
+/// `final_frame` settles animated cells on the last draw — see `stale_cell`.
 #[allow(clippy::too_many_arguments)]
 fn render_cell(
     col: &Column,
@@ -781,6 +809,8 @@ fn render_cell(
     is_cell_loading: impl Fn(FieldSet) -> bool,
     is_cell_unloaded: impl Fn(FieldSet) -> bool,
     is_cell_stale: impl Fn(FieldSet) -> bool,
+    is_cell_stale_settled: impl Fn(FieldSet) -> bool,
+    final_frame: bool,
 ) -> Cell<'static> {
     match col {
         Column::Status => render_status_cell(wt, tick),
@@ -808,7 +838,11 @@ fn render_cell(
                     Cell::from(vals.size.clone())
                 }
             } else if is_cell_stale(FieldSet::SIZE) {
-                stale_cell(&vals.size)
+                stale_cell(
+                    &vals.size,
+                    tick,
+                    final_frame || is_cell_stale_settled(FieldSet::SIZE),
+                )
             } else {
                 Cell::from(vals.size.clone())
             }
@@ -871,6 +905,18 @@ fn render_cell(
                 } else {
                     Cell::from(vals.pr.clone())
                 }
+            } else if is_cell_stale(FieldSet::FORGE_REF) {
+                // A warm cache stripped to identity: the number is real, its
+                // fate is still in flight. No status has loaded yet, so there
+                // is no color to preserve — breathe the identity itself until
+                // the refresh lands and the colored value supersedes it. If
+                // the refresh ends without data the number stays muted (it was
+                // never verified) but stops moving.
+                stale_cell(
+                    &vals.pr,
+                    tick,
+                    final_frame || is_cell_stale_settled(FieldSet::FORGE_REF),
+                )
             } else {
                 // Color carries the status here (a ratatui buffer can't hold
                 // the colorless glyph fallback's escape-free sibling — plain
@@ -1645,6 +1691,8 @@ mod tests {
                         |_fs| false, // not loading (cancelled implies collection_complete)
                         |_fs| true,  // is_cell_unloaded → true
                         |_fs| false, // not stale
+                        |_fs| false, // not settled-stale
+                        false,       // not the final frame
                     );
                     let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
                     frame.render_widget(table, frame.area());
@@ -1697,6 +1745,8 @@ mod tests {
                     |_fs| false, // not loading
                     |_fs| false, // not unloaded — received
                     |_fs| false, // not stale
+                    |_fs| false, // not settled-stale
+                    false,       // not the final frame
                 );
                 let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
                 frame.render_widget(table, frame.area());
@@ -1719,9 +1769,11 @@ mod tests {
     }
 
     #[test]
-    fn render_cell_size_stale_renders_value_dimmed() {
-        // A stale (persisted, not-yet-refreshed) Size cell renders its value
-        // DIM — visible but muted — never the shimmer, never an em-dash.
+    fn render_cell_size_stale_breathes_on_the_skeleton_ramp() {
+        // A stale (persisted, not-yet-refreshed) Size cell renders its value —
+        // never the shimmer, never an em-dash — breathing along the same
+        // grayscale ramp and cadence as the loading skeleton, so it reads as
+        // "real, and actively refreshing" rather than merely dim.
         use crate::output::format::{ColumnContext, compute_column_values};
         use crate::output::tui::state::WorktreeRow;
 
@@ -1738,31 +1790,43 @@ mod tests {
         };
         let vals = compute_column_values(&info, &ctx);
 
-        let backend = TestBackend::new(10, 1);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                let cell = render_cell(
-                    &Column::Size,
-                    &wt,
-                    &vals,
-                    0,
-                    Stat::Summary,
-                    10,
-                    Default::default(),
-                    |_fs| false, // not loading
-                    |_fs| false, // not unloaded
-                    |_fs| true,  // stale → dim
-                );
-                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
-                frame.render_widget(table, frame.area());
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let row: String = (0..10)
-            .map(|x| buffer[(x, 0)].symbol().to_string())
-            .collect();
-        // Value is shown (not shimmer/em-dash) …
+        // Render the Size cell, returning the row text and the foreground
+        // color of its first painted glyph.
+        let render_at = |tick: usize, stale: bool, final_frame: bool| -> (String, Color) {
+            let backend = TestBackend::new(10, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    let cell = render_cell(
+                        &Column::Size,
+                        &wt,
+                        &vals,
+                        tick,
+                        Stat::Summary,
+                        10,
+                        Default::default(),
+                        |_fs| false, // not loading
+                        |_fs| false, // not unloaded
+                        |_fs| stale,
+                        |_fs| false, // settled-stale is exercised via `final_frame` here
+                        final_frame,
+                    );
+                    let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
+                    frame.render_widget(table, frame.area());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let row: String = (0..10)
+                .map(|x| buffer[(x, 0)].symbol().to_string())
+                .collect();
+            let first_glyph = (0..10)
+                .find(|&x| buffer[(x, 0)].symbol().trim() != "")
+                .expect("stale cell should paint at least one glyph");
+            (row, buffer[(first_glyph, 0)].fg)
+        };
+
+        // The value is shown — not a shimmer bar, not an em-dash.
+        let (row, dark) = render_at(0, true, false);
         assert!(
             !row.contains('\u{25AC}') && !row.contains('\u{2014}'),
             "stale cell must render the value, not a placeholder; got {row:?}"
@@ -1773,13 +1837,155 @@ mod tests {
                 .any(|c| c.is_ascii_digit() || c == 'B' || c == 'K'),
             "stale Size cell should render the numeric/unit value; got {row:?}"
         );
-        // … and it is dimmed. Find the first glyph cell and assert DIM.
-        let first_glyph = (0..10)
-            .find(|&x| buffer[(x, 0)].symbol().trim() != "")
-            .expect("stale cell should paint at least one glyph");
+
+        // It breathes across the exact skeleton ramp, at the exact cadence.
+        let (_, bright) = render_at(SKELETON_BREATH_FRAMES / 2, true, false);
+        assert_eq!(dark, Color::Indexed(SKELETON_GRAY_DARKEST));
+        assert_eq!(bright, Color::Indexed(SKELETON_GRAY_BRIGHTEST));
+        assert_ne!(
+            dark, bright,
+            "stale value should pulse across the breath (dark={dark:?}, bright={bright:?})"
+        );
+
+        // The final frame settles to the darkest phase instead of freezing
+        // mid-breath — a value the walk never refreshed must not be left
+        // looking fresh.
+        let (_, settled) = render_at(SKELETON_BREATH_FRAMES / 2, true, true);
+        assert_eq!(
+            settled,
+            Color::Indexed(SKELETON_GRAY_DARKEST),
+            "final frame should settle the stale breath to its darkest phase"
+        );
+
+        // Once the fresh patch lands the cell is no longer stale: plain,
+        // full-brightness text with no ramp color left behind.
+        let (_, fresh) = render_at(SKELETON_BREATH_FRAMES / 2, false, false);
+        assert_eq!(
+            fresh,
+            Color::Reset,
+            "a superseded cell should render plain, with no lingering pulse"
+        );
+    }
+
+    /// The PR column is the second consumer of the stale convention: a warm
+    /// forge cache is stripped to identity while the refresh runs, so the
+    /// number breathes until its fate lands and the colored value supersedes.
+    #[test]
+    fn render_cell_pr_stale_breathes_then_supersedes_to_its_status_color() {
+        use crate::core::worktree::forge_ref::{
+            CiStatus, ForgeBranchRef, ForgePrLookup, ForgeRefKind, PrDecoration, PrStatus,
+        };
+        use crate::output::format::{ColumnContext, compute_column_values};
+        use crate::output::tui::state::WorktreeRow;
+
+        let info = WorktreeInfo::empty("feat/x");
+        let wt = WorktreeRow::idle(info.clone());
+
+        // `status: None` is what `ForgePrLookup::identity_only` leaves behind
+        // while a refresh is in flight — the number without its fate.
+        let lookup = |status: Option<PrStatus>| {
+            let mut l = ForgePrLookup::default();
+            l.by_branch.insert(
+                "feat/x".into(),
+                PrDecoration {
+                    r: ForgeBranchRef::new(ForgeRefKind::GithubPr, 42),
+                    status,
+                    url: None,
+                    author: None,
+                },
+            );
+            l
+        };
+
+        let render_at = |status: Option<PrStatus>,
+                         tick: usize,
+                         stale: bool,
+                         settled: bool,
+                         final_frame: bool|
+         -> (String, Color) {
+            let l = lookup(status);
+            let ctx = ColumnContext {
+                project_root: &PathBuf::from("/tmp"),
+                cwd: &PathBuf::from("/tmp"),
+                now: 0,
+                stat: Stat::Summary,
+                forge_prs: Some(&l),
+                colors: true,
+            };
+            let vals = compute_column_values(&info, &ctx);
+            let backend = TestBackend::new(12, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    let cell = render_cell(
+                        &Column::Pr,
+                        &wt,
+                        &vals,
+                        tick,
+                        Stat::Summary,
+                        12,
+                        Default::default(),
+                        |_fs| false, // not loading — the cache has a value
+                        |_fs| false, // not unloaded
+                        |_fs| stale,
+                        |_fs| settled,
+                        final_frame,
+                    );
+                    let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(12)]);
+                    frame.render_widget(table, frame.area());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let row: String = (0..12)
+                .map(|x| buffer[(x, 0)].symbol().to_string())
+                .collect();
+            let first_glyph = (0..12)
+                .find(|&x| buffer[(x, 0)].symbol().trim() != "")
+                .expect("PR cell should paint at least one glyph");
+            (row, buffer[(first_glyph, 0)].fg)
+        };
+
+        // Identity-only + refresh in flight: the real number, breathing.
+        let (row, dark) = render_at(None, 0, true, false, false);
         assert!(
-            buffer[(first_glyph, 0)].modifier.contains(Modifier::DIM),
-            "stale Size value should carry the DIM modifier"
+            row.contains("42"),
+            "a stale PR cell shows its cached identity; got {row:?}"
+        );
+        let (_, bright) = render_at(None, SKELETON_BREATH_FRAMES / 2, true, false, false);
+        assert_eq!(dark, Color::Indexed(SKELETON_GRAY_DARKEST));
+        assert_eq!(bright, Color::Indexed(SKELETON_GRAY_BRIGHTEST));
+
+        // The final frame settles it — an unrefreshed PR must not freeze
+        // bright and read as a fresh, status-bearing value.
+        let (_, settled) = render_at(None, SKELETON_BREATH_FRAMES / 2, true, false, true);
+        assert_eq!(settled, Color::Indexed(SKELETON_GRAY_DARKEST));
+
+        // A refresh that concluded without data settles the cell mid-run: the
+        // number was never verified, so it keeps the muted ink — but nothing
+        // is loading any more, so it stops moving well before the last frame.
+        let (row, unrefreshed) = render_at(None, SKELETON_BREATH_FRAMES / 2, true, true, false);
+        assert_eq!(
+            unrefreshed,
+            Color::Indexed(SKELETON_GRAY_DARKEST),
+            "an unrefreshed identity holds at the muted end of the ramp"
+        );
+        assert!(
+            row.contains("42"),
+            "settling must not drop the cached identity; got {row:?}"
+        );
+
+        // Refresh landed: no longer stale, and the fate now carries the color.
+        let (_, passing) = render_at(
+            Some(PrStatus::Ci(CiStatus::Pass)),
+            SKELETON_BREATH_FRAMES / 2,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            passing,
+            Color::Green,
+            "a superseded PR cell carries its status color, not the breath"
         );
     }
 
@@ -1857,7 +2063,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_table(&state, frame, frame.area());
+                render_table(&state, frame, frame.area(), false);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -1901,7 +2107,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_table(&state, frame, frame.area());
+                render_table(&state, frame, frame.area(), false);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -1958,7 +2164,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_table(&state, frame, frame.area());
+                render_table(&state, frame, frame.area(), false);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
