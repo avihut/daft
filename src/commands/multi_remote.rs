@@ -4,7 +4,6 @@
 
 use crate::{
     core::OutputSink,
-    core::worktree::ports::NoopStageRunner,
     core::worktree::push::{
         HookVerdict, PushAction, delete_failure_escalates, push_with_hooks, resolve_delete_pre_push,
     },
@@ -734,7 +733,7 @@ fn cmd_move(
             },
             &new_path,
             !no_verify,
-            &NoopStageRunner,
+            crate::hooks::git_stage::stage_runner::runner(),
             push_presenter.as_ref(),
             None,
         ) {
@@ -788,7 +787,7 @@ fn cmd_move(
             },
             &new_path,
             hook_plan.verify,
-            &NoopStageRunner,
+            crate::hooks::git_stage::stage_runner::runner(),
             push_presenter.as_ref(),
             hook_plan.hook_present,
         ) {
