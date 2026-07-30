@@ -149,6 +149,10 @@ pub struct HookExecutionContext<'a> {
     /// repository is read, which means the staged-file probe has to be handed
     /// it back explicitly. `None` everywhere except the stage dispatcher.
     pub index_file: Option<std::path::PathBuf>,
+
+    /// Top-level `templates:` fragments from `daft.yml`, expanded in every
+    /// job's `run:`.
+    pub templates: Option<&'a std::collections::HashMap<String, String>>,
 }
 
 /// Execute a YAML-defined hook.
@@ -181,6 +185,7 @@ pub fn execute_yaml_hook(
         // export the env var); this convenience wrapper keeps the default.
         hook_mode: crate::hooks::HookMode::Auto,
         index_file: None,
+        templates: None,
     };
     execute_yaml_hook_with_rc(hook_name, hook_def, ctx, output, &cfg)
 }
@@ -455,6 +460,9 @@ pub fn execute_yaml_hook_with_rc(
         hook_timeout: hook_def.timeout.as_ref(),
         file_sources: Some(&file_sources),
         hook_exclude: hook_def.exclude.as_deref().unwrap_or(&[]),
+        templates: cfg.templates,
+        stage_stdin: ctx.stage_stdin.as_deref(),
+        repo_root: Some(&ctx.project_root),
     };
     let (specs, mut skipped_jobs) = crate::hooks::job_adapter::yaml_jobs_to_specs(
         &jobs,
@@ -2000,6 +2008,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
             index_file: None,
+            templates: None,
         };
 
         let result =
@@ -2053,6 +2062,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
             index_file: None,
+            templates: None,
         };
 
         let result =
@@ -2106,6 +2116,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
             index_file: None,
+            templates: None,
         };
 
         let result =
@@ -2156,6 +2167,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
             index_file: None,
+            templates: None,
         };
 
         let result =
@@ -2223,6 +2235,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Background,
             index_file: None,
+            templates: None,
         };
 
         let result =
@@ -2273,6 +2286,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Background,
             index_file: None,
+            templates: None,
         };
 
         let result =
@@ -2546,6 +2560,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
             index_file: None,
+            templates: None,
         };
         let result =
             execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
@@ -2581,6 +2596,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
             index_file: None,
+            templates: None,
         };
         let result =
             execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
@@ -2622,6 +2638,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
             index_file: None,
+            templates: None,
         };
         let result =
             execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
@@ -2690,6 +2707,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
             index_file: None,
+            templates: None,
         };
         let result =
             execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
@@ -2732,6 +2750,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
             index_file: None,
+            templates: None,
         };
         // Must NOT error (contrast with the include path's bail!).
         let result =
@@ -2771,6 +2790,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
             index_file: None,
+            templates: None,
         };
         // hook_name == the selected hook type ⇒ the whole hook is skipped, but
         // it is NOT a silent drop: every job renders as skipped with the same
@@ -2829,6 +2849,7 @@ mod tests {
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
             index_file: None,
+            templates: None,
         };
         let result =
             execute_yaml_hook_with_rc("worktree-pre-create", &hook_def, &ctx, &mut output, &cfg)
@@ -2877,6 +2898,7 @@ mod tests {
             trigger_label: Some("run dev".to_string()),
             hook_mode: crate::hooks::HookMode::Auto,
             index_file: None,
+            templates: None,
         };
         execute_yaml_hook_with_rc("dev", &hook_def, &ctx, &mut output, &cfg).unwrap();
 

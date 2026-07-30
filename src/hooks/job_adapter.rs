@@ -33,8 +33,6 @@ pub enum SkipKind {
     Platform,
     /// Not run for a structural reason (an excluded dependency).
     NotRun,
-    /// Declared in a shape the executor refuses (e.g. `group:`).
-    ConfigError,
 }
 
 impl SkipKind {
@@ -46,7 +44,6 @@ impl SkipKind {
             SkipKind::Tag => "tag",
             SkipKind::Platform => "platform",
             SkipKind::NotRun => "not-run",
-            SkipKind::ConfigError => "config-error",
         }
     }
 }
@@ -341,6 +338,14 @@ pub struct JobAdapterContext<'a> {
     /// Hook-level `exclude:` patterns, appended to every file-aware job's
     /// exclude set. Never makes a job file-aware by itself.
     pub hook_exclude: &'a [String],
+    /// Top-level `templates:` fragments, expanded in every `run:` before the
+    /// other template variables.
+    pub templates: Option<&'a HashMap<String, String>>,
+    /// The stage's stdin, replayed into jobs that declare `use_stdin:`.
+    pub stage_stdin: Option<&'a str>,
+    /// Repository root, for `file_types:` checks — the coordinate system
+    /// every file list already uses.
+    pub repo_root: Option<&'a Path>,
 }
 
 impl Default for JobAdapterContext<'_> {
@@ -357,6 +362,9 @@ impl Default for JobAdapterContext<'_> {
             hook_timeout: None,
             file_sources: None,
             hook_exclude: &[],
+            templates: None,
+            stage_stdin: None,
+            repo_root: None,
         }
     }
 }
@@ -404,20 +412,15 @@ pub fn yaml_jobs_to_specs(
     let mut kept: Vec<JobSpec> = Vec::new();
     let mut skipped: Vec<SkippedJob> = Vec::new();
 
+    // Nesting is rewritten away before anything else looks at the list: the
+    // executor schedules a flat set with `needs:` edges and has no notion of
+    // a group, so every later stage sees `lint/eslint`, not `lint`.
+    let flattened = super::groups::flatten(jobs)?;
+    let jobs: &[JobDef] = &flattened;
+
     for job in jobs {
         let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
         let declared_background = resolve_background(job.background, hook_background);
-
-        if job.group.is_some() {
-            skipped.push(SkippedJob {
-                name,
-                background: declared_background,
-                reason: "skip: group jobs are not yet supported by the generic executor"
-                    .to_string(),
-                kind: SkipKind::ConfigError,
-            });
-            continue;
-        }
 
         if super::yaml_executor::is_platform_skip(job) {
             skipped.push(SkippedJob {
@@ -459,6 +462,7 @@ pub fn yaml_jobs_to_specs(
         }
 
         let cmd = super::yaml_executor::resolve_command(job, ctx, Some(&name), source_dir);
+        let cmd = expand_templates(&cmd, adapter.templates);
 
         // Recorded before substitution: the filtered list is injected below,
         // after which the markers are gone.
@@ -546,10 +550,32 @@ pub fn yaml_jobs_to_specs(
 
         let timeout = resolve_timeout(&name, job, adapter.hook_timeout, adapter.timeouts)?;
 
+        // `use_stdin:` replays the payload git handed the stage. Two things
+        // already own stdin for their own reasons, so combining is a config
+        // error rather than a race decided by whichever wins.
+        let stdin = match job.use_stdin {
+            Some(true) => {
+                if job.interactive == Some(true) || declared_background {
+                    bail!(
+                        "job '{name}': use_stdin cannot be combined with {} — both need \
+                         stdin for something else",
+                        if job.interactive == Some(true) {
+                            "interactive"
+                        } else {
+                            "background"
+                        }
+                    );
+                }
+                adapter.stage_stdin.map(str::to_string)
+            }
+            _ => None,
+        };
+
         kept.push(JobSpec {
             name,
             command: cmd,
             extra_chunks,
+            stdin,
             working_dir: wd,
             env,
             description: job.description.clone(),
@@ -632,6 +658,21 @@ fn apply_file_filter(
     exclude.extend(adapter.hook_exclude.iter().cloned());
     let filter = FileFilter::new(&include, &exclude).with_context(|| format!("job '{name}'"))?;
 
+    // `file_types:` narrows what the globs selected — where a file lives
+    // versus what it is. Applied inside the same filtering step so an empty
+    // result is the same first-class skip.
+    let types: Vec<super::file_types::FileType> = match job.file_types {
+        Some(ref declared) => declared
+            .as_slice()
+            .iter()
+            .map(|raw| super::file_types::FileType::parse(raw))
+            .collect::<Result<Vec<_>>>()
+            .with_context(|| format!("job '{name}': file_types"))?,
+        None => Vec::new(),
+    };
+    let type_root = adapter.repo_root.unwrap_or(working_dir);
+    let narrow = |files: Vec<String>| super::file_types::filter(type_root, &files, &types);
+
     // A job's own `files:` overrides every source for that job — including a
     // placeholder that names one. Nothing else would make sense: the job
     // declared where its list comes from.
@@ -656,7 +697,7 @@ fn apply_file_filter(
             Some(ref files) => files.clone(),
             None => resolve_source(placeholder.kind, name, ctx, adapter)?,
         };
-        let matched = filter.filter(&files);
+        let matched = narrow(filter.filter(&files));
         if matched.is_empty() {
             return Ok(FileFilterOutcome::Skip(empty_reason(
                 &filter,
@@ -682,7 +723,7 @@ fn apply_file_filter(
                 adapter,
             )?,
         };
-        if filter.filter(&files).is_empty() {
+        if narrow(filter.filter(&files)).is_empty() {
             return Ok(FileFilterOutcome::Skip(empty_reason(
                 &filter,
                 &include,
@@ -698,11 +739,50 @@ fn apply_file_filter(
     }
 
     let mut chunks = super::changed_files::expand_and_chunk(cmd, &resolved);
+
+    // `stage_fixed:` re-stages what the job touched, so a formatter's edits
+    // land in the commit being made instead of appearing as a surprise diff
+    // afterwards. It is a chunk rather than a `&&` tail because it must run
+    // once for the whole file set, after every chunk of the command itself —
+    // and because a chunked `git add` would hit the same argv limit.
+    if job.stage_fixed == Some(true) {
+        let files: Vec<String> = resolved
+            .iter()
+            .flat_map(|(_, files)| files.iter().cloned())
+            .collect();
+        if !files.is_empty() {
+            chunks.push(format!("git add -- {}", crate::utils::quote_argv(&files)));
+        }
+    }
+
     let command = chunks.remove(0);
     Ok(FileFilterOutcome::Run {
         command,
         extra_chunks: chunks,
     })
+}
+
+/// Expand `templates:` fragments in a command.
+///
+/// One pass, longest name first so `{lint}` cannot shadow `{lint_strict}`.
+/// A fragment that names another fragment is left as-is: recursive expansion
+/// turns a config typo into a hang, and nothing in a command fragment needs
+/// it.
+fn expand_templates(command: &str, templates: Option<&HashMap<String, String>>) -> String {
+    let Some(templates) = templates.filter(|t| !t.is_empty()) else {
+        return command.to_string();
+    };
+    let mut names: Vec<&String> = templates.keys().collect();
+    names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+
+    let mut out = command.to_string();
+    for name in names {
+        let token = format!("{{{name}}}");
+        if out.contains(&token) {
+            out = out.replace(&token, &templates[name]);
+        }
+    }
+    out
 }
 
 /// The file list behind one placeholder kind, or a configuration error
@@ -1344,7 +1424,10 @@ mod tests {
     }
 
     #[test]
-    fn group_jobs_are_skipped() {
+    fn group_jobs_flatten_into_prefixed_specs() {
+        // These used to be reported as "not yet supported by the generic
+        // executor" and dropped. They now flatten into the DAG the executor
+        // already speaks, so the group's name survives only as a prefix.
         let ctx = make_ctx();
         let jobs = vec![
             JobDef {
@@ -1377,11 +1460,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(kept.len(), 1, "group job should be excluded");
-        assert_eq!(kept[0].name, "normal");
-        assert_eq!(skipped.len(), 1);
-        assert_eq!(skipped[0].name, "grouped");
-        assert!(skipped[0].reason.contains("group"));
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let names: Vec<&str> = kept.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["normal", "grouped/inner"]);
     }
 
     #[test]
@@ -1420,7 +1501,10 @@ mod tests {
     }
 
     #[test]
-    fn group_jobs_produce_skipped_job_entry() {
+    fn an_empty_group_fails_the_hook_rather_than_vanishing() {
+        // A group with no jobs is a config the author got wrong. Reporting it
+        // as a skipped job would read as "daft decided not to run this",
+        // which is a different and much more forgivable thing.
         let jobs = vec![JobDef {
             name: Some("my-group".to_string()),
             group: Some(GroupDef::default()),
@@ -1429,7 +1513,7 @@ mod tests {
 
         let ctx = make_ctx();
         let env = HashMap::new();
-        let (kept, skipped) = yaml_jobs_to_specs(
+        let err = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &env,
@@ -1437,12 +1521,10 @@ mod tests {
             std::path::Path::new("/work"),
             &JobAdapterContext::default(),
         )
-        .unwrap();
-
-        assert!(kept.is_empty());
-        assert_eq!(skipped.len(), 1);
-        assert_eq!(skipped[0].name, "my-group");
-        assert!(skipped[0].reason.contains("group"));
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("my-group"), "{msg}");
+        assert!(msg.contains("no jobs"), "{msg}");
     }
 
     #[test]
@@ -1699,6 +1781,97 @@ mod tests {
                 command.starts_with("source ~/.bashrc && rustfmt "),
                 "{command}"
             );
+        }
+    }
+
+    #[test]
+    fn templates_expand_in_run_commands() {
+        let templates: HashMap<String, String> = [
+            ("lint".to_string(), "eslint --max-warnings 0".to_string()),
+            (
+                "lint_strict".to_string(),
+                "eslint --max-warnings 0 --strict".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let (kept, _) = yaml_jobs_to_specs(
+            &[
+                run_job("a", "{lint} src"),
+                run_job("b", "{lint_strict} src"),
+            ],
+            &make_ctx(),
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext {
+                templates: Some(&templates),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(kept[0].command, "eslint --max-warnings 0 src");
+        // Longest name first, so `{lint}` cannot eat the prefix of
+        // `{lint_strict}` and leave `_strict` dangling.
+        assert_eq!(kept[1].command, "eslint --max-warnings 0 --strict src");
+    }
+
+    #[test]
+    fn stage_fixed_appends_a_git_add_chunk() {
+        // A formatter's edits have to reach the index, or the commit lands
+        // unformatted and the user sees a surprise diff afterwards.
+        let sources = provider(&["a.rs", "b.rs"]);
+        let job = JobDef {
+            stage_fixed: Some(true),
+            ..run_job("fmt", "rustfmt {files}")
+        };
+        let (kept, _) = specs_with(job, &sources).unwrap();
+        assert_eq!(kept[0].command, "rustfmt a.rs b.rs");
+        assert_eq!(kept[0].extra_chunks, vec!["git add -- a.rs b.rs"]);
+    }
+
+    #[test]
+    fn use_stdin_replays_the_stage_payload() {
+        let sources = provider(&["a.rs"]);
+        let job = JobDef {
+            use_stdin: Some(true),
+            ..run_job("check", "read-refs")
+        };
+        let (kept, _) = yaml_jobs_to_specs(
+            &[job],
+            &make_ctx(),
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext {
+                file_sources: Some(&sources),
+                stage_stdin: Some("refs/heads/f aaa refs/heads/f bbb"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            kept[0].stdin.as_deref(),
+            Some("refs/heads/f aaa refs/heads/f bbb")
+        );
+    }
+
+    #[test]
+    fn use_stdin_conflicts_with_the_things_that_own_stdin() {
+        for (field, marker) in [("interactive", "interactive"), ("background", "background")] {
+            let mut job = run_job("j", "cat");
+            job.use_stdin = Some(true);
+            if field == "interactive" {
+                job.interactive = Some(true);
+            } else {
+                job.background = Some(true);
+            }
+            let err = specs_with(job, &provider(&["a.rs"])).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("use_stdin"), "{msg}");
+            assert!(msg.contains(marker), "{msg}");
         }
     }
 
