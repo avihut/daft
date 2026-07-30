@@ -190,6 +190,8 @@ pub fn merge_hook_defs(base: HookDef, overlay: HookDef) -> HookDef {
         fail_mode,
         timeout,
         files,
+        setup,
+        fail_on_changes,
     } = overlay;
 
     let mut merged = base;
@@ -227,6 +229,12 @@ pub fn merge_hook_defs(base: HookDef, overlay: HookDef) -> HookDef {
     }
     if files.is_some() {
         merged.files = files;
+    }
+    if setup.is_some() {
+        merged.setup = setup;
+    }
+    if fail_on_changes.is_some() {
+        merged.fail_on_changes = fail_on_changes;
     }
 
     // Jobs: merge named jobs by name, append unnamed
@@ -624,6 +632,8 @@ fn merge3_hook_defs(
         fail_mode: b_fail_mode,
         timeout: b_timeout,
         files: b_files,
+        setup: b_setup,
+        fail_on_changes: b_fail_on_changes,
     } = base;
 
     HookDef {
@@ -712,6 +722,20 @@ fn merge3_hook_defs(
             b_files,
             &ours.files,
             &theirs.files,
+            tally,
+        ),
+        setup: pick3(
+            &format!("{prefix}.setup"),
+            b_setup,
+            &ours.setup,
+            &theirs.setup,
+            tally,
+        ),
+        fail_on_changes: pick3(
+            &format!("{prefix}.fail_on_changes"),
+            b_fail_on_changes,
+            &ours.fail_on_changes,
+            &theirs.fail_on_changes,
             tally,
         ),
     }
