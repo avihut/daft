@@ -165,6 +165,24 @@ pub struct HookContext {
     /// instead of `DAFT_HOOK` (tasks are not hooks), and `hook_type` is an
     /// inert placeholder read only by `working_directory` and header rendering.
     pub task_name: Option<String>,
+
+    /// The argument vector git handed the hook, for a [`HookType::Git`]
+    /// context. Empty for every other hook type, and for a stage invoked by
+    /// hand through `daft hooks run`.
+    ///
+    /// Kept raw rather than parsed into a per-stage payload enum: the same
+    /// values are needed in three shapes — named `DAFT_*` variables,
+    /// `{1}`-style positional templates, and the argv git would have passed a
+    /// script — and a parsed form would have to be flattened back for two of
+    /// them.
+    pub stage_argv: Vec<String>,
+
+    /// What git wrote to the hook's stdin, for the stages that supply one
+    /// (see [`GitStage::expects_stdin`]). Drained once by the dispatcher and
+    /// held here because a process can only read its stdin once.
+    ///
+    /// [`GitStage::expects_stdin`]: crate::hooks::git_stage::GitStage::expects_stdin
+    pub stage_stdin: Option<String>,
 }
 
 /// Reason why a worktree is being removed.
@@ -224,6 +242,8 @@ impl HookContext {
             extra_env: BTreeMap::new(),
             state_dir: None,
             task_name: None,
+            stage_argv: Vec::new(),
+            stage_stdin: None,
         }
     }
 
@@ -342,6 +362,108 @@ impl HookContext {
         self.removal_reason = Some(reason);
         self
     }
+
+    /// Attach the argv and stdin git handed a stage hook.
+    ///
+    /// The named `DAFT_*` variables are derived from this in
+    /// [`HookEnvironment::from_context`] rather than being passed in
+    /// separately, so a caller cannot supply a payload and forget the
+    /// environment that describes it.
+    pub fn with_stage_payload(
+        mut self,
+        argv: Vec<String>,
+        stdin: Option<impl Into<String>>,
+    ) -> Self {
+        self.stage_argv = argv;
+        self.stage_stdin = stdin.map(Into::into);
+        self
+    }
+}
+
+/// The `DAFT_*` variables describing a git stage's payload.
+///
+/// Lives beside [`DAFT_VARS`] because that table must classify every name
+/// this can produce, and the two drifting apart is exactly the failure the
+/// weld test exists to catch.
+///
+/// Naming note: two of git's payloads collide with names daft already uses,
+/// and both are qualified rather than shadowed. `post-merge`'s squash flag is
+/// `DAFT_GIT_MERGE_SQUASH`, not `DAFT_MERGE_SQUASH`, because the whole
+/// `DAFT_MERGE_*` family means "a `daft merge` is running" and this means
+/// something else at a different time. `prepare-commit-msg`'s arguments are
+/// `DAFT_COMMIT_MSG_*` rather than `DAFT_COMMIT_*`, because `DAFT_COMMIT`
+/// already names a branchless worktree's pinned OID.
+fn git_stage_env(
+    stage: crate::hooks::git_stage::GitStage,
+    argv: &[String],
+    stdin: Option<&str>,
+) -> BTreeMap<String, String> {
+    use crate::hooks::git_stage::GitStage;
+
+    let arg = |i: usize| argv.get(i).cloned();
+    let mut out = BTreeMap::new();
+    // Always present, so a shared job body can branch on which stage invoked
+    // it. git's spelling, matching the shim's filename.
+    out.insert(
+        "DAFT_GIT_STAGE".to_string(),
+        stage.git_hook_filename().into(),
+    );
+
+    let mut put = |name: &str, value: Option<String>| {
+        if let Some(v) = value {
+            out.insert(name.to_string(), v);
+        }
+    };
+
+    match stage {
+        GitStage::CommitMsg | GitStage::ApplypatchMsg => {
+            put("DAFT_COMMIT_MSG_FILE", arg(0));
+        }
+        GitStage::PrepareCommitMsg => {
+            put("DAFT_COMMIT_MSG_FILE", arg(0));
+            // git omits the source (and with it the sha) for a plain commit.
+            put("DAFT_COMMIT_MSG_SOURCE", arg(1));
+            put("DAFT_COMMIT_MSG_SHA", arg(2));
+        }
+        GitStage::PreRebase => {
+            put("DAFT_REBASE_UPSTREAM", arg(0));
+            // Absent when rebasing the current branch.
+            put("DAFT_REBASE_BRANCH", arg(1));
+        }
+        GitStage::PostCheckout => {
+            put("DAFT_CHECKOUT_PREV_SHA", arg(0));
+            put("DAFT_CHECKOUT_NEW_SHA", arg(1));
+            // "1" for a branch checkout, "0" for a file checkout.
+            put("DAFT_CHECKOUT_FLAG", arg(2));
+        }
+        GitStage::PostMerge => {
+            put("DAFT_GIT_MERGE_SQUASH", arg(0));
+        }
+        GitStage::PrePush => {
+            put("DAFT_PUSH_REMOTE", arg(0));
+            put("DAFT_PUSH_REMOTE_URL", arg(1));
+            // The raw stdin block, one `<local-ref> <local-oid> <remote-ref>
+            // <remote-oid>` line per ref. Republished as a variable because
+            // stdin is consumed by the dispatcher and cannot be read twice —
+            // a job that wants it as a stream declares `use_stdin:` instead.
+            put("DAFT_PUSH_REFS", stdin.map(str::to_string));
+        }
+        GitStage::PostRewrite => {
+            // "amend" or "rebase".
+            put("DAFT_REWRITE_COMMAND", arg(0));
+        }
+        // No arguments, or none worth a name of their own — `{1}`-style
+        // positional templates still reach them.
+        GitStage::PreCommit
+        | GitStage::PreMergeCommit
+        | GitStage::PostCommit
+        | GitStage::PreApplypatch
+        | GitStage::PostApplypatch
+        | GitStage::PreAutoGc
+        | GitStage::SendemailValidate
+        | GitStage::PostIndexChange => {}
+    }
+    out
 }
 
 /// Builder for hook environment variables.
@@ -412,6 +534,14 @@ impl HookEnvironment {
             }
             if let Some(ref old_branch) = ctx.old_branch_name {
                 env.set("DAFT_OLD_BRANCH_NAME", old_branch);
+            }
+        }
+
+        // Git-stage payload, derived from the argv/stdin on the context so a
+        // caller cannot supply one without the other.
+        if let HookType::Git(stage) = ctx.hook_type {
+            for (k, v) in git_stage_env(stage, &ctx.stage_argv, ctx.stage_stdin.as_deref()) {
+                env.set(&k, v);
             }
         }
 
@@ -611,6 +741,102 @@ static DAFT_VARS: &[(&str, DaftVarKind)] = {
             "DAFT_MERGE_PROMOTED_FROM_EPHEMERAL",
             EventScoped { when: WHEN_MERGE },
         ),
+        // The git-stage family: what git handed the hook, per stage. See
+        // `git_stage_env`, which is welded to this block by the classification
+        // test below.
+        (
+            "DAFT_GIT_STAGE",
+            EventScoped {
+                when: "while a git stage runs (it names the stage: pre-commit, \
+                       pre-push, …)",
+            },
+        ),
+        (
+            "DAFT_COMMIT_MSG_FILE",
+            EventScoped {
+                when: "during the commit-msg, prepare-commit-msg and applypatch-msg \
+                       stages (the file holding the message, which the hook may edit)",
+            },
+        ),
+        (
+            "DAFT_COMMIT_MSG_SOURCE",
+            EventScoped {
+                when: "during the prepare-commit-msg stage, and only when git \
+                       supplies a source (message, template, merge, squash, commit)",
+            },
+        ),
+        (
+            "DAFT_COMMIT_MSG_SHA",
+            EventScoped {
+                when: "during the prepare-commit-msg stage, and only when the \
+                       source is a commit being reused",
+            },
+        ),
+        (
+            "DAFT_REBASE_UPSTREAM",
+            EventScoped {
+                when: "during the pre-rebase stage",
+            },
+        ),
+        (
+            "DAFT_REBASE_BRANCH",
+            EventScoped {
+                when: "during the pre-rebase stage, and only when a branch other \
+                       than the current one is being rebased",
+            },
+        ),
+        (
+            "DAFT_CHECKOUT_PREV_SHA",
+            EventScoped {
+                when: "during the post-checkout stage",
+            },
+        ),
+        (
+            "DAFT_CHECKOUT_NEW_SHA",
+            EventScoped {
+                when: "during the post-checkout stage",
+            },
+        ),
+        (
+            "DAFT_CHECKOUT_FLAG",
+            EventScoped {
+                when: "during the post-checkout stage (1 for a branch checkout, \
+                       0 for a file checkout)",
+            },
+        ),
+        (
+            "DAFT_GIT_MERGE_SQUASH",
+            EventScoped {
+                when: "during git's post-merge stage (1 when the merge was a \
+                       squash) — unrelated to the DAFT_MERGE_* family, which \
+                       belongs to daft's own merge",
+            },
+        ),
+        (
+            "DAFT_PUSH_REMOTE",
+            EventScoped {
+                when: "during the pre-push stage",
+            },
+        ),
+        (
+            "DAFT_PUSH_REMOTE_URL",
+            EventScoped {
+                when: "during the pre-push stage",
+            },
+        ),
+        (
+            "DAFT_PUSH_REFS",
+            EventScoped {
+                when: "during the pre-push stage (the refs being pushed, one \
+                       '<local-ref> <local-oid> <remote-ref> <remote-oid>' per line)",
+            },
+        ),
+        (
+            "DAFT_REWRITE_COMMAND",
+            EventScoped {
+                when: "during the post-rewrite stage (amend or rebase)",
+            },
+        ),
     ]
 };
 
@@ -677,7 +903,31 @@ mod tests {
         maxed.old_branch_name = Some("old".into());
         let task = HookContext::for_task("dev", "/p", "/p/.git", "origin", "/p/main", "main");
 
-        for ctx in [&maxed, &task] {
+        // Every stage's payload too — `git_stage_env` can emit a name for any
+        // of them, and each must be classified.
+        let stages: Vec<HookContext> = crate::hooks::git_stage::GitStage::all()
+            .iter()
+            .map(|&stage| {
+                HookContext::new(
+                    HookType::Git(stage),
+                    "__hook",
+                    "/p",
+                    "/p/.git",
+                    "origin",
+                    "/p/feat",
+                    "/p/feat",
+                    "feat",
+                )
+                // More arguments than any stage takes, so no branch is missed
+                // for want of an argv entry.
+                .with_stage_payload(
+                    vec!["a1".into(), "a2".into(), "a3".into(), "a4".into()],
+                    Some("refs/heads/x 1 refs/heads/x 0"),
+                )
+            })
+            .collect();
+
+        for ctx in [&maxed, &task].into_iter().chain(stages.iter()) {
             for key in HookEnvironment::from_context(ctx).vars().keys() {
                 assert_ne!(
                     daft_var_kind(key),
@@ -726,6 +976,113 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn stage_env(
+        stage: crate::hooks::git_stage::GitStage,
+        argv: &[&str],
+        stdin: Option<&str>,
+    ) -> HookEnvironment {
+        let ctx = HookContext::new(
+            HookType::Git(stage),
+            "__hook",
+            "/p",
+            "/p/.git",
+            "origin",
+            "/p/feat",
+            "/p/feat",
+            "feat",
+        )
+        .with_stage_payload(argv.iter().map(|s| s.to_string()).collect(), stdin);
+        HookEnvironment::from_context(&ctx)
+    }
+
+    #[test]
+    fn every_stage_names_itself() {
+        for &stage in crate::hooks::git_stage::GitStage::all() {
+            let env = stage_env(stage, &[], None);
+            assert_eq!(
+                env.get("DAFT_GIT_STAGE"),
+                Some(stage.git_hook_filename()),
+                "{stage}"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_payloads_map_to_their_named_variables() {
+        use crate::hooks::git_stage::GitStage;
+
+        let env = stage_env(GitStage::CommitMsg, &["/tmp/MSG"], None);
+        assert_eq!(env.get("DAFT_COMMIT_MSG_FILE"), Some("/tmp/MSG"));
+
+        let env = stage_env(
+            GitStage::PrepareCommitMsg,
+            &["/tmp/MSG", "commit", "abc123"],
+            None,
+        );
+        assert_eq!(env.get("DAFT_COMMIT_MSG_FILE"), Some("/tmp/MSG"));
+        assert_eq!(env.get("DAFT_COMMIT_MSG_SOURCE"), Some("commit"));
+        assert_eq!(env.get("DAFT_COMMIT_MSG_SHA"), Some("abc123"));
+
+        let env = stage_env(GitStage::PostCheckout, &["aaa", "bbb", "1"], None);
+        assert_eq!(env.get("DAFT_CHECKOUT_PREV_SHA"), Some("aaa"));
+        assert_eq!(env.get("DAFT_CHECKOUT_NEW_SHA"), Some("bbb"));
+        assert_eq!(env.get("DAFT_CHECKOUT_FLAG"), Some("1"));
+
+        let env = stage_env(GitStage::PreRebase, &["origin/main"], None);
+        assert_eq!(env.get("DAFT_REBASE_UPSTREAM"), Some("origin/main"));
+
+        let env = stage_env(GitStage::PostRewrite, &["amend"], None);
+        assert_eq!(env.get("DAFT_REWRITE_COMMAND"), Some("amend"));
+    }
+
+    #[test]
+    fn pre_push_republishes_the_stdin_git_consumed() {
+        // The dispatcher drains stdin once; a job that wants it as text
+        // reads this rather than a stream nobody can rewind.
+        let refs = "refs/heads/f 1111 refs/heads/f 0000";
+        let env = stage_env(
+            crate::hooks::git_stage::GitStage::PrePush,
+            &["origin", "git@example.com:x/y.git"],
+            Some(refs),
+        );
+        assert_eq!(env.get("DAFT_PUSH_REMOTE"), Some("origin"));
+        assert_eq!(
+            env.get("DAFT_PUSH_REMOTE_URL"),
+            Some("git@example.com:x/y.git")
+        );
+        assert_eq!(env.get("DAFT_PUSH_REFS"), Some(refs));
+    }
+
+    #[test]
+    fn an_argument_git_did_not_supply_produces_no_variable() {
+        use crate::hooks::git_stage::GitStage;
+        // A plain `git commit` gets no source argument. Emitting the name
+        // with an empty value would make `[ -n "$DAFT_COMMIT_MSG_SOURCE" ]`
+        // and `[ -z ... ]` agree — both false-ish, neither informative.
+        let env = stage_env(GitStage::PrepareCommitMsg, &["/tmp/MSG"], None);
+        assert_eq!(env.get("DAFT_COMMIT_MSG_FILE"), Some("/tmp/MSG"));
+        assert_eq!(env.get("DAFT_COMMIT_MSG_SOURCE"), None);
+        assert_eq!(env.get("DAFT_COMMIT_MSG_SHA"), None);
+    }
+
+    #[test]
+    fn git_post_merge_does_not_join_the_daft_merge_family() {
+        use crate::hooks::git_stage::GitStage;
+        // Same event name, different event. `DAFT_MERGE_*` means "a daft
+        // merge is running"; this is git finishing a merge in a worktree.
+        let env = stage_env(GitStage::PostMerge, &["1"], None);
+        assert_eq!(env.get("DAFT_GIT_MERGE_SQUASH"), Some("1"));
+        assert!(env.get("DAFT_MERGE_SQUASH").is_none());
+        assert!(env.get("DAFT_MERGE_MODE").is_none());
+    }
+
+    #[test]
+    fn a_lifecycle_hook_emits_no_stage_variables() {
+        let env = HookEnvironment::from_context(&make_test_context());
+        assert!(env.get("DAFT_GIT_STAGE").is_none());
+        assert!(env.get("DAFT_COMMIT_MSG_FILE").is_none());
     }
 
     /// A near-miss inside the merge family must miss. The prefix rule this
@@ -1098,6 +1455,8 @@ mod tests {
             extra_env: BTreeMap::new(),
             state_dir: None,
             task_name: None,
+            stage_argv: Vec::new(),
+            stage_stdin: None,
         };
         let env = HookEnvironment::from_context(&ctx);
         assert_eq!(env.vars.get("DAFT_IS_MOVE").unwrap(), "true");
@@ -1135,6 +1494,8 @@ mod tests {
             extra_env: BTreeMap::new(),
             state_dir: None,
             task_name: None,
+            stage_argv: Vec::new(),
+            stage_stdin: None,
         };
         let env = HookEnvironment::from_context(&ctx);
         assert!(!env.vars.contains_key("DAFT_IS_MOVE"));
