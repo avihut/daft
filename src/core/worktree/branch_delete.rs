@@ -3,7 +3,7 @@
 //! Deletes branches and their associated worktrees.
 
 use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
-use crate::core::worktree::ports::{ForgeMergedWitness, NoopStageRunner};
+use crate::core::worktree::ports::ForgeMergedWitness;
 use crate::core::worktree::push::{PushAction, push_with_hooks, resolve_delete_pre_push};
 use crate::core::worktree::trash::{self, Disposition};
 use crate::core::{
@@ -2241,7 +2241,7 @@ fn delete_single_branch(
             },
             push_cwd,
             hook_plan.verify,
-            &NoopStageRunner,
+            crate::hooks::git_stage::stage_runner::runner(),
             ctx.presenter,
             hook_plan.hook_present,
         )
