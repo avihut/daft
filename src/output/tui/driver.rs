@@ -322,7 +322,7 @@ impl LiveScreen for TuiState {
         ])
         .split(area);
         render::render_header(self, frame, chunks[0]);
-        render::render_table(self, frame, chunks[1]);
+        render::render_table(self, frame, chunks[1], final_frame);
         render::render_footer(self, frame, chunks[2]);
 
         if final_frame {

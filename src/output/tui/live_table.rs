@@ -315,10 +315,11 @@ impl LiveTable {
 
     /// True when the cell for `field` on `row_idx` holds a persisted (stale)
     /// value that a fresh patch has not yet superseded — the render path
-    /// styles it DIM to signal "last known, refreshing". Goes false the
+    /// breathes it to signal "last known, refreshing". Goes false the
     /// instant the matching patch lands. Deliberately not gated on
     /// `collection_complete`: a value the walk never refreshes stays honestly
-    /// dim rather than promoting to "fresh" at collection end.
+    /// muted rather than promoting to "fresh" at collection end (the final
+    /// frame settles its breath — see `render::stale_cell`).
     pub fn is_cell_stale(&self, row_idx: usize, field: FieldSet) -> bool {
         self.stale_fields[row_idx].contains(field)
             && !self.received_patches[row_idx].contains(field)

@@ -92,8 +92,8 @@ pub fn tree_glyph(index: usize, count: usize) -> &'static str {
 #[derive(Debug, Clone, Copy)]
 enum SizeCell {
     Loading,
-    /// A persisted, last-known size seeded from the catalog cache. Rendered
-    /// dim (like the worktree table's stale cell) and superseded in place the
+    /// A persisted, last-known size seeded from the catalog cache. Breathes
+    /// (like the worktree table's stale cell) and is superseded in place the
     /// moment the fresh walk's `Loaded` lands. Distinct from `Loaded` so
     /// `is_complete` keeps waiting for the real walk.
     Stale(u64),
@@ -135,9 +135,9 @@ impl CatalogTable {
     }
 
     /// Seed the initial size cells with cached (stale) values where available.
-    /// `stale[i] == Some(b)` renders row `i` as a dim, last-known `b` up front
-    /// — superseded when its fresh walk lands — while `None` leaves the cell
-    /// shimmer-loading. A length mismatch leaves every cell Loading
+    /// `stale[i] == Some(b)` renders row `i` as a breathing, last-known `b` up
+    /// front — superseded when its fresh walk lands — while `None` leaves the
+    /// cell shimmer-loading. A length mismatch leaves every cell Loading
     /// (defensive; callers align `stale` to `rows` by index).
     pub fn with_stale_sizes(mut self, stale: Vec<Option<u64>>) -> Self {
         if stale.len() == self.sizes.len() {
@@ -282,7 +282,7 @@ impl CatalogTable {
         widths
     }
 
-    fn size_cell(&self, index: usize, width: u16, dim: bool) -> Cell<'static> {
+    fn size_cell(&self, index: usize, width: u16, dim: bool, final_frame: bool) -> Cell<'static> {
         match self.sizes[index] {
             SizeCell::Loaded(Some(bytes)) => {
                 let style = if dim {
@@ -293,9 +293,10 @@ impl CatalogTable {
                 Cell::from(Span::styled(format_human_size(bytes), style))
             }
             SizeCell::Loaded(None) => not_loaded_cell(width),
-            // A stale value is real (just not re-measured yet), so show it dim
-            // even after cancel — only never-loaded cells fall to the em-dash.
-            SizeCell::Stale(bytes) => stale_cell(&format_human_size(bytes)),
+            // A stale value is real (just not re-measured yet), so keep showing
+            // it — breathing while the walk runs, settled once the run ends —
+            // even after cancel. Only never-loaded cells fall to the em-dash.
+            SizeCell::Stale(bytes) => stale_cell(&format_human_size(bytes), self.tick, final_frame),
             SizeCell::Loading if self.cancelled => not_loaded_cell(width),
             SizeCell::Loading => loading_shimmer_cell(width, self.tick),
         }
@@ -391,7 +392,7 @@ impl LiveScreen for CatalogTable {
                         truncate_with_ellipsis(row.remote.as_deref().unwrap_or("-"), *width),
                         Style::default().add_modifier(Modifier::DIM),
                     )),
-                    RepoListColumn::Size => self.size_cell(idx, *width, dim),
+                    RepoListColumn::Size => self.size_cell(idx, *width, dim, final_frame),
                 });
             }
             let mut table_row = Row::new(cells);
@@ -683,16 +684,31 @@ mod tests {
     }
 
     #[test]
-    fn stale_seeded_cell_renders_dim_value() {
-        let table = CatalogTable::new(vec![cells("alpha", false, false)], columns())
+    fn stale_seeded_cell_breathes_until_the_fresh_value_lands() {
+        use crate::output::tui::render::SKELETON_BREATH_FRAMES;
+
+        let mut table = CatalogTable::new(vec![cells("alpha", false, false)], columns())
             .with_stale_sizes(vec![Some(2048)]);
-        let backend = TestBackend::new(100, 6);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| table.render(f, false)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let row: String = (0..100)
-            .map(|x| buffer[(x, 1)].symbol().to_string())
-            .collect();
+
+        // Render, returning the row text and the foreground color of the size
+        // unit glyph. Key off "K" — unique to the Size cell here (the
+        // Worktrees column's plain "2" would false-match a bare digit search).
+        let unit_fg =
+            |table: &CatalogTable, final_frame: bool| -> (String, ratatui::style::Color) {
+                let backend = TestBackend::new(100, 6);
+                let mut terminal = Terminal::new(backend).unwrap();
+                terminal.draw(|f| table.render(f, final_frame)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let row: String = (0..100)
+                    .map(|x| buffer[(x, 1)].symbol().to_string())
+                    .collect();
+                let x = (0..100u16)
+                    .find(|x| buffer[(*x, 1)].symbol() == "K")
+                    .expect("size unit rendered");
+                (row, buffer[(x, 1)].fg)
+            };
+
+        let (row, dark) = unit_fg(&table, false);
         assert!(
             !row.contains('\u{25AC}'),
             "stale cell shows a value, not the shimmer: {row:?}"
@@ -701,15 +717,21 @@ mod tests {
             row.contains("2K"),
             "stale cell shows the cached size: {row:?}"
         );
-        // The size glyphs are dim. Key off the unit char "K" — unique to the
-        // Size cell here (the Worktrees column's plain "2" would false-match a
-        // bare digit search).
-        let x = (0..100u16)
-            .find(|x| buffer[(*x, 1)].symbol() == "K")
-            .expect("size unit rendered");
-        assert!(
-            buffer[(x, 1)].style().add_modifier.contains(Modifier::DIM),
-            "stale size value should be dim"
+
+        // The cached value breathes on the shared tick while the walk runs.
+        table.tick = SKELETON_BREATH_FRAMES / 2;
+        let (_, bright) = unit_fg(&table, false);
+        assert_ne!(
+            dark, bright,
+            "stale size value should pulse across the breath (dark={dark:?}, bright={bright:?})"
+        );
+
+        // The final frame settles the breath, so a value the walk never
+        // refreshed is not frozen mid-pulse at near-full brightness.
+        let (_, settled) = unit_fg(&table, true);
+        assert_eq!(
+            settled, dark,
+            "final frame should settle the stale breath to its darkest phase"
         );
     }
 
