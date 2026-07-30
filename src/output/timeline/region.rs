@@ -1884,10 +1884,12 @@ fn phase_for(face: &RowFace) -> StepPhase {
 }
 
 fn display_label(spec: &StepSpec, phase: StepPhase) -> String {
-    // A fixed label (a shared file's path) wins in every phase — the face
-    // glyph alone carries the row's state.
+    // A fixed label (a shared file's path, a `-x` command as typed) wins in
+    // every phase — the face glyph alone carries the row's state. It is also
+    // the one label that can carry arbitrary user text, so it is sanitized
+    // here, at the seam the column width is measured through.
     if let Some(label) = &spec.label {
-        return label.clone();
+        return crate::output::live_line::sanitize_label(label);
     }
     let labels = super::plan::labels_for(spec.key.id);
     let base = match phase {
