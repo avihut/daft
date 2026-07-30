@@ -1,8 +1,8 @@
 ---
 title: Services with ports
 description:
-  Per-worktree compose stacks that don't collide — branch-named projects,
-  branch-derived ports, automatic teardown.
+  Per-worktree compose stacks that don't collide — derived ports, slug-named
+  projects, automatic teardown.
 pillars: [worktrees, hooks]
 ---
 
@@ -33,16 +33,23 @@ you forget which port belongs to which worktree. Three days later you're tracing
 a bug against the wrong database.
 
 The reach for daft: every worktree gets its **own** compose stack, with its own
-ports, named after its branch. Two parallel worktrees coexist; the dev server in
-feature/auth talks to feature/auth's Postgres, not feature/billing's.
+ports, named after the worktree. Two parallel worktrees coexist; the dev server
+in feature/auth talks to feature/auth's Postgres, not feature/billing's.
 
 ## What changes
 
-`compose.yaml` stops hardcoding port numbers — they come from env vars. A
-`worktree-post-create` job computes per-worktree ports from the branch name and
-writes them into `.envrc`, where direnv loads them on `cd`. The same job sets
+`compose.yaml` stops hardcoding port numbers — they come from env vars. The
+ports themselves come from a declared `env:` section in `daft.yml`:
+[`daft env`](/reference/cli/daft-env) derives each worktree's values as a pure
+function of the worktree's name, so `feature/auth` gets the same ports on every
+machine, every restart, forever — no allocation script, no registry, no
+bookkeeping job. Each worktree hashes to its own contiguous block, and the
+declared names take consecutive offsets inside it.
+
+Hooks and tasks receive the declared values in their environment automatically,
+so the compose jobs need no port plumbing at all. The same section declares
 `COMPOSE_PROJECT_NAME`, which prefixes every container, network, and volume with
-`<repo>-<branch>` so two stacks can coexist.
+`<repo>-<worktree-slug>` so two stacks can coexist.
 
 A symmetric `worktree-pre-remove` job tears it all down. The full teardown
 semantics live in [Cleanup on remove](/recipes/cleanup-on-remove); this page
@@ -50,37 +57,28 @@ shows the minimum needed for the create-side to be safe.
 
 ## Recipe
 
-Two `worktree-post-create` jobs (allocate ports, then boot services) plus the
-matching teardown:
+One `env:` declaration plus a boot job and its matching teardown:
 
 ```yaml
 # daft.yml
+env:
+  salt: myapp # pin it: values become identical on every machine
+  ports:
+    - PORT_POSTGRES # offset 0 in this worktree's block
+    - PORT_REDIS # offset 1
+  values:
+    COMPOSE_PROJECT_NAME: "myapp-{worktree_slug}"
+
 hooks:
   worktree-post-create:
     jobs:
-      - name: allocate-ports
-        run: |
-          BASE=$((30000 + $(echo -n "$DAFT_BRANCH_NAME" | cksum | cut -d' ' -f1) % 1000 * 10))
-          cat > .envrc <<EOF
-          export PORT_POSTGRES=$BASE
-          export PORT_REDIS=$((BASE + 1))
-          EOF
-          direnv allow .
-
       - name: services-up
         run: docker compose up -d --wait
-        needs: [allocate-ports]
-        env:
-          COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME:-app}-${DAFT_BRANCH_NAME//\//-}
-          PORT_POSTGRES: ${PORT_POSTGRES}
-          PORT_REDIS: ${PORT_REDIS}
 
   worktree-pre-remove:
     jobs:
       - name: services-down
         run: docker compose down -v --remove-orphans
-        env:
-          COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME:-app}-${DAFT_BRANCH_NAME//\//-}
 ```
 
 `compose.yaml`:
@@ -89,34 +87,57 @@ hooks:
 services:
   postgres:
     image: postgres:17
-    ports: ["${PORT_POSTGRES}:5432"]
+    ports: ["127.0.0.1:${PORT_POSTGRES}:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
   redis:
     image: redis:7
-    ports: ["${PORT_REDIS}:6379"]
+    ports: ["127.0.0.1:${PORT_REDIS}:6379"]
 volumes:
   pgdata:
 ```
 
 Piece by piece:
 
-1. **`allocate-ports`** hashes `$DAFT_BRANCH_NAME` to a stable 10-port range
-   starting at 30000–39990. `feature/auth` always lands on the same range;
-   `feature/billing` lands on a different one. No central registry, no races.
-   The result writes to `.envrc` so direnv exports the vars on the next `cd`.
-2. **`services-up`** boots compose with `COMPOSE_PROJECT_NAME` set — the prefix
+1. **`env.ports`** declares the port names. Each worktree hashes to its own
+   16-port block in 20000–32767 (below the OS ephemeral ranges, above the
+   3000–9999 zone dev tools squat on), and declared names take consecutive
+   offsets — one worktree's ports read like `23952, 23953`, easy to hold in your
+   head while debugging. Ask anytime with `daft env PORT_POSTGRES`, from any
+   directory, even for a worktree you haven't created yet.
+2. **`env.values`** renders `COMPOSE_PROJECT_NAME` per worktree — the prefix
    that turns `postgres-1` into `myapp-feature-auth-postgres-1`, isolating
-   containers, networks, and volumes per worktree. The per-job `env:` re-exports
-   the ports because hooks don't inherit from `.envrc`.
-3. **`--wait`** on `docker compose up` blocks until the containers report
-   healthy, so the hook only completes when Postgres can actually accept
-   connections.
+   containers, networks, and volumes per worktree.
+3. **`services-up`** needs no `env:` block: hooks receive every declared value
+   automatically. `--wait` blocks until the containers report healthy.
 4. **`services-down -v --remove-orphans`** is the symmetric pre-remove: stop
    containers, delete the worktree's volumes, sweep stragglers.
+5. Publishing on `127.0.0.1:` keeps dev services off your LAN interface —
+   hygiene that costs nothing.
+
+For interactive `docker compose` commands from your shell — `docker compose ps`
+showing _this_ worktree's containers — load the same values with direnv:
+
+```bash
+# .envrc
+eval "$(daft env --export)"
+watch_file daft.yml daft.local.yml
+```
 
 Two parallel worktrees now coexist. `daft start feature/billing` while
-feature/auth is up gets a different port range, a different project name, and a
-different set of volumes — no collisions, no manual overrides.
+feature/auth is up gets a different port block, a different project name, and a
+different set of volumes — no collisions, no manual overrides. If two worktree
+names ever hash to the same block, `daft env` warns on stderr; rename one or set
+a different `salt:`.
+
+::: warning Migrating from the branch-hash script
+
+Earlier versions of this recipe hashed `$DAFT_BRANCH_NAME` with `cksum` into
+30000–39990 from an `allocate-ports` hook. The declared `env:` section replaces
+that job entirely — delete it — but the derived ports are different numbers
+(worktree-keyed, 20000–32767). Anything that memorized the old ports (debug
+configs, bookmarked URLs) needs the new values from `daft env` once.
+
+:::
 
 ## Variants by starting state
 
@@ -127,23 +148,22 @@ adopting an existing stack.
 ### Green-field
 
 The Recipe above is the full shape. `compose.yaml` is yours; you control the
-port surface; you write `${PORT_POSTGRES}:5432` from the ground up; and the
-hook's `allocate-ports` job populates `.envrc`. Two parallel worktrees coexist
-with disjoint ports and disjoint container names.
+port surface; you write `${PORT_POSTGRES}:5432` from the ground up; the `env:`
+section owns the numbers. Two parallel worktrees coexist with disjoint ports and
+disjoint container names.
 
 ### Adopt-existing
 
 Your team has been running `compose.yaml` for months. You don't want to
 coordinate a "pull and re-up" with everyone today just to add daft. You can
-layer the hook on top without editing the file — but how much isolation you get
+layer daft on top without editing the file — but how much isolation you get
 depends on what `compose.yaml` already looks like.
 
 **Case 1 — `compose.yaml` already uses env-var ports.** Common in projects that
 did the right thing early. The existing `compose.yaml` has
 `${PORT_POSTGRES:-5432}:5432` (a default, with override). Drop in the
 green-field Recipe as-is — the existing defaults stay correct for
-one-worktree-at-a-time, and the hook's per-worktree port allocation takes over
-for parallel worktrees.
+one-worktree-at-a-time, and the declared ports take over for parallel worktrees.
 
 **Case 2 — `compose.yaml` hardcodes ports.** `5432:5432` everywhere. You get
 container, network, and volume isolation via `COMPOSE_PROJECT_NAME`, but
@@ -151,40 +171,29 @@ host-side ports still collide: two worktrees can't both have Postgres up; the
 second `docker compose up` fails with "port already in use." This is still a
 worthwhile adoption — a single worktree at a time gets clean isolation (no `dev`
 containers polluting `master`), and the team can port-variable-ize the file
-later as a smaller, separate PR. The minimum hook for this case:
+later as a smaller, separate PR. The minimum for this case:
 
 ```yaml
 # daft.yml
+env:
+  values:
+    COMPOSE_PROJECT_NAME: "myapp-{worktree_slug}"
+
 hooks:
   worktree-post-create:
     jobs:
       - name: services-up
         run: docker compose up -d --wait
-        env:
-          COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME:-app}-${DAFT_BRANCH_NAME//\//-}
 
   worktree-pre-remove:
     jobs:
       - name: services-down
         run: docker compose down -v --remove-orphans
-        env:
-          COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME:-app}-${DAFT_BRANCH_NAME//\//-}
-```
-
-Two `env:` blocks carry the same `COMPOSE_PROJECT_NAME` value, derived from the
-branch. No edits to `compose.yaml`.
-
-For interactive `docker compose` commands from the worktree shell — so
-`docker compose ps` shows that worktree's containers — also seed the var into
-`.envrc`:
-
-```bash
-# .envrc — written by hand or seeded by an allocate-ports job
-export COMPOSE_PROJECT_NAME="myapp-${DAFT_BRANCH_NAME//\//-}"
 ```
 
 When the team is ready, port-variable-ize `compose.yaml` (`5432:5432` →
-`${PORT_POSTGRES}:5432`) and graduate to the green-field Recipe.
+`${PORT_POSTGRES}:5432`), add the `ports:` list, and graduate to the green-field
+Recipe.
 
 ## Variants by runtime
 
@@ -201,15 +210,23 @@ services:
   postgres: { ... }
   meilisearch:
     image: getmeili/meilisearch:v1.13
-    ports: ["${PORT_MEILI:-30099}:7700"]
+    ports: ["127.0.0.1:${PORT_MEILI}:7700"]
     profiles: ["search"]
 ```
 
 ```yaml
-# daft.yml — only boot search if SEARCH=1 in env
-- name: services-up
-  run: docker compose --profile search up -d --wait
-  only: { env: { SEARCH: "1" } }
+# daft.yml — declare the extra port; only boot search if SEARCH=1 in env
+env:
+  ports:
+    - PORT_POSTGRES
+    - PORT_REDIS
+    - PORT_MEILI
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: services-up
+        run: docker compose --profile search up -d --wait
+        only: { env: { SEARCH: "1" } }
 ```
 
 Devs who need search export `SEARCH=1` in their personal `mise.local.toml` or
@@ -219,8 +236,8 @@ shell rc; everyone else gets the lean stack.
 
 `podman compose` reads the same compose files. Substitute it for
 `docker compose` in the hook. Podman runs rootless by default — port allocations
-under 1024 need extra config, so stick to high ports (which the recipe is
-already doing).
+under 1024 need extra config, so stick to high ports (which the derived range
+already guarantees).
 
 ### Native processes (no containers)
 
@@ -230,6 +247,9 @@ not provisioning — put it in a `tasks:` block and start it with
 [`daft run`](/reference/cli/daft-run) rather than backgrounding it from a hook:
 
 ```yaml
+env:
+  ports:
+    - PORT_APP
 tasks:
   run:
     jobs:
@@ -237,13 +257,11 @@ tasks:
         run: ./bin/myserver --port "$PORT_APP"
 ```
 
+Tasks receive the declared values automatically — `$PORT_APP` is just there.
 `daft run` streams the server's output live and stops it on Ctrl+C — no PID
 file, no pre-remove kill hook, and no server booting in every worktree you only
-ever read. (The `$PORT_APP` allocation still comes from a provisioning hook; see
-[Per-worktree ports (#388)](https://github.com/avihut/daft/issues/388) for
-generating collision-free ports.) If you truly need the process to outlive the
-command, keep the backgrounded-hook approach and kill it from the pre-remove
-hook — covered in
+ever read. If you truly need the process to outlive the command, keep the
+backgrounded-hook approach and kill it from the pre-remove hook — covered in
 [Cleanup on remove → native processes by PID file](/recipes/cleanup-on-remove#native-processes-by-pid-file).
 
 ### Multi-file compose
@@ -254,8 +272,6 @@ services, `compose.dev.yaml` for dev-only overrides):
 ```yaml
 - name: services-up
   run: docker compose -f compose.yaml -f compose.dev.yaml up -d --wait
-  env:
-    COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME}-${DAFT_BRANCH_NAME//\//-}
 ```
 
 Setting `COMPOSE_FILE=compose.yaml:compose.dev.yaml` in `.envrc` is an
@@ -271,6 +287,11 @@ files without needing `-f` every time.
 - Image pulls happen on first run, skipped after
 - Named volumes persist across restarts (so the data survives a hook re-run,
   which is what you want)
+
+The derived ports are deterministic, which changes one habit: **turn off your
+tools' auto-increment port fallbacks** (`strictPort: true` in Vite and friends).
+Once ports are stable, a bind failure should be a loud error naming a real
+conflict — not a silent `+1` that reintroduces the drift you just eliminated.
 
 `docker compose down -v` is **destructive**: the `-v` flag deletes volumes.
 That's correct in `worktree-pre-remove` (the worktree should leave nothing
@@ -292,8 +313,8 @@ corrupt each other's data. Postgres won't recover from that gracefully. See
 - **[Cleanup on remove](/recipes/cleanup-on-remove)** — the symmetric pre-remove
   pattern, plus what to do when teardown isn't just a `compose down` (PID files,
   ports, external registries).
-- **[Env vars & secrets](/recipes/env-vars-and-secrets)** — the deeper
-  port-allocation story (and where the branch-name-hash idea comes from).
+- **[Env vars & secrets](/recipes/env-vars-and-secrets)** — layering derived
+  values with real secrets and per-worktree `.env` files.
 - **[Walkthroughs → Node monorepo with services](/recipes/walkthroughs/node-monorepo-services)**
   — this pattern threaded into a complete project setup, with migrations,
   multiple services, and DATABASE_URL wiring.

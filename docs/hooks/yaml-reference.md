@@ -43,6 +43,7 @@ Additionally:
 | `source_dir`       | string      | Directory for script files (default: `".daft"`)                                    |
 | `source_dir_local` | string      | Directory for local (gitignored) script files (default: `".daft-local"`)           |
 | `copy`             | list / map  | Gitignored paths copied into each new worktree (see [Copied paths](#copied-paths)) |
+| `env`              | object      | Derived per-worktree env values (see [Environment values](#environment-values))    |
 | `hooks`            | map         | Hook definitions, keyed by hook name                                               |
 | `tasks`            | map         | Named, user-invoked task definitions (see [Tasks](#tasks))                         |
 | `log`              | object      | Log configuration (see [Log configuration](#log-configuration))                    |
@@ -132,6 +133,63 @@ message naming the bad value. Check the `copy:` block first when you see it.
 For the practical guide — what actually stays warm per toolchain, and what a
 copied cache cannot promise — see
 [Copying build caches into new worktrees](/worktrees/copying-caches).
+
+## Environment values
+
+The `env:` section declares deterministic per-worktree values — ports and
+templated names — derived from the worktree's slug. No allocation, no registry:
+the same worktree name yields the same values on every machine, even before the
+worktree exists. Query them with [`daft env`](/reference/cli/daft-env); hooks,
+tasks, and `daft exec` receive them in their environment automatically.
+
+```yaml
+env:
+  salt: myapp # optional; default = the repo directory's name.
+  # Pin it so values match across machines and clone locations.
+  ports:
+    - WEBAPP_PORT # offset 0 — enum semantics: a bare name is previous + 1
+    - STORYBOOK_PORT # offset 1
+    - API_PORT: 8 # an explicit offset resets the counter
+  values:
+    COMPOSE_PROJECT_NAME: "myapp-{worktree_slug}"
+    API_URL: "http://localhost:{env:API_PORT}"
+  write: .env # optional default target for `daft env --write`
+  range: 20000-32767 # optional; the default shown
+  block_size: 16 # optional; ports per worktree block
+```
+
+Each worktree hashes to its own contiguous block of `block_size` ports inside
+`range`; declared names take their offsets inside it, so one worktree's ports
+are consecutive. Keep the ports list **append-only** — inserting a bare name
+mid-list renumbers everything after it (pin load-bearing names with explicit
+offsets). Undeclared names resolve in a disjoint ad-hoc region, but only until
+you declare a schema: declaring opts the repo into strictness, where an unknown
+name is an error (`daft env --ad-hoc` escapes).
+
+`values:` are templates over `{worktree_slug}`, `{worktree_path}`,
+`{worktree_root}`, `{branch}`, `{repo}`, plus `{env:PORT_NAME}` to embed a
+declared port. Unresolved placeholders are errors here (unlike hook command
+templates, which leave them intact).
+
+Merge semantics: the scalar knobs (`salt`, `range`, `block_size`, `write`) merge
+field-level — a `daft.local.yml` overriding just `salt:` is the local "reroll
+everything" lever — while `ports:` and `values:` replace wholesale when an
+overlay declares them.
+
+`env.write` must not also appear in `shared:`: a shared dotenv is one central
+file symlinked into every worktree, so per-worktree values would overwrite each
+other. Validation refuses the pair.
+
+::: warning Four meanings of "env"
+
+This schema uses the word at four nesting depths with different semantics:
+top-level `env:` declares _derived_ values (this section); a job-level `env:` is
+a _literal_ K→V map for that job; `skip:`/`only:` take an `env:` that names a
+variable as a _truthiness predicate_; and `DAFT_*` variables are _computed_ by
+daft at hook time. When reading a config, the nesting depth tells you which one
+you are looking at.
+
+:::
 
 ## Relations
 

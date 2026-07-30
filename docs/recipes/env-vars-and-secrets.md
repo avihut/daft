@@ -171,21 +171,24 @@ backgrounded process aren't. See
 ## Per-worktree derived values
 
 Some "env vars" aren't fetched, they're **computed** — per-worktree ports,
-branch-derived database names, run IDs. The pattern is the same as the
-seed-from-template recipe, but the source is `bash`, not a vault:
+worktree-derived project names, database names. Don't hash them in bash: declare
+them, and daft derives them deterministically from the worktree's name:
 
 ```yaml
-- name: allocate-port
-  run: |
-    PORT=$((30000 + $(echo -n "$DAFT_BRANCH_NAME" | cksum | cut -d' ' -f1) % 10000))
-    echo "export PORT=$PORT" >> .envrc
-    direnv allow .
+env:
+  salt: myapp
+  ports:
+    - PORT
+  values:
+    DB_NAME: "myapp_{worktree_slug}"
 ```
 
-`$DAFT_BRANCH_NAME` is set by the lifecycle env (see
-[Lifecycle hooks → Worktree](/hooks/lifecycle#worktree-creation-and-removal-hooks)).
-Hashing it gives every branch a stable, collision-free port — no central
-registry, no race conditions, and the same branch always lands on the same port.
+Hooks and tasks receive `PORT` and `DB_NAME` automatically; your shell gets them
+via `eval "$(daft env --export)"` in `.envrc`; and `daft env PORT` answers from
+anywhere — the same worktree name yields the same values on every machine, with
+no central registry and no race conditions. (Earlier versions of this recipe
+hashed `$DAFT_BRANCH_NAME` with `cksum` in a hook — the declared section
+replaces that job, with different, worktree-keyed numbers.)
 
 For full service orchestration with port allocation and host wiring, see
 [Services with ports](/recipes/services-with-ports), which builds on this
