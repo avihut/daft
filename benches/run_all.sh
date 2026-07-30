@@ -31,6 +31,7 @@ SCENARIOS=(
     branch_delete
     workflow_full
     complete
+    copy_warm
 )
 
 # Parse arguments

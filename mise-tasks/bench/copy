@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run copy/warm benchmark (pnpm-shaped cache tree; SCALE=small|medium|large)"
+#MISE depends=["dev:setup"]
+set -euo pipefail
+export PATH="$(git rev-parse --show-toplevel)/target/release:$PATH"
+
+bash "$(git rev-parse --show-toplevel)/benches/scenarios/copy_warm.sh"
