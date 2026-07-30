@@ -18,6 +18,7 @@ pub mod exec;
 pub mod fetch;
 pub mod file;
 pub mod forge_cache;
+pub mod git_hook;
 pub mod hooks;
 pub mod init;
 pub mod install;
