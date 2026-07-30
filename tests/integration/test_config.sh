@@ -668,11 +668,12 @@ test_config_cli_structured_output() {
     done
     log_success "get --format json carries the whole ladder without --origin"
 
-    # Exit code unchanged by --format: a silent layer still exits 1, and still
-    # emits its document, so either signal answers.
+    # Exit code unchanged by --format, in both the ways a read finds no value.
+    # A silent layer is one; the other is a setting nothing sets anywhere that
+    # has no default to fall back to — bare `get` exits 1 there and `--format`
+    # must not soften it into a success just because a document was printed.
     json=$(daft config get daft.merge.style --local --format json 2>/dev/null)
-    local status=$?
-    if [[ $status -eq 0 ]]; then
+    if [[ $? -eq 0 ]]; then
         log_error "--format must not turn a silent layer into a success"
         return 1
     fi
@@ -680,7 +681,17 @@ test_config_cli_structured_output() {
         log_error "a silent layer should still emit its document; got: $json"
         return 1
     fi
-    log_success "--format leaves the exit code alone"
+
+    json=$(daft config get daft.merge.edit --format json 2>/dev/null)
+    if [[ $? -eq 0 ]]; then
+        log_error "--format must not turn a setting with no value into a success"
+        return 1
+    fi
+    if [[ "$json" != *'"value": null'* ]]; then
+        log_error "the document should report the absent value; got: $json"
+        return 1
+    fi
+    log_success "--format leaves the exit code alone, however the value is absent"
 
     # A write reports what landed. A behavior write is several keys behind one
     # command, and the record is the only place that says which.

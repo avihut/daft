@@ -49,6 +49,16 @@ steps:
       output_contains:
         - "daft.merge.style"
 
+  - name:
+      nor a setting nothing sets anywhere, which is the other way a value is
+      absent
+    run: daft config get daft.merge.edit --format json
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - '"value": null'
+
   - name: a behavior read names its state, its presets, and its members
     run: daft config get remote-sync --format json
     cwd: "$WORK_DIR/test-repo/main"

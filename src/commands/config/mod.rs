@@ -885,28 +885,7 @@ fn print_detail(row: &Resolved) {
     }
 
     println!("{}", dim_underline("Where it comes from"));
-    // `reads_from`, not `winner`, and for the reason the screen's ladder uses
-    // it too: `winner` is `None` for every setting nothing sets, which is most
-    // of them, so this marked nothing on the common row — and where a layer
-    // holds an unparseable value it marked that layer while the effective line
-    // underneath named the default the loaders actually fell back to.
-    let reads_from = row.reads_from();
-    for (index, rung) in row.rungs.iter().enumerate() {
-        let marker = if reads_from == Some(index) {
-            "●"
-        } else {
-            " "
-        };
-        let value = rung.value.as_deref().unwrap_or("—");
-        let mut line = format!("  {marker} {:12}  {value}", rung.layer.label());
-        // The note belongs to a *value* that does nothing. An empty scope is
-        // silent, not inert, and labelling it either way is noise.
-        if rung.inert.is_some() && rung.value.is_some() {
-            line.push_str(&format!(" {}", dim("(set here, but never read)")));
-        }
-        if let (Some(path), true) = (&rung.origin_path, rung.value.is_some()) {
-            line.push_str(&format!("  {}", dim(&path.display().to_string())));
-        }
+    for line in ladder_lines(row) {
         println!("{line}");
     }
 
@@ -926,6 +905,41 @@ fn print_detail(row: &Resolved) {
     for diagnostic in &row.diagnostics {
         println!("  {}", describe(diagnostic));
     }
+}
+
+/// The "Where it comes from" block, as lines.
+///
+/// Built rather than printed straight so the mark can be asserted. It has to
+/// land on the layer the effective line underneath names, and the two came
+/// apart once already: this marked `winner`, which is `None` for every setting
+/// nothing sets — most of them — so the common row carried no mark at all, and
+/// where a layer held an unparseable value the mark went to that layer while
+/// the effective line named the default the loaders had actually fallen back
+/// to. `reads_from` is the one the screen's ladder uses, for the same reason.
+fn ladder_lines(row: &Resolved) -> Vec<String> {
+    let reads_from = row.reads_from();
+    row.rungs
+        .iter()
+        .enumerate()
+        .map(|(index, rung)| {
+            let marker = if reads_from == Some(index) {
+                "●"
+            } else {
+                " "
+            };
+            let value = rung.value.as_deref().unwrap_or("—");
+            let mut line = format!("  {marker} {:12}  {value}", rung.layer.label());
+            // The note belongs to a *value* that does nothing. An empty scope is
+            // silent, not inert, and labelling it either way is noise.
+            if rung.inert.is_some() && rung.value.is_some() {
+                line.push_str(&format!(" {}", dim("(set here, but never read)")));
+            }
+            if let (Some(path), true) = (&rung.origin_path, rung.value.is_some()) {
+                line.push_str(&format!("  {}", dim(&path.display().to_string())));
+            }
+            line
+        })
+        .collect()
 }
 
 /// One diagnostic as a line the user can act on.
@@ -1170,6 +1184,58 @@ mod tests {
             }
             _ => panic!("expected set"),
         }
+    }
+
+    /// Regression: the CLI ladder marked `winner`, where the screen's marks
+    /// `reads_from`. Both cases the two disagree on, since either alone would
+    /// pass against the wrong one.
+    #[test]
+    fn the_ladder_marks_the_layer_the_effective_value_is_read_from() {
+        use crate::core::settings::keys;
+        use crate::git::{ConfigEntry, ConfigScope};
+
+        let resolve = |entries: Vec<ConfigEntry>| {
+            resolve::resolve_all(&Snapshot {
+                entries,
+                env: std::collections::HashMap::new(),
+                in_repo: true,
+                yaml: None,
+                layout: None,
+            })
+        };
+        let marked = |row: &Resolved| -> String {
+            let lines: Vec<String> = ladder_lines(row)
+                .into_iter()
+                .filter(|line| line.contains('●'))
+                .collect();
+            assert_eq!(lines.len(), 1, "exactly one layer is read: {lines:?}");
+            lines.into_iter().next().unwrap()
+        };
+
+        // Nothing set: `winner` is None here, so marking it marked nothing.
+        let set = resolve(vec![]);
+        let row = set.get(keys::MERGE_STYLE).expect("registry row");
+        assert!(
+            marked(row).contains("default"),
+            "an unset setting reads its default, and the ladder must say so"
+        );
+
+        // A value the type cannot parse: `winner` is local, but the loaders
+        // fall back past it to the default rather than to the layer below — so
+        // marking local would contradict the effective line under it.
+        let set = resolve(vec![ConfigEntry {
+            key: keys::MERGE_STYLE.to_string(),
+            value: "octopus-ish".to_string(),
+            scope: ConfigScope::Local,
+            origin_path: None,
+        }]);
+        let row = set.get(keys::MERGE_STYLE).expect("registry row");
+        assert!(row.is_set(), "something did set it, invalid though it is");
+        let line = marked(row);
+        assert!(
+            line.contains("default") && !line.contains("local"),
+            "an unparseable value is not what daft reads: {line}"
+        );
     }
 
     /// Every verb emits, and the shape decides the formats: `list` is rows,
