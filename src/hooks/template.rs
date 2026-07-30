@@ -31,11 +31,20 @@ use super::environment::HookContext;
 /// placeholder is left intact so callers with fail-closed semantics (job
 /// `root:`) can detect and refuse it rather than running somewhere wrong.
 ///
+/// For git stages, `{1}`..`{9}` expand to the arguments git passed the hook
+/// and `{0}` to all of them — see [`substitute_positionals`].
+///
 /// `{changed_files}` is NOT handled here: it expands to a per-job filtered
 /// file list, so the job adapter substitutes it after glob filtering (see
 /// [`crate::hooks::changed_files::CHANGED_FILES_TEMPLATE`]).
 pub fn substitute(command: &str, ctx: &HookContext, job_name: Option<&str>) -> String {
     let mut result = command.to_string();
+
+    // Positionals first: a stage argument is a path or a ref that must not be
+    // re-scanned for `{…}` placeholders once substituted.
+    if !ctx.stage_argv.is_empty() {
+        result = substitute_positionals(&result, &ctx.stage_argv);
+    }
 
     result = result.replace("{worktree_path}", &ctx.worktree_path.to_string_lossy());
     result = result.replace("{worktree_branch}", &ctx.branch_name);
@@ -95,6 +104,51 @@ pub fn substitute(command: &str, ctx: &HookContext, job_name: Option<&str>) -> S
     result
 }
 
+/// Expand `{1}`..`{9}` to git's hook arguments and `{0}` to all of them.
+///
+/// The numbering is git's, and deliberately so: a `commit-msg` job written
+/// against any other hook manager reads `$1` as the message file, and `{1}`
+/// is the same thing said in this schema's syntax. `{0}` is the whole argv,
+/// matching `"$@"`.
+///
+/// Values are shell-quoted, because a command string is handed to `sh -c`
+/// and a message-file path can contain spaces. An index git did not supply
+/// expands empty — the same thing the shell does with an unset `$2`, and the
+/// reason a `prepare-commit-msg` job can reference `{2}` without guarding it.
+///
+/// Single left-to-right pass, so a substituted value containing `{1}` is
+/// never rescanned.
+fn substitute_positionals(command: &str, argv: &[String]) -> String {
+    let quote = |s: &String| crate::utils::quote_argv(std::slice::from_ref(s));
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        // `{` then digits then `}`, with nothing else in between.
+        match after.find('}') {
+            Some(close) if close > 0 && after[..close].chars().all(|c| c.is_ascii_digit()) => {
+                let index: usize = after[..close].parse().unwrap_or(usize::MAX);
+                if index == 0 {
+                    out.push_str(&crate::utils::quote_argv(argv));
+                } else if let Some(value) = argv.get(index - 1) {
+                    out.push_str(&quote(value));
+                }
+                rest = &after[close + 1..];
+            }
+            _ => {
+                // Not a positional — emit the brace and keep scanning after
+                // it so `{worktree_path}` survives for the caller.
+                out.push('{');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Sanitized slug for the worktree, safe to embed in docker compose project
 /// names, DB schema names, DNS labels, and temp-dir names.
 ///
@@ -123,6 +177,88 @@ mod tests {
             "feature/new",
         )
         .with_base_branch("main")
+    }
+
+    fn stage_ctx(stage: crate::hooks::git_stage::GitStage, argv: &[&str]) -> HookContext {
+        HookContext::new(
+            HookType::Git(stage),
+            "__hook",
+            "/project",
+            "/project/.git",
+            "origin",
+            "/project/feature",
+            "/project/feature",
+            "feature",
+        )
+        .with_stage_payload(argv.iter().map(|s| s.to_string()).collect(), None::<String>)
+    }
+
+    #[test]
+    fn positionals_carry_gits_own_numbering() {
+        use crate::hooks::git_stage::GitStage;
+        // `{1}` is `$1` — the message file every other hook manager's
+        // commit-msg job already reads.
+        let ctx = stage_ctx(GitStage::CommitMsg, &[".git/COMMIT_EDITMSG"]);
+        assert_eq!(
+            substitute("check {1}", &ctx, None),
+            "check .git/COMMIT_EDITMSG"
+        );
+    }
+
+    #[test]
+    fn zero_expands_to_the_whole_argv() {
+        use crate::hooks::git_stage::GitStage;
+        let ctx = stage_ctx(GitStage::PostCheckout, &["abc", "def", "1"]);
+        assert_eq!(substitute("log {0}", &ctx, None), "log abc def 1");
+    }
+
+    #[test]
+    fn positionals_are_shell_quoted() {
+        use crate::hooks::git_stage::GitStage;
+        // The expansion lands inside a string handed to `sh -c`, and a
+        // worktree path with a space is ordinary.
+        let ctx = stage_ctx(GitStage::CommitMsg, &["/my worktree/.git/MSG"]);
+        let out = substitute("wc -l {1}", &ctx, None);
+        assert_eq!(out, "wc -l '/my worktree/.git/MSG'");
+    }
+
+    #[test]
+    fn a_missing_positional_expands_empty_like_an_unset_shell_arg() {
+        use crate::hooks::git_stage::GitStage;
+        // git omits the source for a plain commit, so a job may reference
+        // `{2}` unconditionally — as it would `$2`.
+        let ctx = stage_ctx(GitStage::PrepareCommitMsg, &["/tmp/MSG"]);
+        assert_eq!(substitute("f {1} {2}", &ctx, None), "f /tmp/MSG ");
+    }
+
+    #[test]
+    fn named_templates_survive_beside_positionals() {
+        use crate::hooks::git_stage::GitStage;
+        let ctx = stage_ctx(GitStage::CommitMsg, &["/tmp/MSG"]);
+        assert_eq!(
+            substitute("cd {worktree_path} && lint {1} {branch}", &ctx, None),
+            "cd /project/feature && lint /tmp/MSG feature"
+        );
+    }
+
+    #[test]
+    fn a_substituted_value_is_not_rescanned() {
+        use crate::hooks::git_stage::GitStage;
+        // A ref or path that itself contains `{1}` must come out literally,
+        // not re-expand into the first argument again.
+        let ctx = stage_ctx(GitStage::CommitMsg, &["lit{1}eral", "second"]);
+        assert_eq!(substitute("f {1}", &ctx, None), "f 'lit{1}eral'");
+    }
+
+    #[test]
+    fn lifecycle_hooks_leave_brace_digits_alone() {
+        // No stage payload means no positional pass: a lifecycle command
+        // containing `{1}` (a regex quantifier, say) is untouched.
+        let ctx = make_ctx();
+        assert_eq!(
+            substitute("grep -E 'a{1,3}' {branch}", &ctx, None),
+            "grep -E 'a{1,3}' feature/new"
+        );
     }
 
     #[test]
@@ -288,6 +424,8 @@ mod tests {
             extra_env: std::collections::BTreeMap::new(),
             state_dir: None,
             task_name: None,
+            stage_argv: Vec::new(),
+            stage_stdin: None,
         };
         let result = substitute(
             "from {old_worktree_path} to {worktree_path} branch {old_branch}",
@@ -325,6 +463,8 @@ mod tests {
             extra_env: std::collections::BTreeMap::new(),
             state_dir: None,
             task_name: None,
+            stage_argv: Vec::new(),
+            stage_stdin: None,
         };
         let result = substitute("old={old_worktree_path} branch={old_branch}", &ctx, None);
         assert_eq!(result, "old= branch=");
