@@ -57,6 +57,17 @@ pub(crate) fn derived_injection_at(
     };
 
     let mut warnings = Vec::new();
+    // `resolve_all` drops declarations in daft's own namespace rather than
+    // letting a derived port overwrite the real DAFT_* value. Silent
+    // dropping would read as "daft ignored my config", so name them.
+    let reserved = spec.reserved_names();
+    if !reserved.is_empty() {
+        warnings.push(format!(
+            "daft.yml declares {} in daft's reserved DAFT_* namespace; not injected \
+             (rename, or the real value would be overwritten)",
+            reserved.join(", ")
+        ));
+    }
     let resolved = match spec.resolve_all(&slug, &vctx) {
         Ok(resolved) => resolved,
         Err(e) => {
@@ -464,86 +475,156 @@ impl HookEnvironment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DaftVarKind {
     /// Present in every job's environment with a value determined by the
-    /// worktree alone — the set a `daft run` task receives. (`DAFT_COMMIT`
-    /// is the one member that can be absent: only branchless worktrees
-    /// carry it.)
+    /// worktree alone — exactly the set a task receives, which is why
+    /// `daft env` can answer it without running anything.
     AtRest,
     /// Only meaningful while a specific operation runs; `when` says which.
     EventScoped {
         /// When the variable is present, phrased to follow "it is set only".
+        ///
+        /// Must not name the daft executable: these render into runtime
+        /// errors, where the binary has to be spelled the way the user
+        /// invoked it (`cli_label()`/`daft_cmd`, per CLAUDE.md), and a
+        /// `&'static str` cannot do that. Describe the operation instead —
+        /// the render site interpolates the command when it wants one.
         when: &'static str,
     },
     /// Not a variable daft sets.
     Unknown,
 }
 
+/// Shared `when` for the `DAFT_MERGE_*` family.
+const WHEN_MERGE: &str = "during merge hooks (the merge command stamps them)";
+
+/// Every `DAFT_*` name daft can set, paired with its classification.
+///
+/// Single source of truth: [`daft_var_kind`] looks names up here and
+/// [`daft_var_names`] lists them, so a name can neither outlive its
+/// classification nor go missing from typo suggestions. Names are matched
+/// exactly — no prefix rule — because a near-miss inside a family
+/// (`DAFT_MERGE_SOURCE` for `DAFT_MERGE_SOURCE_PATH`) must fall through to
+/// `Unknown` and get a suggestion, not be affirmed as real.
+static DAFT_VARS: &[(&str, DaftVarKind)] = {
+    use DaftVarKind::{AtRest, EventScoped};
+    &[
+        // At rest: determined by the worktree alone.
+        ("DAFT_PROJECT_ROOT", AtRest),
+        ("DAFT_GIT_DIR", AtRest),
+        ("DAFT_REMOTE", AtRest),
+        ("DAFT_SOURCE_WORKTREE", AtRest),
+        ("DAFT_WORKTREE_PATH", AtRest),
+        ("DAFT_BRANCH_NAME", AtRest),
+        ("DAFT_IS_NEW_BRANCH", AtRest),
+        // Event-scoped: naming the run itself.
+        (
+            "DAFT_HOOK",
+            EventScoped {
+                when: "while a lifecycle hook runs (it names the hook type)",
+            },
+        ),
+        (
+            "DAFT_TASK",
+            EventScoped {
+                when: "while a task runs (it names the task)",
+            },
+        ),
+        (
+            "DAFT_COMMAND",
+            EventScoped {
+                when: "while a job runs (the daft command that launched it)",
+            },
+        ),
+        // Event-scoped: set by one operation's hooks.
+        (
+            "DAFT_BASE_BRANCH",
+            EventScoped {
+                when: "during create hooks (the branch the worktree was based on)",
+            },
+        ),
+        (
+            "DAFT_COMMIT",
+            EventScoped {
+                when: "during the create/remove hooks of a branchless (anonymous) \
+                       worktree, which it pins to a commit — tasks never receive it",
+            },
+        ),
+        (
+            "DAFT_REPOSITORY_URL",
+            EventScoped {
+                when: "during post-clone hooks",
+            },
+        ),
+        (
+            "DAFT_DEFAULT_BRANCH",
+            EventScoped {
+                when: "during post-clone hooks",
+            },
+        ),
+        (
+            "DAFT_REMOVAL_REASON",
+            EventScoped {
+                when: "during remove hooks",
+            },
+        ),
+        (
+            "DAFT_IS_MOVE",
+            EventScoped {
+                when: "during hooks fired by a worktree move (rename, layout \
+                       transform, or adopt)",
+            },
+        ),
+        (
+            "DAFT_OLD_WORKTREE_PATH",
+            EventScoped {
+                when: "during hooks fired by a worktree move (rename, layout \
+                       transform, or adopt)",
+            },
+        ),
+        (
+            "DAFT_OLD_BRANCH_NAME",
+            EventScoped {
+                when: "during hooks fired by a worktree rename",
+            },
+        ),
+        // The merge family, spelled out so misspellings inside it still miss.
+        ("DAFT_MERGE_SOURCES", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_SOURCE_SHAS", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_SOURCE_PATHS", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_SOURCE_PATH", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_TARGET_BRANCH", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_TARGET_PATH", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_TARGET_SHA", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_MODE", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_STRATEGY", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_EPHEMERAL", EventScoped { when: WHEN_MERGE }),
+        (
+            "DAFT_MERGE_CROSS_WORKTREE",
+            EventScoped { when: WHEN_MERGE },
+        ),
+        ("DAFT_MERGE_RESULT", EventScoped { when: WHEN_MERGE }),
+        ("DAFT_MERGE_COMMIT_SHA", EventScoped { when: WHEN_MERGE }),
+        (
+            "DAFT_MERGE_CONFLICTED_FILES",
+            EventScoped { when: WHEN_MERGE },
+        ),
+        (
+            "DAFT_MERGE_PROMOTED_FROM_EPHEMERAL",
+            EventScoped { when: WHEN_MERGE },
+        ),
+    ]
+};
+
 /// Classify a `DAFT_*` name. See [`DaftVarKind`].
 pub fn daft_var_kind(name: &str) -> DaftVarKind {
-    use DaftVarKind::{AtRest, EventScoped, Unknown};
-    if name.starts_with("DAFT_MERGE_") {
-        return EventScoped {
-            when: "during merge hooks (the merge command stamps them)",
-        };
-    }
-    match name {
-        "DAFT_PROJECT_ROOT"
-        | "DAFT_GIT_DIR"
-        | "DAFT_REMOTE"
-        | "DAFT_SOURCE_WORKTREE"
-        | "DAFT_WORKTREE_PATH"
-        | "DAFT_BRANCH_NAME"
-        | "DAFT_IS_NEW_BRANCH"
-        | "DAFT_COMMIT" => AtRest,
-        "DAFT_HOOK" => EventScoped {
-            when: "while a lifecycle hook runs (it names the hook type)",
-        },
-        "DAFT_TASK" => EventScoped {
-            when: "while a `daft run` task runs (it names the task)",
-        },
-        "DAFT_COMMAND" => EventScoped {
-            when: "while a job runs (the daft command that launched it)",
-        },
-        "DAFT_BASE_BRANCH" => EventScoped {
-            when: "during create hooks (the branch the worktree was based on)",
-        },
-        "DAFT_REPOSITORY_URL" | "DAFT_DEFAULT_BRANCH" => EventScoped {
-            when: "during hooks of operations that resolve the remote (clone, checkout)",
-        },
-        "DAFT_REMOVAL_REASON" => EventScoped {
-            when: "during remove hooks",
-        },
-        "DAFT_IS_MOVE" | "DAFT_OLD_WORKTREE_PATH" | "DAFT_OLD_BRANCH_NAME" => EventScoped {
-            when: "during rename hooks",
-        },
-        _ => Unknown,
-    }
+    DAFT_VARS
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map_or(DaftVarKind::Unknown, |(_, kind)| *kind)
 }
 
-/// Every concrete `DAFT_*` name daft can set, for typo suggestions. The
-/// merge family is prefix-matched in [`daft_var_kind`]; its known member is
-/// listed so near-misses of it still suggest well.
-pub fn daft_var_names() -> &'static [&'static str] {
-    &[
-        "DAFT_PROJECT_ROOT",
-        "DAFT_GIT_DIR",
-        "DAFT_REMOTE",
-        "DAFT_SOURCE_WORKTREE",
-        "DAFT_WORKTREE_PATH",
-        "DAFT_BRANCH_NAME",
-        "DAFT_IS_NEW_BRANCH",
-        "DAFT_COMMIT",
-        "DAFT_HOOK",
-        "DAFT_TASK",
-        "DAFT_COMMAND",
-        "DAFT_BASE_BRANCH",
-        "DAFT_REPOSITORY_URL",
-        "DAFT_DEFAULT_BRANCH",
-        "DAFT_REMOVAL_REASON",
-        "DAFT_IS_MOVE",
-        "DAFT_OLD_WORKTREE_PATH",
-        "DAFT_OLD_BRANCH_NAME",
-        "DAFT_MERGE_SOURCE_PATH",
-    ]
+/// Every concrete `DAFT_*` name daft can set, for typo suggestions.
+pub fn daft_var_names() -> Vec<&'static str> {
+    DAFT_VARS.iter().map(|(name, _)| *name).collect()
 }
 
 #[cfg(test)]
@@ -601,10 +682,10 @@ mod tests {
                 assert_ne!(
                     daft_var_kind(key),
                     DaftVarKind::Unknown,
-                    "{key} is emitted but unclassified — add it to daft_var_kind"
+                    "{key} is emitted but unclassified — add it to DAFT_VARS"
                 );
                 assert!(
-                    daft_var_names().contains(&key.as_str()) || key.starts_with("DAFT_MERGE_"),
+                    daft_var_names().contains(&key.as_str()),
                     "{key} is emitted but missing from daft_var_names"
                 );
             }
@@ -612,9 +693,16 @@ mod tests {
     }
 
     /// The at-rest set is exactly a task's environment minus the vars that
-    /// name the run itself: every key a bare task receives classifies
-    /// `AtRest` except `DAFT_TASK`/`DAFT_COMMAND`, and every `AtRest` name
-    /// except the branchless-only `DAFT_COMMIT` is present in it.
+    /// name the run itself — no exemptions. Every key a bare task receives
+    /// classifies `AtRest` except `DAFT_TASK`/`DAFT_COMMAND`, and every
+    /// `AtRest` name is present in it.
+    ///
+    /// The equality is the point: `daft env` presents the at-rest set as
+    /// "what a job will see", so a name classified `AtRest` that no task
+    /// actually receives is a lie the command would tell with a live value
+    /// beside it. `DAFT_COMMIT` used to be exempted here and was exactly
+    /// that (only sandbox create/remove hooks set it) — it is now
+    /// `EventScoped`, and this test refuses to grow the exemption back.
     #[test]
     fn at_rest_is_the_task_surface() {
         let task = HookContext::for_task("dev", "/p", "/p/.git", "origin", "/p/main", "main");
@@ -631,12 +719,38 @@ mod tests {
             }
         }
         for name in daft_var_names() {
-            if daft_var_kind(name) == DaftVarKind::AtRest && *name != "DAFT_COMMIT" {
+            if daft_var_kind(name) == DaftVarKind::AtRest {
                 assert!(
                     env.get(name).is_some(),
                     "{name} classifies AtRest but a task does not receive it"
                 );
             }
+        }
+    }
+
+    /// A near-miss inside the merge family must miss. The prefix rule this
+    /// replaced answered "it is set only during merge hooks" for any
+    /// `DAFT_MERGE_*` string, which reads as confirmation that a misspelled
+    /// name is real — the user then writes it into a hook and it expands
+    /// empty forever.
+    #[test]
+    fn merge_family_typos_fall_through_to_unknown() {
+        assert_eq!(daft_var_kind("DAFT_MERGE_SOURCE"), DaftVarKind::Unknown);
+        assert_eq!(daft_var_kind("DAFT_MERGE_"), DaftVarKind::Unknown);
+        assert_eq!(daft_var_kind("DAFT_MERGE_NOPE"), DaftVarKind::Unknown);
+        assert!(matches!(
+            daft_var_kind("DAFT_MERGE_SOURCE_PATH"),
+            DaftVarKind::EventScoped { .. }
+        ));
+        // …and the real names are suggestible, so the miss is recoverable.
+        let names = daft_var_names();
+        for real in [
+            "DAFT_MERGE_SOURCE_PATH",
+            "DAFT_MERGE_SOURCE_PATHS",
+            "DAFT_MERGE_SOURCES",
+            "DAFT_MERGE_RESULT",
+        ] {
+            assert!(names.contains(&real), "{real} is unsuggestible");
         }
     }
 

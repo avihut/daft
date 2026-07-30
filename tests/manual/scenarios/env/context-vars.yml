@@ -3,8 +3,10 @@ description:
   "The DAFT_* namespace is daft's, not the schema's: at-rest variables answer
   with live worktree state even under a declared schema (no --ad-hoc needed),
   the @address reaches a sibling's values, event-scoped variables explain when
-  they exist instead of guessing, typos suggest the real name, derivation flags
-  are refused as a category error, and --export never serializes them."
+  they exist instead of guessing, typos suggest the real name — including
+  near-misses inside the DAFT_MERGE_* family — derivation flags are refused as a
+  category error, and every serializing surface (--export, --write, --format)
+  keeps to the declared set."
 
 repos:
   - name: env-ctx
@@ -65,6 +67,32 @@ steps:
       output_not_contains:
         - "DAFT_"
 
+  - name: --export refuses to serialize one of daft's own variables
+    run: daft env DAFT_BRANCH_NAME --export 2>&1
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "serializes declared values only"
+
+  - name: --write takes no VAR rather than silently writing nothing
+    run: daft env DAFT_BRANCH_NAME --write out.env 2>&1
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "takes no VAR"
+
+  - name: --format serializes the declared set only, never DAFT_*
+    run: daft env --format json
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "WEBAPP_PORT"
+      output_not_contains:
+        - "DAFT_"
+
   - name: An event-scoped variable explains when it exists
     run: daft env DAFT_HOOK 2>&1
     cwd: "$WORK_DIR/env-ctx/main"
@@ -74,6 +102,15 @@ steps:
         - "no value at rest"
         - "lifecycle hook"
 
+  - name: DAFT_COMMIT is event-scoped — no task ever receives it
+    run: daft env DAFT_COMMIT 2>&1
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no value at rest"
+        - "tasks never receive it"
+
   - name: A typo'd DAFT_ name suggests the real one
     run: daft env DAFT_BRANCH_NAM 2>&1
     cwd: "$WORK_DIR/env-ctx/main"
@@ -82,6 +119,15 @@ steps:
       output_contains:
         - "not a variable daft sets"
         - "DAFT_BRANCH_NAME"
+
+  - name: A near-miss inside the DAFT_MERGE_ family misses too
+    run: daft env DAFT_MERGE_SOURCE 2>&1
+    cwd: "$WORK_DIR/env-ctx/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not a variable daft sets"
+        - "DAFT_MERGE_SOURCE"
 
   - name: Derivation flags are refused for daft's own variables
     run: daft env DAFT_BRANCH_NAME --ad-hoc 2>&1

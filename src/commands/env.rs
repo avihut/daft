@@ -8,10 +8,12 @@
 //! actually addressed, and stderr stays silent in the normal case.
 //!
 //! It also answers daft's own `DAFT_*` job variables (the ones hooks and
-//! tasks receive) from live worktree state. Those are inspection surfaces —
-//! the bare listing and explicit `DAFT_*` queries — which may open the
-//! addressed worktree's repo; the `--export`/`--write` eval path never
-//! computes them and keeps its single-discover budget.
+//! tasks receive) from live worktree state. Those live on the *inspection*
+//! surfaces only — the human listing and explicit `DAFT_*` queries — which
+//! may open the addressed worktree's repo. Every serializing surface
+//! (`--export`, `--write`, `--format`) stays the declared set, so the eval
+//! hot path keeps its single-discover budget and nothing materializes
+//! ambient state that goes stale the moment the worktree moves.
 
 use crate::core::env_values::address::parse_address;
 use crate::core::env_values::{AdHocPolicy, EnvSpec, ResolvedValue, ValueContext, ValueSource};
@@ -38,7 +40,9 @@ The positional address is [repo:]VAR[@worktree] — 'daft env API_PORT', 'daft e
 
 Derivation knobs (--salt, --range, --block-size, --offset) answer \"what would it be\": overriding them computes a hypothetical — useful to preview a salt change before committing it — and daft notes on stderr when the answer differs from the configured one.
 
-Daft's own job variables are answered too: the bare listing shows the DAFT_* set a job would receive at rest (DAFT_BRANCH_NAME, DAFT_WORKTREE_PATH, DAFT_PROJECT_ROOT, ...) with live values, and 'daft env DAFT_BRANCH_NAME' prints one — useful for debugging what a hook or task will see. Event-scoped variables (DAFT_HOOK, DAFT_REMOVAL_REASON, DAFT_MERGE_*, ...) exist only while their operation runs; asking for one explains when it is set rather than guessing. These are read from worktree state, never derived — derivation flags do not apply to them — and --export/--write keep serializing the declared set only.
+Daft's own job variables are answered too, for debugging what a hook or task will see without running it. The listing shows the at-rest DAFT_* set — the seven a task receives whose values the worktree alone determines (DAFT_PROJECT_ROOT, DAFT_GIT_DIR, DAFT_REMOTE, DAFT_SOURCE_WORKTREE, DAFT_WORKTREE_PATH, DAFT_BRANCH_NAME, DAFT_IS_NEW_BRANCH) — and naming one prints its value. They are built from the same context a task runs under rather than recomputed, so the answer cannot drift from the job. Two carry a caveat for lifecycle hooks specifically: a hook's DAFT_REMOTE is its operation's remote (daft.remote, when set) and a create or remove hook's DAFT_SOURCE_WORKTREE is wherever the command was invoked, not the worktree named here.
+
+Every other DAFT_* variable is event-scoped — DAFT_HOOK, DAFT_COMMIT, DAFT_REMOVAL_REASON, DAFT_MERGE_*, ... — and exists only while its operation runs; asking for one explains when it is set instead of guessing a value, and an unrecognized name is reported as such rather than answered. None of them are derived, so derivation flags do not apply, and serializing surfaces (--export, --write, --format) stay the declared set: they feed files and machines that keep what they read, and these values go stale the moment the worktree moves.
 
 Declare values under env: in daft.yml (see the yaml reference). Injection: hooks, tasks, and daft exec receive declared values automatically; shells via eval \"$(daft env --export)\" (direnv/mise); file-reading tools via daft env --write (dotenv). Injected values never override variables already set in the parent environment."
 )]
@@ -153,6 +157,19 @@ fn cmd_env(args: &Args, output: &mut dyn Output) -> Result<()> {
     if modes.iter().filter(|m| **m).count() > 1 {
         bail!("--export, --write, and --format are mutually exclusive");
     }
+    // `--write` materializes the whole declared set as a dotenv file; there
+    // is no single-variable form of it. Refusing beats the silent drop that
+    // preceded it — the caller is waiting on a file that never appears, or
+    // reads a stale one left by an earlier run.
+    if args.write.is_some()
+        && let Some(name) = var
+    {
+        bail!(
+            "--write serializes the whole declared set to a file and takes no VAR; \
+             drop '{name}', or print just that one with `{}`",
+            cyan(&crate::daft_cmd(&format!("env {name}")))
+        );
+    }
 
     // One in-process discovery for the local repo. Absent local context is
     // fine when a repo qualifier points elsewhere.
@@ -232,16 +249,14 @@ fn cmd_env(args: &Args, output: &mut dyn Output) -> Result<()> {
             if let Some(ref write) = args.write {
                 return write_dotenv(write, &spec, &resolved, &target);
             }
-            // Inspection surfaces also list daft's own variables. Computed
-            // only past the export/write returns above: the eval hot path
-            // never pays for the extra repo reads, and serialized output
-            // stays the declared set (context values are ambient state, and
-            // DAFT_COMMIT-style volatility would make a materialized copy
-            // silently stale).
-            let context = context_rows(&target, &local);
             if structured {
-                return emit_table(&resolved, &context, &args.emit);
+                return emit_table(&resolved, &args.emit);
             }
+            // The human listing also shows daft's own variables. Computed
+            // only here — past every serializing return above — so the eval
+            // hot path never pays for the extra repo reads and no machine
+            // surface materializes ambient state that goes stale.
+            let context = context_rows(&target, &local);
             print_human_table(&spec, &target.slug, &resolved, &context, output);
             Ok(())
         }
@@ -548,20 +563,33 @@ fn answer_context_var(
              do not apply"
         );
     }
+    // Serialization stays the declared set, as the help, the man page and
+    // the docs all promise. (`--write` is already refused for any VAR in
+    // `cmd_env`; this is the `--export` half.) An `export DAFT_BRANCH_NAME=…`
+    // line appended to an .envrc pins a value that is wrong after the next
+    // checkout — the staleness that keeps these out of serialized output.
+    if args.export {
+        bail!(
+            "--export serializes declared values only — '{name}' is daft's own, \
+             read live from worktree state\n  print it with `{}`",
+            cyan(&crate::daft_cmd(&format!("env {name}")))
+        );
+    }
 
     match crate::hooks::daft_var_kind(name) {
         DaftVarKind::Unknown => {
-            let similar =
-                crate::suggest::find_similar_commands(name, crate::hooks::daft_var_names());
+            let names = crate::hooks::daft_var_names();
+            let similar = crate::suggest::find_similar_commands(name, &names);
             let hint = similar
                 .first()
                 .map(|s| format!("\n  did you mean {s}?"))
                 .unwrap_or_default();
             bail!(
                 "'{name}' is not a variable daft sets{hint}\n  \
-                 declared values use bare names (`{}`); daft's own variables are \
-                 listed in daft-env(1)",
-                cyan(&crate::daft_cmd("env WEBAPP_PORT"))
+                 declared values use bare names (`{}`); daft's own are listed by \
+                 `{}` and in daft-hooks(5)",
+                cyan(&crate::daft_cmd("env WEBAPP_PORT")),
+                cyan(&crate::daft_cmd("env"))
             );
         }
         DaftVarKind::EventScoped { when } => {
@@ -570,98 +598,157 @@ fn answer_context_var(
         DaftVarKind::AtRest => {
             let rows = context_rows(target, local);
             let Some(row) = rows.into_iter().find(|r| r.name == name) else {
-                // AtRest but absent: say why, precisely.
+                // AtRest but absent. Each cause gets its own message —
+                // guessing one of them is how a user ends up debugging the
+                // wrong thing.
                 if target.worktree_path.is_none() {
                     bail!(
                         "worktree '{}' does not exist yet — {name} exists once it is created",
                         target.requested_name.as_deref().unwrap_or(&target.slug)
                     );
                 }
-                if name == "DAFT_COMMIT" {
-                    bail!(
-                        "only branchless (detached-HEAD) worktrees receive DAFT_COMMIT; \
-                         '{}' is on a branch",
-                        target.slug
-                    );
-                }
-                bail!("could not determine {name} for worktree '{}'", target.slug);
+                bail!(
+                    "could not read worktree '{}' as a git worktree, so {name} is \
+                     unknown — is its .git link intact?",
+                    target.slug
+                );
             };
-            if args.export {
-                println!("{}", export_line(&row));
-            } else {
-                println!("{}", row.value);
-            }
+            println!("{}", row.value);
             Ok(())
         }
     }
 }
 
-/// Daft's own `DAFT_*` variables as they stand for the addressed worktree —
-/// the environment a `daft run` task would receive, minus the variables
-/// that name the run itself (`daft_var_kind` event-scopes those). Rows
-/// whose source cannot be read (no repo handle, unknowable branch) are
-/// omitted rather than guessed; `answer_context_var` turns each specific
-/// absence into a specific message.
+/// Daft's own `DAFT_*` variables as they stand for the addressed worktree.
+///
+/// Built by constructing the very [`HookContext`] a task would run under and
+/// reading [`HookEnvironment::from_context`] — not by re-deriving the values.
+/// That is deliberate: this is a debugging view of the job environment, so
+/// anything it models by hand can drift from what jobs actually receive, and
+/// every such divergence is a confidently-wrong answer. The rows are filtered
+/// to `AtRest` (the event-scoped names would need a run to be meaningful) and
+/// ordered by the classifier's own table, since `vars()` is a `HashMap`.
+///
+/// [`HookContext`]: crate::hooks::HookContext
+/// [`HookEnvironment::from_context`]: crate::hooks::HookEnvironment::from_context
 fn context_rows(target: &Target, local: &LocalContext) -> Vec<ResolvedValue> {
+    use crate::hooks::HookContext;
+
     let row = |name: &str, value: String| ResolvedValue {
         name: name.to_string(),
         value,
         source: ValueSource::Context,
     };
-    let mut rows = vec![row("DAFT_PROJECT_ROOT", target.root.display().to_string())];
 
-    // Reuse the initial discovery when it already describes the target;
-    // open the addressed worktree (or repo root) otherwise.
-    let same_worktree =
-        target.worktree_path.is_some() && target.worktree_path == local.worktree_path;
-    let same_repo_hypothetical = target.worktree_path.is_none()
-        && local.project_root.as_deref() == Some(target.root.as_path());
-    let repo: Option<gix::Repository> = if same_worktree || same_repo_hypothetical {
-        local.repo.clone()
-    } else if let Some(ref wt) = target.worktree_path {
-        gix::discover(wt).ok()
-    } else {
-        gix::discover(&target.root).ok()
-    };
-
-    if let Some(ref repo) = repo {
+    let repo = open_target_repo(target, local);
+    let git_dir = repo.as_ref().map(|repo| {
         let common = repo.common_dir();
-        let common = std::fs::canonicalize(common).unwrap_or_else(|_| common.to_path_buf());
-        rows.push(row("DAFT_GIT_DIR", common.display().to_string()));
-    }
-    // Tasks receive the "origin" fallback; lifecycle hooks may carry their
-    // operation's remote instead. Kept in lockstep with the
-    // `HookContext::for_task` call in commands/run.rs.
-    rows.push(row("DAFT_REMOTE", "origin".to_string()));
+        std::fs::canonicalize(common).unwrap_or_else(|_| common.to_path_buf())
+    });
 
-    let Some(ref wt) = target.worktree_path else {
+    // Hypothetical worktree (or no repo handle): there is no context to
+    // build, so emit the strict subset whose values do not depend on the
+    // worktree at all — `from_context` copies both straight off the context.
+    // Deliberately not a second model of the environment: that is the drift
+    // this function exists to avoid.
+    let (Some(wt), Some(git_dir)) = (target.worktree_path.as_ref(), git_dir.as_ref()) else {
+        let mut rows = vec![row("DAFT_PROJECT_ROOT", target.root.display().to_string())];
+        if let Some(git_dir) = git_dir {
+            rows.push(row("DAFT_GIT_DIR", git_dir.display().to_string()));
+        }
         return rows;
     };
-    // At rest the worktree is both source and target, like `for_task`.
-    rows.push(row("DAFT_SOURCE_WORKTREE", wt.display().to_string()));
-    rows.push(row("DAFT_WORKTREE_PATH", wt.display().to_string()));
-    match repo {
-        Some(ref repo) => match crate::git::oxide::symbolic_ref_short_head(repo) {
-            Ok(branch) => rows.push(row("DAFT_BRANCH_NAME", branch)),
-            Err(_) => {
-                // The branchless contract (see hooks::environment): empty
-                // branch name, pinned commit carries the identity.
-                rows.push(row("DAFT_BRANCH_NAME", String::new()));
-                if let Ok(id) = repo.head_id() {
-                    rows.push(row("DAFT_COMMIT", id.to_string()));
-                }
-            }
-        },
-        // No handle (deleted dir, permissions): fall back to what the
-        // enumeration knew, or omit — never guess.
-        None => {
-            if let Some(ref branch) = target.branch {
-                rows.push(row("DAFT_BRANCH_NAME", branch.clone()));
-            }
-        }
+
+    // The task surface, verbatim: same remote fallback and same branch
+    // resolution as the `for_task` call in commands/run.rs. A lifecycle hook
+    // may carry a different remote (its operation's `daft.remote`) and a
+    // different DAFT_SOURCE_WORKTREE (wherever the command was invoked) —
+    // documented on the command, not papered over here.
+    // The task name is immaterial: it only feeds DAFT_TASK, which is
+    // event-scoped and filtered out by the projection.
+    rows_from_context(&HookContext::for_task(
+        "",
+        &target.root,
+        git_dir,
+        "origin",
+        wt,
+        task_branch_name(repo.as_ref()),
+    ))
+}
+
+/// Project a job's environment onto the rows `daft env` shows: the `AtRest`
+/// names, in the classifier's order (`vars()` is a `HashMap`).
+fn rows_from_context(ctx: &crate::hooks::HookContext) -> Vec<ResolvedValue> {
+    use crate::hooks::{DaftVarKind, HookEnvironment, daft_var_kind, daft_var_names};
+
+    let env = HookEnvironment::from_context(ctx);
+    daft_var_names()
+        .into_iter()
+        .filter(|name| daft_var_kind(name) == DaftVarKind::AtRest)
+        .filter_map(|name| {
+            env.get(name).map(|value| ResolvedValue {
+                name: name.to_string(),
+                value: value.to_string(),
+                source: ValueSource::Context,
+            })
+        })
+        .collect()
+}
+
+/// Open the addressed worktree's repository, or `None` when it cannot be
+/// opened as *that* worktree.
+///
+/// `gix::discover` ascends, so a worktree whose `.git` link is missing or
+/// broken would otherwise be answered from the enclosing project root's bare
+/// repo — reporting the bare repo's HEAD as the worktree's branch. The
+/// workdir check rejects that: a handle is accepted only when it actually
+/// describes the path that was asked about.
+fn open_target_repo(target: &Target, local: &LocalContext) -> Option<gix::Repository> {
+    // Reuse the initial discovery when it already describes the target.
+    if target.worktree_path.is_some() && target.worktree_path == local.worktree_path {
+        return local.repo.clone();
     }
-    rows.push(row("DAFT_IS_NEW_BRANCH", "false".to_string()));
-    rows
+    let Some(wt) = target.worktree_path.as_ref() else {
+        // Hypothetical worktree: only the repo-level facts are wanted, and
+        // an ascent from the project root stays inside the same repo.
+        if local.project_root.as_deref() == Some(target.root.as_path()) {
+            return local.repo.clone();
+        }
+        return gix::discover(&target.root).ok();
+    };
+    let repo = gix::discover(wt).ok()?;
+    // Canonicalize both sides: the discovery reports the real path while the
+    // caller may hold a symlinked one (/tmp vs /private/tmp on macOS).
+    let found = repo.workdir()?;
+    let found = std::fs::canonicalize(found).unwrap_or_else(|_| found.to_path_buf());
+    let asked = std::fs::canonicalize(wt).unwrap_or_else(|_| wt.clone());
+    (found == asked).then_some(repo)
+}
+
+/// The branch name a task would receive, mirroring `commands/run.rs`'s
+/// `get_current_branch().unwrap_or_else(|_| "HEAD")`.
+///
+/// `git symbolic-ref --short HEAD` — which that path shells out to — succeeds
+/// on an **unborn** HEAD (the branch is named, it just has no commit yet) and
+/// fails only when HEAD is detached. gix's `head_ref()` returns `None` for
+/// both, so matching on `head().kind` is what keeps a fresh clone of an empty
+/// repo from being reported as branchless.
+///
+/// Note daft has two representations of "no branch": a task gets the literal
+/// `HEAD` (this path), while a sandbox worktree's create/remove hooks get an
+/// empty `DAFT_BRANCH_NAME` plus `DAFT_COMMIT`. Unifying them is a change to
+/// the hook contract, not to this view of it.
+fn task_branch_name(repo: Option<&gix::Repository>) -> String {
+    let detached = "HEAD".to_string();
+    let Some(repo) = repo else { return detached };
+    let Ok(head) = repo.head() else {
+        return detached;
+    };
+    match head.kind {
+        gix::head::Kind::Symbolic(ref reference) => reference.name.shorten().to_string(),
+        gix::head::Kind::Unborn(ref name) => name.shorten().to_string(),
+        gix::head::Kind::Detached { .. } => detached,
+    }
 }
 
 fn warn_on_block_collision(spec: &EnvSpec, target: &Target, output: &mut dyn Output) {
@@ -793,20 +880,20 @@ fn write_dotenv(
     Ok(())
 }
 
-fn emit_table(
-    resolved: &[ResolvedValue],
-    context: &[ResolvedValue],
-    emit_args: &EmitArgs,
-) -> Result<()> {
+/// Structured output is the **declared set only** — the same boundary
+/// `--export` and `--write` draw, and for the same reason: `--format json`
+/// is consumed by machines that store what they read, and daft's own
+/// variables are ambient state that goes stale the moment the worktree
+/// moves. They stay on the inspection surface (the human listing), which is
+/// read once and thrown away.
+fn emit_table(resolved: &[ResolvedValue], emit_args: &EmitArgs) -> Result<()> {
     let mut table = Table::new(vec![
         "name".to_string(),
         "value".to_string(),
         "source".to_string(),
         "offset".to_string(),
     ]);
-    // Derived rows first (stable head for existing consumers), then daft's
-    // own context variables with source "context".
-    for value in resolved.iter().chain(context) {
+    for value in resolved {
         table.rows.push(vec![
             Cell::str(&value.name),
             Cell::str(&value.value),
@@ -834,10 +921,13 @@ fn print_human_table(
     output: &mut dyn Output,
 ) {
     // Sections get their own column widths: context values are long paths,
-    // and one shared width would pad every port row out to them.
+    // and one shared width would pad every port row out to them. Widths
+    // count chars, not bytes — `{:<w$}` pads by chars, so a byte width
+    // over-pads any value with non-ASCII in it.
     let print_rows = |rows: &[ResolvedValue], output: &mut dyn Output| {
-        let name_w = rows.iter().map(|v| v.name.len()).max().unwrap_or(4);
-        let value_w = rows.iter().map(|v| v.value.len()).max().unwrap_or(5);
+        let width = |s: &str| s.chars().count();
+        let name_w = rows.iter().map(|v| width(&v.name)).max().unwrap_or(4);
+        let value_w = rows.iter().map(|v| width(&v.value)).max().unwrap_or(5);
         for value in rows {
             let kind = match value.source {
                 ValueSource::DeclaredPort { offset } => format!("port +{offset}"),
@@ -875,8 +965,13 @@ fn print_human_table(
     }
 
     // Daft's own variables — what a job here would additionally receive.
+    // Labelled: with an empty schema this section is the entire output, and
+    // unheaded it reads as the declared values rather than daft's own.
     if !context.is_empty() {
         output.info("");
+        output.info(&dim(
+            "daft's own variables, as a job here would receive them:",
+        ));
         print_rows(context, output);
     }
 }
@@ -961,29 +1056,57 @@ mod tests {
         }
     }
 
-    /// Fake paths open no repo, so rows degrade honestly: identity and
-    /// remote stay, `DAFT_GIT_DIR` is omitted (never guessed), and the
-    /// branch falls back to what the enumeration knew.
+    /// **The weld.** What `daft env` shows must be a projection of the
+    /// environment a job actually receives — not a second model of it.
+    /// Every `AtRest` name is present, with byte-identical values, and
+    /// nothing event-scoped leaks in.
+    ///
+    /// The previous hand-rolled builder is why `DAFT_BRANCH_NAME`,
+    /// `DAFT_COMMIT` and `DAFT_REMOTE` could each drift from the job
+    /// surface at once. This test is what makes that class of bug fail
+    /// here instead of in someone's hook.
     #[test]
-    fn context_rows_without_a_repo_handle_fall_back_and_omit() {
+    fn context_rows_are_a_projection_of_the_job_environment() {
+        use crate::hooks::{DaftVarKind, HookContext, HookEnvironment, daft_var_kind};
+
+        let ctx = HookContext::for_task("dev", "/p", "/p/.git", "origin", "/p/feat", "feat");
+        let env = HookEnvironment::from_context(&ctx);
+        let rows = rows_from_context(&ctx);
+
+        for row in &rows {
+            assert_eq!(
+                env.get(&row.name),
+                Some(row.value.as_str()),
+                "{} is shown with a value no job would receive",
+                row.name
+            );
+            assert_eq!(
+                daft_var_kind(&row.name),
+                DaftVarKind::AtRest,
+                "{} is shown at rest but is event-scoped",
+                row.name
+            );
+            assert_eq!(row.source, ValueSource::Context);
+        }
+        // …and nothing at rest is missing.
+        let shown: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        for name in crate::hooks::daft_var_names() {
+            if daft_var_kind(name) == DaftVarKind::AtRest {
+                assert!(shown.contains(&name), "{name} is at rest but not shown");
+            }
+        }
+    }
+
+    /// A worktree that will not open as a git worktree yields only the
+    /// repo-level facts. A job cannot run there at all, so reporting the
+    /// paths it "would" receive would be an answer about a job that can
+    /// never happen — and `answer_context_var` says so by name.
+    #[test]
+    fn context_rows_without_a_repo_handle_stop_at_repo_facts() {
         let rows = context_rows(&fake_target(Some("/p/feat"), Some("feat")), &no_local());
-        let get = |name: &str| {
-            rows.iter()
-                .find(|r| r.name == name)
-                .map(|r| r.value.as_str())
-        };
-        assert_eq!(get("DAFT_PROJECT_ROOT"), Some("/p"));
-        assert_eq!(get("DAFT_REMOTE"), Some("origin"));
-        assert_eq!(get("DAFT_WORKTREE_PATH"), Some("/p/feat"));
-        assert_eq!(get("DAFT_SOURCE_WORKTREE"), Some("/p/feat"));
-        assert_eq!(get("DAFT_BRANCH_NAME"), Some("feat"));
-        assert_eq!(get("DAFT_IS_NEW_BRANCH"), Some("false"));
-        assert_eq!(get("DAFT_GIT_DIR"), None);
-        assert_eq!(get("DAFT_COMMIT"), None);
-        assert!(
-            rows.iter()
-                .all(|r| r.source == ValueSource::Context && r.name.starts_with("DAFT_"))
-        );
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["DAFT_PROJECT_ROOT"]);
+        assert!(rows.iter().all(|r| r.source == ValueSource::Context));
     }
 
     /// A hypothetical worktree answers only what exists without it.
@@ -991,7 +1114,23 @@ mod tests {
     fn context_rows_for_a_hypothetical_worktree_stop_at_repo_facts() {
         let rows = context_rows(&fake_target(None, None), &no_local());
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, vec!["DAFT_PROJECT_ROOT", "DAFT_REMOTE"]);
+        assert_eq!(names, vec!["DAFT_PROJECT_ROOT"]);
+    }
+
+    /// An unopenable worktree is diagnosed as such, not as "on a branch".
+    #[test]
+    fn an_unreadable_worktree_says_so_rather_than_guessing() {
+        let args = Args::parse_from(["daft-env", "DAFT_BRANCH_NAME"]);
+        let err = answer_context_var(
+            &args,
+            &fake_target(Some("/p/feat"), Some("feat")),
+            &no_local(),
+            "DAFT_BRANCH_NAME",
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("could not read worktree"), "{msg}");
+        assert!(msg.contains(".git link"), "{msg}");
     }
 
     /// DAFT_* + a derivation flag is a category error, not a computation.
@@ -1040,9 +1179,12 @@ mod tests {
         assert!(msg.contains("DAFT_BRANCH_NAME"), "{msg}");
     }
 
-    /// DAFT_COMMIT on a branch worktree explains the branchless contract.
+    /// DAFT_COMMIT is event-scoped: only a branchless worktree's own
+    /// create/remove hooks set it, and no task ever receives it. Listing it
+    /// at rest with a live OID invited jobs to read a variable that is
+    /// always empty for them.
     #[test]
-    fn daft_commit_on_a_branch_worktree_explains_itself() {
+    fn daft_commit_is_event_scoped_not_at_rest() {
         let args = Args::parse_from(["daft-env", "DAFT_COMMIT"]);
         let err = answer_context_var(
             &args,
@@ -1051,6 +1193,34 @@ mod tests {
             "DAFT_COMMIT",
         )
         .unwrap_err();
-        assert!(err.to_string().contains("branchless"));
+        let msg = err.to_string();
+        assert!(msg.contains("no value at rest"), "{msg}");
+        assert!(msg.contains("tasks never receive it"), "{msg}");
+    }
+
+    /// Serializing surfaces stay the declared set — all of them. `--export`
+    /// is refused for daft's own variables and `--write` takes no VAR at
+    /// all; the docs promise both, and a silently-ignored `--write` leaves
+    /// the caller reading a file that was never written.
+    #[test]
+    fn serializing_flags_refuse_daft_vars() {
+        let args = Args::parse_from(["daft-env", "DAFT_BRANCH_NAME", "--export"]);
+        let err = answer_context_var(
+            &args,
+            &fake_target(Some("/p/feat"), Some("feat")),
+            &no_local(),
+            "DAFT_BRANCH_NAME",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("serializes declared values only"),
+            "{err}"
+        );
+
+        // Refused before any discovery, so this never reads a real repo.
+        let args = Args::parse_from(["daft-env", "WEBAPP_PORT", "--write", ".env"]);
+        let mut out = CliOutput::new(OutputConfig::default());
+        let err = cmd_env(&args, &mut out).unwrap_err();
+        assert!(err.to_string().contains("takes no VAR"), "{err}");
     }
 }

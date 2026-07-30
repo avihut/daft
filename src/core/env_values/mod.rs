@@ -110,6 +110,16 @@ impl EnvSpec {
 
     /// Resolve every declared value for `slug`: ports in declaration order,
     /// then rendered `values:` templates alphabetically.
+    ///
+    /// Names in daft's own `DAFT_*` namespace are **skipped**, not resolved.
+    /// This is the path whose output becomes a job's process environment, so
+    /// resolving one would hash `DAFT_BRANCH_NAME` into a port number and
+    /// then overwrite the real branch name with it — `extra_env` is applied
+    /// last in `HookEnvironment::from_context`. `validate_config` refuses
+    /// such a declaration outright, but validation only runs on demand, so
+    /// this is the load-bearing guard for a config that never saw it. One
+    /// bad name loses only itself: the rest of the schema still resolves,
+    /// and [`reserved_names`] lets callers say what was dropped.
     pub fn resolve_all(
         &self,
         slug: &str,
@@ -119,6 +129,9 @@ impl EnvSpec {
         if !self.ports.is_empty() {
             let base = self.block_base(slug)?;
             for (name, offset) in &self.ports {
+                if is_reserved_name(name) {
+                    continue;
+                }
                 out.push(ResolvedValue {
                     name: name.clone(),
                     value: (base + offset).to_string(),
@@ -127,6 +140,9 @@ impl EnvSpec {
             }
         }
         for (name, template) in &self.values {
+            if is_reserved_name(name) {
+                continue;
+            }
             out.push(ResolvedValue {
                 name: name.clone(),
                 value: self.expand_value(name, template, slug, ctx)?,
@@ -134,6 +150,20 @@ impl EnvSpec {
             });
         }
         Ok(out)
+    }
+
+    /// Declared names that fall in daft's reserved namespace, in a stable
+    /// order. Empty for every valid schema; non-empty means [`resolve_all`]
+    /// skipped something and the caller should say so.
+    ///
+    /// [`resolve_all`]: Self::resolve_all
+    pub fn reserved_names(&self) -> Vec<&str> {
+        let ports = self.ports.iter().map(|(name, _)| name.as_str());
+        let values = self.values.keys().map(String::as_str);
+        ports
+            .chain(values)
+            .filter(|name| is_reserved_name(name))
+            .collect()
     }
 
     /// Resolve one name for `slug`: declared port, declared value, or —
@@ -145,10 +175,11 @@ impl EnvSpec {
         ctx: &ValueContext<'_>,
         adhoc: AdHocPolicy,
     ) -> Result<ResolvedValue, DerivationError> {
-        // Daft's own variables are never derived. Validation already refuses
-        // declaring them, but without this guard an ad-hoc resolution would
-        // confidently hash DAFT_BRANCH_NAME into a meaningless port number.
-        if name.starts_with("DAFT_") {
+        // Daft's own variables are never derived — without this an ad-hoc
+        // resolution would confidently hash DAFT_BRANCH_NAME into a
+        // meaningless port number. `resolve_all` skips them for the same
+        // reason; here the caller named one explicitly, so say so.
+        if is_reserved_name(name) {
             return Err(DerivationError::ReservedName {
                 name: name.to_string(),
             });
@@ -286,6 +317,15 @@ impl EnvSpec {
             .cloned()
             .collect())
     }
+}
+
+/// Whether `name` belongs to daft's own reserved namespace.
+///
+/// The one predicate every path shares, so the query surface, the listing,
+/// and the injection map can never disagree about which names derivation
+/// owns.
+pub fn is_reserved_name(name: &str) -> bool {
+    name.starts_with("DAFT_")
 }
 
 /// Whether an undeclared name may resolve to an ad-hoc port.
