@@ -54,7 +54,8 @@ pub struct LiveTableConfig {
     /// post-set after `TuiState::new` (like `unowned_start_index`); `None`
     /// for commands that don't decorate. While a refresh is in flight the
     /// seed is stripped to identity (`ForgePrLookup::identity_only`) —
-    /// statuses only render once `ForgePrsRefreshed` delivers fresh data.
+    /// statuses only render once `ForgePrsRefreshed` delivers fresh data, and
+    /// the identity breathes in the meantime (`forge_prs_stale`).
     pub forge_prs: Option<ForgePrLookup>,
     /// True while no PR snapshot has *ever* been taken and a refresh is in
     /// flight: PR cells without a value render the loading skeleton until
@@ -62,6 +63,14 @@ pub struct LiveTableConfig {
     /// Unlike per-cell patch state this survives collection completing —
     /// the refresh is out-of-band — but cancel clears it like any shimmer.
     pub forge_prs_loading: bool,
+    /// True while a *warm* PR cache is showing identity-only values and a
+    /// refresh is in flight — the PR analogue of a stale size cell: the number
+    /// is real, its fate is still loading. Those cells breathe until
+    /// `ForgePrsRefreshed` concludes, which clears this whether or not the
+    /// refresh produced data (a failed refresh leaves them honestly
+    /// statusless — see the handler). Mutually exclusive with
+    /// `forge_prs_loading`: cold cache shimmers, warm cache breathes.
+    pub forge_prs_stale: bool,
 }
 
 pub struct LiveTable {
@@ -164,6 +173,10 @@ impl LiveTable {
                     self.pending_resort = true;
                 }
                 self.cfg.forge_prs_loading = false;
+                // Conclusion settles the breath either way: on success the
+                // fresh statuses have swapped in, on failure the identity-only
+                // seed is final. Nothing is loading, so nothing should move.
+                self.cfg.forge_prs_stale = false;
             }
             DagEvent::WorktreeInfoUpdated {
                 branch_name,
@@ -320,7 +333,17 @@ impl LiveTable {
     /// `collection_complete`: a value the walk never refreshes stays honestly
     /// muted rather than promoting to "fresh" at collection end (the final
     /// frame settles its breath — see `render::stale_cell`).
+    ///
+    /// PR cells are stale table-wide rather than per-row: a warm cache is
+    /// stripped to identity for every row at once (`forge_prs_stale`), and the
+    /// refresh concludes for every row at once. Like `forge_prs_loading` this
+    /// is out-of-band, so it deliberately outlives collection completing.
+    /// Unlike the shimmer it is *not* cleared by cancel — an unrefreshed value
+    /// stays honestly stale, and the final frame settles its breath.
     pub fn is_cell_stale(&self, row_idx: usize, field: FieldSet) -> bool {
+        if field.contains(FieldSet::FORGE_REF) && self.cfg.forge_prs_stale {
+            return true;
+        }
         self.stale_fields[row_idx].contains(field)
             && !self.received_patches[row_idx].contains(field)
     }
@@ -400,6 +423,7 @@ mod tests {
             annotation_slots: Default::default(),
             forge_prs: None,
             forge_prs_loading: false,
+            forge_prs_stale: false,
         }
     }
 
@@ -551,6 +575,58 @@ mod tests {
             "a concluded-without-data refresh settles the skeleton"
         );
         assert!(t.cfg.forge_prs.is_none(), "no data means no decorations");
+    }
+
+    /// Warm cache + refresh in flight: the identity-only PR cells are stale,
+    /// not loading — they breathe a real number rather than shimmering an
+    /// empty one — and the conclusion settles them whether or not it carried
+    /// data (a failed refresh leaves the identity honestly statusless).
+    #[test]
+    fn forge_warm_cache_is_stale_until_the_refresh_concludes() {
+        use crate::core::worktree::forge_ref::ForgePrLookup;
+        use crate::core::worktree::pr_rows::ForgePrRowsRefresh;
+
+        for outcome_has_data in [false, true] {
+            let mut t = LiveTable::new(vec![info("feat/x")], cfg());
+            t.cfg.forge_prs_stale = true;
+
+            // Out-of-band like the skeleton: survives collection completing.
+            t.apply_event(&DagEvent::WorktreeInfoCollectionDone);
+            assert!(t.is_cell_stale(0, FieldSet::FORGE_REF));
+            assert!(
+                !t.is_cell_loading(0, FieldSet::FORGE_REF),
+                "a warm cache breathes its value; it must not also shimmer"
+            );
+            assert!(
+                !t.is_cell_stale(0, FieldSet::SIZE),
+                "only the PR cell rides the repo-level flag"
+            );
+
+            let outcome = outcome_has_data.then(|| ForgePrRowsRefresh {
+                lookup: ForgePrLookup::default(),
+                add_rows: vec![],
+                drop_rows: vec![],
+            });
+            t.apply_event(&DagEvent::ForgePrsRefreshed(outcome));
+            assert!(
+                !t.is_cell_stale(0, FieldSet::FORGE_REF),
+                "a concluded refresh settles the breath (data: {outcome_has_data})"
+            );
+        }
+    }
+
+    /// Unlike the shimmer, cancel does NOT clear the stale breath: the cached
+    /// identity is still a real value that was never refreshed, so it stays
+    /// honestly stale and the final frame settles it (see `render::stale_cell`).
+    #[test]
+    fn forge_warm_cache_stays_stale_across_cancel() {
+        let mut t = LiveTable::new(vec![info("feat/x")], cfg());
+        t.cfg.forge_prs_stale = true;
+        t.mark_cancelled();
+        assert!(
+            t.is_cell_stale(0, FieldSet::FORGE_REF),
+            "an unrefreshed cached value must not promote to fresh on cancel"
+        );
     }
 
     /// Cancel must clear the PR skeleton like any other shimmer — the final

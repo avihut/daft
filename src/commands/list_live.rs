@@ -172,6 +172,7 @@ pub fn run_live(args: Args) -> Result<()> {
     //   failed) → the cache renders as-is.
     let mut forge_refresh_pending = false;
     let mut forge_loading = false;
+    let mut forge_stale = false;
     let mut forge_repo_hash: Option<String> = None;
     let mut forge_lookup: Option<ForgePrLookup> = None;
     let mut forge_finished_baseline = None;
@@ -187,11 +188,15 @@ pub fn run_live(args: Args) -> Result<()> {
             // Reuse the lookup read alongside the health gate (one store open);
             // the mid-run refresh reload below re-reads fresh.
             let lookup = gate.lookup.clone();
-            (forge_lookup, forge_loading) = match (forge_refresh_pending, gate.ever_succeeded()) {
-                (true, false) => (None, true),
-                (true, true) => (lookup.map(ForgePrLookup::identity_only), false),
-                (false, _) => (lookup, false),
-            };
+            // Cold cache + refresh → shimmer; warm cache + refresh → stale
+            // (identity now, fates when the refresh lands) so those cells
+            // breathe; no refresh → the cache is final, nothing animates.
+            (forge_lookup, forge_loading, forge_stale) =
+                match (forge_refresh_pending, gate.ever_succeeded()) {
+                    (true, false) => (None, true, false),
+                    (true, true) => (lookup.map(ForgePrLookup::identity_only), false, true),
+                    (false, _) => (lookup, false, false),
+                };
         }
     }
 
@@ -341,6 +346,7 @@ pub fn run_live(args: Args) -> Result<()> {
     // the one caller that decorates.
     state.live.cfg.forge_prs = forge_lookup;
     state.live.cfg.forge_prs_loading = forge_loading;
+    state.live.cfg.forge_prs_stale = forge_stale;
 
     // Watch the detached refresh conclude while the table is live: poll the
     // store's health stamp (cheap reader-pool read, no network — the render

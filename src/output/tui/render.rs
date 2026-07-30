@@ -898,6 +898,12 @@ fn render_cell(
                 } else {
                     Cell::from(vals.pr.clone())
                 }
+            } else if is_cell_stale(FieldSet::FORGE_REF) {
+                // A warm cache stripped to identity: the number is real, its
+                // fate is still in flight. No status has loaded yet, so there
+                // is no color to preserve — breathe the identity itself until
+                // the refresh lands and the colored value supersedes it.
+                stale_cell(&vals.pr, tick, final_frame)
             } else {
                 // Color carries the status here (a ratatui buffer can't hold
                 // the colorless glyph fallback's escape-free sibling — plain
@@ -1842,6 +1848,111 @@ mod tests {
             fresh,
             Color::Reset,
             "a superseded cell should render plain, with no lingering pulse"
+        );
+    }
+
+    /// The PR column is the second consumer of the stale convention: a warm
+    /// forge cache is stripped to identity while the refresh runs, so the
+    /// number breathes until its fate lands and the colored value supersedes.
+    #[test]
+    fn render_cell_pr_stale_breathes_then_supersedes_to_its_status_color() {
+        use crate::core::worktree::forge_ref::{
+            CiStatus, ForgeBranchRef, ForgePrLookup, ForgeRefKind, PrDecoration, PrStatus,
+        };
+        use crate::output::format::{ColumnContext, compute_column_values};
+        use crate::output::tui::state::WorktreeRow;
+
+        let info = WorktreeInfo::empty("feat/x");
+        let wt = WorktreeRow::idle(info.clone());
+
+        // `status: None` is what `ForgePrLookup::identity_only` leaves behind
+        // while a refresh is in flight — the number without its fate.
+        let lookup = |status: Option<PrStatus>| {
+            let mut l = ForgePrLookup::default();
+            l.by_branch.insert(
+                "feat/x".into(),
+                PrDecoration {
+                    r: ForgeBranchRef::new(ForgeRefKind::GithubPr, 42),
+                    status,
+                    url: None,
+                    author: None,
+                },
+            );
+            l
+        };
+
+        let render_at = |status: Option<PrStatus>,
+                         tick: usize,
+                         stale: bool,
+                         final_frame: bool|
+         -> (String, Color) {
+            let l = lookup(status);
+            let ctx = ColumnContext {
+                project_root: &PathBuf::from("/tmp"),
+                cwd: &PathBuf::from("/tmp"),
+                now: 0,
+                stat: Stat::Summary,
+                forge_prs: Some(&l),
+                colors: true,
+            };
+            let vals = compute_column_values(&info, &ctx);
+            let backend = TestBackend::new(12, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    let cell = render_cell(
+                        &Column::Pr,
+                        &wt,
+                        &vals,
+                        tick,
+                        Stat::Summary,
+                        12,
+                        Default::default(),
+                        |_fs| false, // not loading — the cache has a value
+                        |_fs| false, // not unloaded
+                        |_fs| stale,
+                        final_frame,
+                    );
+                    let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(12)]);
+                    frame.render_widget(table, frame.area());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let row: String = (0..12)
+                .map(|x| buffer[(x, 0)].symbol().to_string())
+                .collect();
+            let first_glyph = (0..12)
+                .find(|&x| buffer[(x, 0)].symbol().trim() != "")
+                .expect("PR cell should paint at least one glyph");
+            (row, buffer[(first_glyph, 0)].fg)
+        };
+
+        // Identity-only + refresh in flight: the real number, breathing.
+        let (row, dark) = render_at(None, 0, true, false);
+        assert!(
+            row.contains("42"),
+            "a stale PR cell shows its cached identity; got {row:?}"
+        );
+        let (_, bright) = render_at(None, SKELETON_BREATH_FRAMES / 2, true, false);
+        assert_eq!(dark, Color::Indexed(SKELETON_GRAY_DARKEST));
+        assert_eq!(bright, Color::Indexed(SKELETON_GRAY_BRIGHTEST));
+
+        // The final frame settles it — an unrefreshed PR must not freeze
+        // bright and read as a fresh, status-bearing value.
+        let (_, settled) = render_at(None, SKELETON_BREATH_FRAMES / 2, true, true);
+        assert_eq!(settled, Color::Indexed(SKELETON_GRAY_DARKEST));
+
+        // Refresh landed: no longer stale, and the fate now carries the color.
+        let (_, passing) = render_at(
+            Some(PrStatus::Ci(CiStatus::Pass)),
+            SKELETON_BREATH_FRAMES / 2,
+            false,
+            false,
+        );
+        assert_eq!(
+            passing,
+            Color::Green,
+            "a superseded PR cell carries its status color, not the breath"
         );
     }
 
