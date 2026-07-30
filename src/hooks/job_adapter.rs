@@ -6,7 +6,7 @@
 //! RC-file sourcing, template substitution) happens here so that the
 //! executor never needs to know about hook configuration details.
 
-use super::changed_files::{CHANGED_FILES_TEMPLATE, ChangedFilesProvider, FileFilter};
+use super::changed_files::{ChangedFilesProvider, FileFilter, FileSources};
 use super::config_merge::merge_log_configs;
 use crate::executor::{JobSpec, LogConfig};
 use crate::hooks::environment::{HookContext, HookEnvironment};
@@ -283,11 +283,11 @@ pub struct JobAdapterContext<'a> {
     /// use `Some(JobSpec::DEFAULT_TIMEOUT)` (the `Default`); `daft run` tasks
     /// pass `None` so long-running processes aren't force-killed.
     pub default_timeout: Option<std::time::Duration>,
-    /// The operation's changed-file source, consulted by file-aware jobs
-    /// (`glob:`/`exclude:`/`{changed_files}`) and `changed:` rules. `None`
-    /// for hook types with no changed set — a file-aware job there is a
-    /// config error unless it brings its own `files:` command.
-    pub changed_files: Option<&'a ChangedFilesProvider>,
+    /// The file lists this hook fire can offer, consulted by file-aware jobs
+    /// (`glob:`/`exclude:`/`{files}` and friends) and `changed:` rules. A
+    /// hook with no source at all makes a file-aware job a config error
+    /// unless it brings its own `files:` command.
+    pub file_sources: Option<&'a FileSources>,
     /// Hook-level `exclude:` patterns, appended to every file-aware job's
     /// exclude set. Never makes a job file-aware by itself.
     pub hook_exclude: &'a [String],
@@ -302,9 +302,17 @@ impl Default for JobAdapterContext<'_> {
             hook_background: None,
             repo_log: None,
             default_timeout: Some(JobSpec::DEFAULT_TIMEOUT),
-            changed_files: None,
+            file_sources: None,
             hook_exclude: &[],
         }
+    }
+}
+
+impl JobAdapterContext<'_> {
+    /// The provider a bare file reference (`glob:`, `changed:`, `{files}`)
+    /// resolves to, or `None` when this hook has no default list.
+    fn default_files(&self) -> Option<&ChangedFilesProvider> {
+        self.file_sources?.default_provider()
     }
 }
 
@@ -374,7 +382,7 @@ pub fn yaml_jobs_to_specs(
 
         if let Some(ref skip) = job.skip
             && let Some(info) =
-                super::conditions::should_skip(skip, working_dir, adapter.changed_files)?
+                super::conditions::should_skip(skip, working_dir, adapter.default_files())?
         {
             skipped.push(SkippedJob {
                 name,
@@ -387,7 +395,7 @@ pub fn yaml_jobs_to_specs(
 
         if let Some(ref only) = job.only
             && let Some(info) =
-                super::conditions::should_only_skip(only, working_dir, adapter.changed_files)?
+                super::conditions::should_only_skip(only, working_dir, adapter.default_files())?
         {
             skipped.push(SkippedJob {
                 name,
@@ -401,26 +409,32 @@ pub fn yaml_jobs_to_specs(
         let cmd = super::yaml_executor::resolve_command(job, ctx, Some(&name), source_dir);
 
         // Recorded before substitution: the filtered list is injected below,
-        // after which the marker is gone.
-        let injects_changed_files = cmd.contains(CHANGED_FILES_TEMPLATE);
+        // after which the markers are gone.
+        let injects_changed_files = !super::changed_files::find_placeholders(&cmd).is_empty();
 
-        let cmd = match apply_file_filter(job, &name, &cmd, ctx, working_dir, adapter)? {
-            FileFilterOutcome::Run(cmd) => cmd,
-            FileFilterOutcome::Skip(reason) => {
-                skipped.push(SkippedJob {
-                    name,
-                    background: declared_background,
-                    reason,
-                    kind: SkipKind::Glob,
-                });
-                continue;
-            }
-        };
+        let (cmd, extra_chunks) =
+            match apply_file_filter(job, &name, &cmd, ctx, working_dir, adapter)? {
+                FileFilterOutcome::Run {
+                    command,
+                    extra_chunks,
+                } => (command, extra_chunks),
+                FileFilterOutcome::Skip(reason) => {
+                    skipped.push(SkippedJob {
+                        name,
+                        background: declared_background,
+                        reason,
+                        kind: SkipKind::Glob,
+                    });
+                    continue;
+                }
+            };
 
-        let cmd = match rc {
-            Some(rc_path) => format!("source {rc_path} && {cmd}"),
-            None => cmd,
+        let with_rc = |c: String| match rc {
+            Some(rc_path) => format!("source {rc_path} && {c}"),
+            None => c,
         };
+        let cmd = with_rc(cmd);
+        let extra_chunks: Vec<String> = extra_chunks.into_iter().map(with_rc).collect();
 
         let mut env = hook_env.clone();
         if let Some(ref job_env) = job.env {
@@ -481,6 +495,7 @@ pub fn yaml_jobs_to_specs(
         kept.push(JobSpec {
             name,
             command: cmd,
+            extra_chunks,
             working_dir: wd,
             env,
             description: job.description.clone(),
@@ -507,10 +522,13 @@ pub fn yaml_jobs_to_specs(
     Ok((kept, skipped))
 }
 
-/// Outcome of the changed-file stage for one job: run with the (possibly
-/// `{changed_files}`-expanded) command, or skip with a reason.
+/// Outcome of the changed-file stage for one job: run the expanded command
+/// (plus any follow-on chunks), or skip with a reason.
 enum FileFilterOutcome {
-    Run(String),
+    Run {
+        command: String,
+        extra_chunks: Vec<String>,
+    },
     Skip(String),
 }
 
@@ -539,33 +557,17 @@ fn apply_file_filter(
     working_dir: &Path,
     adapter: &JobAdapterContext<'_>,
 ) -> Result<FileFilterOutcome> {
-    let uses_template = cmd.contains(CHANGED_FILES_TEMPLATE);
-    let file_aware =
-        job.glob.is_some() || job.exclude.is_some() || job.files.is_some() || uses_template;
+    let placeholders = super::changed_files::find_placeholders(cmd);
+    let file_aware = job.glob.is_some()
+        || job.exclude.is_some()
+        || job.files.is_some()
+        || !placeholders.is_empty();
     if !file_aware {
-        return Ok(FileFilterOutcome::Run(cmd.to_string()));
+        return Ok(FileFilterOutcome::Run {
+            command: cmd.to_string(),
+            extra_chunks: Vec::new(),
+        });
     }
-
-    let files: Vec<String> = if let Some(ref files_cmd) = job.files {
-        let files_cmd = super::template::substitute(files_cmd, ctx, Some(name));
-        super::changed_files::run_files_command(&files_cmd, working_dir)
-            .with_context(|| format!("job '{name}': files: command failed"))?
-    } else if let Some(provider) = adapter.changed_files {
-        provider
-            .files()
-            .with_context(|| format!("job '{name}'"))?
-            .to_vec()
-    } else {
-        let hook_label = ctx
-            .task_name
-            .as_deref()
-            .unwrap_or_else(|| ctx.hook_type.yaml_name());
-        bail!(
-            "job '{name}': glob:/exclude:/{{changed_files}} need a changed-file source, \
-             and '{hook_label}' does not provide one — add a `files:` command to the job \
-             or drop the file filter"
-        );
-    };
 
     let include: Vec<String> = job
         .glob
@@ -575,27 +577,148 @@ fn apply_file_filter(
     let mut exclude: Vec<String> = job.exclude.clone().unwrap_or_default();
     exclude.extend(adapter.hook_exclude.iter().cloned());
     let filter = FileFilter::new(&include, &exclude).with_context(|| format!("job '{name}'"))?;
-    let matched = filter.filter(&files);
 
-    if matched.is_empty() {
-        let reason = if include.is_empty() && exclude.is_empty() {
-            // No patterns — the source itself came back empty.
-            if job.files.is_some() {
-                "skip: files: command returned no files".to_string()
-            } else {
-                "skip: no changed files".to_string()
-            }
-        } else {
-            filter.empty_reason()
+    // A job's own `files:` overrides every source for that job — including a
+    // placeholder that names one. Nothing else would make sense: the job
+    // declared where its list comes from.
+    let own_files: Option<Vec<String>> = match job.files {
+        Some(ref files_cmd) => {
+            let files_cmd = super::template::substitute(files_cmd, ctx, Some(name));
+            Some(
+                super::changed_files::run_files_command(&files_cmd, working_dir)
+                    .with_context(|| format!("job '{name}': files: command failed"))?,
+            )
+        }
+        None => None,
+    };
+
+    // Resolve each placeholder from the source it names, filtered by this
+    // job's patterns. `{files}` and `{changed_files}` carry `Operation`,
+    // which the sources set maps to whatever this hook's default is.
+    let mut resolved: Vec<(super::changed_files::Placeholder, Vec<String>)> =
+        Vec::with_capacity(placeholders.len());
+    for placeholder in &placeholders {
+        let files = match own_files {
+            Some(ref files) => files.clone(),
+            None => resolve_source(placeholder.kind, name, ctx, adapter)?,
         };
-        return Ok(FileFilterOutcome::Skip(reason));
+        let matched = filter.filter(&files);
+        if matched.is_empty() {
+            return Ok(FileFilterOutcome::Skip(empty_reason(
+                &filter,
+                &include,
+                &exclude,
+                job.files.is_some(),
+                Some(placeholder.kind),
+            )));
+        }
+        resolved.push((*placeholder, matched));
     }
 
-    Ok(FileFilterOutcome::Run(if uses_template {
-        cmd.replace(CHANGED_FILES_TEMPLATE, &crate::utils::quote_argv(&matched))
-    } else {
-        cmd.to_string()
-    }))
+    // A job that is file-aware by pattern alone (no placeholder) still has to
+    // consult its source: patterns select *work*, so nothing matching means
+    // nothing to do.
+    if placeholders.is_empty() {
+        let files = match own_files {
+            Some(files) => files,
+            None => resolve_source(
+                super::changed_files::SourceKind::Operation,
+                name,
+                ctx,
+                adapter,
+            )?,
+        };
+        if filter.filter(&files).is_empty() {
+            return Ok(FileFilterOutcome::Skip(empty_reason(
+                &filter,
+                &include,
+                &exclude,
+                job.files.is_some(),
+                None,
+            )));
+        }
+        return Ok(FileFilterOutcome::Run {
+            command: cmd.to_string(),
+            extra_chunks: Vec::new(),
+        });
+    }
+
+    let mut chunks = super::changed_files::expand_and_chunk(cmd, &resolved);
+    let command = chunks.remove(0);
+    Ok(FileFilterOutcome::Run {
+        command,
+        extra_chunks: chunks,
+    })
+}
+
+/// The file list behind one placeholder kind, or a configuration error
+/// naming what is missing.
+fn resolve_source(
+    kind: super::changed_files::SourceKind,
+    name: &str,
+    ctx: &HookContext,
+    adapter: &JobAdapterContext<'_>,
+) -> Result<Vec<String>> {
+    use super::changed_files::SourceKind;
+
+    let hook_label = ctx
+        .task_name
+        .as_deref()
+        .unwrap_or_else(|| ctx.hook_type.yaml_name());
+
+    let provider = match kind {
+        SourceKind::Operation => adapter.default_files(),
+        other => adapter.file_sources.and_then(|s| s.get(other)),
+    };
+    let Some(provider) = provider else {
+        // Fail loudly rather than resolving to an empty list: a gate that
+        // silently checks nothing passes green on exactly the change it was
+        // written to catch.
+        match kind {
+            SourceKind::Operation => bail!(
+                "job '{name}': glob:/exclude:/{{files}} need a file list, and '{hook_label}' \
+                 does not provide one — add a `files:` command to the job, name a source \
+                 explicitly ({}), or drop the file filter",
+                SourceKind::all()
+                    .iter()
+                    .filter(|k| **k != SourceKind::Operation)
+                    .map(|k| k.placeholder())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            other => bail!(
+                "job '{name}': {} names {}, which '{hook_label}' cannot supply",
+                other.placeholder(),
+                other.describe()
+            ),
+        };
+    };
+    Ok(provider
+        .files()
+        .with_context(|| format!("job '{name}'"))?
+        .to_vec())
+}
+
+/// Skip text for a job whose filtered list came out empty.
+fn empty_reason(
+    filter: &FileFilter,
+    include: &[String],
+    exclude: &[String],
+    has_files_command: bool,
+    kind: Option<super::changed_files::SourceKind>,
+) -> String {
+    if !include.is_empty() || !exclude.is_empty() {
+        return filter.empty_reason();
+    }
+    if has_files_command {
+        return "skip: files: command returned no files".to_string();
+    }
+    match kind {
+        Some(kind) if kind != super::changed_files::SourceKind::Operation => {
+            format!("skip: no {}", kind.describe())
+        }
+        _ => "skip: no changed files".to_string(),
+    }
 }
 
 /// Convert legacy hook script paths into [`JobSpec`] values.
@@ -1248,11 +1371,10 @@ mod tests {
 
     // ── changed-file filtering (glob / exclude / files) ─────────────────
 
-    use crate::hooks::changed_files::ChangedFilesProvider;
     use crate::hooks::yaml_config::StringOrList;
 
-    fn provider(files: &[&str]) -> ChangedFilesProvider {
-        ChangedFilesProvider::preresolved(files.iter().map(|s| s.to_string()).collect())
+    fn provider(files: &[&str]) -> FileSources {
+        FileSources::preresolved(files.iter().map(|s| s.to_string()).collect())
     }
 
     fn glob_job(name: &str, run: &str, glob: &[&str]) -> JobDef {
@@ -1263,6 +1385,112 @@ mod tests {
                 glob.iter().map(|s| s.to_string()).collect(),
             )),
             ..Default::default()
+        }
+    }
+
+    /// Build specs for one job against the given sources, in a scratch dir.
+    fn specs_with(job: JobDef, sources: &FileSources) -> Result<(Vec<JobSpec>, Vec<SkippedJob>)> {
+        yaml_jobs_to_specs(
+            std::slice::from_ref(&job),
+            &make_ctx(),
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext {
+                file_sources: Some(sources),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn run_job(name: &str, run: &str) -> JobDef {
+        JobDef {
+            name: Some(name.to_string()),
+            run: Some(RunCommand::Simple(run.to_string())),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn files_and_changed_files_expand_to_the_same_list() {
+        let sources = provider(&["a.rs", "b c.rs"]);
+        for template in ["{files}", "{changed_files}"] {
+            let (kept, _) =
+                specs_with(run_job("lint", &format!("fmt {template}")), &sources).unwrap();
+            assert_eq!(kept[0].command, "fmt a.rs 'b c.rs'", "{template}");
+        }
+    }
+
+    #[test]
+    fn quoting_variants_render_per_path() {
+        let sources = provider(&["a.rs", "b.rs"]);
+        let (kept, _) = specs_with(run_job("j", "grep TODO \"{files}\""), &sources).unwrap();
+        assert_eq!(kept[0].command, "grep TODO \"a.rs\" \"b.rs\"");
+    }
+
+    #[test]
+    fn a_job_files_command_overrides_every_named_source() {
+        // The job said where its list comes from; a placeholder naming a
+        // source cannot mean "ignore that".
+        let sources = provider(&["from-hook.rs"]);
+        let job = JobDef {
+            files: Some("printf 'from-job.rs\\n'".into()),
+            ..run_job("j", "fmt {staged_files}")
+        };
+        let (kept, _) = specs_with(job, &sources).unwrap();
+        assert_eq!(kept[0].command, "fmt from-job.rs");
+    }
+
+    #[test]
+    fn naming_a_source_the_hook_cannot_supply_is_a_loud_error() {
+        // Not an empty list: a gate that silently checks nothing passes green
+        // on exactly the change it was written to catch.
+        let sources = provider(&["a.rs"]);
+        let err = specs_with(run_job("j", "fmt {staged_files}"), &sources).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("{staged_files}"), "{msg}");
+        assert!(msg.contains("cannot supply"), "{msg}");
+    }
+
+    #[test]
+    fn an_oversized_expansion_becomes_follow_on_chunks() {
+        let files: Vec<String> = (0..20_000).map(|i| format!("src/f{i:06}.rs")).collect();
+        let sources = FileSources::preresolved(files);
+        let (kept, _) = specs_with(run_job("fmt", "rustfmt {files}"), &sources).unwrap();
+
+        assert_eq!(kept.len(), 1, "chunking must not split the job row");
+        assert!(!kept[0].extra_chunks.is_empty());
+        for command in std::iter::once(&kept[0].command).chain(kept[0].extra_chunks.iter()) {
+            assert!(command.len() <= crate::hooks::changed_files::MAX_EXPANDED_COMMAND_BYTES);
+        }
+    }
+
+    #[test]
+    fn a_chunked_job_keeps_its_rc_prefix_on_every_chunk() {
+        // A later chunk that skipped `source <rc>` would run in a different
+        // shell environment than the first — the same command, different PATH.
+        let files: Vec<String> = (0..20_000).map(|i| format!("src/f{i:06}.rs")).collect();
+        let sources = FileSources::preresolved(files);
+        let (kept, _) = yaml_jobs_to_specs(
+            &[run_job("fmt", "rustfmt {files}")],
+            &make_ctx(),
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext {
+                file_sources: Some(&sources),
+                rc: Some("~/.bashrc"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(!kept[0].extra_chunks.is_empty());
+        for command in std::iter::once(&kept[0].command).chain(kept[0].extra_chunks.iter()) {
+            assert!(
+                command.starts_with("source ~/.bashrc && rustfmt "),
+                "{command}"
+            );
         }
     }
 
@@ -1279,7 +1507,7 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext {
-                changed_files: Some(&p),
+                file_sources: Some(&p),
                 ..Default::default()
             },
         )
@@ -1307,7 +1535,7 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext {
-                changed_files: Some(&p),
+                file_sources: Some(&p),
                 ..Default::default()
             },
         )
@@ -1331,7 +1559,7 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext {
-                changed_files: Some(&p),
+                file_sources: Some(&p),
                 ..Default::default()
             },
         )
@@ -1358,7 +1586,7 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext {
-                changed_files: Some(&p),
+                file_sources: Some(&p),
                 ..Default::default()
             },
         )
@@ -1390,7 +1618,7 @@ mod tests {
             ".daft",
             dir.path(),
             &JobAdapterContext {
-                changed_files: Some(&p),
+                file_sources: Some(&p),
                 ..Default::default()
             },
         )
@@ -1483,7 +1711,7 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext {
-                changed_files: Some(&p),
+                file_sources: Some(&p),
                 ..Default::default()
             },
         )
@@ -1513,7 +1741,7 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext {
-                changed_files: Some(&p),
+                file_sources: Some(&p),
                 ..Default::default()
             },
         )
@@ -1550,7 +1778,7 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext {
-                changed_files: Some(&p),
+                file_sources: Some(&p),
                 hook_exclude: &hook_exclude,
                 ..Default::default()
             },
@@ -1588,7 +1816,7 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext {
-                changed_files: Some(&p),
+                file_sources: Some(&p),
                 ..Default::default()
             },
         )

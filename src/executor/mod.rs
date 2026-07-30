@@ -79,6 +79,19 @@ pub struct JobSpec {
     pub name: String,
     /// Shell command to execute.
     pub command: String,
+    /// Follow-on commands run after [`Self::command`], in order, stopping at
+    /// the first failure — one job's work split across several `exec`s.
+    ///
+    /// Exists for one reason: a file list too long to fit in a single `sh -c`
+    /// argument. Linux caps one argv element at 128 KiB, so a `pre-commit`
+    /// gate over a few thousand staged files would fail with `E2BIG` rather
+    /// than run. Splitting keeps it one job — one row, one log stream, one
+    /// exit code — because that is what it is; only the exec boundary moved.
+    ///
+    /// Empty for almost every job. `#[serde(default)]` so coordinator
+    /// payloads written before this field still parse.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_chunks: Vec<String>,
     /// Working directory for the command.
     pub working_dir: PathBuf,
     /// Extra environment variables to set.
@@ -141,6 +154,7 @@ impl Default for JobSpec {
         Self {
             name: String::new(),
             command: String::new(),
+            extra_chunks: Vec::new(),
             working_dir: PathBuf::new(),
             env: HashMap::new(),
             description: None,
@@ -257,6 +271,7 @@ mod tests {
         env.insert("KEY".into(), "VALUE".into());
 
         let spec = JobSpec {
+            extra_chunks: Vec::new(),
             name: "install".into(),
             command: "pnpm install".into(),
             working_dir: PathBuf::from("/project"),
