@@ -314,7 +314,6 @@ fn cmd_run(args: &Args, forced_args: bool, output: &mut dyn Output) -> Result<()
         // `daft run` is not a lifecycle-hook caller and has no `--hooks` of
         // its own; a task's `background:` jobs keep detaching.
         hook_mode: crate::hooks::HookMode::Auto,
-        index_file: None,
         templates: config.templates.as_ref(),
     };
 
