@@ -672,7 +672,6 @@ impl HookExecutor {
             cancel: None,
             trigger_label: None,
             hook_mode: self.hook_mode,
-            index_file: None,
             templates: yaml_config.templates.as_ref(),
         };
         // An Err from the yaml executor here is an execution-preparation

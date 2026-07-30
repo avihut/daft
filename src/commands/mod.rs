@@ -20,6 +20,7 @@ pub mod file;
 pub mod flow_adopt;
 pub mod flow_eject;
 pub mod forge_cache;
+pub mod git_hook;
 pub mod hooks;
 pub mod init;
 pub mod install;
