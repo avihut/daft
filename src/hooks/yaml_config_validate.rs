@@ -89,10 +89,16 @@ pub fn validate_config(config: &YamlConfig) -> Result<ValidationResult> {
         );
     }
 
+    // Validate the reusable command fragments.
+    if let Some(ref templates) = config.templates {
+        validate_templates(templates, &mut result);
+    }
+
     // Validate each hook definition
     for (hook_name, hook_def) in &config.hooks {
         validate_hook_name(hook_name, &mut result);
         validate_hook_def("hooks", hook_name, hook_def, &mut result);
+        validate_stage_only_fields(hook_name, hook_def, &mut result);
     }
 
     // Validate each task definition. Tasks share the hook body schema and
@@ -381,6 +387,108 @@ fn validate_hook_name(name: &str, result: &mut ValidationResult) {
         similar => format!("did you mean {}?", similar.join(", ")),
     };
     result.error(&path, format!("unknown hook '{name}': {hint}"));
+}
+
+/// Reject `templates:` names that would shadow a built-in placeholder.
+///
+/// Expansion runs before the built-in substitution, so a fragment named
+/// `branch` would win over `{branch}` everywhere in the config — silently,
+/// and only for the repository that defined it. That is the sort of override
+/// nobody debugs quickly, so it is refused rather than resolved by
+/// precedence.
+fn validate_templates(
+    templates: &std::collections::HashMap<String, String>,
+    result: &mut ValidationResult,
+) {
+    use crate::hooks::changed_files::SourceKind;
+
+    let reserved: Vec<&str> = [
+        "worktree_path",
+        "worktree_branch",
+        "worktree_root",
+        "worktree_slug",
+        "branch",
+        "commit",
+        "job_name",
+        "source_worktree",
+        "git_dir",
+        "remote",
+        "base_branch",
+        "repository_url",
+        "default_branch",
+        "merge_source_path",
+        "merge_target_path",
+        "old_worktree_path",
+        "old_branch",
+        "changed_files",
+    ]
+    .into_iter()
+    .chain(
+        SourceKind::all()
+            .iter()
+            .map(|k| k.placeholder().trim_matches(['{', '}'])),
+    )
+    .collect();
+
+    for name in templates.keys() {
+        let path = format!("templates.{name}");
+        if reserved.contains(&name.as_str()) {
+            result.error(
+                &path,
+                format!(
+                    "template '{name}' shadows the built-in {{{name}}} placeholder; \
+                     rename it"
+                ),
+            );
+        }
+        if name.chars().all(|c| c.is_ascii_digit()) && !name.is_empty() {
+            result.error(
+                &path,
+                format!(
+                    "template '{name}' shadows the git-stage positional {{{name}}}; \
+                     rename it"
+                ),
+            );
+        }
+    }
+}
+
+/// Reject job fields that only mean something on a git stage.
+///
+/// `stage_fixed:` needs an index to stage into. On a `post-checkout` or a
+/// worktree lifecycle hook there is no commit in progress, so the field would
+/// quietly stage the job's files into whatever the index happened to be —
+/// which is worse than doing nothing and much worse than saying so.
+fn validate_stage_only_fields(hook_name: &str, hook: &HookDef, result: &mut ValidationResult) {
+    use crate::hooks::git_stage::GitStage;
+
+    let stages_into_a_commit = matches!(
+        GitStage::from_yaml_name(hook_name),
+        Some(
+            GitStage::PreCommit
+                | GitStage::PreMergeCommit
+                | GitStage::PrepareCommitMsg
+                | GitStage::CommitMsg
+                | GitStage::PreApplypatch
+                | GitStage::ApplypatchMsg
+        )
+    );
+    if stages_into_a_commit {
+        return;
+    }
+    for (i, job) in hook.jobs.iter().flatten().enumerate() {
+        if job.stage_fixed == Some(true) {
+            let label = job.name.clone().unwrap_or_else(|| format!("jobs[{i}]"));
+            result.error(
+                format!("hooks.{hook_name}.jobs[{label}]"),
+                format!(
+                    "stage_fixed only applies to the commit stages (pre-commit, \
+                     pre-merge-commit, prepare-commit-msg, commit-msg, pre-applypatch, \
+                     applypatch-msg); '{hook_name}' has no commit in progress to stage into"
+                ),
+            );
+        }
+    }
 }
 
 /// Validate a task name for CLI and shell-completion safety.
@@ -845,6 +953,74 @@ mod tests {
         assert!(errors[0].contains("worktree-post-create"));
         assert!(errors[0].contains("git stage"));
         assert!(errors[0].contains("pre-push"));
+    }
+
+    #[test]
+    fn a_template_shadowing_a_builtin_placeholder_is_refused() {
+        // Fragments expand before the built-in substitution, so a template
+        // named `branch` would silently win over `{branch}` — for one
+        // repository, invisibly. Refuse rather than resolve by precedence.
+        for name in [
+            "branch",
+            "worktree_path",
+            "changed_files",
+            "staged_files",
+            "1",
+        ] {
+            let config = YamlConfig {
+                templates: Some(
+                    [(name.to_string(), "echo hi".to_string())]
+                        .into_iter()
+                        .collect(),
+                ),
+                ..Default::default()
+            };
+            let errors = errors_for(&config);
+            assert_eq!(errors.len(), 1, "{name}: {errors:?}");
+            assert!(errors[0].contains("shadows"), "{name}: {}", errors[0]);
+        }
+    }
+
+    #[test]
+    fn an_ordinary_template_name_validates() {
+        let config = YamlConfig {
+            templates: Some(
+                [("lint".to_string(), "eslint".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        assert!(validate_config(&config).unwrap().is_ok());
+    }
+
+    #[test]
+    fn stage_fixed_outside_the_commit_stages_is_refused() {
+        // There is no commit in progress to stage into, so the field would
+        // quietly add files to whatever the index happened to be.
+        let mut config = config_with_hook("post-checkout");
+        config
+            .hooks
+            .get_mut("post-checkout")
+            .unwrap()
+            .jobs
+            .as_mut()
+            .unwrap()[0]
+            .stage_fixed = Some(true);
+        let errors = errors_for(&config);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("stage_fixed"), "{}", errors[0]);
+        assert!(errors[0].contains("commit stages"), "{}", errors[0]);
+    }
+
+    #[test]
+    fn stage_fixed_on_a_commit_stage_validates() {
+        for stage in ["pre-commit", "commit-msg", "pre-merge-commit"] {
+            let mut config = config_with_hook(stage);
+            config.hooks.get_mut(stage).unwrap().jobs.as_mut().unwrap()[0].stage_fixed = Some(true);
+            let result = validate_config(&config).unwrap();
+            assert!(result.is_ok(), "{stage}: {:?}", result.errors);
+        }
     }
 
     #[test]
