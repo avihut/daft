@@ -102,6 +102,17 @@ pub struct YamlConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub merge: Option<MergeConfig>,
 
+    /// Derived per-worktree env values (see [`EnvConfig`]).
+    ///
+    /// Declares ports and templated values that `daft env` derives
+    /// deterministically from the worktree's slug — no allocation, no
+    /// registration. Note this is the fourth distinct meaning of "env" in
+    /// this schema: job-level `env:` is a literal K→V map, `skip:`/`only:`
+    /// `env:` is a truthiness predicate, and `DAFT_*` vars are computed by
+    /// the hook environment. This one is the *derived-value declaration*.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<EnvConfig>,
+
     /// Hook definitions, keyed by hook name.
     pub hooks: HashMap<String, HookDef>,
 
@@ -497,6 +508,207 @@ impl<'de> Deserialize<'de> for CopyFallback {
                 "invalid copy fallback {s:?}, expected \"copy\" or \"skip\""
             ))
         })
+    }
+}
+
+/// The `env:` block — deterministic per-worktree env values (#388).
+///
+/// Every value is a pure function of `(scheme, salt, repo, worktree-slug,
+/// declaration)` — computable from any worktree, any repo, any machine,
+/// with no allocation registry. Ports hash the worktree to a contiguous
+/// block; declared offsets index into it:
+///
+/// ```yaml
+/// env:
+///   salt: myapp            # optional; default = project-root dir name.
+///                          # Pin it to make values identical across machines.
+///   ports:
+///     - WEBAPP_PORT        # offset 0 (enum semantics: previous + 1)
+///     - STORYBOOK_PORT     # offset 1
+///     - API_PORT: 8        # explicit offset resets the counter
+///   values:
+///     COMPOSE_PROJECT_NAME: "myapp-{worktree_slug}"
+///   write: .env            # optional dotenv target for `daft env --write`
+/// ```
+///
+/// Unknown keys inside this block are tolerated (like `copy:`, unlike
+/// `merge:`): a mistyped knob costs a derived value, not a safety boundary,
+/// and refusing it here would fail the whole `daft.yml` — silently dropping
+/// every YAML hook to the legacy-script fallback.
+///
+/// Merge semantics: scalar knobs (`salt`, `scheme`, `range`, `block_size`,
+/// `write`) merge field-level so a `daft.local.yml` can override just the
+/// salt (the local "reroll" lever); `ports:` and `values:` replace
+/// **wholesale** when the overlay declares them — element-wise merging would
+/// scramble the enum-semantics offsets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct EnvConfig {
+    /// Hash salt. Defaults to the project-root directory name at resolution
+    /// time; pinning it in the tracked config is what guarantees identical
+    /// values across machines and clone locations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub salt: Option<String>,
+
+    /// Derivation scheme version. Only `1` exists; a future scheme bump is
+    /// opt-in precisely because changing the function renumbers every port.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<u32>,
+
+    /// Port range as `"START-END"` inclusive. Default `20000-32767` — below
+    /// the Linux ephemeral floor (32768) and macOS's (49152), above the
+    /// 3000–9999 zone dev tools squat on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<String>,
+
+    /// Ports per worktree block. Default 16.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_size: Option<u16>,
+
+    /// Declared port variables, in offset order (enum semantics — see
+    /// [`PortEntry`]). Declaring any schema opts the repo into strictness:
+    /// unknown names become errors instead of ad-hoc hashes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ports: Option<Vec<PortEntry>>,
+
+    /// Templated string values, rendered per worktree. Same variable names as
+    /// the hook template dialect (`{worktree_slug}`, `{worktree_path}`,
+    /// `{worktree_root}`, `{branch}`, `{repo}`) plus `{env:PORT_NAME}` to
+    /// embed a declared port. BTreeMap: emission order is alphabetical and
+    /// values may not reference each other, so declaration order carries no
+    /// meaning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub values: Option<std::collections::BTreeMap<String, String>>,
+
+    /// Default dotenv target for `daft env --write` (worktree-relative).
+    /// Must NOT also appear in `shared:` — a shared symlinked dotenv would
+    /// make every worktree overwrite the same central file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write: Option<String>,
+}
+
+impl EnvConfig {
+    /// Declared port names with their resolved offsets, in declaration order.
+    ///
+    /// Enum semantics, exactly like a C/Rust enum's discriminants: a bare
+    /// name takes `previous + 1` (first is 0), an explicit `NAME: n` resets
+    /// the counter to `n`. Duplicate names/offsets an invalid config may
+    /// produce are preserved here — `validate_config` reports them; consumers
+    /// that reached resolution treat the config as validated.
+    pub fn resolved_ports(&self) -> Vec<(String, u16)> {
+        let mut out = Vec::new();
+        let mut next: u16 = 0;
+        for entry in self.ports.as_deref().unwrap_or_default() {
+            let offset = entry.offset.unwrap_or(next);
+            out.push((entry.name.clone(), offset));
+            next = offset.saturating_add(1);
+        }
+        out
+    }
+
+    /// The declared range parsed to `(start, end)` inclusive, if present and
+    /// well-formed. `None` when the field is absent; `Some(Err)` semantics are
+    /// collapsed to `None` here — `validate_config` owns the error message.
+    pub fn parsed_range(&self) -> Option<(u16, u16)> {
+        parse_port_range(self.range.as_deref()?)
+    }
+}
+
+/// Parse `"START-END"` into an inclusive port range. Rejects reversed and
+/// zero-start ranges.
+pub fn parse_port_range(raw: &str) -> Option<(u16, u16)> {
+    let (start, end) = raw.split_once('-')?;
+    let start: u16 = start.trim().parse().ok()?;
+    let end: u16 = end.trim().parse().ok()?;
+    (start > 0 && start <= end).then_some((start, end))
+}
+
+/// One entry in `env.ports:` — a name with an optional explicit offset.
+///
+/// Two YAML spellings: a bare string (`- WEBAPP_PORT`, offset = previous + 1)
+/// or a one-pair map (`- API_PORT: 8`, explicit offset). See
+/// [`EnvConfig::resolved_ports`] for the counter semantics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortEntry {
+    /// The env var name (validated as `[A-Z_][A-Z0-9_]*`).
+    pub name: String,
+    /// Explicit offset within the worktree's block; `None` = auto.
+    pub offset: Option<u16>,
+}
+
+impl Serialize for PortEntry {
+    /// Round-trips the two YAML spellings: bare string when the offset is
+    /// auto, one-pair map when explicit.
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.offset {
+            None => serializer.serialize_str(&self.name),
+            Some(offset) => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(&self.name, &offset)?;
+                map.end()
+            }
+        }
+    }
+}
+
+/// Hand-written for the same reason as [`CopyConfig`]: a derived
+/// `#[serde(untagged)]` impl reports every shape mistake as "data did not
+/// match any variant", the error fails the entire `daft.yml`, and a failed
+/// deserialize silently drops every YAML hook to the legacy-script fallback.
+/// Each rejected shape gets its own sentence instead.
+impl<'de> Deserialize<'de> for PortEntry {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = PortEntry;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a port name (`- WEBAPP_PORT`) or a one-pair map (`- API_PORT: 8`)")
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                value: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(PortEntry {
+                    name: value.to_string(),
+                    offset: None,
+                })
+            }
+
+            fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let Some((name, offset)) = map.next_entry::<String, u16>()? else {
+                    return Err(serde::de::Error::custom(
+                        "empty map in `env.ports`; write `- NAME` or `- NAME: offset`",
+                    ));
+                };
+                if map
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                    .is_some()
+                {
+                    return Err(serde::de::Error::custom(format!(
+                        "`env.ports` entry starting at `{name}` holds more than one pair; \
+                         each list item is one `NAME: offset` (did you forget the `-` on \
+                         the next line?)"
+                    )));
+                }
+                Ok(PortEntry {
+                    name,
+                    offset: Some(offset),
+                })
+            }
+        }
+        deserializer.deserialize_any(V)
     }
 }
 
@@ -958,6 +1170,94 @@ pub struct GroupDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_ports_two_spellings_and_enum_offsets() {
+        let yaml = r#"
+env:
+  salt: myapp
+  ports:
+    - WEBAPP_PORT
+    - STORYBOOK_PORT
+    - API_PORT: 8
+    - METRICS_PORT
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let env = config.env.expect("env section parses");
+        assert_eq!(env.salt.as_deref(), Some("myapp"));
+        assert_eq!(
+            env.resolved_ports(),
+            vec![
+                ("WEBAPP_PORT".to_string(), 0),
+                ("STORYBOOK_PORT".to_string(), 1),
+                ("API_PORT".to_string(), 8),
+                ("METRICS_PORT".to_string(), 9),
+            ]
+        );
+    }
+
+    #[test]
+    fn env_port_entry_multi_pair_map_names_the_mistake() {
+        // A missing `-` folds two declarations into one map entry; the error
+        // must say so instead of the generic untagged-enum shrug.
+        let yaml = "env:\n  ports:\n    - API_PORT: 8\n      METRICS_PORT: 9\n";
+        let err = serde_yaml::from_str::<YamlConfig>(yaml).expect_err("multi-pair map must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("more than one pair"),
+            "error should explain the shape: {msg}"
+        );
+    }
+
+    #[test]
+    fn env_port_entries_roundtrip_their_spelling() {
+        let entries = vec![
+            PortEntry {
+                name: "WEBAPP_PORT".into(),
+                offset: None,
+            },
+            PortEntry {
+                name: "API_PORT".into(),
+                offset: Some(8),
+            },
+        ];
+        let yaml = serde_yaml::to_string(&entries).unwrap();
+        // Bare name stays a bare scalar; explicit offset stays a one-pair map.
+        assert!(yaml.contains("- WEBAPP_PORT"), "bare spelling kept: {yaml}");
+        assert!(yaml.contains("API_PORT: 8"), "map spelling kept: {yaml}");
+        let back: Vec<PortEntry> = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(back, entries);
+    }
+
+    #[test]
+    fn env_unknown_keys_are_tolerated() {
+        // Like copy:, unlike merge:: a mistyped knob must not fail the file
+        // (a failed deserialize silently drops every hook to legacy scripts).
+        let yaml = "env:\n  salt: x\n  blocksize: 8\n  ports:\n    - A_PORT\n";
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let env = config.env.unwrap();
+        assert_eq!(env.block_size, None, "typo'd key is ignored, not adopted");
+        assert_eq!(env.resolved_ports().len(), 1);
+    }
+
+    #[test]
+    fn env_absent_serializes_sparsely() {
+        let config = YamlConfig::default();
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(!yaml.contains("env:"), "no env litter in output: {yaml}");
+    }
+
+    #[test]
+    fn parse_port_range_cases() {
+        assert_eq!(parse_port_range("20000-32767"), Some((20000, 32767)));
+        assert_eq!(parse_port_range(" 3000 - 4000 "), Some((3000, 4000)));
+        assert_eq!(parse_port_range("5000-5000"), Some((5000, 5000)));
+        assert_eq!(parse_port_range("4000-3000"), None, "reversed");
+        assert_eq!(parse_port_range("0-100"), None, "zero start");
+        assert_eq!(parse_port_range("20000"), None, "no dash");
+        assert_eq!(parse_port_range("a-b"), None);
+        assert_eq!(parse_port_range("1-70000"), None, "beyond u16");
+    }
 
     #[test]
     fn test_minimal_config() {

@@ -80,6 +80,15 @@ pub fn validate_config(config: &YamlConfig) -> Result<ValidationResult> {
         validate_copy(copy, &mut result);
     }
 
+    // Validate the env: section (derived per-worktree values).
+    if let Some(ref env) = config.env {
+        validate_env(
+            env,
+            config.shared.as_deref().unwrap_or_default(),
+            &mut result,
+        );
+    }
+
     // Validate each hook definition
     for (hook_name, hook_def) in &config.hooks {
         validate_hook_def("hooks", hook_name, hook_def, &mut result);
@@ -108,6 +117,167 @@ pub fn validate_config(config: &YamlConfig) -> Result<ValidationResult> {
     }
 
     Ok(result)
+}
+
+/// Validate the `env:` section — derived per-worktree values (#388).
+///
+/// Everything here is an error, not a warning: each rule guards a value that
+/// would otherwise derive *something* — plausible-looking and wrong — and a
+/// wrong port is two services silently fighting instead of a message.
+///
+/// Name rules: `[A-Z_][A-Z0-9_]*`. Uppercase-only is load-bearing beyond
+/// convention — future `daft env` sub-verbs (`pin`, `unpin`) are lowercase,
+/// so the two namespaces can never collide in the positional slot. `DAFT_*`
+/// is reserved: derived values ride the hook environment's `extra_env`,
+/// which is applied last and would let a declared `DAFT_BRANCH_NAME`
+/// silently shadow daft's own variable.
+fn validate_env(
+    env: &crate::hooks::yaml_config::EnvConfig,
+    shared: &[String],
+    result: &mut ValidationResult,
+) {
+    use std::collections::HashMap;
+
+    if let Some(scheme) = env.scheme
+        && scheme != 1
+    {
+        result.error(
+            "env.scheme",
+            format!("unsupported derivation scheme {scheme}; this daft supports scheme 1"),
+        );
+    }
+
+    let block_size = env.block_size.unwrap_or(16);
+    if block_size == 0 {
+        result.error("env.block_size", "'block_size' must be at least 1");
+    }
+
+    if let Some(ref raw) = env.range {
+        match crate::hooks::yaml_config::parse_port_range(raw) {
+            None => {
+                result.error(
+                    "env.range",
+                    format!(
+                        "invalid range '{raw}'; expected 'START-END' with \
+                         1 <= START <= END <= 65535"
+                    ),
+                );
+            }
+            Some((start, end)) => {
+                // The derivation splits the range into a declared-block region
+                // and an ad-hoc region (core::env_values owns the exact
+                // split); the minimum viable span is one block for each half.
+                let span = u32::from(end) - u32::from(start) + 1;
+                if block_size > 0 && span < 2 * u32::from(block_size) {
+                    result.error(
+                        "env.range",
+                        format!(
+                            "range '{raw}' is too small: it must fit at least two \
+                             blocks of {block_size} ports (declared + ad-hoc regions)"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    let mut offsets_seen: HashMap<u16, String> = HashMap::new();
+    for (name, offset) in env.resolved_ports() {
+        let path = format!("env.ports.{name}");
+        validate_env_name(&name, &path, result);
+        if block_size > 0 && offset >= block_size {
+            result.error(
+                &path,
+                format!(
+                    "offset {offset} does not fit a block of {block_size} ports \
+                     (offsets are 0..={})",
+                    block_size - 1
+                ),
+            );
+        }
+        if let Some(prev_name) = offsets_seen.insert(offset, name.clone())
+            && prev_name != name
+        {
+            result.error(
+                &path,
+                format!("offset {offset} is already taken by '{prev_name}'"),
+            );
+        }
+    }
+
+    for name in env.values.as_ref().map(|v| v.keys()).into_iter().flatten() {
+        let path = format!("env.values.{name}");
+        validate_env_name(name, &path, result);
+    }
+
+    // Duplicate names across the whole section (ports twice, or port+value).
+    let mut all_names: HashMap<&str, u32> = HashMap::new();
+    for entry in env.ports.as_deref().unwrap_or_default() {
+        *all_names.entry(entry.name.as_str()).or_default() += 1;
+    }
+    for name in env.values.as_ref().map(|v| v.keys()).into_iter().flatten() {
+        *all_names.entry(name.as_str()).or_default() += 1;
+    }
+    for (name, count) in all_names {
+        if count > 1 {
+            result.error(
+                format!("env.{name}"),
+                format!("'{name}' is declared {count} times; ports and values share one namespace"),
+            );
+        }
+    }
+
+    if let Some(ref write) = env.write {
+        let trimmed = write.trim().trim_start_matches("./");
+        if write.trim().starts_with('/') {
+            result.error("env.write", "'write' must be a worktree-relative path");
+        } else if std::path::Path::new(trimmed)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            result.error("env.write", "'write' must not escape the worktree ('..')");
+        }
+        let shared_hit = shared
+            .iter()
+            .any(|s| s.trim().trim_start_matches("./").trim_end_matches('/') == trimmed);
+        if shared_hit {
+            result.error(
+                "env.write",
+                format!(
+                    "'{trimmed}' is also listed in 'shared:'; a shared dotenv is one \
+                     central file symlinked everywhere, so per-worktree derived values \
+                     would overwrite each other. Remove it from one of the two."
+                ),
+            );
+        }
+    }
+}
+
+/// `[A-Z_][A-Z0-9_]*` — the shape of a derived env var name.
+fn is_valid_env_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_uppercase() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Shared name checks for ports and values entries.
+fn validate_env_name(name: &str, path: &str, result: &mut ValidationResult) {
+    if !is_valid_env_var_name(name) {
+        result.error(
+            path,
+            format!("invalid name '{name}'; derived env names must match [A-Z_][A-Z0-9_]*"),
+        );
+        return;
+    }
+    if name.starts_with("DAFT_") {
+        result.error(
+            path,
+            format!("'{name}' is reserved; the DAFT_ prefix belongs to daft's own variables"),
+        );
+    }
 }
 
 /// Validate the `copy:` section.
@@ -713,6 +883,108 @@ hooks:
         };
         let result = validate_config(&config).unwrap();
         assert!(result.is_ok());
+    }
+
+    fn env_yaml(body: &str) -> YamlConfig {
+        serde_yaml::from_str(body).expect("test yaml parses")
+    }
+
+    fn env_errors(body: &str) -> Vec<String> {
+        validate_config(&env_yaml(body))
+            .unwrap()
+            .errors
+            .iter()
+            .map(|e| format!("{e}"))
+            .collect()
+    }
+
+    #[test]
+    fn env_valid_section_passes() {
+        let errors = env_errors(
+            "env:\n  salt: myapp\n  range: 20000-32767\n  block_size: 16\n  ports:\n    - WEBAPP_PORT\n    - API_PORT: 8\n  values:\n    COMPOSE_PROJECT_NAME: \"x-{worktree_slug}\"\n  write: .env\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn env_name_rules_enforced() {
+        let errors = env_errors("env:\n  ports:\n    - webapp_port\n");
+        assert!(errors.iter().any(|e| e.contains("[A-Z_]")), "{errors:?}");
+
+        let errors = env_errors("env:\n  ports:\n    - DAFT_BRANCH_NAME\n");
+        assert!(errors.iter().any(|e| e.contains("reserved")), "{errors:?}");
+
+        // values keys follow the same rules — one namespace.
+        let errors = env_errors("env:\n  values:\n    lower: x\n");
+        assert!(errors.iter().any(|e| e.contains("[A-Z_]")), "{errors:?}");
+    }
+
+    #[test]
+    fn env_offset_collisions_and_overflow_rejected() {
+        // B_PORT auto-follows A_PORT's explicit 3 → collides with C_PORT: 4?
+        // No — construct the collision directly: explicit 0 after auto 0.
+        let errors = env_errors("env:\n  ports:\n    - A_PORT\n    - B_PORT: 0\n");
+        assert!(
+            errors.iter().any(|e| e.contains("already taken")),
+            "{errors:?}"
+        );
+
+        let errors = env_errors("env:\n  block_size: 4\n  ports:\n    - A_PORT: 4\n");
+        assert!(
+            errors.iter().any(|e| e.contains("does not fit a block")),
+            "{errors:?}"
+        );
+
+        // Same name twice (port + value) is a namespace error.
+        let errors = env_errors("env:\n  ports:\n    - A_PORT\n  values:\n    A_PORT: x\n");
+        assert!(
+            errors.iter().any(|e| e.contains("one namespace")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn env_range_rules_enforced() {
+        let errors = env_errors("env:\n  range: 4000-3000\n");
+        assert!(
+            errors.iter().any(|e| e.contains("invalid range")),
+            "{errors:?}"
+        );
+
+        // Must fit declared + ad-hoc regions (two blocks minimum).
+        let errors = env_errors("env:\n  range: 20000-20019\n  block_size: 16\n");
+        assert!(errors.iter().any(|e| e.contains("too small")), "{errors:?}");
+
+        let errors = env_errors("env:\n  block_size: 0\n");
+        assert!(
+            errors.iter().any(|e| e.contains("at least 1")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn env_scheme_other_than_one_rejected() {
+        let errors = env_errors("env:\n  scheme: 2\n");
+        assert!(
+            errors.iter().any(|e| e.contains("supports scheme 1")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn env_write_shape_and_shared_collision_rejected() {
+        let errors = env_errors("env:\n  write: /etc/env\n");
+        assert!(
+            errors.iter().any(|e| e.contains("worktree-relative")),
+            "{errors:?}"
+        );
+
+        let errors = env_errors("env:\n  write: ../up/.env\n");
+        assert!(errors.iter().any(|e| e.contains("escape")), "{errors:?}");
+
+        // A shared symlinked dotenv would make worktrees overwrite each other.
+        let errors = env_errors("shared:\n  - .env\nenv:\n  write: .env\n");
+        assert!(errors.iter().any(|e| e.contains("shared")), "{errors:?}");
     }
 
     #[test]
