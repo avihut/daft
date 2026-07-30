@@ -130,6 +130,15 @@ pub struct YamlConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub templates: Option<HashMap<String, String>>,
 
+    /// Opt out of chaining `git lfs <stage>` before daft's own jobs.
+    ///
+    /// Installing a shim displaces git-lfs's hook file, so daft calls it
+    /// instead — otherwise large files silently stop being uploaded, and the
+    /// failure surfaces on somebody else's clone days later. Set this only
+    /// when LFS is wired some other way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_lfs: Option<bool>,
+
     /// Hook definitions, keyed by hook name.
     pub hooks: HashMap<String, HookDef>,
 
