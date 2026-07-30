@@ -569,6 +569,7 @@ pub fn run_pipeline_streaming(
 
         let mut cmd = build_command(spec, alias_cache);
         cmd.current_dir(&target.worktree_path)
+            .envs(&target.env)
             .env("DAFT_WORKTREE_PATH", &target.worktree_path)
             .env("DAFT_BRANCH_NAME", &target.branch_name)
             .env("DAFT_COMMAND", "exec")

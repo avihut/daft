@@ -22,23 +22,38 @@ pub(crate) fn derived_injection(
     config: &crate::hooks::yaml_config::YamlConfig,
     ctx: &HookContext,
 ) -> (BTreeMap<String, String>, Vec<String>) {
+    derived_injection_at(
+        config,
+        &ctx.worktree_path,
+        &ctx.project_root,
+        (!ctx.branch_name.is_empty()).then_some(ctx.branch_name.as_str()),
+    )
+}
+
+/// [`derived_injection`] on raw coordinates, for callers without a
+/// [`HookContext`] (exec targets carry only a path and branch).
+pub(crate) fn derived_injection_at(
+    config: &crate::hooks::yaml_config::YamlConfig,
+    worktree_path: &Path,
+    project_root: &Path,
+    branch: Option<&str>,
+) -> (BTreeMap<String, String>, Vec<String>) {
     use crate::core::env_values::{EnvSpec, ValueContext, spawn_injection};
 
     let Some(env_cfg) = config.env.as_ref() else {
         return (BTreeMap::new(), Vec::new());
     };
-    let repo_name = ctx
-        .project_root
+    let repo_name = project_root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "repo".to_string());
     let spec = EnvSpec::from_config(Some(env_cfg), &repo_name);
-    let slug = crate::core::slug::worktree_slug_from(&ctx.worktree_path, &ctx.project_root);
+    let slug = crate::core::slug::worktree_slug_from(worktree_path, project_root);
     let vctx = ValueContext {
         repo: &repo_name,
-        worktree_path: ctx.worktree_path.to_str(),
-        worktree_root: ctx.project_root.to_str(),
-        branch: (!ctx.branch_name.is_empty()).then_some(ctx.branch_name.as_str()),
+        worktree_path: worktree_path.to_str(),
+        worktree_root: project_root.to_str(),
+        branch,
     };
 
     let mut warnings = Vec::new();
