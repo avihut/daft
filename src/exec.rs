@@ -17,10 +17,13 @@ use crate::output::timeline::Timeline;
 /// which made these commands unusable for users whose rc files break in
 /// non-interactive contexts.
 ///
-/// This is the off-rail path: `Plain`, `Hidden`, quiet, redirected stdout,
-/// and every journey that never commits a plan (navigating to an existing
-/// worktree). Invocations that DO commit a plan run the same sequence as
-/// planned rail rows instead — see [`run_on_rail`].
+/// This is the off-rail path: `Plain`, `Hidden`, quiet, redirected **stderr**
+/// (that is the stream `TimelineMode::auto` gates on, so a TTY stderr with a
+/// piped stdout still gets the rail), the journeys that never commit a plan
+/// (navigating to an existing worktree), and the commands that do not plan
+/// `-x` at all — `daft clone`, `daft init`, and `start --with-related`'s
+/// post-fan-out sequence. Invocations that DO commit a plan carrying the rows
+/// run the same sequence as planned rail rows instead — see [`run_on_rail`].
 pub fn run_exec_commands(commands: &[String], output: &mut dyn Output) -> Result<()> {
     // Nothing to run, nothing to capture: `ensure` spawns a shell to reload
     // the user's rc files whenever its snapshot has aged out, and every
