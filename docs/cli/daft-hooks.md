@@ -193,11 +193,12 @@ daft hooks run [OPTIONS] [HOOK_TYPE]
 | `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
 | `--no-headers` | Omit header row (tsv/csv only) |  |
 
-### install
+### add
 
-Scaffold a daft.yml configuration with hook definitions
+Scaffold a daft.yml configuration with lifecycle hook definitions
 
-Scaffold a daft.yml configuration with hook definitions.
+Scaffold a daft.yml configuration with worktree lifecycle hook
+definitions.
 
 Creates a daft.yml file with placeholder jobs for the specified hooks.
 If no hook names are provided, all daft lifecycle hooks are scaffolded.
@@ -209,15 +210,18 @@ Valid hook names:
   post-clone, worktree-pre-create, worktree-post-create,
   worktree-pre-remove, worktree-post-remove
 
+This scaffolds definitions only; it installs nothing. To make git call
+daft for stages like pre-commit, use `git daft hooks install`.
+
 ```
-daft hooks install [HOOKS]
+daft hooks add [HOOKS]
 ```
 
 #### Arguments
 
 | Argument | Description | Required |
 |----------|-------------|----------|
-| `<HOOKS>` | Hook names to add (omit for all hooks) | No |
+| `<HOOKS>` | Lifecycle hook names to add (omit for all) | No |
 
 ### validate
 
