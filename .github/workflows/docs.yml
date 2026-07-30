@@ -1,12 +1,27 @@
 name: Deploy Docs
 
 on:
+  # Deploy on release tags only, so the published site describes the released
+  # binary rather than master. Deploying on every master push meant a user who
+  # installed the latest tag read documentation for merged-but-unreleased
+  # commands — with the nav's version indicator (parsed from Cargo.toml, which
+  # only the release PR bumps) rendering the *released* version right beside
+  # them.
+  #
+  # LOAD-BEARING: this fires only because release-flow.yml pushes the tag with
+  # the Wheatley GitHub App token. Refs pushed with the default GITHUB_TOKEN do
+  # not trigger workflows, so switching that job back to GITHUB_TOKEN would
+  # silently strand the docs site at the last App-token-tagged release — green
+  # runs, no deploys, no signal. release.yml triggers on this same tag push, so
+  # the two fail and recover together.
+  #
+  # No paths: filter here on purpose. A release republishes regardless of its
+  # diff shape (CHANGELOG.md is @include'd into docs/about/changelog.md but
+  # would not match the filter list below), and path filters are unreliable
+  # against tag pushes.
   push:
-    branches: [master]
-    paths:
-      - "docs/**"
-      - "Cargo.toml"
-      - ".github/workflows/docs.yml"
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
   # Build (without deploying) on PRs that touch the docs, so a broken VitePress
   # build is caught before merge. This workflow previously only ran on push to
   # master, so bad Markdown (e.g. unclosed angle-bracket placeholders parsed as
@@ -48,9 +63,11 @@ jobs:
         working-directory: docs
         run: bunx vitepress build
 
-      # Deploy only on push to master and manual dispatch — never on PR builds,
-      # which validate the VitePress build without publishing. github.event_name
-      # is a trusted, GitHub-controlled value (no untrusted-input injection).
+      # Deploy only on release-tag pushes and manual dispatch — never on PR
+      # builds, which validate the VitePress build without publishing. Those are
+      # the only three triggers above, so excluding pull_request covers it.
+      # github.event_name is a trusted, GitHub-controlled value (no
+      # untrusted-input injection).
       - name: Deploy to Cloudflare Pages
         if: github.event_name != 'pull_request'
         uses: cloudflare/wrangler-action@v4.0.0
