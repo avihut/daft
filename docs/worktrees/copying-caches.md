@@ -137,6 +137,29 @@ copy:
 The full schema is in the
 [`daft.yml` reference](/hooks/yaml-reference#copied-paths).
 
+On macOS the copier clones an entire declared tree in a single `clonefile()`
+call when the filesystem allows it, so cost scales with neither bytes nor entry
+count in any way you are likely to notice: a 57,000-entry pnpm `node_modules`
+clones in about a second — measurably faster than `pnpm install` against a warm
+store rebuilding the same tree. Where whole-tree cloning is not available, the
+copier walks the tree entry by entry, and entry count is what you pay for.
+
+### Opting a machine out
+
+`copy:` lives in `daft.yml`, which the repository shares — but whether copying
+is worth it is a property of the machine reading it. A contributor on ext4 pays
+a real byte copy for the same config that is free on APFS. The opt-out therefore
+lives in git config, not in the repo file:
+
+```bash
+git config --global daft.copy.enabled false   # this machine, all repos
+git config daft.copy.enabled false            # this repository only
+```
+
+With it off, worktree creation skips the copy stage entirely — no rows, no
+source ranking. An explicit `daft warm` still copies: running the command is the
+opt-in.
+
 ## What actually stays warm
 
 A copied cache is a head start, not a guarantee. Toolchains vary in how much

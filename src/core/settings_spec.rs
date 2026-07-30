@@ -852,6 +852,14 @@ fn git_specs() -> Vec<SettingSpec> {
             Fixed("true"),
         ),
         SettingSpec::git(
+            keys::COPY_ENABLED,
+            "Copy caches on create",
+            "Copy the caches a repo declares under copy: into newly created worktrees; daft warm still copies on request.",
+            Checkout,
+            Bool,
+            Fixed("true"),
+        ),
+        SettingSpec::git(
             keys::GO_AUTO_START,
             "Auto-start on go",
             "Create the worktree when daft go names a branch that does not exist yet.",
@@ -1746,7 +1754,7 @@ mod tests {
             .iter()
             .filter(|s| s.backend == Backend::GitConfig)
             .count();
-        assert_eq!(git, 77, "63 fixed git keys + 14 per-hook");
+        assert_eq!(git, 78, "64 fixed git keys + 14 per-hook");
         assert_eq!(
             specs.iter().filter(|s| s.form == KeyForm::Layout).count(),
             1

@@ -16,6 +16,7 @@
 //! | `daft.remote` | `"origin"` | Default remote name |
 //! | `daft.checkoutBranch.carry` | `true` | Default carry for checkout-branch |
 //! | `daft.checkout.carry` | `false` | Default carry for checkout |
+//! | `daft.copy.enabled` | `true` | Copy `copy:`-declared caches into newly created worktrees |
 //! | `daft.go.autoStart` | `false` | Auto-create worktree when branch not found in go |
 //! | `daft.prune.cdTarget` | `root` | Where to cd after pruning current worktree (`root` or `default-branch`) |
 //! | `daft.list.stat` | `summary` | Default statistics mode for list command (`summary` or `lines`) |
@@ -401,6 +402,9 @@ pub mod defaults {
     /// Default value for checkout.carry setting.
     pub const CHECKOUT_CARRY: bool = false;
 
+    /// Default value for copy.enabled setting.
+    pub const COPY_ENABLED: bool = true;
+
     /// Default value for update.args setting.
     pub const UPDATE_ARGS: &str = "--ff-only";
 
@@ -513,6 +517,9 @@ pub mod keys {
 
     /// Config key for checkout.carry setting.
     pub const CHECKOUT_CARRY: &str = "daft.checkout.carry";
+
+    /// Config key for copy.enabled setting.
+    pub const COPY_ENABLED: &str = "daft.copy.enabled";
 
     /// Config key for update.args setting.
     pub const UPDATE_ARGS: &str = "daft.update.args";
@@ -732,6 +739,14 @@ pub struct DaftSettings {
     /// Default carry setting for checkout command.
     pub checkout_carry: bool,
 
+    /// Whether worktree creation copies the caches declared under `copy:`.
+    /// The opt-out exists because the copy's value is machine-dependent —
+    /// near-free on reflink filesystems (APFS, btrfs, XFS), a real byte copy
+    /// on ext4 — and daft.yml is repo-shared, so the "not on this machine"
+    /// decision has to live in git config. `daft warm` deliberately ignores
+    /// it: running the command *is* the opt-in.
+    pub copy_enabled: bool,
+
     /// Where to cd after pruning the user's current worktree.
     pub prune_cd_target: PruneCdTarget,
 
@@ -880,6 +895,7 @@ impl Default for DaftSettings {
             remote: defaults::REMOTE.to_string(),
             checkout_branch_carry: defaults::CHECKOUT_BRANCH_CARRY,
             checkout_carry: defaults::CHECKOUT_CARRY,
+            copy_enabled: defaults::COPY_ENABLED,
             prune_cd_target: defaults::PRUNE_CD_TARGET,
             update_args: defaults::UPDATE_ARGS.to_string(),
             multi_remote_enabled: defaults::MULTI_REMOTE_ENABLED,
@@ -979,6 +995,10 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get(keys::CHECKOUT_CARRY)? {
             settings.checkout_carry = parse_bool(&value, defaults::CHECKOUT_CARRY);
+        }
+
+        if let Some(value) = git.config_get(keys::COPY_ENABLED)? {
+            settings.copy_enabled = parse_bool(&value, defaults::COPY_ENABLED);
         }
 
         if let Some(value) = git.config_get(keys::PRUNE_CD_TARGET)?
@@ -1238,6 +1258,10 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get_global(keys::CHECKOUT_CARRY)? {
             settings.checkout_carry = parse_bool(&value, defaults::CHECKOUT_CARRY);
+        }
+
+        if let Some(value) = git.config_get_global(keys::COPY_ENABLED)? {
+            settings.copy_enabled = parse_bool(&value, defaults::COPY_ENABLED);
         }
 
         if let Some(value) = git.config_get_global(keys::PRUNE_CD_TARGET)?
@@ -1897,6 +1921,7 @@ mod tests {
         assert_eq!(settings.remote, "origin");
         assert!(settings.checkout_branch_carry);
         assert!(!settings.checkout_carry);
+        assert!(settings.copy_enabled);
         assert_eq!(settings.prune_cd_target, PruneCdTarget::Root);
         assert_eq!(settings.update_args, "--ff-only");
         assert!(!settings.multi_remote_enabled);

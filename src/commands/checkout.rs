@@ -837,6 +837,7 @@ fn run_start_fork(args: StartArgs, base: Option<String>, count: u32) -> Result<(
             // pop); the explicit --carry × -n combination bailed at decode.
             no_carry: args.no_carry || count > 1,
             checkout_carry: settings.checkout_carry,
+            copy_enabled: settings.copy_enabled,
             remote: args.remote.clone(),
             remote_name: settings.remote.clone(),
             multi_remote_enabled: settings.multi_remote_enabled,
@@ -2141,6 +2142,7 @@ fn run_checkout(
         multi_remote_enabled: settings.multi_remote_enabled,
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_carry: settings.checkout_carry,
+        copy_enabled: settings.copy_enabled,
         checkout_upstream: settings.checkout_upstream,
         // Forge targets always fetch (the PR/MR ref must be materialized);
         // --local is rejected earlier for them.
@@ -2278,6 +2280,7 @@ fn run_sandbox_visit(
         carry: args.carry,
         no_carry: args.no_carry,
         checkout_carry: settings.checkout_carry,
+        copy_enabled: settings.copy_enabled,
         remote: args.remote.clone(),
         remote_name: settings.remote.clone(),
         multi_remote_enabled: settings.multi_remote_enabled,
@@ -2438,6 +2441,7 @@ fn run_create_branch_core(
         multi_remote_enabled: settings.multi_remote_enabled,
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_branch_carry: settings.checkout_branch_carry,
+        copy_enabled: settings.copy_enabled,
         checkout_push: if args.local {
             false
         } else {

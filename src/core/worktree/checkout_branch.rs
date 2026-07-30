@@ -42,6 +42,8 @@ pub struct CheckoutBranchParams {
     pub multi_remote_default: String,
     /// Whether carry is enabled by default (from settings).
     pub checkout_branch_carry: bool,
+    /// `daft.copy.enabled`: whether creation copies `copy:`-declared caches.
+    pub copy_enabled: bool,
     /// Whether to push and set upstream (from settings).
     pub checkout_push: bool,
     /// Skip the repo's pre-push hook on the upstream push (`--no-verify`).
@@ -174,7 +176,18 @@ pub fn execute(
     // resolved ONCE, here, and reused verbatim at execution below, so the plan
     // and the receipt cannot disagree. One row per declared ENTRY, planned
     // unexpanded: the plan face never walks the filesystem.
-    let copy_config = crate::core::copy_paths::read_copy_config(&source_worktree);
+    // `daft.copy.enabled=false` (a per-machine opt-out — the copy's value is
+    // filesystem-dependent, and daft.yml is repo-shared) drops the whole
+    // stage here: no plan section, no source ranking, no rows.
+    let copy_config = if params.copy_enabled {
+        crate::core::copy_paths::read_copy_config(&source_worktree)
+    } else {
+        crate::log_debug!(
+            "copy: stage disabled by {}",
+            crate::core::settings::keys::COPY_ENABLED
+        );
+        None
+    };
     let planned_copy = copy_config
         .as_ref()
         .map(|c| c.paths.clone())
@@ -1140,6 +1153,7 @@ mod tests {
             multi_remote_enabled: false,
             multi_remote_default: "origin".to_string(),
             checkout_branch_carry: false,
+            copy_enabled: true,
             checkout_push: true,
             no_verify: false,
             push_verify,
@@ -1356,6 +1370,7 @@ mod timeline_tests {
             multi_remote_enabled: false,
             multi_remote_default: "origin".to_string(),
             checkout_branch_carry: false,
+            copy_enabled: true,
             checkout_push: false,
             no_verify: false,
             push_verify: PushVerify::Auto,
@@ -1458,6 +1473,7 @@ mod timeline_tests {
             multi_remote_enabled: false,
             multi_remote_default: "origin".to_string(),
             checkout_branch_carry: false,
+            copy_enabled: true,
             checkout_push: false,
             no_verify: false,
             push_verify: PushVerify::Auto,
@@ -1559,6 +1575,7 @@ mod timeline_tests {
             multi_remote_enabled: false,
             multi_remote_default: "origin".to_string(),
             checkout_branch_carry: false,
+            copy_enabled: true,
             checkout_push: false,
             no_verify: false,
             push_verify: PushVerify::Auto,
@@ -1662,6 +1679,7 @@ mod timeline_tests {
             multi_remote_enabled: false,
             multi_remote_default: "origin".to_string(),
             checkout_branch_carry: false,
+            copy_enabled: true,
             checkout_push: false,
             no_verify: false,
             push_verify: PushVerify::Auto,
@@ -1741,6 +1759,7 @@ mod timeline_tests {
             multi_remote_enabled: false,
             multi_remote_default: "origin".to_string(),
             checkout_branch_carry: false,
+            copy_enabled: true,
             checkout_push: false,
             no_verify: false,
             push_verify: PushVerify::Auto,
@@ -1834,6 +1853,7 @@ mod timeline_tests {
             multi_remote_enabled: false,
             multi_remote_default: "origin".to_string(),
             checkout_branch_carry: false,
+            copy_enabled: true,
             checkout_push: false,
             no_verify: false,
             push_verify: PushVerify::Auto,
