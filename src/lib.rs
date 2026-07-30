@@ -216,6 +216,12 @@ pub fn daft_cmd(args: &str) -> String {
 /// on stderr — `eval` only captures stdout, so banners on stderr (e.g., the
 /// update-available notice) leak straight into the user's terminal.
 ///
+/// `env` shares the eval'd hot path (`eval "$(daft env --export)"` from
+/// `.envrc`/mise on every cd) with a slightly looser contract: it must read
+/// the repo and daft.yml to answer at all, so in-process file IO is fine, but
+/// the no-subprocess / no-network / no-background-spawn / quiet-stderr rules
+/// bind exactly as for the other two.
+///
 /// `__*` subcommands are background tasks (e.g., `__check-update`,
 /// `__prune-trust`, and the `__complete` tab-completion helper). Skipping
 /// further background work for them prevents recursive fork bombs and keeps
@@ -229,7 +235,7 @@ pub fn skip_startup_tasks_for(args: &[String]) -> bool {
     let Some(sub) = args.get(1).map(String::as_str) else {
         return false;
     };
-    sub.starts_with("__") || matches!(sub, "shell-init" | "completions")
+    sub.starts_with("__") || matches!(sub, "shell-init" | "completions" | "env")
 }
 
 /// Whether daft's startup-time background work should be skipped for this
@@ -588,6 +594,18 @@ mod tests {
             "git-daft",
             "completions",
             "bash"
+        ])));
+    }
+
+    #[test]
+    fn test_skip_startup_tasks_env() {
+        // `daft env --export` is eval'd from .envrc/mise on every cd; an
+        // update-check spawn or stderr banner there leaks into every shell.
+        assert!(skip_startup_tasks_for(&args(&["daft", "env", "--export"])));
+        assert!(skip_startup_tasks_for(&args(&[
+            "git-daft",
+            "env",
+            "WEBAPP_PORT"
         ])));
     }
 
