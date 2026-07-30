@@ -710,7 +710,7 @@ _daft() {
     if (( CURRENT >= 3 )) && [[ "$words[2]" == "hooks" ]]; then
         # hooks subcommand completion (position 3)
         if (( CURRENT == 3 )); then
-            compadd trust prompt deny status migrate install validate dump run jobs
+            compadd trust prompt deny status migrate add validate dump run jobs
             _files -/
             return
         fi

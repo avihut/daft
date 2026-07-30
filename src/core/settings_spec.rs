@@ -1347,13 +1347,15 @@ fn git_specs() -> Vec<SettingSpec> {
 
 /// The two per-hook git-config settings, expanded over every hook type.
 ///
-/// Seven hook types × two settings = the 14 dynamic keys. The four renamed
-/// hooks still honour their pre-`worktree-` spelling while the new key is
-/// unset, which the row records as its deprecated alias.
+/// Seven lifecycle hooks plus sixteen git stages × two settings = the 46
+/// dynamic keys. The four renamed lifecycle hooks still honour their
+/// pre-`worktree-` spelling while the new key is unset, which the row records
+/// as its deprecated alias.
 fn per_hook_specs() -> Vec<SettingSpec> {
-    let mut specs = Vec::with_capacity(HookType::all().len() * 2);
+    let all = HookType::all_configurable();
+    let mut specs = Vec::with_capacity(all.len() * 2);
 
-    for &hook in HookType::all() {
+    for &hook in all {
         let name = hook.yaml_name();
 
         specs.push(SettingSpec::per_hook(
@@ -1660,9 +1662,13 @@ mod tests {
     #[test]
     fn per_hook_expansion_covers_every_hook_and_setting() {
         let specs = per_hook_specs();
-        assert_eq!(specs.len(), 14, "7 hook types x 2 settings");
+        assert_eq!(
+            specs.len(),
+            46,
+            "7 lifecycle hooks + 16 git stages x 2 settings"
+        );
 
-        for &hook in HookType::all() {
+        for &hook in HookType::all_configurable() {
             for (setting, suffix) in [
                 (HookSetting::Enabled, "enabled"),
                 (HookSetting::FailMode, "failMode"),
@@ -1754,7 +1760,7 @@ mod tests {
             .iter()
             .filter(|s| s.backend == Backend::GitConfig)
             .count();
-        assert_eq!(git, 78, "64 fixed git keys + 14 per-hook");
+        assert_eq!(git, 110, "64 fixed git keys + 46 per-hook");
         assert_eq!(
             specs.iter().filter(|s| s.form == KeyForm::Layout).count(),
             1
