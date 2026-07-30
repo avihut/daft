@@ -107,16 +107,56 @@ pub(super) fn cmd_install(force: bool, output: &mut dyn Output) -> Result<()> {
     }
 
     output.info("");
-    output.info(&format!(
-        "Stages run from your {} — nothing is baked into the hook files, so \
-         editing it takes effect immediately.",
-        bold("daft.yml hooks:")
-    ));
+    report_source(&dirs, output);
     output.info(&format!(
         "Undo with {}.",
         cyan(&crate::daft_cmd("hooks uninstall"))
     ));
     Ok(())
+}
+
+/// Say which config the stages will actually run from.
+///
+/// The most important line install prints, and the one a takeover turns on:
+/// daft is now the thing git calls, but the gates are still described by
+/// someone else's file. Anyone reading the output has to know that, and has
+/// to know what it would take to change it.
+fn report_source(dirs: &GitDirs, output: &mut dyn Output) {
+    use crate::hooks::incumbent::{self, StageSource};
+
+    let native = crate::hooks::yaml_config_loader::load_merged_config(&dirs.worktree_root)
+        .ok()
+        .flatten();
+    match incumbent::resolve_stage_source(&dirs.worktree_root, native.as_ref()) {
+        StageSource::Native => output.info(&format!(
+            "Stages run from your {} — nothing is baked into the hook files, so \
+             editing it takes effect immediately.",
+            bold("daft.yml hooks:")
+        )),
+        StageSource::Incumbent(path) => {
+            output.info(&format!(
+                "Stages run from {} — daft is running your existing config as-is. \
+                 Nothing was written to the tracked tree.",
+                bold(&path.display().to_string())
+            ));
+            if let Ok(Some(spec)) = incumbent::detect(&dirs.worktree_root) {
+                for note in &spec.unsupported {
+                    output.warning(note);
+                }
+            }
+            output.info(&format!(
+                "  {} {} converts it into daft.yml when you are ready; adding any git \
+                 stage to daft.yml takes precedence over this file.",
+                dim("Next:"),
+                cyan(&crate::daft_cmd("hooks import"))
+            ));
+        }
+        StageSource::None => output.info(&format!(
+            "No stages are defined yet — add a {} block to daft.yml and it takes \
+             effect immediately, with no reinstall.",
+            bold("hooks:")
+        )),
+    }
 }
 
 /// Remove daft's shims and restore whatever they displaced.
