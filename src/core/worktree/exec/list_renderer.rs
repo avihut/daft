@@ -227,6 +227,7 @@ mod tests {
                 worktree_path: format!("/r/{branch}").into(),
                 branch_name: branch.into(),
                 display: None,
+                ..Default::default()
             },
             last_command_index: 0,
             exit_code: exit,

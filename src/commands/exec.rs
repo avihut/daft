@@ -549,6 +549,7 @@ fn find_worktree_for_branch(
             worktree_path: w.path.clone(),
             branch_name: branch.to_string(),
             display,
+            ..Default::default()
         })
 }
 
@@ -646,6 +647,7 @@ fn collect_related_targets(
             current_repo_catalog_name(),
             current_branch
         )),
+        ..Default::default()
     }];
 
     let original = get_current_directory()?;

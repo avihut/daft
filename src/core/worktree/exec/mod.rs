@@ -42,7 +42,7 @@ fn terminate_child(_child: &std::process::Child) {
 
 /// A worktree that has been matched by the user's selectors and is ready
 /// to receive commands.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ResolvedTarget {
     pub worktree_path: PathBuf,
     pub branch_name: String,
@@ -50,6 +50,11 @@ pub struct ResolvedTarget {
     /// illegal in refnames, so the form is unambiguous). `None` renders the
     /// plain branch name; `DAFT_BRANCH_NAME` always stays the raw branch.
     pub display: Option<String>,
+    /// Derived per-worktree env values (#388) to inject into the spawned
+    /// command's environment. Populated by the command layer, where repo
+    /// identity is unambiguous for multi-repo runs — the spawn sites must
+    /// not re-derive it from ambient cwd. Empty = nothing to inject.
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 impl ResolvedTarget {
@@ -263,6 +268,7 @@ pub fn resolve_targets(
                     worktree_path: w.path.clone(),
                     branch_name: b.clone(),
                     display: None,
+                    ..Default::default()
                 })
             })
             .collect();
@@ -289,6 +295,7 @@ pub fn resolve_targets(
                         worktree_path: wt.path.clone(),
                         branch_name: branch.clone(),
                         display: None,
+                        ..Default::default()
                     });
                 }
                 break;
@@ -310,6 +317,7 @@ pub fn resolve_targets(
                         worktree_path: wt.path.clone(),
                         branch_name: branch.clone(),
                         display: None,
+                        ..Default::default()
                     });
                 }
                 break;
@@ -354,6 +362,7 @@ pub fn resolve_targets_with_orphans(
                     worktree_path: w.path.clone(),
                     branch_name: b.clone(),
                     display: None,
+                    ..Default::default()
                 })
             })
             .collect();
@@ -405,6 +414,7 @@ pub fn resolve_targets_with_orphans(
                         worktree_path: wt.path.clone(),
                         branch_name: branch.clone(),
                         display: None,
+                        ..Default::default()
                     });
                     actionable_this_glob += 1;
                 } else {
@@ -1009,6 +1019,7 @@ mod tests {
             worktree_path: dir.path().to_path_buf(),
             branch_name: branch.to_string(),
             display: None,
+            ..Default::default()
         }
     }
 
@@ -1111,11 +1122,13 @@ mod tests {
                 worktree_path: dir1.path().into(),
                 branch_name: "a".into(),
                 display: None,
+                ..Default::default()
             },
             ResolvedTarget {
                 worktree_path: dir2.path().into(),
                 branch_name: "b".into(),
                 display: None,
+                ..Default::default()
             },
         ];
         let pipeline = vec![CommandSpec::Argv(vec!["echo".into(), "ok".into()])];
@@ -1135,11 +1148,13 @@ mod tests {
                 worktree_path: dir1.path().into(),
                 branch_name: "a".into(),
                 display: None,
+                ..Default::default()
             },
             ResolvedTarget {
                 worktree_path: dir2.path().into(),
                 branch_name: "b".into(),
                 display: None,
+                ..Default::default()
             },
         ];
         let pipeline = vec![CommandSpec::Argv(vec!["false".into()])];
@@ -1254,16 +1269,19 @@ mod tests {
                 worktree_path: dir1.path().into(),
                 branch_name: "a".into(),
                 display: None,
+                ..Default::default()
             },
             ResolvedTarget {
                 worktree_path: dir2.path().into(),
                 branch_name: "b".into(),
                 display: None,
+                ..Default::default()
             },
             ResolvedTarget {
                 worktree_path: dir3.path().into(),
                 branch_name: "c".into(),
                 display: None,
+                ..Default::default()
             },
         ];
 
@@ -1294,16 +1312,19 @@ mod tests {
                 worktree_path: dir1.path().into(),
                 branch_name: "a".into(),
                 display: None,
+                ..Default::default()
             },
             ResolvedTarget {
                 worktree_path: dir2.path().into(),
                 branch_name: "b".into(),
                 display: None,
+                ..Default::default()
             },
             ResolvedTarget {
                 worktree_path: dir3.path().into(),
                 branch_name: "c".into(),
                 display: None,
+                ..Default::default()
             },
         ];
         let pipeline = vec![CommandSpec::Shell(
@@ -1326,6 +1347,7 @@ mod tests {
                     worktree_path: "/r/master".into(),
                     branch_name: "master".into(),
                     display: None,
+                    ..Default::default()
                 },
                 last_command_index: 0,
                 exit_code: 0,
@@ -1338,6 +1360,7 @@ mod tests {
                     worktree_path: "/r/feat-dirty".into(),
                     branch_name: "feat/dirty".into(),
                     display: None,
+                    ..Default::default()
                 },
                 last_command_index: 0,
                 exit_code: 101,
@@ -1442,6 +1465,7 @@ mod streaming_skip_emission_tests {
             worktree_path: dir.path().to_path_buf(),
             branch_name: "branch-a".into(),
             display: None,
+            ..Default::default()
         };
         let pipeline = vec![
             CommandSpec::Argv(vec!["false".into()]),
@@ -1477,6 +1501,7 @@ mod streaming_skip_emission_tests {
             worktree_path: dir.path().to_path_buf(),
             branch_name: "branch-b".into(),
             display: None,
+            ..Default::default()
         };
         let pipeline = vec![
             CommandSpec::Argv(vec!["echo".into(), "one".into()]),
@@ -1526,6 +1551,7 @@ mod streaming_skip_emission_tests {
             worktree_path: dir.path().to_path_buf(),
             branch_name: "branch-mid".into(),
             display: None,
+            ..Default::default()
         };
         let pipeline = vec![
             CommandSpec::Shell("sleep 5".into()),
