@@ -91,6 +91,7 @@ pub fn validate_config(config: &YamlConfig) -> Result<ValidationResult> {
 
     // Validate each hook definition
     for (hook_name, hook_def) in &config.hooks {
+        validate_hook_name(hook_name, &mut result);
         validate_hook_def("hooks", hook_name, hook_def, &mut result);
     }
 
@@ -333,6 +334,55 @@ fn validate_copy(copy: &CopyConfig, result: &mut ValidationResult) {
     }
 }
 
+/// Reject a `hooks:` key that names no event daft will ever dispatch.
+///
+/// Until git stages existed the map was a free-form namespace: an unknown key
+/// parsed clean and was silently never run. That was survivable while the only
+/// keys were daft's own lifecycle names — a typo cost you a hook that visibly
+/// did not fire during `daft start`. It stops being survivable now that
+/// `pre-commit:` is a *gate*. A misspelled gate reports nothing, blocks
+/// nothing, and reads in review as a repo with a gate.
+///
+/// So an unrecognised key is an error, and the three ways to get one are
+/// answered differently:
+///
+/// - a hook git has but daft will not manage → say why it is refused, since
+///   no spelling of it will ever work;
+/// - a near-miss of a real name → did-you-mean;
+/// - anything else → name both namespaces.
+fn validate_hook_name(name: &str, result: &mut ValidationResult) {
+    use crate::hooks::git_stage;
+
+    if crate::hooks::HookType::from_yaml_name(name).is_some() {
+        return;
+    }
+    let path = format!("hooks.{name}");
+
+    if let Some(reason) = git_stage::rejection_reason(name) {
+        result.error(&path, format!("daft does not manage '{name}': {reason}"));
+        return;
+    }
+
+    let known: Vec<&str> = crate::hooks::yaml_config::LIFECYCLE_HOOK_NAMES
+        .iter()
+        .copied()
+        .chain(git_stage::GitStage::all().iter().map(|s| s.yaml_name()))
+        .collect();
+    let hint = match crate::suggest::find_similar(name, &known, 3).as_slice() {
+        [] => format!(
+            "expected a worktree lifecycle hook ({}) or a git stage ({})",
+            crate::hooks::yaml_config::LIFECYCLE_HOOK_NAMES.join(", "),
+            git_stage::GitStage::all()
+                .iter()
+                .map(|s| s.yaml_name())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        similar => format!("did you mean {}?", similar.join(", ")),
+    };
+    result.error(&path, format!("unknown hook '{name}': {hint}"));
+}
+
 /// Validate a task name for CLI and shell-completion safety.
 ///
 /// A task name is typed as a bare `daft run <name>` argument and completed on
@@ -362,7 +412,7 @@ fn validate_task_name(name: &str, result: &mut ValidationResult) {
 
     // A task named like a lifecycle hook is legal (the namespaces are
     // disjoint) but confusing — surface it as a warning.
-    if crate::hooks::yaml_config::KNOWN_HOOK_NAMES.contains(&name) {
+    if crate::hooks::yaml_config::LIFECYCLE_HOOK_NAMES.contains(&name) {
         result.warn(
             &path,
             format!("task '{name}' shares a name with a lifecycle hook; they are unrelated"),
@@ -730,6 +780,92 @@ mod tests {
         let result = validate_config(&config).unwrap();
         assert!(result.is_ok());
         assert!(result.warnings.is_empty());
+    }
+
+    /// A config with one `hooks:` entry named `name`, with a runnable job so
+    /// nothing but the name is under test.
+    fn config_with_hook(name: &str) -> YamlConfig {
+        let mut config = YamlConfig::default();
+        config.hooks.insert(
+            name.to_string(),
+            HookDef {
+                jobs: Some(vec![JobDef {
+                    name: Some("j".into()),
+                    run: Some(RunCommand::Simple("true".into())),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        );
+        config
+    }
+
+    fn errors_for(config: &YamlConfig) -> Vec<String> {
+        validate_config(config)
+            .unwrap()
+            .errors
+            .iter()
+            .map(|e| format!("{}: {}", e.path, e.message))
+            .collect()
+    }
+
+    #[test]
+    fn both_hook_namespaces_validate_clean() {
+        for name in [
+            "worktree-post-create",
+            "pre-merge",
+            "post-merge",
+            "pre-commit",
+            "commit-msg",
+            "git-post-merge",
+            "sendemail-validate",
+        ] {
+            let result = validate_config(&config_with_hook(name)).unwrap();
+            assert!(result.is_ok(), "{name} rejected: {:?}", result.errors);
+        }
+    }
+
+    #[test]
+    fn an_unknown_hook_name_is_an_error_with_a_suggestion() {
+        // The behaviour change this validation exists for: before git stages,
+        // an unrecognised key parsed clean and silently never ran. A
+        // misspelled *gate* that reads as configured is worse than no gate.
+        let errors = errors_for(&config_with_hook("pre-comit"));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("hooks.pre-comit: unknown hook 'pre-comit'"));
+        assert!(errors[0].contains("did you mean"));
+        assert!(errors[0].contains("pre-commit"));
+    }
+
+    #[test]
+    fn a_hook_name_resembling_nothing_lists_both_namespaces() {
+        let errors = errors_for(&config_with_hook("frobnicate"));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("worktree lifecycle hook"));
+        assert!(errors[0].contains("worktree-post-create"));
+        assert!(errors[0].contains("git stage"));
+        assert!(errors[0].contains("pre-push"));
+    }
+
+    #[test]
+    fn refused_git_hooks_say_why_rather_than_suggesting_a_spelling() {
+        // No spelling of these will ever work, so a did-you-mean would send
+        // the reader looking for a typo that isn't there.
+        for (name, marker) in [
+            ("pre-receive", "server-side hook"),
+            ("push-to-checkout", "server-side hook"),
+            ("reference-transaction", "protocol hook"),
+            ("fsmonitor-watchman", "protocol hook"),
+        ] {
+            let errors = errors_for(&config_with_hook(name));
+            assert_eq!(errors.len(), 1, "{name}: {errors:?}");
+            assert!(
+                errors[0].contains("daft does not manage") && errors[0].contains(marker),
+                "{name}: {}",
+                errors[0]
+            );
+            assert!(!errors[0].contains("did you mean"), "{name}");
+        }
     }
 
     #[test]
