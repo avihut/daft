@@ -29,6 +29,14 @@ impl Stat {
             _ => None,
         }
     }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("summary", "one-line change summary"),
+            ("lines", "full added/removed line counts"),
+        ]
+    }
 }
 
 /// The kind of entry in the list output.

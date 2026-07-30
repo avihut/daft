@@ -43,7 +43,9 @@ const FALLBACK_JOBS: usize = 4;
 /// above `daft.list.sizeConcurrency` config and the `available_parallelism()`
 /// default. Read here rather than in the settings loader so `DaftSettings`
 /// stays a pure git-config projection.
-const JOBS_ENV: &str = "DAFT_SIZE_WALK_JOBS";
+/// Public so the settings registry can point at it rather than re-typing the
+/// name — the same single-source rule its `keys::` references follow.
+pub const JOBS_ENV: &str = "DAFT_SIZE_WALK_JOBS";
 
 /// Resolve the walk concurrency budget: `DAFT_SIZE_WALK_JOBS` env var, then the
 /// caller-supplied config value (`daft.list.sizeConcurrency`), then

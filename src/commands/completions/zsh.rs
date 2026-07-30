@@ -636,11 +636,14 @@ _daft() {
             fi
         done
         case "$_fmt_path" in
-            list|worktree-list|"hooks trust list"|"hooks jobs"|"layout list"|"shared status")
+            list|worktree-list|"hooks trust list"|"hooks jobs"|"layout list"|"shared status"|"config list")
                 compadd json ndjson tsv csv yaml toon markdown
                 return
                 ;;
-            release-notes|"multi-remote status"|"hooks run")
+            # The config read and write verbs emit one document rather than
+            # rows, so the row formats are not among their options. The trailing
+            # glob is because three of them take a key before the flag.
+            release-notes|"multi-remote status"|"hooks run"|"config get"*|"config set"*|"config unset"*)
                 compadd json yaml toon markdown
                 return
                 ;;
@@ -1016,9 +1019,62 @@ _daft() {
         return
     fi
 
-    # config: complete subcommands
-    if (( CURRENT == 3 )) && [[ "$words[2]" == "config" ]]; then
-        compadd remote-sync
+    # config: subcommands, then registry keys and the values they accept.
+    # The CURRENT guard matters: while `config` is itself the word being
+    # completed it already sits in words[2], so testing the word alone claims
+    # the completion, matches no case arm below, and returns nothing at all --
+    # `daft config<TAB>` would stop completing the verb it is spelling.
+    if [[ "$words[2]" == "config" ]] && (( CURRENT >= 3 )); then
+        if (( CURRENT == 3 )); then
+            compadd get list set unset
+            return
+        fi
+        local config_sub="$words[3]"
+        # --category takes a value, and the categories are a const table, so
+        # this answers without opening anything.
+        if [[ "$words[$((CURRENT-1))]" == "--category" ]]; then
+            local -a cfg_cats
+            cfg_cats=( ${(f)"$(daft __complete config-category "$curword" 2>/dev/null | cut -f1)"} )
+            (( ${#cfg_cats} )) && compadd -- "${cfg_cats[@]}"
+            return
+        fi
+        case "$config_sub" in
+            get|set|unset)
+                if [[ "$curword" == -* ]]; then
+                    if [[ "$config_sub" == "get" ]]; then
+                        compadd -- --origin --global --local --format --template --no-headers -h --help
+                    else
+                        compadd -- --global --local --format --template --no-headers -h --help
+                    fi
+                    return
+                fi
+                # Count positionals after the verb so the key slot and the
+                # value slot complete against different things.
+                local -i cfg_pos=0 cfg_i
+                local cfg_key=""
+                for (( cfg_i = 4; cfg_i < CURRENT; cfg_i++ )); do
+                    [[ "$words[cfg_i]" == -* ]] && continue
+                    (( cfg_pos++ ))
+                    [[ $cfg_pos -eq 1 ]] && cfg_key="$words[cfg_i]"
+                done
+                local -a cfg_out
+                if (( cfg_pos == 0 )); then
+                    cfg_out=( ${(f)"$(daft __complete config-key "$curword" 2>/dev/null | cut -f1)"} )
+                elif [[ "$config_sub" == "set" ]] && (( cfg_pos == 1 )); then
+                    cfg_out=( ${(f)"$(DAFT_COMPLETE_CONFIG_KEY="$cfg_key" daft __complete config-value "$curword" 2>/dev/null | cut -f1)"} )
+                else
+                    return
+                fi
+                (( ${#cfg_out} )) && compadd -- "${cfg_out[@]}"
+                return
+                ;;
+            list)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --modified --category --global --local --format --template --no-headers -h --help
+                fi
+                return
+                ;;
+        esac
         return
     fi
 

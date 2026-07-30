@@ -331,6 +331,11 @@ pub(super) fn emit_formats_for(command_path: &str) -> Option<Vec<&'static str>> 
         "shared status" => Shape::Matrix,
         "multi-remote status" => Shape::Sectioned,
         "hooks run" => Shape::Sectioned,
+        // Every config verb emits. `list` is rows; the other three are one
+        // document each — a setting with its ladder, or the record of a write —
+        // so they offer four formats where `list` offers seven.
+        "config list" => Shape::Tabular,
+        "config get" | "config set" | "config unset" => Shape::Document,
         _ => return None,
     };
     Some(
@@ -1095,6 +1100,144 @@ mod tests {
     /// `daft repo remove --repo <name>` / `--keep-files`: the repo-verb
     /// sections of the umbrella completions are hardcoded per shell, so a
     /// new flag must land in all three (fig has its own spec test).
+    /// Every shell offers the same `daft config` verbs, and each completes
+    /// keys from the registry rather than a hardcoded list.
+    ///
+    /// The verb list lives in four places by necessity (three shell scripts
+    /// plus the Fig spec) and `DAFT_CONFIG_SUBCOMMANDS` is the fifth. This is
+    /// what stops a new verb from completing in one shell and not the others.
+    #[test]
+    fn config_verbs_and_keys_complete_in_all_shells() {
+        let zsh = zsh::DAFT_ZSH_COMPLETIONS;
+        let bash = bash::DAFT_BASH_COMPLETIONS;
+        let fish = fish::generate_daft_fish_completions();
+        let fig = fig::generate_fig_daft_spec().expect("fig spec generates");
+
+        // The umbrella scripts list the verbs inline; they must be the same
+        // list `DAFT_CONFIG_SUBCOMMANDS` holds, in the same order.
+        let inline = crate::suggest::DAFT_CONFIG_SUBCOMMANDS.join(" ");
+        assert!(
+            zsh.contains(&format!("compadd {inline}")),
+            "zsh must offer exactly the config verbs"
+        );
+        assert!(
+            bash.contains(&inline),
+            "bash must offer exactly the config verbs"
+        );
+
+        for verb in crate::suggest::DAFT_CONFIG_SUBCOMMANDS {
+            assert!(
+                fish.contains(&format!("-f -a '{verb}'")),
+                "fish must offer the config verb {verb}"
+            );
+            assert!(
+                fig.contains(&format!("\"{verb}\"")),
+                "the fig spec must offer the config verb {verb}"
+            );
+        }
+
+        // Keys come from the registry through `__complete`, never a literal
+        // list — that is the whole point of the registry existing.
+        for (shell, script) in [("zsh", zsh), ("bash", bash), ("fish", fish.as_str())] {
+            assert!(
+                script.contains("daft __complete config-key"),
+                "{shell} must complete config keys from the registry"
+            );
+            assert!(
+                script.contains("DAFT_COMPLETE_CONFIG_KEY="),
+                "{shell} must hand the typed key to the value completer — the \
+                 __complete protocol carries only the word under the cursor"
+            );
+            assert!(
+                script.contains("daft __complete config-value"),
+                "{shell} must complete config values"
+            );
+        }
+
+        assert!(fig.contains("config-key") && fig.contains("config-value"));
+
+        // Categories too: a const table, so this is IO-free on the Tab path.
+        for (shell, script) in [("zsh", zsh), ("bash", bash), ("fish", fish.as_str())] {
+            assert!(
+                script.contains("daft __complete config-category"),
+                "{shell} must complete --category from the registry"
+            );
+        }
+        assert!(
+            fig.contains("Settings under "),
+            "the fig spec bakes the categories in, since they cannot change after generation"
+        );
+    }
+
+    /// The layer flags reach every verb in every shell.
+    ///
+    /// Four hand-written scripts and one generated spec, none of which any
+    /// compiler checks against the clap tree — so a flag added to the command
+    /// and forgotten here completes nowhere and is invisible until someone
+    /// presses Tab and gets nothing.
+    #[test]
+    fn config_completes_the_layer_flags_and_the_emit_flags_in_all_shells() {
+        let zsh = zsh::DAFT_ZSH_COMPLETIONS;
+        let bash = bash::DAFT_BASH_COMPLETIONS;
+        let fish = fish::generate_daft_fish_completions();
+        let fig = fig::generate_fig_daft_spec().expect("fig spec generates");
+
+        // The verb-flag lines carry the whole list, so asserting the pair sits
+        // beside a verb-specific flag pins them to the right arm rather than
+        // finding --global somewhere else in a 1000-line script.
+        for (shell, script) in [("zsh", zsh), ("bash", bash)] {
+            assert!(
+                script.contains("--origin --global --local"),
+                "{shell}: config get must offer the layer pair alongside --origin"
+            );
+            assert!(
+                script.contains("--modified --category --global --local"),
+                "{shell}: config list must offer the layer pair"
+            );
+            // set and unset share one arm, and it is the one that is not get's.
+            assert!(
+                script.contains("--global --local --format --template --no-headers"),
+                "{shell}: config set/unset must offer the layer pair and the emit flags"
+            );
+        }
+
+        // fish groups verbs per clause (`get list`, `set unset`), so the verb
+        // coverage is the sibling test's job; what is checked here is that both
+        // directions of the pair exist, with the wording that tells them apart.
+        assert!(
+            fish.contains("-l local -d 'Read this worktree'"),
+            "fish must offer --local as a read"
+        );
+        assert!(
+            fish.contains("-l local -d 'Write to this repository"),
+            "fish must offer --local as a write"
+        );
+
+        assert!(
+            fig.contains("Read this worktree's own scope alone")
+                && fig.contains("Write to this repository — the default"),
+            "the fig spec must carry both directions of --local"
+        );
+
+        // A document has no rows, so the row formats must not be offered for
+        // the three verbs that emit one. The value lists live in the shells as
+        // literals, which is exactly why this is worth asserting.
+        for (shell, script) in [("zsh", zsh), ("bash", bash)] {
+            assert!(
+                script.contains("\"config get\"*"),
+                "{shell}: the config read verbs must take the document format list"
+            );
+            assert!(
+                script.contains("\"config list\")"),
+                "{shell}: config list must take the row format list"
+            );
+        }
+        assert!(
+            fish.contains("__fish_seen_subcommand_from get set unset' -l format -x -a 'json yaml toon markdown'"),
+            "fish must offer the config read verbs only the document formats"
+        );
+    }
+
     #[test]
     fn repo_remove_completes_repo_flag_and_keep_files_in_all_shells() {
         let zsh = zsh::DAFT_ZSH_COMPLETIONS;

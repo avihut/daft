@@ -49,6 +49,15 @@ impl TrustLevel {
     pub fn allows_without_prompt(&self) -> bool {
         matches!(self, TrustLevel::Allow)
     }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("deny", "never run untrusted hooks"),
+            ("prompt", "ask per repository"),
+            ("allow", "run without asking"),
+        ]
+    }
 }
 
 impl fmt::Display for TrustLevel {

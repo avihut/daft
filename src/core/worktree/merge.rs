@@ -296,6 +296,27 @@ pub enum AdoptPreset {
     No,
 }
 
+impl AdoptPreset {
+    /// Parse a string value into an AdoptPreset (case-insensitive).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "prompt" => Some(Self::Prompt),
+            "yes" => Some(Self::Yes),
+            "no" => Some(Self::No),
+            _ => None,
+        }
+    }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("prompt", "ask before creating"),
+            ("yes", "create silently"),
+            ("no", "refuse"),
+        ]
+    }
+}
+
 /// Result of the adopt-target decision.
 ///
 /// `Yes`/`No` are final; `Ask` means the caller must prompt the user (e.g.
@@ -441,6 +462,16 @@ impl MergeStyle {
     pub fn uses_rebase(&self) -> bool {
         matches!(self, MergeStyle::Rebase | MergeStyle::RebaseMerge)
     }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("merge", "merge commit"),
+            ("squash", "squash into one commit"),
+            ("rebase", "rebase onto the target"),
+            ("rebase-merge", "rebase, then merge commit"),
+        ]
+    }
 }
 
 impl std::fmt::Display for MergeStyle {
@@ -473,6 +504,17 @@ impl CleanupKind {
             CleanupKind::Keep => "keep",
             CleanupKind::RemoveBranch => "remove-branch",
         }
+    }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("keep", "keep the branch and worktree"),
+            (
+                "remove-branch",
+                "delete the branch and worktree after merging",
+            ),
+        ]
     }
 }
 

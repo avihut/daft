@@ -217,6 +217,112 @@ pub fn config_get_global(key: &str) -> Result<Option<String>> {
     Ok(config.string(key).map(|v| v.to_string()))
 }
 
+/// Every `<section>.*` entry visible from this repository, tagged with the
+/// file and scope it came from.
+///
+/// There is no subprocess equivalent worth having: `git config --list
+/// --show-origin --show-scope` would need parsing, and asking `--get` per key
+/// per scope would be hundreds of processes and still could not distinguish a
+/// value set in `~/.gitconfig` from the same value set in `.git/config`.
+/// gitoxide keeps one `Section` per (header, source file) pair in load order,
+/// so a single walk over the merged snapshot yields every layer's answer with
+/// its provenance intact — which is the whole substance of the settings
+/// screen's ladder.
+///
+/// Keys are returned exactly as spelled in the file. Git matches section and
+/// value names case-insensitively but subsection names case-**sensitively**,
+/// so canonicalizing here would erase the difference between
+/// `daft.checkoutBranch.carry` and a typo'd `daft.checkoutbranch.carry` that
+/// git stores as a separate, inert subsection.
+pub fn config_entries_prefixed(
+    repo: &Repository,
+    section_name: &str,
+) -> Result<Vec<super::config::ConfigEntry>> {
+    Ok(config_entries_in(&repo.config_snapshot(), section_name))
+}
+
+/// The same enumeration from outside any repository: system and global config
+/// only, read the way [`config_get_global`] reads a single key.
+///
+/// `daft config` has to work from anywhere — a user standing in their home
+/// directory should still see what their `~/.gitconfig` sets, and be able to
+/// change it. Returning nothing here would make every setting look unset.
+pub fn config_entries_global(section_name: &str) -> Result<Vec<super::config::ConfigEntry>> {
+    let file = gix::config::File::from_globals().context("Failed to read global git config")?;
+    Ok(config_entries_in(&file, section_name))
+}
+
+/// The shared walk. Takes the parsed config rather than a repository so the
+/// in-repo and global paths cannot drift in how they read provenance.
+fn config_entries_in(
+    config: &gix::config::File<'_>,
+    section_name: &str,
+) -> Vec<super::config::ConfigEntry> {
+    use super::config::ConfigEntry;
+    use std::collections::HashSet;
+
+    let mut entries = Vec::new();
+
+    let Some(sections) = config.sections_by_name(section_name) else {
+        return entries;
+    };
+
+    for section in sections {
+        let meta = section.meta();
+        let scope = scope_for_source(meta.source);
+        let subsection = section.header().subsection_name().map(|s| s.to_string());
+        let body = section.body();
+
+        // A name repeated inside one section resolves to its last value, the
+        // way git does; visiting it once keeps the ladder from showing the
+        // same rung twice.
+        let mut seen = HashSet::new();
+
+        for name in body.value_names() {
+            if !seen.insert(name.to_string().to_ascii_lowercase()) {
+                continue;
+            }
+            let Some(value) = body.value(name.as_ref()) else {
+                continue;
+            };
+            let key = match &subsection {
+                Some(sub) => format!("{section_name}.{sub}.{name}"),
+                None => format!("{section_name}.{name}"),
+            };
+            entries.push(ConfigEntry {
+                key,
+                value: value.to_string(),
+                scope,
+                origin_path: meta.path.clone(),
+            });
+        }
+    }
+
+    entries
+}
+
+/// Collapse gitoxide's ten config sources onto the five layers a user can
+/// reason about.
+///
+/// `Git` and `User` are both "global" — the XDG file and `~/.gitconfig` are
+/// two spellings of the same scope, and `git config --global` writes whichever
+/// exists. Everything process-scoped (`GIT_CONFIG_KEY_N`, `git -c`, an
+/// in-process override) collapses to `Ephemeral`: they outrank every file and
+/// there is nothing to write, so the screen must show them as the winner and
+/// refuse to treat them as a target.
+fn scope_for_source(source: gix::config::Source) -> super::config::ConfigScope {
+    use super::config::ConfigScope;
+    use gix::config::Source;
+
+    match source {
+        Source::GitInstallation | Source::System => ConfigScope::System,
+        Source::Git | Source::User => ConfigScope::Global,
+        Source::Local => ConfigScope::Local,
+        Source::Worktree => ConfigScope::Worktree,
+        Source::Env | Source::Cli | Source::Api | Source::EnvOverride => ConfigScope::Ephemeral,
+    }
+}
+
 // --- Group 4: Status & Commit Info ---
 
 /// gitoxide equivalent of `git status --porcelain` (checking for non-empty output)
@@ -704,6 +810,83 @@ mod tests {
 
         let result = config_get(&repo, "nonexistent.key").unwrap();
         assert!(result.is_none());
+    }
+
+    /// Set a key in the temp repo's *local* config only. Never `--global`:
+    /// this suite must not touch the developer's `~/.gitconfig`.
+    fn set_local(dir: &std::path::Path, key: &str, value: &str) {
+        let mut cmd = Command::new("git");
+        cmd.args(["config", "--local", key, value]).current_dir(dir);
+        for var in GIT_ENV_VARS {
+            cmd.env_remove(var);
+        }
+        assert!(cmd.output().unwrap().status.success());
+    }
+
+    #[test]
+    #[serial]
+    fn config_entries_report_key_value_and_scope() {
+        let (dir, _repo) = create_test_repo();
+        set_local(dir.path(), "daft.autocd", "false");
+        set_local(dir.path(), "daft.checkout.fetch", "true");
+        set_local(dir.path(), "daft.hooks.output.tailLines", "12");
+
+        let repo = gix::open(dir.path()).unwrap();
+        let entries = config_entries_prefixed(&repo, "daft").unwrap();
+
+        // The developer's own global daft config may be visible too, so
+        // assert on this repo's layer.
+        let local: Vec<_> = entries
+            .iter()
+            .filter(|e| e.scope == crate::git::ConfigScope::Local)
+            .collect();
+
+        let find = |key: &str| local.iter().find(|e| e.key == key);
+        assert_eq!(find("daft.autocd").map(|e| e.value.as_str()), Some("false"));
+        assert_eq!(
+            find("daft.checkout.fetch").map(|e| e.value.as_str()),
+            Some("true")
+        );
+        // Git stores this as `[daft "hooks.output"] tailLines`; the key must
+        // come back reassembled, dots and camelCase intact.
+        assert_eq!(
+            find("daft.hooks.output.tailLines").map(|e| e.value.as_str()),
+            Some("12")
+        );
+
+        assert!(
+            local
+                .iter()
+                .all(|e| e.origin_path.as_deref().is_some_and(|p| p.exists())),
+            "a local entry must name the file it came from"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn config_entries_preserve_subsection_case() {
+        // Git compares subsections case-sensitively, so these are two
+        // distinct keys — and the reader must not fold them together, or the
+        // screen would credit a typo'd key as the real setting.
+        let (dir, _repo) = create_test_repo();
+        set_local(dir.path(), "daft.checkoutBranch.carry", "true");
+        set_local(dir.path(), "daft.checkoutbranch.carry", "false");
+
+        let repo = gix::open(dir.path()).unwrap();
+        let entries = config_entries_prefixed(&repo, "daft").unwrap();
+        let keys: Vec<&str> = entries.iter().map(|e| e.key.as_str()).collect();
+
+        assert!(keys.contains(&"daft.checkoutBranch.carry"), "got {keys:?}");
+        assert!(keys.contains(&"daft.checkoutbranch.carry"), "got {keys:?}");
+    }
+
+    #[test]
+    #[serial]
+    fn config_entries_are_empty_for_a_repo_with_no_daft_config() {
+        let (dir, _repo) = create_test_repo();
+        let repo = gix::open(dir.path()).unwrap();
+        let local: Vec<_> = config_entries_prefixed(&repo, "definitelyNotASection").unwrap();
+        assert!(local.is_empty());
     }
 
     #[test]

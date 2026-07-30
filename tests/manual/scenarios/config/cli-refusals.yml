@@ -1,0 +1,86 @@
+name: config set refuses what it cannot honour
+description:
+  Verify invalid values, cross-key conflicts, inert scopes, and unknown keys are
+  refused where they are typed rather than at the next command that reads them
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: an invalid enum value is refused and lists the options
+    run: daft config set daft.merge.style octopus-ish 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "expected one of"
+        - "squash"
+
+  - name: a refused set writes nothing
+    run: |
+      git config --local --get daft.merge.style && exit 1
+      exit 0
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: an invalid column spec is refused at set time
+    run: daft config set daft.list.columns "+definitelyNotAColumn" 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "daft.list.columns"
+
+  - name: a cross-key conflict is refused with the reason
+    run: |
+      daft config set daft.merge.cleanup remove-branch
+      daft config set daft.merge.commit false 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "remove-branch"
+        - "committed merge"
+
+  - name: a global-only key refuses a local write and names the fix
+    run: daft config set daft.updateCheck false 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "global config only"
+        - "--global"
+
+  - name: a setting owned by another command points at it
+    run: daft config set shared .env 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "daft shared"
+
+  - name: an unknown key exits non-zero and suggests the near spelling
+    run: daft config get daft.merge.stile 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "unknown setting"
+        - "daft.merge.style"
+
+  - name: a retired spelling names the key that replaced it
+    run: daft config set daft.fetch.args --ff-only 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "daft.update.args"

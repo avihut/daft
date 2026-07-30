@@ -1,0 +1,63 @@
+name: config refuses a local daft.yml write that nothing would read
+description:
+  A repo with no daft.yml has nowhere for an overlay to sit — the loader derives
+  the overlay's name from the main file and gives up before merging when there
+  is none. Verify the write is refused rather than reported as a success nobody
+  can act on.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone a repository that has no daft.yml at all
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      test ! -f daft.yml
+    expect:
+      exit_code: 0
+
+  - name: a local write says why it cannot land rather than writing a dead file
+    run: daft config set log.retention 30d 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no daft.yml"
+        - "--global"
+
+  - name: and it left nothing behind
+    run: |
+      test ! -f daft.local.yml
+      test -z "$(git status --porcelain)"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: the committed scope still works, and creates the file it names
+    run: |
+      daft config set --global log.retention 30d
+      grep -q 'retention: 30d' daft.yml
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: with a main config present the overlay is allowed again
+    run: |
+      daft config set log.retention 90d
+      grep -q 'retention: 90d' daft.local.yml
+      test "$(daft config get log.retention)" = "90d"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: unsetting with nothing to unset is a statement, not an error
+    run: |
+      rm -f daft.local.yml
+      daft config unset log.retention 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "was not set"

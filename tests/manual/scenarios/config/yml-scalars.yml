@@ -1,0 +1,129 @@
+name: config edits daft.yml scalars without disturbing the file
+description:
+  Verify `daft config set` writes the overlay and the committed file, keeps
+  comments and siblings intact, and refuses to relax a merge gate
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and commit a daft.yml with comments and a merge gate
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      cat > daft.yml <<'YAML'
+      # team conventions — do not reformat
+      rc: .envrc  # sourced before every hook
+      source_dir: .daft
+      log:
+        retention: 7d
+      merge:
+        ff: only
+      YAML
+      git add daft.yml
+      git -c user.email=t@t -c user.name=t commit -q -m "add daft.yml"
+    expect:
+      exit_code: 0
+
+  - name: setting at the committed scope rewrites one line and nothing else
+    run: |
+      daft config set --global log.retention 30d
+      test "$(grep -c '# team conventions' daft.yml)" = "1"
+      test "$(grep -c 'sourced before every hook' daft.yml)" = "1"
+      test "$(grep -c 'source_dir: .daft' daft.yml)" = "1"
+      grep -q '^  retention: 30d$' daft.yml
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      # Named for the file it landed in. "global" would be a lie here: this is
+      # the repository's committed config, not anything user-wide.
+      output_contains:
+        - "committed config"
+
+  - name: the committed file is the only thing that changed
+    run: |
+      test "$(git diff --name-only)" = "daft.yml"
+      test "$(git diff --numstat | awk '{print $1, $2}')" = "1 1"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: setting locally creates the overlay rather than touching the commit
+    run: |
+      git checkout -q daft.yml
+      daft config set log.retention 90d
+      test -f daft.local.yml
+      grep -q 'retention: 90d' daft.local.yml
+      grep -q '^  retention: 7d$' daft.yml
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: the overlay wins, and get reports it
+    run: daft config get log.retention
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "90d"
+
+  - name: the ladder names both files
+    run: daft config get log.retention --origin 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "daft.yml"
+        - "daft.local.yml"
+
+  - name: unsetting the overlay reveals the committed value again
+    run: |
+      daft config unset log.retention
+      test "$(daft config get log.retention)" = "7d"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: a merge gate cannot be relaxed from anywhere
+    run: daft config set merge.ff off 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "merge.ff"
+
+  - name: nor deleted, which would drop it just as completely
+    run: daft config unset --global merge.ff 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "merge.ff"
+
+  - name: the gate is still in the file it was committed in
+    run: |
+      grep -q 'ff: only' daft.yml
+      test -z "$(git diff --name-only)"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: a value the config type rejects leaves the file untouched
+    run: |
+      daft config set --global log.retention "not a duration" 2>&1 || true
+      grep -q '^  retention: 7d$' daft.yml
+      test -z "$(git diff --name-only)"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: a key written inline is refused rather than rewritten
+    run: |
+      printf 'log: {retention: 7d}\n' > daft.yml
+      daft config set --global log.retention 30d 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "inline"

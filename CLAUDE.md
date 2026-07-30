@@ -587,6 +587,30 @@ defaults (PRAGMAs, perms, env scrub) come for free.
    foreign `application_id` files, and tightens file/dir perms to 0600/0700. Do
    not duplicate or weaken those checks.
 
+## Settings Registry
+
+**Every `daft.*` config key needs a row in `src/core/settings_spec.rs`.** The
+registry is what `daft config` lists, validates, completes, and edits — a key
+without a row is invisible in the UI forever, and nothing else breaks, so nobody
+notices. The xtask test `config_registry_drift` enforces it: it scans
+`src/**/*.rs` for key-shaped `"daft.*"` literals and fails on any the registry
+does not claim. It also runs the converse, so a row for a key nothing reads
+fails too.
+
+When adding a key: define the const in `settings.rs`'s `keys::` module as usual,
+then add the `SettingSpec` row. Two conventions the registry relies on — break
+either and the row silently becomes a lie:
+
+- **Rows reference the `keys::` consts**, never a re-typed literal, so a rename
+  is a compile error rather than an orphaned row.
+- **Enum value sets come from the parsing type's own `variants()`**, declared
+  next to its `parse()`. A new enum-valued setting adds `variants()` to the
+  type; it does not spell the values out a second time in the registry.
+
+A key-shaped literal that is deliberately _not_ a setting (a fixture for the
+unrecognized-key diagnostic, say) opts out by spelling itself with a hyphen —
+`daft.no-such-key`. The gate's failure message says so.
+
 ## Shell Completions
 
 Shell completions live in `src/commands/completions/`. When adding, removing, or

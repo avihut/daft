@@ -209,21 +209,38 @@ the dependents with it.
 
 ## OS and architecture gating
 
-Individual jobs can declare `os:` and `arch:` constraints. A job with
-`os: macos` only runs on macOS; a job with `arch: aarch64` only runs on ARM
-machines. Both fields accept a single value or a list, and both are evaluated at
-runtime — a job whose OS or architecture does not match is silently skipped.
+A job can declare an `arch:` constraint: `arch: aarch64` runs only on ARM
+machines. It accepts a single value or a list, and is evaluated at runtime — a
+job whose architecture does not match is skipped.
+
+There is no `os:` field. Operating-system targeting is a property of `run:`,
+which may be an OS-keyed map instead of a string. A job whose map has no entry
+for the current OS is skipped, with
+`platform-specific run has no entry for <os>` as the reason — so a one-platform
+job is a map with one key:
 
 ```yaml
 - name: install-brew
-  os: macos
   run:
-    /bin/bash -c "$(curl -fsSL
-    https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    macos:
+      /bin/bash -c "$(curl -fsSL
+      https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
   skip:
     - run: "command -v brew"
       desc: Brew is already installed
 ```
+
+The map also lets one job cover several platforms with different commands, which
+a boolean `os:` field could not:
+
+```yaml
+- name: install-deps
+  run:
+    macos: brew bundle
+    linux: sudo apt-get install -y build-essential
+```
+
+Each value may also be a list, joined with `&&`.
 
 This matters in cross-platform teams. A shared `daft.yml` committed to the repo
 can describe the full setup for all platforms, and each developer's machine

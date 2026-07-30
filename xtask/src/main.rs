@@ -212,7 +212,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-daft-skill-install" => Some(daft::commands::skill::install::Args::command()),
         "git-daft-skill-show" => Some(daft::commands::skill::show::Args::command()),
         "git-daft-skill-uninstall" => Some(daft::commands::skill::uninstall::Args::command()),
-        "daft-config" => Some(daft::commands::config::remote_sync::Args::command()),
+        "daft-config" => Some(daft::commands::config::ConfigArgs::command()),
         "daft-doctor" => Some(daft::commands::doctor::Args::command()),
         "daft-file" => Some(daft::commands::file::merge::Args::command()),
         "daft-layout" => Some(daft::commands::layout::LayoutArgs::command()),
@@ -822,7 +822,7 @@ fn build_top_level_command() -> clap::Command {
         .subcommand(daft::commands::hooks::Args::command().name("hooks"))
         .subcommand(daft::commands::layout::LayoutArgs::command().name("layout"))
         .subcommand(daft::commands::multi_remote::Args::command().name("multi-remote"))
-        .subcommand(daft::commands::config::remote_sync::Args::command().name("config"))
+        .subcommand(daft::commands::config::ConfigArgs::command().name("config"))
         .subcommand(daft::commands::install::Args::command().name("install"))
         .subcommand(
             clap::Command::new("file")
@@ -1865,5 +1865,334 @@ mod tests {
             err.contains("Unknown matrix entry"),
             "Error should mention unknown entry, got: {err}"
         );
+    }
+}
+
+/// The settings-registry drift gate.
+///
+/// `src/core/settings_spec.rs` is only useful if it stays complete: a
+/// `daft.*` key that exists in the code but has no registry row is invisible
+/// in `daft config` forever, and nobody notices because everything still
+/// compiles. This module is what notices.
+///
+/// It lives in xtask so it rides the existing `xtask-test` CI job, the
+/// `xtask-tests` pre-merge ring, and `mise run test:xtask` — one check, three
+/// surfaces already in parity, no new wiring. (Contrast the `repos-no-format`
+/// grep gate, which is reachable only from `mise run lint` and therefore
+/// never blocks a merge.)
+#[cfg(test)]
+mod config_registry_drift {
+    use daft::commands::config::resolve::keys_match;
+    use daft::core::settings_spec::all_specs;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    /// Final segments that make a `daft.<x>` literal a *filename* rather than
+    /// a config key.
+    ///
+    /// `daft.yml` and `daft.local.yml` are why this exists: dozens live in
+    /// the config loaders, doctor, and seed paths, and every one matches the
+    /// key shape exactly. The list is only ever consulted for literals the
+    /// registry does not already claim, so a real key whose last segment
+    /// happens to look like an extension is still checked.
+    const FILE_EXTENSIONS: &[&str] = &["yml", "yaml", "toml", "json", "js", "md", "lock", "sh"];
+
+    /// The file that holds the registry itself — excluded from the
+    /// "somebody actually reads this key" search, since it names every const
+    /// by construction.
+    const REGISTRY_FILE: &str = "settings_spec.rs";
+
+    /// Key-shaped literals that are deliberately not settings, each with the
+    /// reason it earns an exemption.
+    ///
+    /// The usual way to opt out is a hyphen — `daft.no-such-key` is not key
+    /// shaped, so the scan ignores it. These are the cases where that does not
+    /// work because the fixture's whole point is to be indistinguishable from
+    /// a real key. An entry that stops appearing in the source is a test
+    /// failure, so this list cannot quietly rot.
+    const NOT_A_SETTING: &[(&str, &str)] = &[
+        (
+            "daft.checkoutbranch.carry",
+            "mis-cased subsection fixture: git stores this as a separate, inert \
+             key, and the resolver has to report it rather than credit the real row",
+        ),
+        (
+            "daft.merge.stile",
+            "did-you-mean fixture: one letter off a real key on purpose, so it \
+             cannot be spelled with a hyphen without defeating the test",
+        ),
+    ];
+
+    fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask/ sits directly under the repo root")
+            .to_path_buf()
+    }
+
+    fn rust_sources() -> Vec<PathBuf> {
+        walkdir::WalkDir::new(repo_root().join("src"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "rs"))
+            .map(|entry| entry.path().to_path_buf())
+            .collect()
+    }
+
+    /// Every `"daft.<key-shaped>"` string literal in `text`.
+    ///
+    /// Requiring the quotes is what keeps prose out: doc comments spell keys
+    /// in backticks, and the dynamic per-hook key is built by
+    /// `format!("daft.hooks.{hook}.{setting}")`, whose braces the shape test
+    /// rejects.
+    fn config_key_literals(text: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut cursor = 0;
+
+        while let Some(offset) = text[cursor..].find("\"daft.") {
+            let open = cursor + offset + 1;
+            let Some(len) = text[open..].find('"') else {
+                break;
+            };
+            let literal = &text[open..open + len];
+            if is_key_shaped(literal) {
+                found.push(literal.to_string());
+            }
+            cursor = open + len + 1;
+        }
+
+        found
+    }
+
+    /// `daft.` followed by dot-separated alphanumeric segments — the shape
+    /// every real key has. Notably excludes hyphens, so a test fixture that
+    /// deliberately is not a setting can say so by spelling itself
+    /// `daft.no-such-key`.
+    fn is_key_shaped(literal: &str) -> bool {
+        let Some(rest) = literal.strip_prefix("daft.") else {
+            return false;
+        };
+        rest.starts_with(|c: char| c.is_ascii_alphabetic())
+            && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '.')
+    }
+
+    fn is_filename(literal: &str) -> bool {
+        literal
+            .rsplit('.')
+            .next()
+            .is_some_and(|ext| FILE_EXTENSIONS.contains(&ext))
+    }
+
+    /// Every key the registry claims, including the deprecated spellings it
+    /// still honours.
+    fn registry_keys() -> Vec<String> {
+        let mut keys = Vec::new();
+        for spec in all_specs() {
+            keys.push(spec.key.to_string());
+            if let Some(alias) = &spec.deprecated_alias {
+                keys.push(alias.to_string());
+            }
+        }
+        keys
+    }
+
+    /// Whether the registry claims `literal`, compared the way git compares
+    /// config keys.
+    ///
+    /// Exact string matching would flag `daft.checkout.PUSHVERIFY` as an
+    /// orphan even though git reads it as `daft.checkout.pushVerify` — the
+    /// trailing value name is case-insensitive. Borrowing the resolver's own
+    /// comparison keeps the gate and the runtime honest about the same rule,
+    /// and still catches a mis-cased *subsection*, which genuinely is a
+    /// different key.
+    fn registry_claims(keys: &[String], literal: &str) -> bool {
+        keys.iter().any(|key| keys_match(key, literal))
+    }
+
+    /// `"daft.autocd" -> "AUTOCD"` for every const in `settings.rs`'s `keys`
+    /// module, parsed rather than duplicated so the mapping cannot drift.
+    fn key_consts() -> HashMap<String, String> {
+        let source = std::fs::read_to_string(repo_root().join("src/core/settings.rs"))
+            .expect("src/core/settings.rs is readable");
+
+        let mut consts = HashMap::new();
+        for line in source.lines() {
+            let trimmed = line.trim();
+            let Some(rest) = trimmed.strip_prefix("pub const ") else {
+                continue;
+            };
+            let Some((name, tail)) = rest.split_once(": &str") else {
+                continue;
+            };
+            let Some(start) = tail.find('"') else {
+                continue;
+            };
+            let Some(end) = tail[start + 1..].find('"') else {
+                continue;
+            };
+            let literal = &tail[start + 1..start + 1 + end];
+            if literal.starts_with("daft.") {
+                consts.insert(literal.to_string(), name.trim().to_string());
+            }
+        }
+        consts
+    }
+
+    /// Every `daft.*` key literal in the codebase has a registry row.
+    ///
+    /// This is the direction that matters: it fires when a future PR adds a
+    /// config key and forgets the row.
+    #[test]
+    fn every_config_key_in_the_codebase_has_a_registry_row() {
+        let known = registry_keys();
+        let mut orphans: Vec<(String, String)> = Vec::new();
+
+        for path in rust_sources() {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for literal in config_key_literals(&text) {
+                // Registry membership is checked before the filename rule so
+                // a real key can never be waved through as a file.
+                if registry_claims(&known, &literal)
+                    || is_filename(&literal)
+                    || NOT_A_SETTING.iter().any(|(key, _)| *key == literal)
+                {
+                    continue;
+                }
+                orphans.push((literal, path.display().to_string()));
+            }
+        }
+
+        orphans.sort();
+        orphans.dedup();
+
+        assert!(
+            orphans.is_empty(),
+            "these `daft.*` keys have no row in src/core/settings_spec.rs:\n{}\n\n\
+             Add a SettingSpec row so the key shows up in `daft config`. If the \
+             literal is deliberately not a setting — a fixture for the \
+             unrecognized-key diagnostic, say — spell it with a hyphen \
+             (`daft.no-such-key`) so it does not look like one.",
+            orphans
+                .iter()
+                .map(|(key, file)| format!("  {key}  ({file})"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    /// Every registry row's key is one something actually reads.
+    ///
+    /// Guards the other failure mode: a row for a phantom setting, which
+    /// would document a knob that does nothing. The search is for the
+    /// qualified `::NAME` spelling, which excludes the `pub const` definition
+    /// itself, and it skips the registry file because that names every const
+    /// by construction.
+    ///
+    /// Two consts share the name `ENABLED` (`keys::hooks` and
+    /// `keys::multi_remote`), so for those the check proves one of the pair
+    /// is read rather than both. Both are, and the alternative — tracking
+    /// module nesting through the parse — buys strictness nothing needs.
+    #[test]
+    fn every_registry_key_is_read_by_something() {
+        let consts = key_consts();
+        let sources: Vec<(PathBuf, String)> = rust_sources()
+            .into_iter()
+            .filter(|path| !path.ends_with(REGISTRY_FILE))
+            .filter_map(|path| {
+                let text = std::fs::read_to_string(&path).ok()?;
+                Some((path, text))
+            })
+            .collect();
+
+        let mut unread = Vec::new();
+
+        for spec in all_specs() {
+            let Some(name) = consts.get(spec.key.as_ref()) else {
+                // Per-hook and non-git rows have no const of their own.
+                continue;
+            };
+            let needle = format!("::{name}");
+            let read = sources.iter().any(|(_, text)| {
+                text.match_indices(&needle).any(|(at, _)| {
+                    let after = at + needle.len();
+                    !text[after..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                })
+            });
+            if !read {
+                unread.push(format!("  {} (keys::{name})", spec.key));
+            }
+        }
+
+        unread.sort();
+        assert!(
+            unread.is_empty(),
+            "these registry rows name a key nothing reads:\n{}\n\n\
+             Either wire the setting up, or drop the row — a documented knob \
+             that does nothing is worse than an undocumented one.",
+            unread.join("\n")
+        );
+    }
+
+    /// An exemption that no longer applies is worse than no exemption: it
+    /// silently widens the gate for whatever key-shaped literal appears next
+    /// under that name.
+    #[test]
+    fn every_exemption_is_still_in_use() {
+        let sources: Vec<String> = rust_sources()
+            .into_iter()
+            .filter_map(|path| std::fs::read_to_string(path).ok())
+            .collect();
+
+        for (key, reason) in NOT_A_SETTING {
+            assert!(!reason.trim().is_empty(), "{key}: exemptions need a reason");
+            assert!(
+                sources
+                    .iter()
+                    .any(|text| config_key_literals(text).iter().any(|lit| lit == key)),
+                "{key} is exempted but no longer appears in src/ — drop the entry"
+            );
+        }
+    }
+
+    #[test]
+    fn the_literal_scanner_reads_code_not_prose() {
+        // Quoted keys are found...
+        assert_eq!(
+            config_key_literals(r#"git.config_get("daft.autocd")"#),
+            vec!["daft.autocd".to_string()]
+        );
+        // ...backticked prose in a doc comment is not.
+        assert!(config_key_literals("/// Set via `daft.checkout.push`.").is_empty());
+        // ...and neither is the dynamic per-hook format string.
+        assert!(config_key_literals(r#"format!("daft.hooks.{hook}.{setting}")"#).is_empty());
+        // A key-shaped literal in the middle of other code still is.
+        assert_eq!(
+            config_key_literals(r#"let a = "x"; let b = "daft.merge.style"; let c = "y";"#),
+            vec!["daft.merge.style".to_string()]
+        );
+    }
+
+    #[test]
+    fn filenames_are_recognised_and_keys_are_not() {
+        assert!(is_filename("daft.yml"));
+        assert!(is_filename("daft.local.yml"));
+        assert!(is_filename("daft.yaml"));
+        assert!(is_filename("daft.js"));
+        assert!(!is_filename("daft.autocd"));
+        assert!(!is_filename("daft.merge.style"));
+    }
+
+    #[test]
+    fn hyphenated_placeholders_are_not_key_shaped() {
+        assert!(is_key_shaped("daft.autocd"));
+        assert!(is_key_shaped("daft.hooks.output.tailLines"));
+        assert!(!is_key_shaped("daft.no-such-key"));
+        assert!(!is_key_shaped("daft."));
+        assert!(!is_key_shaped("daft.9lives"));
     }
 }

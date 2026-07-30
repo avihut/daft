@@ -221,7 +221,7 @@ fn get_daft_categories() -> Vec<CommandCategory> {
                 },
                 CommandEntry {
                     display_name: "config",
-                    command: config::remote_sync::Args::command(),
+                    command: config::ConfigArgs::command(),
                 },
                 CommandEntry {
                     display_name: "hooks",
@@ -442,7 +442,7 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
                 },
                 CommandEntry {
                     display_name: "daft config",
-                    command: config::remote_sync::Args::command(),
+                    command: config::ConfigArgs::command(),
                 },
                 CommandEntry {
                     display_name: "daft doctor",

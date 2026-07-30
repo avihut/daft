@@ -60,6 +60,7 @@ pub mod yaml_config;
 pub mod yaml_config_loader;
 pub mod yaml_config_validate;
 pub mod yaml_executor;
+pub mod yaml_scalar_edit;
 
 pub use environment::{HookContext, HookEnvironment, RemovalReason};
 pub use executor::{HookAborted, HookExecutor, HookResult};
@@ -274,6 +275,22 @@ impl FailMode {
             "warn" => Some(FailMode::Warn),
             _ => None,
         }
+    }
+
+    /// The canonical spelling, as written to git config / `daft.yml`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FailMode::Abort => "abort",
+            FailMode::Warn => "warn",
+        }
+    }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("abort", "a failing hook aborts the operation"),
+            ("warn", "report the failure and continue"),
+        ]
     }
 }
 

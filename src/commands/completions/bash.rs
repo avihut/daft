@@ -473,11 +473,14 @@ _daft() {
             fi
         done
         case "$_fmt_path" in
-            list|worktree-list|"hooks trust list"|"hooks jobs"|"layout list"|"shared status")
+            list|worktree-list|"hooks trust list"|"hooks jobs"|"layout list"|"shared status"|"config list")
                 COMPREPLY=( $(compgen -W "json ndjson tsv csv yaml toon markdown" -- "$cur") )
                 return 0
                 ;;
-            release-notes|"multi-remote status"|"hooks run")
+            # The config read and write verbs emit one document rather than
+            # rows, so the row formats are not among their options. The trailing
+            # glob is because three of them take a key before the flag.
+            release-notes|"multi-remote status"|"hooks run"|"config get"*|"config set"*|"config unset"*)
                 COMPREPLY=( $(compgen -W "json yaml toon markdown" -- "$cur") )
                 return 0
                 ;;
@@ -813,9 +816,62 @@ _daft() {
         return 0
     fi
 
-    # config: complete subcommands
-    if [[ $cword -eq 2 && "${words[1]}" == "config" ]]; then
-        COMPREPLY=( $(compgen -W "remote-sync" -- "$cur") )
+    # config: subcommands, then registry keys and the values they accept.
+    # The cword guard matters: while `config` is itself the word being
+    # completed it already sits in words[1], so testing the word alone claims
+    # the completion, matches no case arm below, and returns nothing at all --
+    # `daft config<TAB>` would stop completing the verb it is spelling.
+    if [[ "${words[1]}" == "config" && $cword -ge 2 ]]; then
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=( $(compgen -W "get list set unset" -- "$cur") )
+            return 0
+        fi
+        local config_sub="${words[2]}"
+        # --category takes a value, and the categories are a const table, so
+        # this answers without opening anything.
+        if [[ "${words[cword-1]}" == "--category" ]]; then
+            local __cfg_cats=()
+            mapfile -t __cfg_cats < <(daft __complete config-category "$cur" 2>/dev/null | cut -f1)
+            COMPREPLY=( $(compgen -W "${__cfg_cats[*]}" -- "$cur") )
+            return 0
+        fi
+        case "$config_sub" in
+            get|set|unset)
+                if [[ "$cur" == -* ]]; then
+                    if [[ "$config_sub" == "get" ]]; then
+                        COMPREPLY=( $(compgen -W "--origin --global --local --format --template --no-headers -h --help" -- "$cur") )
+                    else
+                        COMPREPLY=( $(compgen -W "--global --local --format --template --no-headers -h --help" -- "$cur") )
+                    fi
+                    return 0
+                fi
+                # Count positionals after the verb: the key slot and the value
+                # slot complete against different things, and a flag anywhere
+                # before the cursor must not shift them.
+                local __cfg_pos=0 __cfg_key="" __cfg_i
+                for (( __cfg_i = 3; __cfg_i < cword; __cfg_i++ )); do
+                    [[ "${words[__cfg_i]}" == -* ]] && continue
+                    (( __cfg_pos++ ))
+                    [[ $__cfg_pos -eq 1 ]] && __cfg_key="${words[__cfg_i]}"
+                done
+                local __cfg_out=()
+                if [[ $__cfg_pos -eq 0 ]]; then
+                    mapfile -t __cfg_out < <(daft __complete config-key "$cur" 2>/dev/null | cut -f1)
+                elif [[ "$config_sub" == "set" && $__cfg_pos -eq 1 ]]; then
+                    mapfile -t __cfg_out < <(DAFT_COMPLETE_CONFIG_KEY="$__cfg_key" daft __complete config-value "$cur" 2>/dev/null | cut -f1)
+                else
+                    return 0
+                fi
+                COMPREPLY=( $(compgen -W "${__cfg_out[*]}" -- "$cur") )
+                return 0
+                ;;
+            list)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--modified --category --global --local --format --template --no-headers -h --help" -- "$cur") )
+                fi
+                return 0
+                ;;
+        esac
         return 0
     fi
 

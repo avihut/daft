@@ -1,0 +1,948 @@
+//! The value editor: a centred overlay over the dimmed screen.
+//!
+//! Every setting is edited the same way, which is the point — a bool, an enum,
+//! a duration, and a column spec all open the same box with the same keys, so
+//! there is one thing to learn rather than thirteen.
+//!
+//! Two things the overlay always shows that a bare prompt would not: **which
+//! scope** the value is going to, and **unset** as a first-class choice rather
+//! than an absence. Unsetting is how you reveal what a value was masking, and
+//! for the tri-state settings it is a third meaningful answer, not a way to
+//! give up.
+//!
+//! A behavior is the exception to the first paragraph, and has to be: it has no
+//! value, so there is nothing to pick from a list of values. Its box is a preset
+//! selector with the state's members drawn out underneath — same keys, different
+//! shape. See [`Subject`].
+//!
+//! The editor decides *what to write* and hands it back as an [`Apply`]. It
+//! never writes: that keeps the whole thing testable without a repository, and
+//! keeps the one place that touches git in `write.rs` where the CLI shares it.
+
+use crate::commands::config::resolve::{BehaviorState, Resolved, ResolvedBehavior};
+use crate::commands::config::write::{WriteScope, canonical_value};
+use crate::core::settings_spec::{BehaviorSpec, SettingSpec, ValueType};
+use crate::git::ConfigScope;
+
+/// What the editor decided to do, for the caller to carry out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Apply {
+    Set {
+        key: String,
+        scope: WriteScope,
+        value: String,
+    },
+    Unset {
+        key: String,
+        scope: WriteScope,
+    },
+    /// Apply every member of a behavior's preset at once.
+    SetBehavior {
+        name: &'static str,
+        preset: &'static str,
+        scope: WriteScope,
+    },
+    /// Remove every member at this scope.
+    UnsetBehavior {
+        name: &'static str,
+        scope: WriteScope,
+    },
+}
+
+/// What the editor is editing.
+///
+/// One overlay and one set of keys for both — j/k to choose, tab for scope,
+/// enter to apply — but not one layout. A setting has a value to pick; a
+/// behavior has a state to pick and three keys to account for, and drawing the
+/// second as the first is what made a preset list read as a boolean's on / off /
+/// unset. The shapes part company in `render`; the keys never do.
+#[derive(Debug, Clone)]
+pub enum Subject {
+    // Boxed: a `SettingSpec` is ~250 bytes against the behavior's one
+    // reference, and every `Modal` would carry the larger of the two.
+    Setting(Box<SettingSpec>),
+    Behavior(&'static BehaviorSpec),
+}
+
+impl Subject {
+    /// The title line.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Setting(spec) => spec.label.to_string(),
+            Self::Behavior(behavior) => behavior.label.to_string(),
+        }
+    }
+
+    /// The identifier under the title — a key, or a behavior name.
+    pub fn name(&self) -> String {
+        match self {
+            Self::Setting(spec) => spec.key.to_string(),
+            Self::Behavior(behavior) => behavior.name.to_string(),
+        }
+    }
+
+    pub fn help(&self) -> String {
+        match self {
+            Self::Setting(spec) => spec.help.to_string(),
+            Self::Behavior(behavior) => behavior.help.to_string(),
+        }
+    }
+}
+
+/// One row of the value list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Option_ {
+    /// A concrete value, with the gloss the registry gives it.
+    Value { value: String, gloss: String },
+    /// Remove whatever is set at this scope. Always last.
+    Unset { reveals: String },
+}
+
+/// How the value is being entered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Field {
+    /// Pick from a closed list.
+    Options { cursor: usize },
+    /// Type it. `on_unset` is the row below the input.
+    Text {
+        buffer: String,
+        caret: usize,
+        on_unset: bool,
+    },
+}
+
+/// The open editor.
+#[derive(Debug, Clone)]
+pub struct Modal {
+    pub subject: Subject,
+    /// Where the write goes. Starts at the screen's pill.
+    pub scope: WriteScope,
+    /// The scopes worth offering — one of them when there is no repository.
+    pub scopes: Vec<WriteScope>,
+    pub options: Vec<Option_>,
+    pub field: Field,
+    /// Why the last attempt was refused. Cleared on the next keystroke.
+    pub error: Option<String>,
+    /// What this setting resolves to today, for the "reveals" line.
+    inherited: String,
+    /// True when the chosen scope is one daft never reads for this key.
+    pub scope_is_inert: bool,
+}
+
+impl Modal {
+    /// Open the editor for a setting.
+    pub fn open(resolved: &Resolved, scope: ConfigScope, in_repo: bool) -> Self {
+        let spec = resolved.spec.clone();
+
+        let scopes = if in_repo {
+            vec![WriteScope::Local, WriteScope::Global]
+        } else {
+            vec![WriteScope::Global]
+        };
+        let scope = match scope {
+            ConfigScope::Global => WriteScope::Global,
+            _ if in_repo => WriteScope::Local,
+            _ => WriteScope::Global,
+        };
+
+        // What unsetting at this scope would leave behind. Computing it up
+        // front is what lets the unset row say "inherit: auto" instead of
+        // making the user guess.
+        let inherited = resolved
+            .spec
+            .default
+            .value()
+            .map(str::to_string)
+            .unwrap_or_else(|| "nothing".to_string());
+
+        let options = match spec.ty.variants() {
+            Some(variants) => {
+                let mut rows: Vec<Option_> = variants
+                    .iter()
+                    .map(|(value, gloss)| Option_::Value {
+                        value: (*value).to_string(),
+                        gloss: (*gloss).to_string(),
+                    })
+                    .collect();
+                rows.push(Option_::Unset {
+                    reveals: inherited.clone(),
+                });
+                rows
+            }
+            None => vec![Option_::Unset {
+                reveals: inherited.clone(),
+            }],
+        };
+
+        let field = match spec.ty.variants() {
+            Some(_) => {
+                // Start on whatever is set at this scope, so Enter without
+                // moving is a no-op rather than a surprise.
+                let current = resolved.value_written_at(&spec, scope);
+                let cursor = current
+                    .and_then(|value| {
+                        options.iter().position(|row| match row {
+                            Option_::Value { value: v, .. } => v.eq_ignore_ascii_case(value),
+                            Option_::Unset { .. } => false,
+                        })
+                    })
+                    .unwrap_or(0);
+                Field::Options { cursor }
+            }
+            None => {
+                let buffer = resolved
+                    .value_written_at(&spec, scope)
+                    .unwrap_or_default()
+                    .to_string();
+                let caret = buffer.chars().count();
+                Field::Text {
+                    buffer,
+                    caret,
+                    on_unset: false,
+                }
+            }
+        };
+
+        let mut modal = Self {
+            subject: Subject::Setting(Box::new(spec)),
+            scope,
+            scopes,
+            options,
+            field,
+            error: None,
+            inherited,
+            scope_is_inert: false,
+        };
+        modal.refresh_scope_warning();
+        modal
+    }
+
+    /// Open the editor for a behavior.
+    ///
+    /// Not the same box a boolean gets. A behavior has no value of its own to
+    /// edit, so the list is a *preset* selector: each row is a named recipe,
+    /// and what it stands for underneath is drawn out in full — the state the
+    /// behavior is in now, why that is `Custom` when it is, and exactly what
+    /// each member would be set to. The options carry the preset's name and
+    /// label; the prose comes off the registry at render time, so nothing here
+    /// is pre-formatted into a width.
+    pub fn open_behavior(behavior: &ResolvedBehavior, scope: ConfigScope, in_repo: bool) -> Self {
+        let spec = behavior.spec;
+
+        let scopes = if in_repo {
+            vec![WriteScope::Local, WriteScope::Global]
+        } else {
+            vec![WriteScope::Global]
+        };
+        let scope = match scope {
+            ConfigScope::Global => WriteScope::Global,
+            _ if in_repo => WriteScope::Local,
+            _ => WriteScope::Global,
+        };
+
+        // The gloss is the preset's label — the name of the state, not a
+        // sentence about it. A row is one line and a state's help is three, so
+        // pre-formatting the two together is what truncated the explanation.
+        let mut options: Vec<Option_> = spec
+            .presets
+            .iter()
+            .map(|preset| Option_::Value {
+                value: preset.name.to_string(),
+                gloss: preset.label.to_string(),
+            })
+            .collect();
+        options.push(Option_::Unset {
+            reveals: format!("clear all {} settings at this scope", spec.members.len()),
+        });
+
+        // Start on the state the behavior is in, so Enter without moving is a
+        // no-op. Custom starts on its *nearest* preset — the one keystroke
+        // that resolves the disagreement — rather than the top of the list,
+        // which for a configuration two changes into the other pole would mean
+        // Enter quietly reverts the lot.
+        let cursor = match &behavior.state {
+            BehaviorState::Preset(index) => *index,
+            BehaviorState::Custom { nearest, .. } => *nearest,
+        };
+
+        let mut modal = Self {
+            subject: Subject::Behavior(spec),
+            scope,
+            scopes,
+            options,
+            field: Field::Options { cursor },
+            error: None,
+            inherited: spec.presets[0].label.to_string(),
+            scope_is_inert: false,
+        };
+        modal.refresh_scope_warning();
+        modal
+    }
+
+    /// Whether the value is picked from a list rather than typed.
+    pub fn is_picking(&self) -> bool {
+        matches!(self.field, Field::Options { .. })
+    }
+
+    /// The row currently selected, when picking.
+    pub fn selected_option(&self) -> std::option::Option<&Option_> {
+        match &self.field {
+            Field::Options { cursor } => self.options.get(*cursor),
+            Field::Text { on_unset, .. } if *on_unset => self.options.last(),
+            Field::Text { .. } => None,
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        self.error = None;
+        match &mut self.field {
+            Field::Options { cursor } => {
+                if *cursor + 1 < self.options.len() {
+                    *cursor += 1;
+                }
+            }
+            Field::Text { on_unset, .. } => *on_unset = true,
+        }
+    }
+
+    pub fn move_up(&mut self) {
+        self.error = None;
+        match &mut self.field {
+            Field::Options { cursor } => *cursor = cursor.saturating_sub(1),
+            Field::Text { on_unset, .. } => *on_unset = false,
+        }
+    }
+
+    /// Move to the next scope. Wraps, so one key reaches all of them.
+    pub fn cycle_scope(&mut self) {
+        self.error = None;
+        if self.scopes.len() < 2 {
+            return;
+        }
+        let index = self
+            .scopes
+            .iter()
+            .position(|s| *s == self.scope)
+            .unwrap_or(0);
+        self.scope = self.scopes[(index + 1) % self.scopes.len()];
+        self.refresh_scope_warning();
+    }
+
+    pub fn set_scope(&mut self, scope: WriteScope) {
+        if self.scopes.contains(&scope) {
+            self.scope = scope;
+            self.error = None;
+            self.refresh_scope_warning();
+        }
+    }
+
+    /// A key daft reads only from global config is offered at local anyway,
+    /// with the warning inline — hiding the scope would be more confusing than
+    /// showing why it is a bad idea, and the apply still refuses.
+    fn refresh_scope_warning(&mut self) {
+        self.scope_is_inert =
+            self.setting().is_some_and(|spec| spec.global_only) && self.scope == WriteScope::Local;
+    }
+
+    // ── Text entry ───────────────────────────────────────────────────────
+
+    pub fn type_char(&mut self, ch: char) {
+        self.error = None;
+        if let Field::Text {
+            buffer,
+            caret,
+            on_unset,
+        } = &mut self.field
+        {
+            // Typing always means "I want a value", so it takes focus back
+            // from the unset row rather than being swallowed.
+            *on_unset = false;
+            let index = char_to_byte(buffer, *caret);
+            buffer.insert(index, ch);
+            *caret += 1;
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        self.error = None;
+        if let Field::Text { buffer, caret, .. } = &mut self.field
+            && *caret > 0
+        {
+            let index = char_to_byte(buffer, *caret - 1);
+            buffer.remove(index);
+            *caret -= 1;
+        }
+    }
+
+    pub fn caret_left(&mut self) {
+        if let Field::Text { caret, .. } = &mut self.field {
+            *caret = caret.saturating_sub(1);
+        }
+    }
+
+    pub fn caret_right(&mut self) {
+        if let Field::Text { buffer, caret, .. } = &mut self.field {
+            *caret = (*caret + 1).min(buffer.chars().count());
+        }
+    }
+
+    /// The live format hint under a text field, or the current buffer's
+    /// complaint once it stops parsing.
+    pub fn text_feedback(&self) -> std::option::Option<String> {
+        let Field::Text { buffer, .. } = &self.field else {
+            return None;
+        };
+        if buffer.trim().is_empty() {
+            return self
+                .setting()
+                .and_then(|spec| spec.ty.format_hint())
+                .map(str::to_string);
+        }
+        let spec = self.setting()?;
+        match spec.ty.validate(buffer) {
+            Ok(()) => spec.ty.format_hint().map(str::to_string),
+            Err(reason) => Some(reason),
+        }
+    }
+
+    /// Whether what is typed would be accepted, for the live marker.
+    pub fn text_is_valid(&self) -> bool {
+        match &self.field {
+            Field::Text {
+                buffer, on_unset, ..
+            } if !on_unset => {
+                !buffer.trim().is_empty()
+                    && self
+                        .setting()
+                        .is_some_and(|spec| spec.ty.validate(buffer).is_ok())
+            }
+            _ => true,
+        }
+    }
+
+    // ── Applying ─────────────────────────────────────────────────────────
+
+    /// What the current selection would do.
+    ///
+    /// `Err` is a refusal to show inside the overlay; the caller only carries
+    /// out an `Ok`. Type validation happens here so the message lands next to
+    /// the field rather than after the box has closed — the cross-key rules
+    /// still run in `write.rs`, which is the one place that cannot be skipped.
+    pub fn apply(&self) -> Result<Apply, String> {
+        let key = self.subject.name();
+
+        if self.scope_is_inert {
+            return Err(format!(
+                "daft reads {key} from global config only — press tab to switch scope"
+            ));
+        }
+
+        let chosen = match &self.field {
+            Field::Options { cursor } => match self.options.get(*cursor) {
+                Some(Option_::Value { value, .. }) => Some(value.clone()),
+                Some(Option_::Unset { .. }) | None => None,
+            },
+            Field::Text { on_unset: true, .. } => None,
+            Field::Text { buffer, .. } => {
+                if buffer.trim().is_empty() {
+                    return Err("type a value, or choose unset below".to_string());
+                }
+                Some(buffer.clone())
+            }
+        };
+
+        match (&self.subject, chosen) {
+            (Subject::Setting(spec), Some(raw)) => {
+                let value = canonical_value(&spec.ty, &raw);
+                spec.ty.validate(&value)?;
+                Ok(Apply::Set {
+                    key,
+                    scope: self.scope,
+                    value,
+                })
+            }
+            (Subject::Setting(_), None) => Ok(Apply::Unset {
+                key,
+                scope: self.scope,
+            }),
+            // A preset name comes straight off the options list the registry
+            // built, so there is nothing left to validate here — the whole
+            // assignment is checked in `write.rs`, against where it lands.
+            (Subject::Behavior(behavior), Some(raw)) => behavior
+                .preset(&raw)
+                .map(|preset| Apply::SetBehavior {
+                    name: behavior.name,
+                    preset: preset.name,
+                    scope: self.scope,
+                })
+                .ok_or_else(|| format!("{raw} is not a state of {}", behavior.name)),
+            (Subject::Behavior(behavior), None) => Ok(Apply::UnsetBehavior {
+                name: behavior.name,
+                scope: self.scope,
+            }),
+        }
+    }
+
+    /// The setting being edited, when the subject is one.
+    pub fn setting(&self) -> std::option::Option<&SettingSpec> {
+        match &self.subject {
+            Subject::Setting(spec) => Some(spec),
+            Subject::Behavior(_) => None,
+        }
+    }
+
+    /// What this scope is called for whatever is being edited.
+    ///
+    /// A setting takes its backend's word for it — a `daft.yml` row's "global"
+    /// is the repository's committed file, not anything user-wide. A behavior
+    /// can span backends, so it keeps the plain scope word.
+    pub fn scope_label(&self, scope: WriteScope) -> &'static str {
+        match &self.subject {
+            Subject::Setting(spec) => scope.label_for(spec),
+            Subject::Behavior(_) => scope.label(),
+        }
+    }
+
+    /// What unsetting would leave behind, for the unset row's caption.
+    pub fn inherited(&self) -> &str {
+        &self.inherited
+    }
+}
+
+/// Byte offset of the `index`-th character.
+fn char_to_byte(text: &str, index: usize) -> usize {
+    text.char_indices()
+        .nth(index)
+        .map(|(offset, _)| offset)
+        .unwrap_or(text.len())
+}
+
+/// The quick toggle: the other side of a boolean, for `space` in the list.
+///
+/// Returns `None` for anything that is not a two-state setting, so the key
+/// reports "not a toggle" rather than guessing at what a duration's opposite
+/// might be.
+pub fn toggled_value(resolved: &Resolved, scope: ConfigScope) -> std::option::Option<String> {
+    if !matches!(resolved.spec.ty, ValueType::Bool | ValueType::TriBool) {
+        return None;
+    }
+    // Flip what the user can currently see, not what this scope holds: the
+    // effective value is what they are looking at, and a toggle that inverts
+    // an invisible lower layer would look like it did nothing.
+    let current = resolved
+        .value_at(scope)
+        .map(str::to_string)
+        .or_else(|| resolved.effective.clone())
+        .unwrap_or_else(|| "false".to_string());
+
+    match crate::core::settings_spec::parse_git_bool(&current) {
+        Some(true) => Some("false".to_string()),
+        Some(false) => Some("true".to_string()),
+        None => Some("true".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::config::resolve::{Snapshot, resolve_all};
+    use crate::core::settings::keys;
+    use crate::git::ConfigEntry;
+
+    fn entry(key: &str, value: &str, scope: ConfigScope) -> ConfigEntry {
+        ConfigEntry {
+            key: key.to_string(),
+            value: value.to_string(),
+            scope,
+            origin_path: None,
+        }
+    }
+
+    fn resolved_for(key: &str, entries: Vec<ConfigEntry>) -> Resolved {
+        let set = resolve_all(&Snapshot {
+            entries,
+            in_repo: true,
+            ..Default::default()
+        });
+        set.get(key).expect("registry row").clone()
+    }
+
+    fn open(key: &str, entries: Vec<ConfigEntry>) -> Modal {
+        Modal::open(&resolved_for(key, entries), ConfigScope::Local, true)
+    }
+
+    #[test]
+    fn an_enum_opens_on_its_current_value() {
+        let modal = open(
+            keys::MERGE_STYLE,
+            vec![entry(keys::MERGE_STYLE, "rebase", ConfigScope::Local)],
+        );
+        assert!(modal.is_picking());
+        assert_eq!(
+            modal.selected_option(),
+            Some(&Option_::Value {
+                value: "rebase".to_string(),
+                gloss: "rebase onto the target".to_string(),
+            }),
+            "opening elsewhere makes Enter-without-moving a surprise"
+        );
+    }
+
+    #[test]
+    fn unset_is_always_the_last_choice_and_says_what_it_reveals() {
+        let modal = open(keys::MERGE_STYLE, vec![]);
+        match modal.options.last() {
+            Some(Option_::Unset { reveals }) => assert_eq!(reveals, "merge"),
+            other => panic!("expected unset last, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn picking_a_value_applies_it_at_the_current_scope() {
+        let mut modal = open(keys::MERGE_STYLE, vec![]);
+        modal.move_down();
+        assert_eq!(
+            modal.apply(),
+            Ok(Apply::Set {
+                key: keys::MERGE_STYLE.to_string(),
+                scope: WriteScope::Local,
+                value: "squash".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_unset_row_applies_as_an_unset() {
+        let mut modal = open(keys::MERGE_STYLE, vec![]);
+        for _ in 0..10 {
+            modal.move_down();
+        }
+        assert_eq!(
+            modal.apply(),
+            Ok(Apply::Unset {
+                key: keys::MERGE_STYLE.to_string(),
+                scope: WriteScope::Local,
+            })
+        );
+    }
+
+    #[test]
+    fn the_scope_cycles_and_the_write_follows_it() {
+        let mut modal = open(keys::MERGE_STYLE, vec![]);
+        assert_eq!(modal.scope, WriteScope::Local);
+        modal.cycle_scope();
+        assert_eq!(modal.scope, WriteScope::Global);
+        modal.cycle_scope();
+        assert_eq!(modal.scope, WriteScope::Local, "cycling wraps");
+
+        modal.set_scope(WriteScope::Global);
+        match modal.apply().unwrap() {
+            Apply::Set { scope, .. } => assert_eq!(scope, WriteScope::Global),
+            other => panic!("expected a set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outside_a_repository_only_global_is_offered() {
+        let resolved = resolved_for(keys::MERGE_STYLE, vec![]);
+        let mut modal = Modal::open(&resolved, ConfigScope::Global, false);
+
+        assert_eq!(modal.scopes, vec![WriteScope::Global]);
+        modal.cycle_scope();
+        assert_eq!(
+            modal.scope,
+            WriteScope::Global,
+            "there is no second scope to reach"
+        );
+    }
+
+    #[test]
+    fn a_global_only_key_warns_at_local_and_refuses_to_apply_there() {
+        let mut modal = open(keys::UPDATE_CHECK, vec![]);
+        assert!(
+            modal.scope_is_inert,
+            "the warning has to be visible before Enter, not after"
+        );
+
+        let err = modal.apply().unwrap_err();
+        assert!(err.contains("global config only"), "unhelpful: {err}");
+        assert!(err.contains("tab"), "the message names the way out");
+
+        modal.cycle_scope();
+        assert!(!modal.scope_is_inert);
+        assert!(modal.apply().is_ok());
+    }
+
+    // ── Behaviors ────────────────────────────────────────────────────────
+
+    fn open_behavior(entries: Vec<ConfigEntry>) -> Modal {
+        let set = resolve_all(&Snapshot {
+            entries,
+            in_repo: true,
+            ..Default::default()
+        });
+        let behavior = set.behavior("remote-sync").expect("registry behavior");
+        Modal::open_behavior(behavior, ConfigScope::Local, true)
+    }
+
+    #[test]
+    fn a_behavior_offers_its_presets_by_name_and_by_label() {
+        let modal = open_behavior(vec![]);
+        assert_eq!(
+            modal.options[..2],
+            [
+                Option_::Value {
+                    value: "off".to_string(),
+                    gloss: "Local only".to_string(),
+                },
+                Option_::Value {
+                    value: "on".to_string(),
+                    gloss: "Full sync".to_string(),
+                },
+            ],
+            "the row carries the state's name and its label — the sentence \
+             explaining it is too long for a row and is drawn separately"
+        );
+        assert!(matches!(modal.options.last(), Some(Option_::Unset { .. })));
+    }
+
+    /// Custom means the members disagree. The one keystroke that resolves it is
+    /// the *nearest* preset — opening at the top of the list instead would make
+    /// Enter revert every member that had been set deliberately.
+    #[test]
+    fn a_custom_behavior_opens_on_the_preset_that_would_resolve_it() {
+        let modal = open_behavior(vec![
+            entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Local),
+            entry(keys::BRANCH_DELETE_REMOTE, "true", ConfigScope::Local),
+        ]);
+        assert_eq!(
+            modal.apply(),
+            Ok(Apply::SetBehavior {
+                name: "remote-sync",
+                preset: "on",
+                scope: WriteScope::Local,
+            }),
+            "two of three members already agree with Full sync"
+        );
+    }
+
+    #[test]
+    fn a_behavior_in_a_preset_opens_on_that_preset() {
+        let modal = open_behavior(vec![
+            entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Local),
+            entry(keys::CHECKOUT_PUSH, "true", ConfigScope::Local),
+            entry(keys::BRANCH_DELETE_REMOTE, "true", ConfigScope::Local),
+        ]);
+        match modal.apply().unwrap() {
+            Apply::SetBehavior { preset, .. } => assert_eq!(preset, "on"),
+            other => panic!("expected a behavior write, got {other:?}"),
+        }
+    }
+
+    // ── Text entry ───────────────────────────────────────────────────────
+
+    #[test]
+    fn a_text_setting_opens_with_what_is_already_there() {
+        let modal = open(
+            keys::REMOTE,
+            vec![entry(keys::REMOTE, "upstream", ConfigScope::Local)],
+        );
+        match &modal.field {
+            Field::Text { buffer, caret, .. } => {
+                assert_eq!(buffer, "upstream");
+                assert_eq!(*caret, 8, "the caret starts where typing continues");
+            }
+            other => panic!("expected a text field, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typing_editing_and_applying_a_text_value() {
+        let mut modal = open(keys::REMOTE, vec![]);
+        for ch in "upstreammm".chars() {
+            modal.type_char(ch);
+        }
+        modal.backspace();
+        modal.backspace();
+
+        assert_eq!(
+            modal.apply(),
+            Ok(Apply::Set {
+                key: keys::REMOTE.to_string(),
+                scope: WriteScope::Local,
+                value: "upstream".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_caret_moves_and_inserts_where_it_sits() {
+        let mut modal = open(keys::REMOTE, vec![]);
+        for ch in "orign".chars() {
+            modal.type_char(ch);
+        }
+        modal.caret_left();
+        modal.type_char('i');
+
+        match modal.apply().unwrap() {
+            Apply::Set { value, .. } => assert_eq!(value, "origin"),
+            other => panic!("expected a set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn text_editing_handles_multi_byte_characters() {
+        // A byte-indexed insert would split these and panic.
+        let mut modal = open(keys::REMOTE, vec![]);
+        for ch in "naïve—ünïcode".chars() {
+            modal.type_char(ch);
+        }
+        modal.caret_left();
+        modal.caret_left();
+        modal.type_char('ß');
+        modal.backspace();
+        modal.backspace();
+
+        match modal.apply().unwrap() {
+            Apply::Set { value, .. } => assert!(value.starts_with("naïve—ünïc")),
+            other => panic!("expected a set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_text_field_refuses_rather_than_writing_nothing() {
+        let modal = open(keys::REMOTE, vec![]);
+        let err = modal.apply().unwrap_err();
+        assert!(err.contains("unset"), "the message names the alternative");
+    }
+
+    #[test]
+    fn a_text_field_reports_what_is_wrong_while_you_type() {
+        let mut modal = open(keys::hooks::TIMEOUT, vec![]);
+        assert_eq!(
+            modal.text_feedback().as_deref(),
+            Some("a whole number"),
+            "an empty field shows the format"
+        );
+
+        for ch in "ninety".chars() {
+            modal.type_char(ch);
+        }
+        assert!(!modal.text_is_valid());
+        assert_eq!(
+            modal.text_feedback().as_deref(),
+            Some("expected a whole number")
+        );
+
+        for _ in 0..6 {
+            modal.backspace();
+        }
+        modal.type_char('9');
+        modal.type_char('0');
+        assert!(modal.text_is_valid());
+        assert_eq!(
+            modal.apply().unwrap(),
+            Apply::Set {
+                key: keys::hooks::TIMEOUT.to_string(),
+                scope: WriteScope::Local,
+                value: "90".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_text_setting_can_still_be_unset() {
+        let mut modal = open(
+            keys::REMOTE,
+            vec![entry(keys::REMOTE, "upstream", ConfigScope::Local)],
+        );
+        modal.move_down();
+        assert_eq!(
+            modal.apply(),
+            Ok(Apply::Unset {
+                key: keys::REMOTE.to_string(),
+                scope: WriteScope::Local,
+            })
+        );
+
+        // Typing takes focus back from the unset row.
+        modal.type_char('x');
+        assert!(matches!(modal.apply(), Ok(Apply::Set { .. })));
+    }
+
+    #[test]
+    fn values_are_canonicalized_before_they_leave_the_editor() {
+        let mut modal = open(keys::MERGE_GPG_SIGN, vec![]);
+        for ch in "TRUE".chars() {
+            modal.type_char(ch);
+        }
+        // boolOrKey passes its text through — a key id must survive verbatim.
+        match modal.apply().unwrap() {
+            Apply::Set { value, .. } => assert_eq!(value, "TRUE"),
+            other => panic!("expected a set, got {other:?}"),
+        }
+
+        let mut modal = open(keys::MERGE_STYLE, vec![]);
+        modal.move_down();
+        match modal.apply().unwrap() {
+            Apply::Set { value, .. } => assert_eq!(value, "squash"),
+            other => panic!("expected a set, got {other:?}"),
+        }
+    }
+
+    // ── Quick toggle ─────────────────────────────────────────────────────
+
+    #[test]
+    fn the_quick_toggle_flips_what_is_on_screen() {
+        // Nothing set: flip the default the user is looking at.
+        let resolved = resolved_for(keys::CHECKOUT_FETCH, vec![]);
+        assert_eq!(
+            toggled_value(&resolved, ConfigScope::Local).as_deref(),
+            Some("true")
+        );
+
+        // Set locally: flip that.
+        let resolved = resolved_for(
+            keys::CHECKOUT_FETCH,
+            vec![entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Local)],
+        );
+        assert_eq!(
+            toggled_value(&resolved, ConfigScope::Local).as_deref(),
+            Some("false")
+        );
+
+        // Set globally, editing locally: flip what is effective, because that
+        // is what is on screen.
+        let resolved = resolved_for(
+            keys::CHECKOUT_FETCH,
+            vec![entry(keys::CHECKOUT_FETCH, "true", ConfigScope::Global)],
+        );
+        assert_eq!(
+            toggled_value(&resolved, ConfigScope::Local).as_deref(),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn the_quick_toggle_refuses_anything_that_is_not_two_state() {
+        for key in [keys::MERGE_STYLE, keys::REMOTE, keys::hooks::TIMEOUT] {
+            let resolved = resolved_for(key, vec![]);
+            assert!(
+                toggled_value(&resolved, ConfigScope::Local).is_none(),
+                "{key} has no obvious opposite"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tri_state_toggles_and_still_offers_unset_in_the_editor() {
+        let resolved = resolved_for(keys::MERGE_EDIT, vec![]);
+        assert!(toggled_value(&resolved, ConfigScope::Local).is_some());
+
+        let modal = Modal::open(&resolved, ConfigScope::Local, true);
+        assert!(
+            matches!(modal.options.last(), Some(Option_::Unset { .. })),
+            "unset is the third state, not the absence of one"
+        );
+    }
+}

@@ -1,25 +1,66 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH "daft config remote-sync" 1  "daft config remote-sync " 
+.TH config 1  "config " 
 .SH NAME
-daft config remote\-sync \- Configure remote sync behavior
+config \- Browse and change daft settings
 .SH SYNOPSIS
-\fBdaft config remote\-sync\fR [\fB\-\-on\fR] [\fB\-\-off\fR] [\fB\-\-status\fR] [\fB\-\-global\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBconfig\fR [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
-Configure remote sync behavior
+.PP
+Browse and change daft settings.
+.PP
+Every daft setting in one place, with the value it currently has and the
+layer that decided it. Settings live in several stores — git config, the
+repository\*(Aqs daft.yml, the global config — resolved through different
+precedence chains; this command hides that split behind one list of keys.
+.PP
+  daft config                    Open the settings browser
+  daft config list               Every setting, its value, and where it came from
+  daft config list \-\-modified    Only the settings something sets
+  daft config list \-\-global      Only what the shared scope sets
+  daft config get <key>          Print one effective value
+  daft config get <key> \-\-origin Print it with the full layer\-by\-layer chain
+  daft config get <key> \-\-local  Print what this worktree\*(Aqs own scope sets
+  daft config set <key> <value>  Change it for this worktree
+  daft config set \-\-global ...   Change it at the shared scope instead
+  daft config unset <key>        Remove it, revealing whatever it was masking
+.PP
+\-\-local and \-\-global name one layer, and name the same layer whether you are
+reading or writing: `get \-\-local` prints what `set \-\-local` would replace. For
+a git\-config setting those are the two files git gives the same flags for; for
+a daft.yml setting they are the local overlay and the committed config; for the
+worktree layout, the repository\*(Aqs own entry and the global default.
+.PP
+A read narrowed to one layer exits 1 when that layer is silent, the way
+`git config \-\-get` does, so a script can ask whether something is set here
+rather than only what it resolves to.
+.PP
+Some settings only make sense together, and travel as a named behavior — one
+name for the group and for the states it can be in:
+.PP
+  daft config get remote\-sync    on, off, or custom
+  daft config set remote\-sync on Write every setting the state names
+.PP
+Values are validated against the setting\*(Aqs own type before anything is
+written, so a bad enum or column spec is refused where you typed it rather
+than at the next command that reads it.
 .SH OPTIONS
 .TP
-\fB\-\-on\fR
-Enable all remote sync operations
-.TP
-\fB\-\-off\fR
-Disable all remote sync operations
-.TP
-\fB\-\-status\fR
-Show current remote sync settings
-.TP
-\fB\-\-global\fR
-Write to global git config instead of local
-.TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+config\-list(1)
+List every setting with its value and origin
+.TP
+config\-get(1)
+Print one setting\*(Aqs effective value
+.TP
+config\-set(1)
+Change a setting
+.TP
+config\-unset(1)
+Remove a setting, revealing whatever it was masking
+.TP
+config\-help(1)
+Print this message or the help of the given subcommand(s)

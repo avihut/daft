@@ -45,6 +45,18 @@ impl OwnershipStrategy {
             _ => None,
         }
     }
+
+    /// Accepted values with a one-phrase gloss, for the settings registry.
+    pub fn variants() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("tip", "the newest commit's author owns"),
+            ("any", "any commit by you claims it"),
+            ("first", "the oldest commit's author owns"),
+            ("plurality", "the most commits wins"),
+            ("majority", "an absolute majority wins"),
+            ("recency-plurality", "recent commits weighted higher"),
+        ]
+    }
 }
 
 /// A commit's author identity + recency, as needed by the resolver.

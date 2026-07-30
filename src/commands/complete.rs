@@ -261,6 +261,17 @@ fn complete(
             complete_layouts(word)
         }
 
+        // config get/set/unset <KEY>: every setting in the registry.
+        ("config-key", _) => complete_config_keys(word),
+
+        // config set <KEY> <VALUE>: the values that key accepts. The key
+        // travels in DAFT_COMPLETE_CONFIG_KEY because the __complete protocol
+        // carries only the word under the cursor.
+        ("config-value", _) => complete_config_values(word),
+
+        // config list --category <NAME>: the functional groupings.
+        ("config-category", _) => complete_config_categories(word),
+
         // shared-files: complete declared shared file paths from daft.yml
         ("shared-files", _) => complete_shared_files(word),
 
@@ -298,6 +309,105 @@ fn complete(
 // ---------------------------------------------------------------------------
 // Gitoxide helpers — repo discovery and time formatting
 // ---------------------------------------------------------------------------
+
+/// Every setting key, with its one-line help.
+///
+/// The registry and nothing else: no config read, no repo discovery, no
+/// subprocess. This runs on every Tab, and answering "which settings exist" has
+/// never needed to open anything.
+fn complete_config_keys(prefix: &str) -> Result<Vec<String>> {
+    // Behaviors first: they are what someone reaching for "turn remote sync
+    // off" is looking for, and there are only ever a handful of them.
+    let behaviors = crate::core::settings_spec::BEHAVIORS
+        .iter()
+        .filter(|behavior| behavior.name.starts_with(prefix))
+        .map(|behavior| format!("{}\t{}", behavior.name, behavior.help));
+
+    Ok(behaviors
+        .chain(
+            crate::core::settings_spec::all_specs()
+                .into_iter()
+                .filter(|spec| spec.key.starts_with(prefix))
+                .map(|spec| format!("{}\t{}", spec.key, spec.help)),
+        )
+        .collect())
+}
+
+/// The categories `--category` accepts, with how many settings each holds.
+///
+/// Spelled the way the filter matches: `parse_category` also accepts the label
+/// with spaces and ampersands stripped, but offering "Push & Sync" would put a
+/// word the shell has to quote under the cursor. The count is the gloss because
+/// "which of these is worth filtering to" is the question at this prompt.
+///
+/// Const table only — same Tab-path budget as the key completer.
+fn complete_config_categories(prefix: &str) -> Result<Vec<String>> {
+    let specs = crate::core::settings_spec::all_specs();
+    Ok(crate::core::settings_spec::Category::all()
+        .iter()
+        .map(|category| (category, category.label().replace([' ', '&'], "")))
+        .filter(|(_, name)| name.to_lowercase().starts_with(&prefix.to_lowercase()))
+        .map(|(category, name)| {
+            let count = specs
+                .iter()
+                .filter(|spec| spec.category == *category)
+                .count();
+            let plural = if count == 1 { "setting" } else { "settings" };
+            format!("{name}\t{count} {plural}")
+        })
+        .collect())
+}
+
+/// The values the already-typed key accepts.
+///
+/// Closed-vocabulary types offer their variants with the gloss; everything else
+/// offers its default, which is the value most people are reaching for when
+/// they Tab at an empty slot. An unknown or absent key completes nothing rather
+/// than guessing.
+fn complete_config_values(prefix: &str) -> Result<Vec<String>> {
+    let Ok(key) = std::env::var("DAFT_COMPLETE_CONFIG_KEY") else {
+        return Ok(vec![]);
+    };
+    Ok(config_values_for(&key, prefix))
+}
+
+/// The completion body, with the earlier word passed in rather than read from
+/// the environment — so it is testable without an env var and a `#[serial]`.
+fn config_values_for(key: &str, prefix: &str) -> Vec<String> {
+    // A behavior takes preset names, not values — `true` would be nonsense in
+    // the slot after `remote-sync`.
+    if let Some(behavior) = crate::core::settings_spec::find_behavior(key) {
+        return behavior
+            .presets
+            .iter()
+            .map(|preset| format!("{}\t{}", preset.name, preset.label))
+            .filter(|entry| entry.starts_with(prefix))
+            .collect();
+    }
+
+    // Git-aware matching, so a key the user typed in a different case still
+    // finds its row — the same rule `daft config set` resolves through.
+    let Ok(spec) = crate::commands::config::resolve::lookup(key) else {
+        return vec![];
+    };
+
+    let entries: Vec<String> = match spec.ty.variants() {
+        Some(variants) => variants
+            .iter()
+            .map(|(value, gloss)| format!("{value}\t{gloss}"))
+            .collect(),
+        None => spec
+            .default
+            .value()
+            .map(|value| vec![format!("{value}\tthe default")])
+            .unwrap_or_default(),
+    };
+
+    entries
+        .into_iter()
+        .filter(|entry| entry.starts_with(prefix))
+        .collect()
+}
 
 /// Discover the git repository from the current working directory via gitoxide.
 /// This avoids spawning a subprocess and reuses the in-process gix object cache.
@@ -2571,6 +2681,81 @@ pub(crate) fn format_rich_completions(entries: &[CompletionEntry]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Config-key completion is the whole registry and nothing else.
+    ///
+    /// It must stay a pure table lookup: this runs on every Tab, and reaching
+    /// for the resolver — which does gitoxide discovery — would put a repo
+    /// open on the keystroke path.
+    #[test]
+    fn config_key_completion_offers_every_setting() {
+        let all = complete_config_keys("").unwrap();
+        assert_eq!(
+            all.len(),
+            crate::core::settings_spec::all_specs().len()
+                + crate::core::settings_spec::BEHAVIORS.len(),
+            "every setting and every behavior — both are things `set` accepts"
+        );
+
+        // The prefix is carved off a real key rather than typed out: it cannot
+        // drift from the registry, and a key-shaped literal here would owe the
+        // drift gate a row it is not.
+        let key = crate::core::settings::keys::MERGE_STYLE;
+        let prefix = &key[..key.len() - "yle".len()];
+
+        let merge = complete_config_keys(prefix).unwrap();
+        assert!(merge.iter().any(|e| e.starts_with(&format!("{key}\t"))));
+        assert!(merge.iter().all(|e| e.starts_with(prefix)));
+        assert!(
+            merge.iter().all(|e| e.contains('\t')),
+            "each entry carries its help after a tab"
+        );
+
+        assert!(
+            complete_config_keys("daft.nothing-like-this")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A behavior name has to be offered in the key slot, or the only way to
+    /// discover `remote-sync` is to already know it.
+    #[test]
+    fn config_key_completion_offers_behavior_names_too() {
+        let offered = complete_config_keys("remote").unwrap();
+        assert!(
+            offered
+                .iter()
+                .any(|entry| entry.starts_with("remote-sync\t")),
+            "{offered:?}"
+        );
+        assert!(
+            offered.iter().all(|entry| entry.contains('\t')),
+            "a behavior carries its help like a key does"
+        );
+    }
+
+    /// The value slot after a behavior is a preset name. Offering `true` there
+    /// would complete something `set` refuses.
+    #[test]
+    fn config_value_completion_offers_presets_for_a_behavior() {
+        let values: Vec<String> = config_values_for("remote-sync", "")
+            .into_iter()
+            .map(|entry| entry.split('\t').next().unwrap().to_string())
+            .collect();
+        assert_eq!(values, vec!["off", "on"]);
+
+        assert_eq!(
+            config_values_for("remote-sync", "o").len(),
+            2,
+            "both presets start with o"
+        );
+        assert!(config_values_for("remote-sync", "z").is_empty());
+
+        // A key still completes its own values, unchanged.
+        let fetch = config_values_for(crate::core::settings::keys::CHECKOUT_FETCH, "");
+        assert!(fetch.iter().any(|entry| entry.starts_with("true\t")));
+    }
+
     use super::*;
 
     #[test]

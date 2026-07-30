@@ -58,6 +58,9 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
 pub const DAFT_REPO_SUBCOMMANDS: &[&str] =
     &["add", "info", "install", "link", "list", "remove", "unlink"];
 
+/// All subcommands available via `daft config <verb>`.
+pub const DAFT_CONFIG_SUBCOMMANDS: &[&str] = &["get", "list", "set", "unset"];
+
 /// All subcommands available via `daft skill <verb>`.
 pub const DAFT_SKILL_SUBCOMMANDS: &[&str] = &["install", "show", "uninstall"];
 

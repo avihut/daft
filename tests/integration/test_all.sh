@@ -14,6 +14,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_repo_remove.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_branch_delete.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_fetch.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_config.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_config_tui.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_hooks.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_flow_adopt.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_rename.sh"
@@ -359,6 +360,7 @@ run_all_integration_tests() {
     run_rename_tests
     run_fetch_tests
     run_config_tests
+    run_config_tui_tests
     run_hooks_tests
     run_flow_adopt_tests
     run_flow_eject_tests

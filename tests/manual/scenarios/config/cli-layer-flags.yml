@@ -1,0 +1,112 @@
+name: config --local / --global name one layer, reading or writing
+description:
+  Verify the layer flags select the same rung on a read as on a write, that a
+  narrowed read exits 1 when its layer is silent, and that a narrowed list is
+  the contents of that layer rather than the resolved values
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: each layer reads back exactly what a write at that layer put there
+    run: |
+      daft config set --global daft.remote shared
+      daft config set --local daft.remote mine
+      test "$(daft config get daft.remote)" = "mine"
+      test "$(daft config get daft.remote --global)" = "shared"
+      test "$(daft config get daft.remote --local)" = "mine"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: --local is the default for a write, so spelling it changes nothing
+    run: |
+      daft config set --local daft.merge.style squash
+      test "$(git config --local --get daft.merge.style)" = "squash"
+      daft config unset --local daft.merge.style
+      test -z "$(git config --local --get daft.merge.style || true)"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: a narrowed read exits 1 when that layer is silent
+    run: daft config get daft.merge.style --local
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+
+  - name: while the unnarrowed read of the same key still resolves
+    run: daft config get daft.merge.style
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "merge"
+
+  - name: naming two layers for one act is refused
+    run: daft config get daft.remote --local --global
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 2
+
+  - name: and --origin, which shows every layer, will not be narrowed to one
+    run: daft config get daft.remote --origin --local
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--origin already shows every layer"
+
+  - name: a narrowed list is that layer's contents, and names what outranks it
+    run: |
+      daft config list --global | grep -q "shared"
+      daft config list --global | grep -q "outranked by local"
+      ! daft config list --global | grep -q "mine"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      a layer flag on a daft.yml setting picks the overlay or the committed file
+    run: |
+      printf '# the team convention\nrc: .daftrc\n' > daft.yml
+      daft config set --global rc committed.rc
+      daft config set --local rc overlay.rc
+      test "$(daft config get rc)" = "overlay.rc"
+      test "$(daft config get rc --global)" = "committed.rc"
+      test "$(daft config get rc --local)" = "overlay.rc"
+      test -f daft.local.yml
+      grep -q "the team convention" daft.yml
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: outside a repository --local is an error, not an empty answer
+    run: daft config get daft.remote --local
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no local config to read"
+
+  - name: but --global still answers from outside one
+    run: daft config get daft.remote --global
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "shared"
+
+  - name: Clean up the global value this scenario wrote
+    run: daft config unset --global daft.remote
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
