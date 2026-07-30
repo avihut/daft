@@ -426,6 +426,7 @@ mod tests {
             task_name: None,
             stage_argv: Vec::new(),
             stage_stdin: None,
+            index_file: None,
         };
         let result = substitute(
             "from {old_worktree_path} to {worktree_path} branch {old_branch}",
@@ -465,6 +466,7 @@ mod tests {
             task_name: None,
             stage_argv: Vec::new(),
             stage_stdin: None,
+            index_file: None,
         };
         let result = substitute("old={old_worktree_path} branch={old_branch}", &ctx, None);
         assert_eq!(result, "old= branch=");

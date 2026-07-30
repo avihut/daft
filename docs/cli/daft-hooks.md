@@ -223,6 +223,52 @@ daft hooks add [HOOKS]
 |----------|-------------|----------|
 | `<HOOKS>` | Lifecycle hook names to add (omit for all) | No |
 
+### install
+
+Install git hook shims so git calls daft
+
+Install thin shim scripts into the repository's hooks directory so
+git calls daft for the stages it dispatches (pre-commit, commit-msg,
+pre-push, and the rest).
+
+Everything installed lives under .git/ — nothing is added to the
+tracked tree, so trying daft as your hooks manager commits you to
+nothing and 'hooks uninstall' puts the repository back.
+
+Shims are installed for every supported stage, not only the ones you
+have defined. A stage with no definition costs a fast no-op, and the
+alternative is editing daft.yml and silently having no effect until
+you remember to reinstall.
+
+A hook from a manager daft recognises is moved aside (and restored on
+uninstall). An unrecognised hook stops that stage and is reported —
+--force backs it up and installs anyway.
+
+```
+daft hooks install [OPTIONS]
+```
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--force` | Displace hooks daft does not recognise |  |
+
+### uninstall
+
+Remove daft's git hook shims and restore what they displaced
+
+Remove daft's hook shims and restore whatever they displaced.
+
+Only files daft wrote are removed, proven by a marker inside them.
+A hook replaced by hand since installing is reported and left alone.
+
+A core.hooksPath that --force unset is restored.
+
+```
+daft hooks uninstall
+```
+
 ### validate
 
 Validate the YAML hooks configuration

@@ -34,6 +34,7 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
         merge,
         env,
         templates,
+        skip_lfs,
         hooks,
         tasks,
     } = overlay;
@@ -85,6 +86,9 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
     // config where some `{name}` expands and some does not.
     if templates.is_some() {
         merged.templates = templates;
+    }
+    if skip_lfs.is_some() {
+        merged.skip_lfs = skip_lfs;
     }
 
     // Merge log config (field-level merge)
@@ -325,6 +329,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         merge: b_merge,
         env: b_env,
         templates: b_templates,
+        skip_lfs: b_skip_lfs,
         hooks: b_hooks,
         tasks: b_tasks,
     } = base;
@@ -345,6 +350,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         merge: o_merge,
         env: o_env,
         templates: o_templates,
+        skip_lfs: o_skip_lfs,
         hooks: o_hooks,
         tasks: o_tasks,
     } = ours;
@@ -365,6 +371,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         merge: t_merge,
         env: t_env,
         templates: t_templates,
+        skip_lfs: t_skip_lfs,
         hooks: t_hooks,
         tasks: t_tasks,
     } = theirs;
@@ -423,6 +430,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
             t_templates,
             &mut tally,
         ),
+        skip_lfs: pick3("skip_lfs", b_skip_lfs, o_skip_lfs, t_skip_lfs, &mut tally),
         hooks: merge3_hook_maps("hooks", b_hooks, o_hooks, t_hooks, &mut tally),
         tasks: merge3_hook_maps("tasks", b_tasks, o_tasks, t_tasks, &mut tally),
     };
@@ -1032,6 +1040,7 @@ mod tests {
         );
         let full = YamlConfig {
             templates: Some(HashMap::new()),
+            skip_lfs: Some(false),
             min_version: Some("1.0.0".to_string()),
             colors: Some(false),
             no_tty: Some(true),
@@ -1620,6 +1629,7 @@ mod tests {
         );
         let full = YamlConfig {
             templates: Some(HashMap::new()),
+            skip_lfs: Some(false),
             min_version: Some("1.0.0".to_string()),
             colors: Some(false),
             no_tty: Some(true),
