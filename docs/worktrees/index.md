@@ -60,10 +60,13 @@ my-project/
     └── ...
 ```
 
-::: tip Other layouts available This page shows the **contained** layout, where
-worktrees are subdirectories of the repo. daft supports several layouts that
-control where worktrees are placed. See [Layouts](/worktrees/layouts) to explore
-your options. :::
+::: tip Other layouts available
+
+This page shows the **contained** layout, where worktrees are subdirectories of
+the repo. daft supports several layouts that control where worktrees are placed.
+See [Layouts](/worktrees/layouts) to explore your options.
+
+:::
 
 Key properties:
 

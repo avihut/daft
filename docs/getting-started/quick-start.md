@@ -28,9 +28,13 @@ my-project/
 
 You're automatically placed in `my-project/main/`.
 
-::: tip This shows the **contained** layout. daft supports other layouts that
-organize worktrees differently — see [Layouts](/worktrees/layouts) to explore
-your options. :::
+::: tip Other layouts available
+
+This shows the **contained** layout. daft supports other layouts that organize
+worktrees differently — see [Layouts](/worktrees/layouts) to explore your
+options.
+
+:::
 
 ### Create a Feature Branch
 
@@ -135,9 +139,13 @@ daft adopt
 This restructures your repo into the worktree layout. Uncommitted changes are
 preserved.
 
-::: tip Git-native commands Every daft command has a git-native equivalent
-(e.g., `daft clone` = `git worktree-clone`). See the
-[CLI Reference](/reference/cli/git-worktree-clone) for the full list. :::
+::: tip Git-native commands
+
+Every daft command has a git-native equivalent (e.g., `daft clone` =
+`git worktree-clone`). See the
+[CLI Reference](/reference/cli/git-worktree-clone) for the full list.
+
+:::
 
 That's stage 1: every branch in its own directory, no stashing, no swapping.
 
