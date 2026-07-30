@@ -2,7 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.25.0](https://github.com/avihut/daft/compare/v1.24.0...v1.25.0) - 2026-07-29
+## [1.26.0](https://github.com/avihut/daft/compare/v1.25.0...v1.26.0) - 2026-07-30
+
+
+### Features
+
+- Breathe stale cached cells in the live list until fresh values land (#806)
+- Deterministic per-worktree env values (daft env) (#807)
+- **config**: A settings interface that shows where every value comes from (#796)
+
+
+### Performance
+
+- **copy**: Clone whole trees in one syscall — 6.4x faster, and 3.2x faster than pnpm (#808)
+## [1.25.0](https://github.com/avihut/daft/compare/v1.24.0...v1.25.0) - 2026-07-30
 
 
 ### Bug Fixes
