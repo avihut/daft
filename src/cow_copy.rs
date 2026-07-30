@@ -15,8 +15,11 @@
 //! current callsites don't depend on them.
 
 use anyhow::{Context, Result};
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex};
+#[cfg(target_os = "macos")]
 use walkdir::WalkDir;
 
 /// What a copy actually did, per regular file.
@@ -250,75 +253,283 @@ pub fn copy_dir_within(src: &Path, dst: &Path, move_root: &Path) -> Result<CopyS
         src.display()
     );
 
+    // DAFT_COPY_FORCE_WALK is the bench/test escape hatch: it pins the
+    // portable walking path on machines whose filesystem would always take
+    // the clone, so the path Linux users actually run can be measured — and
+    // regressed — anywhere. Not a user-facing setting.
     #[cfg(target_os = "macos")]
-    if let Some(stats) = clone_tree(src, dst, move_root)? {
+    if std::env::var_os("DAFT_COPY_FORCE_WALK").is_none()
+        && let Some(stats) = clone_tree(src, dst, move_root)?
+    {
         return Ok(stats);
     }
 
+    copy_dir_walking(src, dst, move_root, src_meta.permissions())
+}
+
+/// The portable per-entry copy: a bounded pool of workers drains a shared
+/// queue of directories, each worker copying one directory's immediate
+/// children and enqueueing its subdirectories.
+///
+/// Parallel because the walk is a syscall storm with almost no user-space
+/// work between calls (a sampled profile of the serial version spent 84% of
+/// its time inside per-file syscalls): several in-flight operations hide
+/// each other's latency. How many is worth having depends on what the walk
+/// is actually doing, and the pool sizes itself from a one-file reflink
+/// probe of the destination. Measured on the same 57k-entry pnpm-shaped
+/// tree (930 MB):
+///
+/// * **byte-copy walk** (ext4): 1.32s serial → 0.51s at 4 workers, flat
+///   beyond — data movement parallelizes, so the probe failing picks 4;
+/// * **reflink walk** (btrfs `FICLONE`): 0.65s serial → 0.53s at 2 workers,
+///   then *worse than serial* at 4+ (1.08s/1.31s) — per-file cloning is a
+///   metadata storm that contends on filesystem-internal locks, so the
+///   probe succeeding picks 2. APFS behaves the same way (a 10-core
+///   machine's 8-worker clone walk spent 6x the kernel CPU for a 13% wall
+///   win), but on macOS this path only runs when the whole-tree clone
+///   already declined.
+///
+/// Two ordering properties the serial walk guaranteed survive the pool:
+///
+/// * a directory is created by its parent's worker **before** it is
+///   enqueued, so no worker ever writes into a directory that does not
+///   exist yet;
+/// * directory modes are applied only **after the pool has joined**,
+///   deepest-first — the read-only-source contract [`copy_dir_reporting`]
+///   documents (a 0555 directory must be fully populated before it is
+///   sealed).
+///
+/// The first error wins: workers observing a recorded failure stop pulling
+/// work, the queue drains, and that error is returned once the pool joins.
+/// Which of several racing errors gets reported is nondeterministic — the
+/// serial walk's contract was "some real failure from this tree", and that
+/// is preserved; its exact ordering is not.
+fn copy_dir_walking(
+    src: &Path,
+    dst: &Path,
+    move_root: &Path,
+    src_perms: fs::Permissions,
+) -> Result<CopyStats> {
     create_writable_dir(dst).with_context(|| format!("creating {}", dst.display()))?;
 
-    let mut stats = CopyStats::default();
-    // (path, source permissions), in the walk's top-down order — replayed in
-    // reverse so a directory is sealed only after its children exist.
-    let mut deferred_modes: Vec<(PathBuf, fs::Permissions)> =
-        vec![(dst.to_path_buf(), src_meta.permissions())];
+    let shared = WalkShared {
+        queue: Mutex::new(WalkQueue {
+            dirs: VecDeque::from([(PathBuf::new(), 0usize)]),
+            active: 0,
+            failed: None,
+            stats: CopyStats::default(),
+            deferred: vec![(dst.to_path_buf(), src_perms, 0)],
+        }),
+        cvar: Condvar::new(),
+    };
+    let shared = &shared;
+    // DAFT_COPY_WALK_JOBS is the bench/test knob for the pool size (1 = the
+    // old serial behavior, modulo queue overhead). Not a user-facing setting.
+    let workers = std::env::var("DAFT_COPY_WALK_JOBS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or_else(|| {
+            let cap = if probe_reflink(dst) { 2 } else { 4 };
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(cap)
+                .min(cap)
+        });
 
-    for entry in WalkDir::new(src).follow_links(false).min_depth(1) {
-        let entry = entry.with_context(|| format!("walking {}", src.display()))?;
-        let rel = entry
-            .path()
-            .strip_prefix(src)
-            .expect("walkdir paths are rooted at src");
-        let dst_path = dst.join(rel);
-        let ftype = entry.file_type();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(move || walk_worker(shared, src, dst, move_root));
+        }
+    });
 
+    let (failed, stats, mut deferred) = {
+        let mut queue = shared.queue.lock().expect("copy walk mutex poisoned");
+        (
+            queue.failed.take(),
+            queue.stats,
+            std::mem::take(&mut queue.deferred),
+        )
+    };
+    if let Some(err) = failed {
+        return Err(err);
+    }
+
+    // Deepest-first: a directory can only be made read-only once nothing more
+    // needs to be written inside it.
+    deferred.sort_by_key(|entry| std::cmp::Reverse(entry.2));
+    for (path, permissions, _) in deferred {
+        fs::set_permissions(&path, permissions)
+            .with_context(|| format!("setting mode of {}", path.display()))?;
+    }
+    Ok(stats)
+}
+
+/// Whether the filesystem holding `dir` (which must already exist) can
+/// reflink: clone one throwaway file inside it and read the verdict. The
+/// walking pool's sizing signal — see [`copy_dir_walking`] for the measured
+/// why. Any failure (including not being able to create the probe at all)
+/// reads as "no reflink", which merely picks the byte-copy worker count.
+fn probe_reflink(dir: &Path) -> bool {
+    let src = dir.join(".daft-copy-probe-src");
+    let dst = dir.join(".daft-copy-probe-dst");
+    let verdict = fs::write(&src, b"probe").is_ok() && reflink_copy::reflink(&src, &dst).is_ok();
+    let _ = fs::remove_file(&src);
+    let _ = fs::remove_file(&dst);
+    verdict
+}
+
+struct WalkShared {
+    queue: Mutex<WalkQueue>,
+    cvar: Condvar,
+}
+
+struct WalkQueue {
+    /// Source-relative directory paths whose children remain to be copied,
+    /// with their depth for the deferred-mode ordering.
+    dirs: VecDeque<(PathBuf, usize)>,
+    /// Directories currently inside a worker. Work exists while either this
+    /// is non-zero (an active worker may still enqueue) or `dirs` is
+    /// non-empty.
+    active: usize,
+    /// The first error any worker hit; the pool drains once it is set.
+    failed: Option<anyhow::Error>,
+    /// Merged as each worker exits.
+    stats: CopyStats,
+    /// (destination path, source mode, depth), applied deepest-first after
+    /// the pool joins.
+    deferred: Vec<(PathBuf, fs::Permissions, usize)>,
+}
+
+fn walk_worker(shared: &WalkShared, src: &Path, dst: &Path, move_root: &Path) {
+    let mut local = CopyStats::default();
+    loop {
+        let (rel, depth) = {
+            let mut queue = shared.queue.lock().expect("copy walk mutex poisoned");
+            loop {
+                if queue.failed.is_some() {
+                    queue.stats.add(local);
+                    return;
+                }
+                if let Some(job) = queue.dirs.pop_front() {
+                    queue.active += 1;
+                    break job;
+                }
+                if queue.active == 0 {
+                    queue.stats.add(local);
+                    return;
+                }
+                queue = shared.cvar.wait(queue).expect("copy walk mutex poisoned");
+            }
+        };
+
+        let result = copy_dir_children(&rel, depth, shared, src, dst, move_root, &mut local);
+
+        let mut queue = shared.queue.lock().expect("copy walk mutex poisoned");
+        queue.active -= 1;
+        if let Err(err) = result
+            && queue.failed.is_none()
+        {
+            queue.failed = Some(err);
+        }
+        if queue.failed.is_some() || (queue.active == 0 && queue.dirs.is_empty()) {
+            shared.cvar.notify_all();
+        }
+    }
+}
+
+/// Copy the immediate children of `src.join(rel)`: subdirectories are
+/// created writable (real modes deferred) and enqueued for the pool, then
+/// files and symlinks are copied in place — in that order, because descent
+/// is what feeds the pool and must never wait behind a directory's own file
+/// copies.
+fn copy_dir_children(
+    rel: &Path,
+    depth: usize,
+    shared: &WalkShared,
+    src: &Path,
+    dst: &Path,
+    move_root: &Path,
+    local: &mut CopyStats,
+) -> Result<()> {
+    let src_dir = src.join(rel);
+    let mut child_dirs = Vec::new();
+    let mut links = Vec::new();
+    let mut files = Vec::new();
+
+    for entry in fs::read_dir(&src_dir).with_context(|| format!("reading {}", src_dir.display()))? {
+        let entry = entry.with_context(|| format!("reading {}", src_dir.display()))?;
+        let ftype = entry
+            .file_type()
+            .with_context(|| format!("reading type of {}", entry.path().display()))?;
+        let child_rel = rel.join(entry.file_name());
         if ftype.is_dir() {
-            create_writable_dir(&dst_path)
-                .with_context(|| format!("creating {}", dst_path.display()))?;
             let meta = entry
                 .metadata()
                 .with_context(|| format!("reading metadata of {}", entry.path().display()))?;
-            deferred_modes.push((dst_path, meta.permissions()));
+            child_dirs.push((child_rel, meta.permissions()));
         } else if ftype.is_symlink() {
-            #[cfg(unix)]
-            {
-                // A link pointing within what is moving keeps its text, one
-                // escaping it is re-based on the new position. The boundary is
-                // `move_root`, not `src`: under `copy:` the walked tree is one
-                // entry but the whole worktree moves, and a workspace link that
-                // leaves `node_modules/` still lands inside the worktree the
-                // destination has its own copy of. See `rebased_link_target`.
-                let target = rebased_link_target(entry.path(), &dst_path, move_root)?;
-                std::os::unix::fs::symlink(target, &dst_path)
-                    .with_context(|| format!("creating symlink {}", dst_path.display()))?;
-            }
-            #[cfg(not(unix))]
-            {
-                // Windows / non-Unix targets: symlink replication needs the
-                // file-vs-dir distinction up front (`symlink_file` /
-                // `symlink_dir`) and admin/dev-mode privileges. Daft's
-                // current consumers don't produce symlinks in their copy
-                // trees; #387's `copy_paths:` work will revisit if needed.
-                anyhow::bail!(
-                    "symlink replication not yet implemented on this platform: {}",
-                    entry.path().display()
-                );
-            }
+            links.push(child_rel);
         } else if ftype.is_file() {
-            stats.add(copy_file_reporting(entry.path(), &dst_path)?);
+            files.push(child_rel);
         }
         // Block / char / fifo / socket entries are skipped. Daft's existing
         // callsites don't produce them; future consumers that need them
         // should extend this dispatch deliberately.
     }
 
-    // Deepest-first: a directory can only be made read-only once nothing more
-    // needs to be written inside it.
-    for (path, permissions) in deferred_modes.into_iter().rev() {
-        fs::set_permissions(&path, permissions)
-            .with_context(|| format!("setting mode of {}", path.display()))?;
+    if !child_dirs.is_empty() {
+        let mut created = Vec::with_capacity(child_dirs.len());
+        for (child_rel, perms) in child_dirs {
+            let dst_path = dst.join(&child_rel);
+            create_writable_dir(&dst_path)
+                .with_context(|| format!("creating {}", dst_path.display()))?;
+            created.push((child_rel, dst_path, perms));
+        }
+        {
+            let mut queue = shared.queue.lock().expect("copy walk mutex poisoned");
+            for (child_rel, dst_path, perms) in created {
+                queue.deferred.push((dst_path, perms, depth + 1));
+                queue.dirs.push_back((child_rel, depth + 1));
+            }
+        }
+        shared.cvar.notify_all();
     }
-    Ok(stats)
+
+    #[cfg(unix)]
+    for child_rel in links {
+        // A link pointing within what is moving keeps its text, one escaping
+        // it is re-based on the new position. The boundary is `move_root`,
+        // not `src`: under `copy:` the walked tree is one entry but the whole
+        // worktree moves, and a workspace link that leaves `node_modules/`
+        // still lands inside the worktree the destination has its own copy
+        // of. See `rebased_link_target`.
+        let src_path = src.join(&child_rel);
+        let dst_path = dst.join(&child_rel);
+        let target = rebased_link_target(&src_path, &dst_path, move_root)?;
+        std::os::unix::fs::symlink(target, &dst_path)
+            .with_context(|| format!("creating symlink {}", dst_path.display()))?;
+    }
+    #[cfg(not(unix))]
+    if let Some(child_rel) = links.first() {
+        // Windows / non-Unix targets: symlink replication needs the
+        // file-vs-dir distinction up front (`symlink_file` / `symlink_dir`)
+        // and admin/dev-mode privileges. Daft's current consumers don't
+        // produce symlinks in their copy trees; #387's `copy_paths:` work
+        // will revisit if needed.
+        anyhow::bail!(
+            "symlink replication not yet implemented on this platform: {}",
+            src.join(child_rel).display()
+        );
+    }
+
+    for child_rel in files {
+        local.add(copy_file_reporting(
+            &src.join(&child_rel),
+            &dst.join(&child_rel),
+        )?);
+    }
+    Ok(())
 }
 
 /// One-syscall whole-tree clone (macOS/APFS), or `None` when the filesystem
@@ -965,6 +1176,163 @@ mod tests {
         fs::hard_link(src.join("real"), src.join("link")).unwrap();
 
         assert_eq!(copy_dir_reporting(&src, &dst).unwrap().bytes, 2000);
+    }
+
+    fn walking(src: &Path, dst: &Path, move_root: &Path) -> Result<CopyStats> {
+        let perms = fs::symlink_metadata(src).unwrap().permissions();
+        copy_dir_walking(src, dst, move_root, perms)
+    }
+
+    /// Twin of `copy_dir_populates_a_read_only_source_directory_before_sealing_it`,
+    /// pinned to the WALKING path: on APFS every `copy_dir` call takes the
+    /// clone fast path, which would leave the deferred-modes machinery — the
+    /// thing that test exists to cover — exercised only on Linux CI.
+    #[cfg(unix)]
+    #[test]
+    fn walking_path_populates_a_read_only_source_directory_before_sealing_it() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        write_file(&src.join("archive/nested/deep.txt"), b"payload");
+        write_file(&src.join("archive/top.txt"), b"top");
+        fs::set_permissions(
+            src.join("archive/nested"),
+            fs::Permissions::from_mode(0o555),
+        )
+        .unwrap();
+        fs::set_permissions(src.join("archive"), fs::Permissions::from_mode(0o555)).unwrap();
+
+        let premise_holds = fs::File::create(src.join("archive/probe")).is_err();
+
+        let result = walking(&src, &dst, &src);
+
+        fs::set_permissions(src.join("archive"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(
+            src.join("archive/nested"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let mut modes = Vec::new();
+        for dir in ["archive", "archive/nested"] {
+            if let Ok(meta) = fs::metadata(dst.join(dir)) {
+                modes.push(meta.permissions().mode() & 0o777);
+            }
+            let _ = fs::set_permissions(dst.join(dir), fs::Permissions::from_mode(0o755));
+        }
+        if !premise_holds {
+            return;
+        }
+
+        result.expect("a read-only source directory must still copy");
+        assert_eq!(fs::read(dst.join("archive/top.txt")).unwrap(), b"top");
+        assert_eq!(
+            fs::read(dst.join("archive/nested/deep.txt")).unwrap(),
+            b"payload"
+        );
+        assert_eq!(modes, vec![0o555, 0o555], "modes still applied, just last");
+    }
+
+    /// Twin of `copy_dir_rebases_a_link_that_escapes_the_copied_tree` for the
+    /// walking path, same rationale as above.
+    #[cfg(unix)]
+    #[test]
+    fn walking_path_rebases_a_link_that_escapes_the_copied_tree() {
+        let tmp = TempDir::new().unwrap();
+        write_file(&tmp.path().join(".venvs/proj/bin/python"), b"#!");
+        let src = tmp.path().join("main/cache");
+        let dst = tmp.path().join("feature/login/cache");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        symlink("../../.venvs/proj", src.join("venv")).unwrap();
+
+        walking(&src, &dst, &src).unwrap();
+
+        assert!(dst.join("venv/bin/python").exists());
+    }
+
+    /// Twin of `copy_reporting_does_not_deduplicate_hard_links` for the
+    /// walking path.
+    #[cfg(unix)]
+    #[test]
+    fn walking_path_counts_hard_links_every_time() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        write_file(&src.join("real"), &vec![7u8; 1000]);
+        fs::hard_link(src.join("real"), src.join("link")).unwrap();
+
+        assert_eq!(walking(&src, &dst, &src).unwrap().bytes, 2000);
+    }
+
+    /// The pool must copy a wide, deep tree completely and account for every
+    /// file exactly once — width is what actually exercises concurrent
+    /// workers, and the recount catches both lost subtrees and double-copies.
+    #[test]
+    fn walking_path_copies_a_wide_deep_tree_completely() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        let mut expected_files = 0u64;
+        let mut expected_bytes = 0u64;
+        for a in 0..4 {
+            for b in 0..4 {
+                for c in 0..4 {
+                    for f in 0..6 {
+                        let content = format!("{a}/{b}/{c}/{f}");
+                        write_file(
+                            &src.join(format!("d{a}/d{b}/d{c}/f{f}.txt")),
+                            content.as_bytes(),
+                        );
+                        expected_files += 1;
+                        expected_bytes += content.len() as u64;
+                    }
+                }
+            }
+        }
+
+        let stats = walking(&src, &dst, &src).unwrap();
+
+        assert_eq!(stats.reflinked + stats.copied, expected_files);
+        assert_eq!(stats.bytes, expected_bytes);
+        let mut seen = 0;
+        for entry in walkdir::WalkDir::new(&dst).min_depth(1) {
+            let entry = entry.unwrap();
+            if entry.file_type().is_file() {
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, expected_files);
+        assert_eq!(
+            fs::read(dst.join("d3/d2/d1/f5.txt")).unwrap(),
+            b"3/2/1/5",
+            "content lands at the mirrored path"
+        );
+    }
+
+    /// An unreadable directory anywhere in the tree fails the copy with a
+    /// real error — the pool must surface it, not deadlock or swallow it.
+    #[cfg(unix)]
+    #[test]
+    fn walking_path_surfaces_an_unreadable_subtree_as_an_error() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        write_file(&src.join("ok/a.txt"), b"a");
+        write_file(&src.join("sealed/hidden.txt"), b"h");
+        fs::set_permissions(src.join("sealed"), fs::Permissions::from_mode(0o000)).unwrap();
+
+        let premise_holds = fs::read_dir(src.join("sealed")).is_err();
+        let result = walking(&src, &dst, &src);
+        fs::set_permissions(src.join("sealed"), fs::Permissions::from_mode(0o755)).unwrap();
+        if !premise_holds {
+            return;
+        }
+
+        let err = result.expect_err("an unreadable subtree must fail the copy");
+        assert!(
+            format!("{err:#}").contains("sealed"),
+            "the error names the unreadable directory: {err:#}"
+        );
     }
 
     #[test]
