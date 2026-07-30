@@ -10,6 +10,10 @@ hero:
   tagline:
     Each branch in its own directory. Hooks at every code-evolution boundary.
     Coordinate across the repo graph.
+  image:
+    light: /brand/daft-donut-accent.svg
+    dark: /brand/daft-donut-accent-white.svg
+    alt: Donut, the daft dodo
   actions:
     - theme: brand
       text: Get Started
@@ -18,28 +22,48 @@ hero:
       text: Why daft
       link: /about/why-daft
 features:
-  - title: Worktrees
+  - icon:
+      light: /brand/glyph-worktrees.svg
+      dark: /brand/glyph-worktrees-dark.svg
+      width: 26
+      height: 26
+    title: Worktrees
     details:
       Every branch gets its own directory. Run feature-A and feature-B in
       different terminals at the same time — no stashing, no context switching.
       Merge across worktrees from anywhere with `daft merge`.
     link: /worktrees/
     linkText: Worktrees pillar
-  - title: Hooks
+  - icon:
+      light: /brand/glyph-hooks.svg
+      dark: /brand/glyph-hooks-dark.svg
+      width: 26
+      height: 26
+    title: Hooks
     details:
       Boundaries at every code-evolution stage — the local-parallel-to-CI
       surface. Worktree lifecycle and PR-style merge gates today; the full
       git-hooks lifecycle is on the roadmap.
     link: /hooks/
     linkText: Hooks pillar
-  - title: Graph
+  - icon:
+      light: /brand/glyph-graph.svg
+      dark: /brand/glyph-graph-dark.svg
+      width: 26
+      height: 26
+    title: Graph
     details:
       Coordinate changes across repositories. A self-maintaining repo catalog
       plus a committed relations manifest — jump between repos with `daft go`,
       open one branch everywhere, run commands across the set.
     link: /graph/
     linkText: Graph pillar
-  - title: Recipes
+  - icon:
+      light: /brand/glyph-recipes.svg
+      dark: /brand/glyph-recipes-dark.svg
+      width: 26
+      height: 26
+    title: Recipes
     details:
       Patterns for adopting daft alongside your existing tooling — mise, direnv,
       asdf, monorepos, fork workflows, CI integration.
