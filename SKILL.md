@@ -454,6 +454,27 @@ repository root.
 | `pre-merge`            | After pre-flight checks, before the merge runs  | Target worktree             |
 | `post-merge`           | After the merge completes (success or conflict) | Target worktree             |
 
+Plus git's own stages, once `daft hooks install` has run: `pre-commit`,
+`pre-merge-commit`, `prepare-commit-msg`, `commit-msg`, `post-commit`,
+`applypatch-msg`, `pre-applypatch`, `post-applypatch`, `pre-rebase`,
+`post-checkout`, `git-post-merge`, `pre-push`, `pre-auto-gc`, `post-rewrite`,
+`sendemail-validate`, `post-index-change`. They live in the same `hooks:` block
+and use the same job schema.
+
+Two things to know when writing them:
+
+- `git-post-merge` is git's `post-merge`. The plain key is already daft's merge
+  lifecycle hook, so git's stage takes the qualified spelling.
+- File lists are named: `{staged_files}`, `{push_files}`, `{all_files}`, and
+  `{files}` for whatever the stage is about (staged for the commit family,
+  pushed for `pre-push`). Stages with no natural list — `post-checkout`,
+  `pre-rebase` — have no default, so a file-aware job there must name a source
+  or bring its own `files:` command.
+
+Shims are installed for every stage regardless of what is configured, so editing
+`daft.yml` takes effect immediately with no reinstall. Everything lives under
+`.git/`; `daft hooks uninstall` restores the repository exactly.
+
 `worktree-pre-remove`/`worktree-post-remove` also fire when `daft merge -r`
 cleans up a merged source worktree; there `DAFT_COMMAND=merge` (not
 `branch-delete`), so scripts can tell merge cleanup from a standalone
@@ -704,11 +725,14 @@ Hooks from untrusted repos do not run automatically. Manage trust with:
 daft hooks trust        # Allow hooks to run
 daft hooks prompt       # Prompt before each execution
 daft hooks deny         # Never run hooks (default)
-daft hooks status       # Check current trust level
+daft hooks status       # Check current trust level and installed shims
 daft hooks add          # Scaffold a daft.yml with placeholders
+daft hooks install      # Install git hook shims so git calls daft
+daft hooks uninstall    # Remove the shims, restoring what they displaced
+daft hooks import       # Convert an existing hooks config into daft.yml
 daft hooks validate     # Validate configuration syntax
 daft hooks dump         # Show fully merged configuration
-daft hooks run <type>   # Manually run a hook (bypasses trust)
+daft hooks run <type>   # Manually run a hook or git stage (bypasses trust)
 ```
 
 When a command skips hooks because the repo is untrusted, it prints one plain

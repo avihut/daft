@@ -278,9 +278,11 @@ export default defineConfig({
         items: [
           { text: "Overview", link: "/hooks/" },
           { text: "Lifecycle hooks", link: "/hooks/lifecycle" },
+          { text: "Git stages", link: "/hooks/git-stages" },
           { text: "Job orchestration", link: "/hooks/job-orchestration" },
           { text: "YAML reference", link: "/hooks/yaml-reference" },
           { text: "Trust & security", link: "/hooks/trust-and-security" },
+          { text: "Migrating from lefthook", link: "/hooks/lefthook-migration" },
           { text: "Roadmap", link: "/hooks/roadmap" },
         ],
       },
@@ -307,6 +309,10 @@ export default defineConfig({
               {
                 text: "Adopting from direnv",
                 link: "/recipes/adopting-from-direnv",
+              },
+              {
+                text: "Adopting from lefthook",
+                link: "/recipes/adopting-from-lefthook",
               },
               {
                 text: "Adopting from mise",

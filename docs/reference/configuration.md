@@ -452,6 +452,12 @@ Each strategy decides the branch owner from the commits in the range
 | `daft.hooks.timeout`       | `300`                   | Hook execution timeout in seconds                                           |
 | `daft.hooks.trustPrune`    | `true`                  | Auto-prune stale entries from the trust database (background, once per 24h) |
 
+Two environment variables sit outside git config: `DAFT_HOOKS=0` disables
+git-stage dispatch entirely (the escape hatch for a script that invokes git
+several times, where `--no-verify` cannot reach), and `DAFT_STAGE_GUARD` names
+the stage currently running so a job that re-enters it stands down — daft sets
+that one itself.
+
 ### Per-Hook Settings
 
 Each hook type can be configured individually. The hook name uses camelCase.
@@ -461,8 +467,14 @@ Each hook type can be configured individually. The hook name uses camelCase.
 | `daft.hooks.<hookName>.enabled`  | `true`  | Enable/disable a specific hook type    |
 | `daft.hooks.<hookName>.failMode` | varies  | Behavior on failure: `abort` or `warn` |
 
-Hook names: `postClone`, `worktreePreCreate`, `worktreePostCreate`,
-`worktreePreRemove`, `worktreePostRemove`.
+Lifecycle hook names: `postClone`, `worktreePreCreate`, `worktreePostCreate`,
+`worktreePreRemove`, `worktreePostRemove`, `preMerge`, `postMerge`.
+
+Git stage names (see [Git stages](/hooks/git-stages)): `preCommit`,
+`preMergeCommit`, `prepareCommitMsg`, `commitMsg`, `postCommit`,
+`applypatchMsg`, `preApplypatch`, `postApplypatch`, `preRebase`, `postCheckout`,
+`gitPostMerge`, `prePush`, `preAutoGc`, `postRewrite`, `sendemailValidate`,
+`postIndexChange`.
 
 Default fail modes:
 
@@ -470,6 +482,10 @@ Default fail modes:
 - `worktreePostCreate`: `abort` (a failed setup makes the creation command exit
   non-zero and skip its `-x`/`--exec` commands; the worktree is kept on disk)
 - `preMerge`: `abort` (gates the merge)
+- Git stages: whatever git does with the exit code. `abort` for the ones git
+  honours (`preCommit`, `commitMsg`, `prePush`, …), `warn` for the ones it
+  ignores (`postCommit`, `postCheckout`, …) — defaulting an ignored stage to
+  `abort` would invent a gate that does not exist.
 - All others: `warn` (don't block operations)
 
 A hook's fail mode can also be committed per-hook in `daft.yml` via `fail_mode:`
