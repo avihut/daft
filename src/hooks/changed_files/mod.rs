@@ -16,8 +16,14 @@
 //! - Brace alternation is supported (`*.{js,ts}`).
 //! - Matching is case-sensitive.
 
+pub mod expand;
 pub mod provider;
+pub mod sources;
+pub use expand::{
+    MAX_EXPANDED_COMMAND_BYTES, Placeholder, Quoting, expand_and_chunk, find_placeholders,
+};
 pub use provider::{ChangedFilesProvider, run_files_command};
+pub use sources::{FileSources, SourceKind};
 
 use anyhow::{Context, Result};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
@@ -26,6 +32,9 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 /// filtered changed-file list, shell-quoted and space-joined. Substituted by
 /// the job adapter (not [`crate::hooks::template::substitute`]) because the
 /// expansion is per-job, after glob filtering.
+///
+/// The original spelling, kept as an exact synonym of `{files}` — see
+/// [`SourceKind::placeholder`] for the full set.
 pub const CHANGED_FILES_TEMPLATE: &str = "{changed_files}";
 
 /// A compiled include/exclude glob filter over a changed-file list.
