@@ -1,0 +1,66 @@
+name: "Tasks receive derived env values; parent env wins"
+description:
+  "Declared values inject into daft run tasks with no template ceremony, an
+  explicit per-job env: still wins over derived, and a variable already set in
+  the parent environment is never clobbered (VAR=x daft run stays the universal
+  override — the dotenv convention)."
+
+repos:
+  - name: env-inject
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# inject"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      env:
+        salt: myapp
+        ports:
+          - WEBAPP_PORT
+        values:
+          COMPOSE_PROJECT_NAME: "myapp-{worktree_slug}"
+      tasks:
+        record:
+          jobs:
+            - name: record
+              run: 'printf "port=%s project=%s explicit=%s" "$WEBAPP_PORT" "$COMPOSE_PROJECT_NAME" "$EXPLICIT" > .marker'
+              env:
+                EXPLICIT: "job-env-wins"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_ENV_INJECT
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/env-inject/main"
+    expect:
+      exit_code: 0
+
+  # DAFT_TESTING hides the live renderer, so assert on the file the job wrote.
+  - name: The task sees derived ports, rendered values, and its own env
+    run: daft run record 2>&1
+    cwd: "$WORK_DIR/env-inject/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/env-inject/main/.marker"
+          content: "port=20960"
+        - path: "$WORK_DIR/env-inject/main/.marker"
+          content: "project=myapp-main"
+        - path: "$WORK_DIR/env-inject/main/.marker"
+          content: "explicit=job-env-wins"
+
+  - name: A parent-set variable is never clobbered
+    run: WEBAPP_PORT=1111 daft run record 2>&1
+    cwd: "$WORK_DIR/env-inject/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/env-inject/main/.marker"
+          content: "port=1111"

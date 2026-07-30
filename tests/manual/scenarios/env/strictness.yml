@@ -1,0 +1,64 @@
+name: "Declaring an env: schema opts the repo into strictness"
+description:
+  "A repo with a declared schema treats an unknown name as an error (a typo'd
+  var would otherwise vend a valid-looking port and two services would silently
+  miss each other); --ad-hoc escapes deliberately. A repo with no env: section
+  resolves any name ad-hoc — zero-config first contact."
+
+repos:
+  - name: env-strict
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# strict"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      env:
+        salt: myapp
+        ports:
+          - WEBAPP_PORT
+  - name: env-loose
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# loose"
+        commits:
+          - message: "Initial commit"
+
+steps:
+  - name: Clone both repositories
+    run:
+      git-worktree-clone --layout contained $REMOTE_ENV_STRICT &&
+      git-worktree-clone --layout contained $REMOTE_ENV_LOOSE
+    expect:
+      exit_code: 0
+
+  - name: An unknown name errors under a declared schema
+    run: daft env TYPO_PORT 2>&1
+    cwd: "$WORK_DIR/env-strict/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not declared"
+        - "--ad-hoc"
+
+  - name: --ad-hoc escapes strictness into the disjoint ad-hoc region
+    run:
+      'daft env TYPO_PORT --ad-hoc > .adhoc && awk "\$1 >= 26384 && \$1 <= 32767
+      {print \"in-range\"}" .adhoc'
+    cwd: "$WORK_DIR/env-strict/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "in-range"
+
+  - name: A schema-less repo resolves any name ad-hoc, zero config
+    run: daft env ANY_PORT
+    cwd: "$WORK_DIR/env-loose/main"
+    expect:
+      exit_code: 0

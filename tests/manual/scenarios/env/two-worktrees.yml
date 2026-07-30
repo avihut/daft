@@ -1,0 +1,67 @@
+name: "Worktrees get distinct blocks; addresses reach across worktrees"
+description:
+  "Two worktrees of one repo hash to different blocks (salt 'myapp': 'main' →
+  20960, 'feature-new' → 23952), the @worktree address answers for a sibling
+  from anywhere, and a worktree that does not exist yet still answers —
+  compute-before-create makes bring-up order irrelevant."
+
+repos:
+  - name: env-two
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# two"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      env:
+        salt: myapp
+        ports:
+          - WEBAPP_PORT
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_ENV_TWO
+    expect:
+      exit_code: 0
+
+  - name: A sibling worktree that does not exist yet already answers
+    run: daft env WEBAPP_PORT@feature-new 2>.note && cat .note
+    cwd: "$WORK_DIR/env-two/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "23952"
+        - "computing for it anyway"
+
+  - name: Create the sibling worktree
+    run: daft start feature-new 2>&1
+    cwd: "$WORK_DIR/env-two/main"
+    expect:
+      exit_code: 0
+
+  - name: The created worktree resolves to the same pre-computed value
+    run: daft env WEBAPP_PORT
+    cwd: "$WORK_DIR/env-two/feature-new"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "23952"
+
+  - name: Each worktree keeps its own block (no collision between the two)
+    run: daft env WEBAPP_PORT
+    cwd: "$WORK_DIR/env-two/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "20960"
+
+  - name: The @address from a sibling matches the local answer
+    run: daft env WEBAPP_PORT@main
+    cwd: "$WORK_DIR/env-two/feature-new"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "20960"
