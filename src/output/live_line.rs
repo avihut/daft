@@ -54,6 +54,45 @@ use console::measure_text_width;
 pub(crate) fn sanitize(raw: &str) -> String {
     let stripped = strip_ansi(raw.trim_end());
     let seg = stripped.rsplit('\r').next().unwrap_or(&stripped);
+    let mut out = scrub(seg);
+    out.truncate(out.trim_end().len());
+    out
+}
+
+/// Normalize one **fixed row label** for the rail.
+///
+/// Labels are where arbitrary user text becomes rail furniture: a `-x`
+/// command is reproduced exactly as typed (#812), and a shared file's path
+/// is whatever the filesystem allows — which on Unix includes newlines.
+///
+/// This deliberately does **not** share [`sanitize`]'s `\r` rule. A label is
+/// not a repainting progress line, so keeping only the last carriage-returned
+/// segment would silently delete the front of it. Every whitespace run —
+/// newlines included — collapses to a single space instead, so a pasted
+/// multi-line snippet stays one row.
+///
+/// Getting this wrong costs more than looks: the region measures its shared
+/// annotation column from the *rendered* label, so an embedded newline
+/// mis-sizes every row's padding as well as splitting the bar's own line —
+/// the #751 failure mode, reached through a different door.
+pub(crate) fn sanitize_label(raw: &str) -> String {
+    // Whitespace is flattened before scrubbing, not after: `scrub` drops
+    // control characters outright, which would weld the text on either side
+    // of a dropped newline into one word (`echo $f` + `done` → `$fdone`).
+    let flattened: String = strip_ansi(raw)
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .collect();
+    scrub(&flattened)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The shared character scrub: tabs to spaces, control characters and
+/// width-lying combining sequences dropped. Both entry points above run
+/// their own line discipline first, then hand the result here.
+fn scrub(seg: &str) -> String {
     let mut out = String::with_capacity(seg.len());
     let mut chars = seg.chars();
     while let Some(c) = chars.next() {
@@ -81,7 +120,6 @@ pub(crate) fn sanitize(raw: &str) -> String {
             c => out.push(c),
         }
     }
-    out.truncate(out.trim_end().len());
     out
 }
 
@@ -196,5 +234,46 @@ mod tests {
             sanitize("\u{2713} \u{2502} \u{2514} \u{283c} \u{276f} \u{2726}"),
             "\u{2713} \u{2502} \u{2514} \u{283c} \u{276f} \u{2726}"
         );
+    }
+
+    #[test]
+    fn an_ordinary_label_passes_through_untouched() {
+        // Every label the rail carried before `-x`: commands, paths, branches.
+        assert_eq!(sanitize_label("npm ci"), "npm ci");
+        assert_eq!(sanitize_label(".env.local"), ".env.local");
+        assert_eq!(sanitize_label("feat/rows-on-rail"), "feat/rows-on-rail");
+        assert_eq!(sanitize_label(""), "");
+    }
+
+    #[test]
+    fn a_multi_line_label_becomes_one_row() {
+        // A pasted shell snippet is an ordinary thing to hand `-x`. Each
+        // newline has to leave a word boundary behind: dropping it outright
+        // would render `echo $f` + `done` as `$fdone`.
+        assert_eq!(
+            sanitize_label("for f in *; do\n  echo $f\ndone"),
+            "for f in *; do echo $f done"
+        );
+        assert_eq!(sanitize_label("a\r\nb"), "a b");
+        assert_eq!(sanitize_label("wrapped\\\n  --flag"), "wrapped\\ --flag");
+    }
+
+    #[test]
+    fn a_label_never_loses_its_front_to_a_carriage_return() {
+        // `sanitize` keeps only the last `\r` segment — right for a
+        // repainting progress line, silent data loss for a label.
+        assert_eq!(sanitize("kept\rlast"), "last");
+        assert_eq!(sanitize_label("kept\rlast"), "kept last");
+    }
+
+    #[test]
+    fn a_label_cannot_smuggle_escapes_or_width_lies_onto_the_rail() {
+        assert_eq!(sanitize_label("\x1b[31mmake\x1b[0m test"), "make test");
+        // Same VS16 lie as a captured line — a label is measured for the
+        // shared annotation column, so it has to measure what it draws.
+        assert_eq!(sanitize_label("deploy \u{2714}\u{FE0F}"), "deploy \u{2714}");
+        assert_eq!(sanitize_label("tabs\tand   runs"), "tabs and runs");
+        // Leading and trailing whitespace is padding, not content.
+        assert_eq!(sanitize_label("  make  "), "make");
     }
 }

@@ -974,6 +974,133 @@ test_go_fetch_on_rail_expands() {
     return 0
 }
 
+# #812: the `-x` sequence is planned onto the creation rail and runs inside
+# the region's lifetime. None of that is reachable from the YAML suite —
+# `commit_plan` early-returns off Interactive and the runner captures stderr,
+# so every scenario there exercises the off-rail `Executing:` record instead.
+# These are the only tests that execute `run_on_rail` itself: row resolution
+# against the committed plan, the suspend/redraw seam around a child that owns
+# the terminal, and the footer's verdict.
+#
+# SHELL is pinned to one daft does not alias-capture for (`ShellKind::from_path`
+# knows only bash/zsh, and returns None otherwise, short-circuiting the whole
+# snapshot path). The snapshot lives under `dirs::cache_dir()`, which no
+# DAFT_*_DIR override redirects — capturing here would write the developer's
+# real cache directory.
+_exec_rail_daft() {
+    _rail_daft SHELL=/bin/sh "$@"
+}
+
+# Two commands: an `exec` anchor, one row each, labelled as typed, and the
+# commands' own output above a Ready footer.
+test_start_exec_rows_on_rail() {
+    local remote_repo=$(create_test_remote "test-repo-exec-rail" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-exec-rail/main" || return 1
+
+    local log="$TEMP_BASE_DIR/exec-rail.log"
+    _exec_rail_daft "$CHECKOUT_PTY_RUN" "$log" \
+        daft start feat-exec -x 'echo first-command' -x 'echo second-command' || return 1
+
+    local clean
+    clean=$(_rail_clean "$log")
+    if ! echo "$clean" | grep -q "├─ exec"; then
+        log_error "exec section anchor missing from the rail"
+        return 1
+    fi
+    if ! echo "$clean" | grep -q "echo first-command"; then
+        log_error "first -x row missing (label is the command as typed)"
+        return 1
+    fi
+    if ! echo "$clean" | grep -q "echo second-command"; then
+        log_error "second -x row missing — identical rows must not collapse"
+        return 1
+    fi
+    # The commands really ran, not just got planned.
+    if ! echo "$clean" | grep -q "^first-command"; then
+        log_error "first command's own output missing"
+        return 1
+    fi
+    if ! echo "$clean" | grep -q "^second-command"; then
+        log_error "second command's own output missing"
+        return 1
+    fi
+    if ! echo "$clean" | grep -q "Ready in"; then
+        log_error "Ready footer missing after a clean sequence"
+        return 1
+    fi
+    assert_directory_exists "../feat-exec" || return 1
+    return 0
+}
+
+# A failing `-x` fails its own row, marks the rest not-run, and still lands a
+# worktree — the footer says so rather than claiming the creation failed.
+test_start_exec_failure_on_rail() {
+    local remote_repo=$(create_test_remote "test-repo-exec-fail" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-exec-fail/main" || return 1
+
+    local log="$TEMP_BASE_DIR/exec-fail.log"
+    # No `|| return 1`: a failing `-x` propagates its status, which is the
+    # behavior under test. pty_run.py exits with the child's status.
+    _exec_rail_daft "$CHECKOUT_PTY_RUN" "$log" \
+        daft start feat-broken -x 'echo ran-first' -x 'false' -x 'echo never-runs'
+
+    local clean
+    clean=$(_rail_clean "$log")
+    if ! echo "$clean" | grep -q "exit 1"; then
+        log_error "failing row missing its exit status"
+        return 1
+    fi
+    if ! echo "$clean" | grep -q "not run"; then
+        log_error "commands after the failure must resolve as not run, not vanish"
+        return 1
+    fi
+    if ! echo "$clean" | grep -q "Ready with failures in"; then
+        log_error "footer must report failures without claiming creation failed"
+        return 1
+    fi
+    if echo "$clean" | grep -q "^never-runs"; then
+        log_error "the sequence continued past a failure"
+        return 1
+    fi
+    # The worktree is the point: a failed command must not undo it.
+    assert_directory_exists "../feat-broken" || return 1
+    return 0
+}
+
+# A pasted multi-line command is ordinary input for `-x`. Its label is
+# flattened to one line so the region's line accounting and its shared
+# annotation column both survive it (#751's failure mode, different door).
+test_start_exec_multiline_label_stays_one_row() {
+    local remote_repo=$(create_test_remote "test-repo-exec-multiline" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-exec-multiline/main" || return 1
+
+    local log="$TEMP_BASE_DIR/exec-multiline.log"
+    _exec_rail_daft "$CHECKOUT_PTY_RUN" "$log" \
+        daft start feat-multiline -x $'echo alpha\necho beta' || return 1
+
+    local clean
+    clean=$(_rail_clean "$log")
+    # Both halves of the label on one line, in order.
+    if ! echo "$clean" | grep -q "echo alpha echo beta"; then
+        log_error "multi-line -x label was not flattened onto one row"
+        return 1
+    fi
+    # One command is one row, with no section to anchor.
+    if echo "$clean" | grep -q "├─ exec"; then
+        log_error "a lone -x command must not get a section anchor"
+        return 1
+    fi
+    if ! echo "$clean" | grep -q "Ready in"; then
+        log_error "rail did not close cleanly after a multi-line label"
+        return 1
+    fi
+    assert_directory_exists "../feat-multiline" || return 1
+    return 0
+}
+
 # Run all checkout tests
 run_checkout_tests() {
     log "Running git-worktree-checkout integration tests..."
@@ -1019,6 +1146,11 @@ run_checkout_tests() {
     # Rail behavior under a PTY (#782)
     run_test "go_fetch_hop_no_rail_receipt" "test_go_fetch_hop_no_rail_receipt"
     run_test "go_fetch_on_rail_expands" "test_go_fetch_on_rail_expands"
+
+    # `-x` rows on the creation rail under a PTY (#812)
+    run_test "start_exec_rows_on_rail" "test_start_exec_rows_on_rail"
+    run_test "start_exec_failure_on_rail" "test_start_exec_failure_on_rail"
+    run_test "start_exec_multiline_label_stays_one_row" "test_start_exec_multiline_label_stays_one_row"
 }
 
 # Main execution
