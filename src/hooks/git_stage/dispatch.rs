@@ -185,6 +185,7 @@ pub fn run_git_stage(
                 skip: crate::hooks::job_adapter::SkipSelectors {
                     names: excluded.clone(),
                     raw: excluded,
+                    origin: Some(crate::hooks::incumbent::lefthook::EXCLUDE_VAR),
                     ..Default::default()
                 },
                 ..Default::default()
