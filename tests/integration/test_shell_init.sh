@@ -896,6 +896,69 @@ test_go_tag_sandbox_cd_through_wrapper() {
     return 0
 }
 
+# Regression for #811: `daft go <branch> -x <cmd>` must land the shell in the
+# new worktree whether the command succeeds, fails, or is interrupted. The
+# interrupted case is the one that was broken — daft wrote the cd target after
+# the exec sequence, so a Ctrl-C aimed at `-x 'pnpm dev'` killed daft first and
+# the file was never written. Only the wrapper layer can prove the shell
+# actually moved; the YAML scenarios drive the binary directly.
+test_go_exec_cd_through_wrapper() {
+    log "Testing: daft go -x through wrapper cds on success, failure and interrupt"
+
+    local remote_dir
+    remote_dir=$(create_test_remote "test-go-exec-wrapper" "main")
+    git-worktree-clone --layout contained "$remote_dir" >/dev/null 2>&1
+    local project_root="$PWD/test-go-exec-wrapper"
+
+    # `-x` runs through a `$SHELL -c` daft spawns directly, so `$PPID` inside
+    # the command is daft's own pid and `kill -INT $PPID` interrupts daft with
+    # no timing race. Each case pins daft's exit code as well as the landing
+    # directory: without that, the interrupt case is indistinguishable from a
+    # `$PPID` the spawned shell does not support, where `kill` simply fails,
+    # the -x command exits 1, and the wrapper cds anyway — a green test for
+    # the one path it exists to cover. 130 is the interrupt, 1 is a plain
+    # command failure.
+    local -a cases=(
+        "true|develop|0"
+        "false|release-x|1"
+        'kill -INT $PPID|hotfix-x|130'
+    )
+    local case_spec cmd branch want_rc out got_rc got_pwd
+    for case_spec in "${cases[@]}"; do
+        IFS='|' read -r cmd branch want_rc <<< "$case_spec"
+        # `develop` exists on the remote; the other two are created locally so
+        # each case gets a worktree of its own.
+        out=$(MAIN_WT="$project_root/main" CMD="$cmd" BRANCH="$branch" bash -c '
+            eval "$(daft shell-init bash)"
+            builtin cd "$MAIN_WT" || exit 11
+            rc=0
+            if [ "$BRANCH" = "develop" ]; then
+                daft go "$BRANCH" -x "$CMD" >/dev/null 2>&1 || rc=$?
+            else
+                daft start "$BRANCH" -x "$CMD" >/dev/null 2>&1 || rc=$?
+            fi
+            echo "RC=$rc"
+            builtin pwd
+        ' 2>&1) || true
+
+        got_rc=$(echo "$out" | grep '^RC=' | head -1 | cut -d= -f2)
+        got_pwd=$(echo "$out" | tail -1)
+
+        if [[ "$got_rc" != "$want_rc" ]]; then
+            log_error "-x '$cmd' exited $got_rc, expected $want_rc (no signal delivered?)"
+            return 1
+        fi
+        if [[ "$(basename "$got_pwd")" != "$branch" ]]; then
+            log_error "-x '$cmd' did not cd the shell into '$branch' (pwd: $got_pwd)"
+            return 1
+        fi
+        log_success "-x '$cmd' exited $got_rc and landed the shell at: $got_pwd"
+    done
+
+    log_success "go/start -x cd contract holds across success, failure and interrupt"
+    return 0
+}
+
 main() {
     setup
 
@@ -932,6 +995,7 @@ main() {
     run_test "c_flag_symlink_entry" test_c_flag_symlink_entry
     run_test "fork_cd_through_wrapper" test_fork_cd_through_wrapper
     run_test "go_tag_sandbox_cd_through_wrapper" test_go_tag_sandbox_cd_through_wrapper
+    run_test "go_exec_cd_through_wrapper" test_go_exec_cd_through_wrapper
     run_test "warm_force_rescues_shell_from_a_replaced_cache" test_warm_force_rescues_shell_from_a_replaced_cache
 
     print_summary

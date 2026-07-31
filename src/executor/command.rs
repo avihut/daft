@@ -72,6 +72,14 @@ pub fn run_command(
     command.args(["-c", cmd]);
     command.current_dir(working_dir);
     command.envs(env);
+    // A hook is lifecycle automation, never the arbiter of where the user's
+    // shell ends up. Inheriting `DAFT_CD_FILE` lets a hook that shells out to
+    // daft — `daft go other` — write the outer invocation's cd target. Most
+    // paths mask it by writing the real target afterwards, but the ones that
+    // deliberately write *nothing* do not: a failed post-create hook must not
+    // teleport the user into the half-set-up worktree (#765), and a bulk
+    // `--fork -n N` has no single destination to move to. Scrub it (#811).
+    command.env_remove(crate::CD_FILE_ENV);
 
     // Non-interactive commands must not inherit stdin -- a child process
     // (e.g. mise, cargo) might block waiting for input that will never come.
@@ -209,6 +217,9 @@ pub fn run_command_interactive(
     command.args(["-c", cmd]);
     command.current_dir(working_dir);
     command.envs(env);
+    // Same reasoning as the non-interactive path above: a hook does not get
+    // to choose the user's destination (#811).
+    command.env_remove(crate::CD_FILE_ENV);
 
     // Inherit stdin/stdout/stderr for interactive mode
     command.stdin(Stdio::inherit());

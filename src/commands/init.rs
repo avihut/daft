@@ -206,15 +206,17 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
     render_init_result(&result, output);
 
     if !result.bare_mode {
-        // Run exec commands (after hooks, before cd_path)
-        let exec_result = crate::exec::run_exec_commands(&args.exec, output);
-
+        // cd before `-x`, so an interrupted command still lands the shell in
+        // the new worktree (#811); see run_checkout for the full reasoning.
         if let Some(ref cd_target) = result.cd_target {
             output.cd_path(cd_target);
         }
+
+        // Run exec commands (after hooks, after cd_path)
+        let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+
         maybe_show_shell_hint(output)?;
 
-        // Propagate exec error after cd_path is written
         exec_result?;
     }
 

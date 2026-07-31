@@ -812,11 +812,15 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
         }
 
-        let exec_result = crate::exec::run_exec_commands(&args.exec, output);
-
+        // cd before `-x`, so an interrupted `-x 'pnpm install'` still lands
+        // the shell in the fresh clone (#811); see run_checkout in
+        // commands/checkout.rs for the full reasoning.
         if let Some(ref cd_target) = result.cd_target {
             output.cd_path(cd_target);
         }
+
+        let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+
         maybe_show_shell_hint(output)?;
 
         exec_result?;

@@ -248,8 +248,26 @@ fn capture_aliases() -> Option<AliasCache> {
 /// spawn site for both paths, so the rail cannot drift from the legacy one in
 /// how a command is built or what it can reach.
 fn spawn(cmd: &str, alias_cache: Option<&AliasCache>) -> std::io::Result<std::process::ExitStatus> {
+    // The command shares daft's process group, so a terminal Ctrl-C aimed at
+    // `-x 'pnpm dev'` hits daft too — and dying *from* the signal is what
+    // costs the user the cd. bash and zsh abandon the enclosing function when
+    // a foreground child is signal-killed, so `__daft_wrapper` never reaches
+    // its `cd` and the target written before the sequence is read by nobody
+    // (#811). Arming the dispatcher makes that an ordinary exit(130) instead.
+    // A live region arms it as a side effect of its own collapse behavior;
+    // doing it here is what carries the guarantee through `-q`, redirected
+    // stderr, and every other path that opens no region at all.
+    crate::interrupt::arm_default_exit();
+
     let spec = CommandSpec::Shell(cmd.to_string());
     build_command(&spec, alias_cache)
+        // `DAFT_CD_FILE` is the wrapper's private channel for *this*
+        // invocation's destination. Inheriting it lets a nested bare daft —
+        // `-x 'daft go other'` — write the outer shell's cd target and
+        // teleport the user somewhere they never asked to go. The callers
+        // write that target *before* the sequence runs (#811), so nothing
+        // downstream may touch the file.
+        .env_remove(crate::CD_FILE_ENV)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())

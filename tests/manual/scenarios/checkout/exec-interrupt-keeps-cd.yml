@@ -1,0 +1,56 @@
+name: Interrupted -x keeps the cd redirect
+description:
+  A `-x` command killed by SIGINT still leaves the cd target written — daft
+  writes it before the exec sequence, so Ctrl-C on a long-running `-x` cannot
+  cost the shell its move into the worktree that was just created
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: SIGINT during -x still writes DAFT_CD_FILE
+    # `-x` runs through a `$SHELL -c` that daft spawns directly, so inside the
+    # command `$PPID` is daft's own pid and `kill -INT $PPID` interrupts daft
+    # mid-exec with no timing race.
+    #
+    # Scope, precisely: this signals daft's *pid*, where a keyboard Ctrl-C
+    # signals the whole foreground process group. That difference decides
+    # whether the user's own shell also gets the signal, so it cannot be
+    # reproduced here without killing the test runner. The group-wide case,
+    # and the exit-cleanly-vs-die-from-the-signal distinction it turns on, is
+    # covered under a real pty by `go_exec_interrupt_keeps_cd` in
+    # tests/integration/test_checkout.sh.
+    #
+    # Before #811 the cd target was written *after* the exec sequence, so a
+    # signal killed daft first and the file stayed empty: the worktree existed
+    # and the shell was left standing outside it.
+    run: |
+      cd_file=$(mktemp)
+      rc=0
+      DAFT_CD_FILE="$cd_file" daft go develop -x 'kill -INT $PPID' || rc=$?
+      echo "RC=$rc"
+      target=$(cat "$cd_file")
+      # 130 == interrupted. Asserting the exact code is what keeps this
+      # honest: a merely non-zero rc is also what an unsupported `$PPID`
+      # produces (`kill` fails, the -x command exits 1, daft reports it), and
+      # that path would satisfy every assertion below while never delivering
+      # a signal at all — a green test for the one case it exists to cover.
+      test "$rc" -eq 130 || { echo "FAIL: expected exit 130 (interrupted), got $rc — no signal was delivered"; exit 1; }
+      test -d "$WORK_DIR/test-repo/develop" || { echo "FAIL: worktree was never created"; exit 1; }
+      test -n "$target" || { echo "FAIL: DAFT_CD_FILE not written — the shell would stay put"; exit 1; }
+      expected=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$WORK_DIR/test-repo/develop")
+      resolved=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$target")
+      test "$resolved" = "$expected" || { echo "FAIL: cd target '$resolved' != '$expected'"; exit 1; }
+      echo OK
+      rm -f "$cd_file"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "OK"
