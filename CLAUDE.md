@@ -546,6 +546,13 @@ prompt interactively.
     Repo-Aware Command Grammar section above (go-shape positional when the slot
     is free and the command is read-only; exec-shape `--repo`/ `--all-repos`
     flags otherwise).
+11. **Decide the command's diagram-language representation** — if it changes
+    what the repo graph shows (creates, removes, or reshapes worktrees, repos,
+    relations between them, agents, sync), coordinate with the docs diagram
+    engine: extend the act vocabulary and gallery scripts in
+    `docs/.vitepress/theme/graph/` (see its CLAUDE.md), in the same change or a
+    filed follow-up, so docs animations can show the command. Commands with no
+    graph-visible effect (config, completions, ...) skip this step.
 
 ## Adding a New DB-backed Feature
 
@@ -693,6 +700,10 @@ adding or changing user-facing features.
   shape requirements, new style rules. The skill is what guides future recipe
   authors (human or agent), and divergence between the skill and the recipes is
   the silent way the conventions rot.
+- **Coordinate the diagram language** (`docs/.vitepress/theme/graph/`, see its
+  CLAUDE.md) when a new command lands or an existing one significantly changes
+  graph-visible behavior (worktrees, repos, relations, agents, sync) — the
+  animated diagrams must keep telling the truth about daft's verbs.
 
 ### Docs Site (VitePress)
 

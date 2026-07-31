@@ -6,11 +6,13 @@ same engine and grammar are meant for diagrams across the docs — static or
 animated. If a page needs to show repo/worktree structure, use this language
 (via `RepoDiagram.vue`), not an ad-hoc SVG or a screenshot.
 
-Files: `engine.ts` (timeline compiler, event-sourced player, canvas renderer),
-`RepoDiagram.vue` (embeddable component: canvas + optional step controls),
-`hero-script.ts` (the landing story). Styles live in `../home.css` under the
-`.dg-` prefix. Change this file and the renderer together — the grammar here is
-normative, not descriptive.
+Files: `engine.ts` (timeline compiler, headless event-sourced player, canvas
+view), `RepoDiagram.vue` and `RepoTerminal.vue` (the two viewers),
+`hero-script.ts` (the landing story), `gallery.ts` (scripts the playground
+replays), `Playground.vue` (the `/playground` page). Styles live in
+`../home.css` under the `.dg-`/`.dl-` prefixes (playground styles in
+`Playground.vue` itself). Change this file and the renderer together — the
+grammar here is normative, not descriptive.
 
 ## Vocabulary
 
@@ -90,42 +92,77 @@ in the panel background color and are clamped inside the canvas.
 - Reduced motion: no autoplay, no floats, no dash crawl; the diagram becomes a
   stepper of settled frames (each step shown at its end state).
 
-## Scripts, time, and interaction
+## Scripts, players, and viewers
 
 A diagram is a `StepDef[]` script: beats of terminal lines (`cmd`/`out`), scene
-`act`s, `cam` moves, and `pause`s. `compile` lays them on one absolute timeline;
-the player is event-sourced — pausing and seeking just move the clock and
-replay. Clicking the canvas toggles play; `settle()` (and reduced motion) land
-on a step's end state.
+`act`s, `cam` moves, and `pause`s. `compile` lays them on one absolute timeline.
+Playback then splits into one **headless player** and any number of **viewers**:
 
-When a diagram is paired with a terminal (the hero), the terminal renders from
-the same compiled timeline via `@tick` — never from its own timers, or seeking
-desynchronizes them. The shell speaks the same color law for important
-operations: the `daft` verb in gold, setup printouts in teal (`tone: "ok"`),
-agent lines in purple (`tone: "agent"`), destructive output in rust
-(`tone: "rust"`), commentary dim. Don't tone routine output — correspondence
-only means something if it's scarce. Step navigation lives in the terminal: each
-step's first command carries a checkpoint circle in the left gutter, and
-clicking any command jumps to that step's checkpoint — the command just typed,
-paused (`seekCheckpoint`) — so play resumes by executing it. The terminal
-scrolls freely; it auto-follows the tail only when the reader is already there.
+- `createPlayer({ script, autoplay, loop })` owns the clock — play state, seeks,
+  rate, looping. It renders nothing.
+- Viewers subscribe (`onFrame`/`onStep`/`onPlayState`) and derive everything
+  they show from the compiled script plus the clock. `RepoDiagram.vue` is the
+  canvas viewer, `RepoTerminal.vue` the shell viewer — a viewer must never run
+  its own timers, or seeking desynchronizes the pair. State is event-sourced: a
+  viewer that sees time move backward (seek, loop wrap) replays from scratch, so
+  pausing, stepping, and scrubbing all reduce to "set the clock".
+- A viewer used alone creates and owns its player. A host composing viewers
+  creates one player and passes it to each via the `player` prop — a ref
+  starting `null`, attached on arrival — so shared viewers cannot drift. The
+  player's owner also owns visibility gating (`observeVisibility`).
+
+The landing hero (`DemoStage.vue`) is deliberately nothing more than this:
+`HERO_SCRIPT` + `loop: true` through the two standard viewers. Any capability
+the hero needs must land as a player or viewer feature, never as hero-only code.
+
+Clicking the canvas toggles play; `settle()` (and reduced motion) land on a
+step's end state. The shell speaks the same color law for important operations:
+the `daft` verb in gold, setup printouts in teal (`tone: "ok"`), agent lines in
+purple (`tone: "agent"`), destructive output in rust (`tone: "rust"`),
+commentary dim. Don't tone routine output — correspondence only means something
+if it's scarce. Step navigation lives in the terminal: each step's first command
+carries a checkpoint circle in the left gutter, and clicking any command jumps
+to that step's checkpoint — the command just typed, paused (`seekCheckpoint`) —
+so play resumes by executing it. The terminal scrolls freely; it auto-follows
+the tail only when the reader is already there.
+
+## Playground
+
+`/playground` (`docs/playground.md`, unlisted for now) replays any gallery
+script through the standard viewers, with a transport the hero doesn't need:
+play/pause, step jumps, a scrubber, playback rate, a loop toggle, and a
+diagram/terminal/both layout switch. Iterate on animation work there, not
+against the landing page. When the language grows, grow `gallery.ts` in the same
+change — the vocabulary tour exists so every act kind stays visible in
+isolation.
 
 ## Embedding in docs
 
 ```vue
 <RepoDiagram :script="SCRIPT" />
-<!-- animated, controls -->
-<RepoDiagram :script="SCRIPT" :controls="false" />
+<!-- animated diagram, controls -->
 <RepoDiagram :script="SCRIPT" still />
 <!-- static settled frame -->
+<RepoTerminal :script="SCRIPT" />
+<!-- self-typing shell session -->
 ```
 
-Give the host element a size (the canvas fills it) and a `--vp-c-bg-soft`-like
-background. Static diagrams for docs pages are one-step scripts with `still` —
-the full grammar (hollow, badges, arcs) works in a single frame.
+Both viewers are registered globally (theme `enhanceApp`), so docs pages can
+embed them straight from markdown. Give the host element a size (the canvas
+fills it) and a `--vp-c-bg-soft`-like background. Static diagrams for docs pages
+are one-step scripts with `still` — the full grammar (hollow, badges, arcs)
+works in a single frame.
 
 ## Extending
 
 New meaning = new `Act` kind in `engine.ts` + a rendering rule + an entry in
 this file, in the same change. Keep acts declarative (data, not callbacks) so
 scripts stay serializable and replays stay deterministic.
+
+The vocabulary tracks daft's command surface. When a new command lands — or an
+existing one significantly changes graph-visible behavior (anything that
+creates, removes, or reshapes what diagrams show: worktrees, repos, relations,
+agents, sync) — coordinate it with this engine in the same change or a filed
+follow-up: extend the acts and `gallery.ts` so diagrams can tell the truth about
+it. The root CLAUDE.md's "Adding a New Command" checklist points here; commands
+with no graph-visible effect are exempt.
