@@ -1,20 +1,51 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import { createPlayer, type Player } from "./engine";
+import { CATALOG } from "./catalog";
+import Composer from "./Composer.vue";
+import { createPlayer, type Player, type StepDef } from "./engine";
 import { GALLERY } from "./gallery";
 import RepoDiagram from "./RepoDiagram.vue";
 import RepoTerminal from "./RepoTerminal.vue";
+import { buildScenario, type VerbInvocation } from "./verbs";
 
+const MODES = ["gallery", "verbs", "composer"] as const;
 const LAYOUTS = ["both", "diagram", "terminal"] as const;
 const RATES = [0.25, 0.5, 1, 2];
 
+const mode = ref<(typeof MODES)[number]>("gallery");
 const scriptId = ref(GALLERY[0].id);
-const entry = computed(
-  () => GALLERY.find((g) => g.id === scriptId.value) ?? GALLERY[0],
-);
+const catalogId = ref(CATALOG[0].id);
+const invocations = ref<VerbInvocation[]>([]);
+const rev = ref(0);
 const layout = ref<(typeof LAYOUTS)[number]>("both");
 const rate = ref(1);
 const loop = ref(true);
+
+const galleryEntry = computed(
+  () => GALLERY.find((g) => g.id === scriptId.value) ?? GALLERY[0],
+);
+const catalogEntry = computed(
+  () => CATALOG.find((c) => c.id === catalogId.value) ?? CATALOG[0],
+);
+const demoBuild = computed(() => buildScenario(catalogEntry.value.demo));
+const composed = computed(() => buildScenario(invocations.value));
+
+const activeSteps = computed<StepDef[]>(() =>
+  mode.value === "gallery"
+    ? galleryEntry.value.script
+    : mode.value === "verbs"
+      ? demoBuild.value.steps
+      : composed.value.steps,
+);
+// Viewers compile their script once at setup, so a script change must
+// remount them — the key tracks the underlying script's identity.
+const stageKey = computed(() =>
+  mode.value === "gallery"
+    ? `g:${scriptId.value}`
+    : mode.value === "verbs"
+      ? `v:${catalogId.value}`
+      : `c:${rev.value}`,
+);
 
 const player = shallowRef<Player | null>(null);
 const playing = ref(false);
@@ -30,13 +61,14 @@ function teardown(): void {
   player.value = null;
 }
 
-function boot(): void {
+function boot(steps: StepDef[], after?: (p: Player) => void): void {
   teardown();
-  const p = createPlayer({
-    script: entry.value.script,
-    autoplay: true,
-    loop: loop.value,
-  });
+  duration.value = 0;
+  time.value = 0;
+  stepIdx.value = 0;
+  playing.value = false;
+  if (!steps.length) return;
+  const p = createPlayer({ script: steps, autoplay: true, loop: loop.value });
   p.setRate(rate.value);
   cleanups = [
     p.onFrame((t) => {
@@ -49,18 +81,72 @@ function boot(): void {
       playing.value = on;
     }),
   ];
+  player.value = p;
+  duration.value = p.compiled.duration;
+  after?.(p);
   playing.value = p.playing();
   stepIdx.value = p.current();
   time.value = p.clock();
-  duration.value = p.compiled.duration;
-  player.value = p;
 }
 
-onMounted(boot);
-watch(scriptId, boot);
+function reboot(): void {
+  if (mode.value === "gallery") {
+    boot(galleryEntry.value.script);
+    return;
+  }
+  if (mode.value === "verbs") {
+    // Land on the verb's checkpoint — its context built instantly by event
+    // replay — and play: the verb executes the moment the catalog opens it.
+    const b = demoBuild.value;
+    const focus = b.mapping[catalogEntry.value.focus] ?? b.steps.length - 1;
+    boot(b.steps, (p) => {
+      p.seekCheckpoint(Math.max(focus, 0));
+      p.play();
+    });
+    return;
+  }
+  boot(composed.value.steps, (p) => {
+    p.pause();
+    p.settle(composed.value.steps.length - 1);
+  });
+}
+
+onMounted(reboot);
+watch([mode, scriptId, catalogId], reboot);
 watch(rate, (r) => player.value?.setRate(r));
 watch(loop, (on) => player.value?.setLoop(on));
 onBeforeUnmount(teardown);
+
+function addInvocation(inv: VerbInvocation): void {
+  invocations.value = [...invocations.value, inv];
+  rev.value++;
+  const b = composed.value;
+  boot(b.steps, (p) => {
+    p.seekCheckpoint(b.steps.length - 1);
+    p.play();
+  });
+}
+
+function removeInvocation(index: number): void {
+  invocations.value = invocations.value.filter((_, i) => i !== index);
+  rev.value++;
+  const b = composed.value;
+  boot(b.steps, (p) => {
+    p.pause();
+    p.settle(b.steps.length - 1);
+  });
+}
+
+function clearInvocations(): void {
+  invocations.value = [];
+  rev.value++;
+  boot([]);
+}
+
+function focusInvocation(index: number): void {
+  const m = composed.value.mapping[index];
+  if (m !== undefined && m >= 0) player.value?.seekCheckpoint(m);
+}
 
 function scrub(event: Event): void {
   const input = event.target as HTMLInputElement;
@@ -73,15 +159,27 @@ function scrub(event: Event): void {
     <header class="dgp-head">
       <h1>Diagram playground</h1>
       <p>
-        Replay any script through the standard viewers — the same player,
-        diagram, and terminal the landing page uses. Scrub, slow down, jump
-        between steps; click a command in the terminal to land on its
-        checkpoint, paused.
+        Three rooms, one stage: replay the gallery, open any verb's canonical
+        animation, or compose a scenario of your own — all through the same
+        player, diagram, and terminal the landing page uses. Click a command
+        in the terminal to land on its checkpoint, paused.
       </p>
     </header>
 
     <div class="dgp-bar">
-      <label class="dgp-field">
+      <div class="dgp-seg" role="group" aria-label="Mode">
+        <button
+          v-for="m in MODES"
+          :key="m"
+          type="button"
+          class="dgp-segbtn"
+          :class="{ on: mode === m }"
+          @click="mode = m"
+        >
+          {{ m }}
+        </button>
+      </div>
+      <label v-if="mode === 'gallery'" class="dgp-field">
         <span>Script</span>
         <select v-model="scriptId">
           <option v-for="g in GALLERY" :key="g.id" :value="g.id">
@@ -113,16 +211,45 @@ function scrub(event: Event): void {
       </label>
     </div>
 
-    <div :key="entry.id" class="dl-stage dgp-stage" :class="`is-${layout}`">
+    <div v-if="mode === 'verbs'" class="dgp-verbs">
+      <button
+        v-for="c in CATALOG"
+        :key="c.id"
+        type="button"
+        class="dgp-verb"
+        :class="{ on: c.id === catalogId }"
+        @click="catalogId = c.id"
+      >
+        {{ c.title }}
+      </button>
+    </div>
+    <p v-if="mode === 'verbs'" class="dgp-verbinfo">
+      <code>{{ catalogEntry.syntax }}</code>
+      <span>{{ catalogEntry.blurb }}</span>
+    </p>
+
+    <Composer
+      v-if="mode === 'composer'"
+      :invocations="invocations"
+      :world="composed.world"
+      :mapping="composed.mapping"
+      :steps="composed.steps"
+      @add="addInvocation"
+      @remove="removeInvocation"
+      @focus="focusInvocation"
+      @clear="clearInvocations"
+    />
+
+    <div :key="stageKey" class="dl-stage dgp-stage" :class="`is-${layout}`">
       <RepoTerminal
         v-if="layout !== 'diagram'"
-        :script="entry.script"
+        :script="activeSteps"
         :player="player"
       />
       <RepoDiagram
         v-if="layout !== 'terminal'"
         class="dl-graph"
-        :script="entry.script"
+        :script="activeSteps"
         :player="player"
         :controls="false"
       />
@@ -168,10 +295,10 @@ function scrub(event: Event): void {
       </span>
     </div>
 
-    <div class="dgp-steps">
+    <div v-if="mode !== 'composer'" class="dgp-steps">
       <button
-        v-for="(s, i) in entry.script"
-        :key="s.title"
+        v-for="(s, i) in activeSteps"
+        :key="i"
         type="button"
         class="dgp-step"
         :class="{ on: i === stepIdx }"
@@ -203,7 +330,7 @@ function scrub(event: Event): void {
 .dgp-head p {
   font-size: 14px;
   color: var(--vp-c-text-2);
-  max-width: 68ch;
+  max-width: 72ch;
   margin: 0 0 20px;
 }
 .dgp-bar {
@@ -256,6 +383,41 @@ function scrub(event: Event): void {
 }
 .dgp-check input {
   accent-color: var(--daft-gold);
+}
+.dgp-verbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.dgp-verb {
+  font-family: var(--vp-font-family-mono);
+  font-size: 12px;
+  border: 1px solid var(--vp-c-divider);
+  background: none;
+  color: var(--vp-c-text-2);
+  border-radius: 999px;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+.dgp-verb.on {
+  border-color: color-mix(in srgb, var(--daft-gold) 55%, var(--vp-c-divider));
+  color: var(--vp-c-text-1);
+  background: var(--vp-c-bg-soft);
+}
+.dgp-verbinfo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--vp-c-text-2);
+  margin: 0 0 12px;
+}
+.dgp-verbinfo code {
+  font-family: var(--vp-font-family-mono);
+  font-size: 12px;
+  color: var(--daft-gold-text);
 }
 .dgp-stage {
   margin-top: 0;
@@ -336,7 +498,8 @@ function scrub(event: Event): void {
 }
 .dgp-btn:focus-visible,
 .dgp-segbtn:focus-visible,
-.dgp-step:focus-visible {
+.dgp-step:focus-visible,
+.dgp-verb:focus-visible {
   outline: 2px solid var(--daft-gold);
   outline-offset: 2px;
 }
