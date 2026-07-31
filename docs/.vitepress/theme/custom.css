@@ -28,6 +28,7 @@
   --daft-link: #0e7280;
   --daft-rust-text: #a84a15;
   --daft-gold: #d99a21;
+  --daft-gold-text: #8a5e0d;
   --daft-rust: #c75c1e;
 
   --vp-c-bg: #ffffff;
@@ -83,6 +84,7 @@
 .dark {
   --daft-link: #35b4c4;
   --daft-rust-text: #e0824a;
+  --daft-gold-text: #d99a21;
 
   --vp-c-bg: #111111;
   --vp-c-bg-alt: #161412;
@@ -132,16 +134,4 @@
 .vp-doc .custom-block.warning .custom-block-title,
 .vp-doc .custom-block.danger .custom-block-title {
   color: var(--daft-rust-text);
-}
-
-/* Home hero: warm disc behind the accent mark instead of the gradient blob. */
-.VPHero .image-bg {
-  background: var(--vp-c-bg-soft);
-  border-radius: 50%;
-}
-
-/* The wordmark reads a step larger than the text line beneath it. */
-.VPHero .name {
-  font-size: clamp(44px, 6.5vw, 64px);
-  line-height: 1.15;
 }
