@@ -549,10 +549,11 @@ prompt interactively.
 11. **Decide the command's diagram-language representation** — if it changes
     what the repo graph shows (creates, removes, or reshapes worktrees, repos,
     relations between them, agents, sync), coordinate with the docs diagram
-    engine: extend the act vocabulary and gallery scripts in
-    `docs/.vitepress/theme/graph/` (see its CLAUDE.md), in the same change or a
-    filed follow-up, so docs animations can show the command. Commands with no
-    graph-visible effect (config, completions, ...) skip this step.
+    engine: add or extend the verb macro and its catalog demo (plus a new act
+    kind only for genuinely new meaning) in `docs/.vitepress/theme/graph/` (see
+    its CLAUDE.md), in the same change or a filed follow-up, so docs animations
+    can show the command. Commands with no graph-visible effect (config,
+    completions, ...) skip this step.
 
 ## Adding a New DB-backed Feature
 

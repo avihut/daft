@@ -7,12 +7,14 @@ animated. If a page needs to show repo/worktree structure, use this language
 (via `RepoDiagram.vue`), not an ad-hoc SVG or a screenshot.
 
 Files: `engine.ts` (timeline compiler, headless event-sourced player, canvas
-view), `RepoDiagram.vue` and `RepoTerminal.vue` (the two viewers),
-`hero-script.ts` (the landing story), `gallery.ts` (scripts the playground
-replays), `Playground.vue` (the `/playground` page). Styles live in
-`../home.css` under the `.dg-`/`.dl-` prefixes (playground styles in
-`Playground.vue` itself). Change this file and the renderer together — the
-grammar here is normative, not descriptive.
+view), `RepoDiagram.vue` and `RepoTerminal.vue` (the two viewers), `verbs.ts`
+(the verb layer: daft commands → canonical beats over a world model),
+`catalog.ts` (a demo scenario per verb), `hero-script.ts` (the landing story),
+`gallery.ts` (scripts the playground replays), `Playground.vue` + `Composer.vue`
+(the `/playground` page and its scenario builder). Styles live in `../home.css`
+under the `.dg-`/`.dl-` prefixes (playground styles in the two page components).
+Change this file and the renderer together — the grammar here is normative, not
+descriptive.
 
 ## Vocabulary
 
@@ -126,15 +128,50 @@ to that step's checkpoint — the command just typed, paused (`seekCheckpoint`) 
 so play resumes by executing it. The terminal scrolls freely; it auto-follows
 the tail only when the reader is already there.
 
+## The verb layer
+
+Acts are the atoms; daft verbs are the standard molecules. `verbs.ts` expands
+each documented verb into its canonical beats — terminal lines and scene acts
+bound as one unit — so every diagram renders a verb identically and the shell
+can never drift from the graph. A scenario is a serializable list of
+`VerbInvocation`s replayed by `buildScenario` over a world model that:
+
+- generates truthful output (`daft list` rows and sync's prune summary come from
+  what actually exists),
+- places repos deterministically and computes cameras (`camFor` widens the
+  fit-rect as repos join; the first three spots match the hero),
+- gates and targets verbs (the composer offers only valid choices; an invocation
+  whose prerequisites vanished skips cleanly — `mapping` marks it `-1` — instead
+  of corrupting the scene),
+- encodes the grammar's own rules: a cross-repo `start` relates the entering
+  repo to every carrier of the branch and arcs to the latest one, `ship` merges
+  only where the branch lives, `sync` prunes only merged shells.
+
+Hand-written `StepDef[]` scripts stay valid — the hero predates the layer and
+keeps its tuned pacing until the scenario rework — but new scripts should be
+verb invocations first, raw beats only where a story needs a moment the layer
+cannot say yet. `catalog.ts` gives every verb a demo scenario whose `focus`
+names the invocation that is the verb; the catalog seeks straight to that
+checkpoint (context built instantly by event replay) and plays the verb.
+
 ## Playground
 
-`/playground` (`docs/playground.md`, unlisted for now) replays any gallery
-script through the standard viewers, with a transport the hero doesn't need:
-play/pause, step jumps, a scrubber, playback rate, a loop toggle, and a
-diagram/terminal/both layout switch. Iterate on animation work there, not
-against the landing page. When the language grows, grow `gallery.ts` in the same
-change — the vocabulary tour exists so every act kind stays visible in
-isolation.
+`/playground` (`docs/playground.md`, unlisted for now) is the sandbox — one
+stage, three modes:
+
+- **Gallery** — replay full scripts from `gallery.ts`.
+- **Verbs** — the catalog: pick a verb, land on its checkpoint with context
+  already built, and watch it execute. The per-verb reference.
+- **Composer** — build a scenario verb by verb: world-aware forms, live replay
+  (each added verb plays immediately from its checkpoint), rows that jump back
+  to any step, deleted-prerequisite rows shown as skipped, and "Copy script" to
+  export the built `StepDef[]` into a gallery entry or a docs page.
+
+Transport (play/pause, step jumps, scrubber, rate, loop) and the
+diagram/terminal/both layout switch apply in every mode. Iterate on animation
+work here, not against the landing page. When the language grows, grow the
+catalog and gallery in the same change — the vocabulary tour exists so every act
+kind stays visible in isolation.
 
 ## Embedding in docs
 
@@ -163,6 +200,7 @@ The vocabulary tracks daft's command surface. When a new command lands — or an
 existing one significantly changes graph-visible behavior (anything that
 creates, removes, or reshapes what diagrams show: worktrees, repos, relations,
 agents, sync) — coordinate it with this engine in the same change or a filed
-follow-up: extend the acts and `gallery.ts` so diagrams can tell the truth about
-it. The root CLAUDE.md's "Adding a New Command" checklist points here; commands
-with no graph-visible effect are exempt.
+follow-up: add or extend the verb macro in `verbs.ts`, give it a catalog demo in
+`catalog.ts`, and add an `Act` kind only when the meaning is genuinely new. The
+root CLAUDE.md's "Adding a New Command" checklist points here; commands with no
+graph-visible effect are exempt.
