@@ -155,6 +155,20 @@ pub struct Args {
         help = "Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
     )]
     skip_hooks: Vec<String>,
+
+    /// How this run's hook phase executes. `auto` honors each job's own
+    /// `background:`; `foreground` runs every job inline and waits, so a
+    /// promoted job's failure counts against the hook outcome; `off` skips
+    /// the phase (same as `--skip-hooks all`). Orthogonal to `--skip-hooks`,
+    /// which selects *which* jobs run. See daft-hooks(1).
+    #[arg(
+        long,
+        value_name = "MODE",
+        value_enum,
+        default_value_t = crate::hooks::HookMode::Auto,
+        help = "How this run's hook jobs execute"
+    )]
+    hooks: crate::hooks::HookMode,
 }
 
 /// Daft-style args for `daft go`. Separate from `Args` so that `-h`/`--help`
@@ -302,6 +316,21 @@ pub struct GoArgs {
         help = "Skip hooks when creating a worktree (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
     )]
     skip_hooks: Vec<String>,
+
+    /// How this run's hook phase executes (only applies when `go` creates a
+    /// worktree). `auto` honors each job's own `background:`; `foreground`
+    /// runs every job inline and waits, so a promoted job's failure counts
+    /// against the hook outcome; `off` skips the phase (same as
+    /// `--skip-hooks all`). Orthogonal to `--skip-hooks`, which selects
+    /// *which* jobs run. See daft-hooks(1).
+    #[arg(
+        long,
+        value_name = "MODE",
+        value_enum,
+        default_value_t = crate::hooks::HookMode::Auto,
+        help = "How this run's hook jobs execute"
+    )]
+    hooks: crate::hooks::HookMode,
 }
 
 /// Daft-style args for `daft start`. Separate from `Args` so that `-h`/`--help`
@@ -472,6 +501,20 @@ pub struct StartArgs {
         help = "Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
     )]
     skip_hooks: Vec<String>,
+
+    /// How this run's hook phase executes. `auto` honors each job's own
+    /// `background:`; `foreground` runs every job inline and waits, so a
+    /// promoted job's failure counts against the hook outcome; `off` skips
+    /// the phase (same as `--skip-hooks all`). Orthogonal to `--skip-hooks`,
+    /// which selects *which* jobs run. See daft-hooks(1).
+    #[arg(
+        long,
+        value_name = "MODE",
+        value_enum,
+        default_value_t = crate::hooks::HookMode::Auto,
+        help = "How this run's hook jobs execute"
+    )]
+    hooks: crate::hooks::HookMode,
 }
 
 impl StartArgs {
@@ -494,6 +537,7 @@ impl StartArgs {
             local: self.local,
             no_verify: self.no_verify,
             skip_hooks: self.skip_hooks.clone(),
+            hooks: self.hooks,
         }
     }
 }
@@ -532,6 +576,7 @@ pub fn run_go() -> Result<()> {
         local: go_args.local,
         no_verify: go_args.no_verify,
         skip_hooks: go_args.skip_hooks,
+        hooks: go_args.hooks,
     };
     run_with_args(args, routing)
 }
@@ -846,9 +891,8 @@ fn run_start_fork(args: StartArgs, base: Option<String>, count: u32) -> Result<(
             at_path: args.at.clone(),
         };
 
-        let executor = HookExecutor::new(hooks_config.clone())?.with_job_filter(
-            crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
-        );
+        let executor =
+            HookExecutor::new(hooks_config.clone())?.with_hook_mode(args.hooks, &args.skip_hooks);
         let mut timeline = Timeline::new(
             TimelineMode::auto(output.is_quiet()),
             output.is_verbose(),
@@ -2182,9 +2226,7 @@ fn run_checkout(
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
     let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
-    let executor = HookExecutor::new(hooks_config)?.with_job_filter(
-        crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
-    );
+    let executor = HookExecutor::new(hooks_config)?.with_hook_mode(args.hooks, &args.skip_hooks);
 
     // Plan-execute rail timeline (#651). The rail opens immediately with a
     // planning face; the core replaces it with the committed plan. The
@@ -2353,9 +2395,7 @@ fn run_sandbox_visit(
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
     let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
-    let executor = HookExecutor::new(hooks_config)?.with_job_filter(
-        crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
-    );
+    let executor = HookExecutor::new(hooks_config)?.with_hook_mode(args.hooks, &args.skip_hooks);
 
     let mut timeline = Timeline::new(
         TimelineMode::auto(output.is_quiet()),
@@ -2577,9 +2617,7 @@ fn run_create_branch_core(
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
     let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
-    let executor = HookExecutor::new(hooks_config)?.with_job_filter(
-        crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
-    );
+    let executor = HookExecutor::new(hooks_config)?.with_hook_mode(args.hooks, &args.skip_hooks);
 
     // Plan-execute rail timeline (#651).
     let mut timeline = Timeline::new(

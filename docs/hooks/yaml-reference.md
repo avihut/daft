@@ -623,8 +623,73 @@ The `background_output` field controls notification behavior:
 | `log`    | Always written          | Yes                              |
 | `silent` | Written only on failure | No                               |
 
-Default is `log`. Set `DAFT_NO_BACKGROUND_JOBS=1` to promote all background jobs
-to foreground.
+Default is `log`.
+
+#### Choosing how a run's hook jobs execute
+
+Every command that fires hooks and accepts `--skip-hooks` also accepts
+`--hooks <mode>`: `daft go`, `daft start`, `daft clone`, `daft adopt`, and
+`daft merge`.
+
+| Mode         | Effect                                                              |
+| ------------ | ------------------------------------------------------------------- |
+| `auto`       | Honor each job's own `background:`. The default.                    |
+| `foreground` | Run every job inline and wait for the whole phase.                  |
+| `background` | Dispatch every job and return without waiting (post-* phases only). |
+| `off`        | Skip the hook phase — exactly `--skip-hooks all`.                   |
+
+The two hook flags answer different questions and compose freely: `--hooks`
+decides **how** the phase runs, `--skip-hooks` decides **which** jobs run. So
+`--hooks foreground --skip-hooks clippy` waits for everything except `clippy`,
+which is skipped. `--skip-hooks` keeps its own open vocabulary — hook names,
+`tag:<tag>`, and any job name from your `daft.yml` — which is why it is not
+folded into the mode.
+
+`background` is the mirror image of `foreground`, and it is the same bargain
+`background: true` already makes per job — the command reports success once the
+worktree is usable, and you follow the rest through `daft hooks jobs`. It is
+what to reach for when a repo's `daft.yml` is more conservative than you need
+right now: nothing waits, including jobs the config declared foreground.
+
+One exception, and it is not a matter of taste: **a gate phase keeps running
+inline.** `worktree-pre-create`, `worktree-pre-remove`, and `pre-merge` each
+precede an operation daft performs the moment they return, so detaching one
+would not defer the gate, it would delete it — the worktree would be created, or
+the merge would land, before the job meant to have a say ran at all.
+`worktree-pre-remove` is worse still: it runs _inside_ the worktree being
+deleted, so a detached job would have its working directory removed underneath
+it. `--hooks background` therefore applies to `post-clone`,
+`worktree-post-create`, `worktree-post-remove`, and `post-merge`, and leaves the
+gates alone. If you want a gate not to run, that is what `off` is for — and it
+says so in the output.
+
+`DAFT_NO_BACKGROUND_JOBS` promotes background jobs for any command, including
+ones without the flag; it promotes on **any** value, `0` and the empty string
+included. Setting it alongside `--hooks foreground` is not an error.
+
+Promotion is not just a different scheduler, and two of the differences are
+visible:
+
+- **A promoted job's failure fails the hook.** Detached, a failing background
+  job is logged and notified but leaves the hook successful. Promoted, it folds
+  into the hook outcome — and since a failing `worktree-post-create` aborts by
+  default, `--hooks foreground` can turn a command that works today into a
+  refusal. That is the intended behavior for a mode whose whole purpose is to
+  stop and show you the failure; skip an individual offender with
+  `--skip-hooks <job>` rather than dropping the promotion.
+- **The job timeout still applies.** Promoted jobs keep the same 300-second
+  default every job is stamped with — the coordinator enforces it on the
+  detached path too, so a job that dies at five minutes detached dies at five
+  minutes promoted. Promotion changes who is waiting, not the budget.
+
+On `daft merge` the mode reaches the same jobs `--skip-hooks` does — the
+pre-merge and post-merge job lists, never the core gate-policy checks. It is
+worth knowing there that a `pre-merge` job marked `background: true` detaches
+and stops gating; `--hooks foreground` is how you force such a gate to be a real
+one.
+
+On Windows there is no coordinator and background jobs already run inline, so
+the mode and the variable change nothing there.
 
 ## Log configuration
 

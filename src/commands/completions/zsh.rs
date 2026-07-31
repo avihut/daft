@@ -1174,7 +1174,7 @@ _daft() {
                 '-r' '--remove-branch' '--keep-branch'
                 '--set-default'
                 '--ff-only' '--no-ff-only' '--source-worktree'
-                '--skip-hooks' '--skip-tag' '--only-tag'
+                '--hooks' '--skip-hooks' '--skip-tag' '--only-tag'
                 '--format' '--template' '--no-headers'
                 '-m' '-F' '--file' '--edit' '--no-edit' '--cleanup'
                 '--commit' '--no-commit'

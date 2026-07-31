@@ -4,7 +4,7 @@
 .SH NAME
 daft\-clone \- Clone a repository into a worktree\-based directory structure
 .SH SYNOPSIS
-\fBdaft\-clone\fR [\fB\-b\fR|\fB\-\-branch\fR] [\fB\-n\fR|\fB\-\-no\-checkout\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-a\fR|\fB\-\-all\-branches\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-skip\-hooks\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-\-layout\fR] [\fB\-\-columns\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-\-install\fR] [\fB\-\-git\-exclude\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_URL\fR> 
+\fBdaft\-clone\fR [\fB\-b\fR|\fB\-\-branch\fR] [\fB\-n\fR|\fB\-\-no\-checkout\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-a\fR|\fB\-\-all\-branches\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-skip\-hooks\fR] [\fB\-\-hooks\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-\-layout\fR] [\fB\-\-columns\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-\-install\fR] [\fB\-\-git\-exclude\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_URL\fR> 
 .SH DESCRIPTION
 .PP
 Clones a repository into a directory structure optimized for worktree\-based
@@ -42,6 +42,23 @@ Trust the repository and allow hooks to run without prompting
 .TP
 \fB\-\-skip\-hooks\fR \fI<SELECTOR>\fR
 Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma\-separated
+.TP
+\fB\-\-hooks\fR \fI<MODE>\fR [default: auto]
+How this run\*(Aqs hook jobs execute
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto: Honor each job\*(Aqs own `background:` declaration — the default
+.IP \(bu 2
+foreground: Run every job inline and wait for the whole phase to finish
+.IP \(bu 2
+background: Dispatch every job to the coordinator and return without waiting
+.IP \(bu 2
+off: Skip the hook phase entirely — equivalent to `\-\-skip\-hooks all`
+.RE
 .TP
 \fB\-r\fR, \fB\-\-remote\fR \fI<REMOTE>\fR
 Organize worktree under this remote folder (enables multi\-remote mode)

@@ -123,6 +123,20 @@ pub struct Args {
     )]
     skip_hooks: Vec<String>,
 
+    /// How this run's hook phase executes. `auto` honors each job's own
+    /// `background:`; `foreground` runs every `post-clone` job inline and
+    /// waits, so a promoted job's failure counts against the hook outcome;
+    /// `off` skips the phase (same as `--skip-hooks all`). Orthogonal to
+    /// `--skip-hooks`, which selects *which* jobs run. See daft-hooks(1).
+    #[arg(
+        long,
+        value_name = "MODE",
+        value_enum,
+        default_value_t = crate::hooks::HookMode::Auto,
+        help = "How this run's hook jobs execute"
+    )]
+    hooks: crate::hooks::HookMode,
+
     #[arg(
         short = 'r',
         long = "remote",
@@ -172,6 +186,15 @@ pub fn run() -> Result<()> {
 
     init_logging(args.verbose >= 2);
 
+    // `--hooks off` is sugar for `--skip-hooks all`, so lower it into the
+    // selector list before anything reads it. Clone gates on
+    // `skip_hooks_all()` in several places *before* any executor is built —
+    // the `--trust-hooks` conflict, the `--install` trust implication, the
+    // post-clone short-circuit — and those must all see the mode. Folding it
+    // at filter-construction time only (as the executor also does, defensively)
+    // would leave every one of them blind to it.
+    normalize_hook_mode(&mut args);
+
     validate_arg_combinations(&args)?;
     apply_install_trust(&mut args);
 
@@ -211,7 +234,9 @@ fn validate_arg_combinations(args: &Args) -> Result<()> {
         anyhow::bail!("--remote cannot be used with multiple -b flags.");
     }
     if args.trust_hooks && skip_hooks_all(&args.skip_hooks) {
-        anyhow::bail!("--trust-hooks and --skip-hooks all cannot be used together.");
+        anyhow::bail!(
+            "--trust-hooks cannot be combined with skipping every hook (--skip-hooks all / --hooks off)."
+        );
     }
     if args.install && args.no_checkout {
         anyhow::bail!(
@@ -229,6 +254,17 @@ fn validate_arg_combinations(args: &Args) -> Result<()> {
 /// are NOT `all`: hooks still fire, just with some jobs excluded.
 fn skip_hooks_all(skip_hooks: &[String]) -> bool {
     crate::hooks::job_adapter::parse_skip_selectors(skip_hooks).all
+}
+
+/// Lower `--hooks off` into the `--skip-hooks all` selector.
+///
+/// Keeps one mechanism for "no hooks this run" so every existing gate keyed
+/// on [`skip_hooks_all`] applies unchanged. Idempotent: an explicit
+/// `--skip-hooks all` alongside the flag adds nothing.
+fn normalize_hook_mode(args: &mut Args) {
+    if args.hooks == crate::hooks::HookMode::Off && !skip_hooks_all(&args.skip_hooks) {
+        args.skip_hooks.push("all".to_string());
+    }
 }
 
 /// `--install` implies `--trust-hooks`: bootstrapping your own daft.yml in this
@@ -675,6 +711,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                 &bare_params,
                 &layout,
                 settings,
+                args.hooks,
                 &args.skip_hooks,
                 args.trust_hooks,
                 args.verbose,
@@ -699,6 +736,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                 &bare_params,
                 &layout,
                 settings,
+                args.hooks,
                 &args.skip_hooks,
                 args.trust_hooks,
                 output,
@@ -883,6 +921,7 @@ fn create_satellite_worktrees(
     bare_params: &clone::BareCloneParams,
     layout: &crate::core::layout::Layout,
     settings: &DaftSettings,
+    hook_mode: crate::hooks::HookMode,
     skip_hooks: &[String],
     trust_hooks: bool,
     output: &mut dyn Output,
@@ -952,8 +991,7 @@ fn create_satellite_worktrees(
         if let Some(ref hooks_config) = shared_hooks_config
             && let Ok(executor) = HookExecutor::new(hooks_config.clone())
         {
-            let mut executor = executor
-                .with_job_filter(crate::hooks::yaml_executor::JobFilter::skipping(skip_hooks));
+            let mut executor = executor.with_hook_mode(hook_mode, skip_hooks);
             if trust_hooks {
                 if let Some(fp) = get_remote_url_for_git_dir(&base_result.git_dir) {
                     let _ = executor.trust_repository_with_fingerprint(
@@ -1023,9 +1061,7 @@ fn create_satellite_worktrees(
                     );
 
                     if let Ok(executor) = HookExecutor::new(hooks_config.clone()) {
-                        let mut executor = executor.with_job_filter(
-                            crate::hooks::yaml_executor::JobFilter::skipping(skip_hooks),
-                        );
+                        let mut executor = executor.with_hook_mode(hook_mode, skip_hooks);
                         if trust_hooks {
                             if let Some(fp) = get_remote_url_for_git_dir(&base_result.git_dir) {
                                 let _ = executor.trust_repository_with_fingerprint(
@@ -1132,6 +1168,7 @@ fn create_satellite_worktrees_tui(
     bare_params: &clone::BareCloneParams,
     layout: &Layout,
     settings: &DaftSettings,
+    hook_mode: crate::hooks::HookMode,
     skip_hooks: &[String],
     trust_hooks: bool,
     verbosity: u8,
@@ -1280,9 +1317,7 @@ fn create_satellite_worktrees_tui(
             if let Some(ref hooks_cfg) = shared_hooks_config
                 && let Ok(executor) = HookExecutor::new(hooks_cfg.clone())
             {
-                let mut executor = executor.with_job_filter(
-                    crate::hooks::yaml_executor::JobFilter::skipping(&shared_skip_hooks),
-                );
+                let mut executor = executor.with_hook_mode(hook_mode, &shared_skip_hooks);
                 if shared_trust_hooks {
                     if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
                         let _ = executor.trust_repository_with_fingerprint(
@@ -1375,9 +1410,7 @@ fn create_satellite_worktrees_tui(
                         continue;
                     }
                     Ok(executor) => {
-                        let mut executor = executor.with_job_filter(
-                            crate::hooks::yaml_executor::JobFilter::skipping(&shared_skip_hooks),
-                        );
+                        let mut executor = executor.with_hook_mode(hook_mode, &shared_skip_hooks);
                         if shared_trust_hooks {
                             if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
                                 let _ = executor.trust_repository_with_fingerprint(
@@ -1704,11 +1737,11 @@ fn run_post_clone_hook(
 ) -> Result<()> {
     let step_key = StepKey::new(StageId::PostCloneHooks);
     if skip_hooks_all(&args.skip_hooks) {
-        output.step("Skipping hooks (--skip-hooks all)");
+        output.step(&format!("Skipping hooks ({})", args.hooks.skip_all_label()));
         timeline.on_stage(
             &step_key,
             StageEvent::SkippedAttention {
-                reason: "--skip-hooks all".to_string(),
+                reason: args.hooks.skip_all_label().to_string(),
             },
         );
         return Ok(());
@@ -1730,9 +1763,8 @@ fn run_post_clone_hook(
     // start (cwd-tolerance, above), so the rail learns its job-log density
     // now — before the block draws, which is all the live flag requires.
     timeline.set_verbose_density(hook_output_config.verbose);
-    let mut executor = HookExecutor::new(hooks_config)?.with_job_filter(
-        crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
-    );
+    let mut executor =
+        HookExecutor::new(hooks_config)?.with_hook_mode(args.hooks, &args.skip_hooks);
 
     if args.trust_hooks {
         output.step("Trusting repository for hooks (--trust-hooks flag)");
@@ -1786,7 +1818,7 @@ fn run_post_create_hook(
         timeline.on_stage(
             &step_key,
             StageEvent::SkippedAttention {
-                reason: "--skip-hooks all".to_string(),
+                reason: args.hooks.skip_all_label().to_string(),
             },
         );
         return Ok(());
@@ -1797,9 +1829,8 @@ fn run_post_create_hook(
     let hooks_config = crate::core::settings::load_hooks_config_global()?;
     let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
     timeline.set_verbose_density(hook_output_config.verbose);
-    let mut executor = HookExecutor::new(hooks_config)?.with_job_filter(
-        crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
-    );
+    let mut executor =
+        HookExecutor::new(hooks_config)?.with_hook_mode(args.hooks, &args.skip_hooks);
 
     if args.trust_hooks {
         if let Some(fp) = get_remote_url_for_git_dir(&result.git_dir) {
@@ -2048,6 +2079,89 @@ mod tests {
             args.trust_hooks,
             "--install with a partial --skip-hooks should still imply --trust-hooks"
         );
+    }
+
+    /// `--hooks off` is sugar for `--skip-hooks all`, so it must reach every
+    /// gate keyed on `skip_hooks_all` — including the ones that run before
+    /// any executor exists. Here: the `--install` trust implication must not
+    /// fire, exactly as it does not for the explicit spelling.
+    #[test]
+    fn install_with_hooks_off_does_not_trust() {
+        let mut args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--install",
+            "--hooks",
+            "off",
+        ]);
+        normalize_hook_mode(&mut args);
+        apply_install_trust(&mut args);
+        assert!(
+            !args.trust_hooks,
+            "--hooks off opts out of hooks, so it must not imply --trust-hooks"
+        );
+    }
+
+    /// The other two modes leave the selector list alone, so the trust
+    /// implication still fires — `foreground` runs *more* of your hooks, not
+    /// fewer.
+    #[test]
+    fn install_with_hooks_foreground_still_trusts() {
+        let mut args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--install",
+            "--hooks",
+            "foreground",
+        ]);
+        normalize_hook_mode(&mut args);
+        apply_install_trust(&mut args);
+        assert!(args.trust_hooks);
+    }
+
+    /// Normalization is idempotent: the flag and the explicit selector
+    /// together must not stack two `all` entries or otherwise disagree.
+    #[test]
+    fn hooks_off_with_explicit_skip_all_normalizes_once() {
+        let mut args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--hooks",
+            "off",
+            "--skip-hooks",
+            "all",
+        ]);
+        normalize_hook_mode(&mut args);
+        assert_eq!(args.skip_hooks, vec!["all".to_string()]);
+    }
+
+    /// `--hooks off` conflicts with `--trust-hooks` for the same reason
+    /// `--skip-hooks all` does — normalization runs first so the existing
+    /// validation catches it rather than needing its own rule.
+    #[test]
+    fn trust_hooks_with_hooks_off_conflicts() {
+        let mut args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--trust-hooks",
+            "--hooks",
+            "off",
+        ]);
+        normalize_hook_mode(&mut args);
+        assert!(validate_arg_combinations(&args).is_err());
+    }
+
+    #[test]
+    fn trust_hooks_with_hooks_foreground_is_ok() {
+        let mut args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--trust-hooks",
+            "--hooks",
+            "foreground",
+        ]);
+        normalize_hook_mode(&mut args);
+        assert!(validate_arg_combinations(&args).is_ok());
     }
 
     #[test]

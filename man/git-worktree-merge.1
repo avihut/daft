@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-merge \- Merge branches across worktrees
 .SH SYNOPSIS
-\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-merge\fR] [\fB\-\-squash\fR] [\fB\-\-rebase\fR] [\fB\-\-rebase\-merge\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-\-adopt\-target\fR] [\fB\-\-no\-adopt\-target\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-r\fR|\fB\-\-remove\-branch\fR] [\fB\-\-keep\-branch\fR] [\fB\-\-ff\-only\fR] [\fB\-\-no\-ff\-only\fR] [\fB\-\-source\-worktree\fR] [\fB\-\-skip\-hooks\fR] [\fB\-\-skip\-tag\fR] [\fB\-\-only\-tag\fR] [\fB\-\-set\-default\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
+\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-merge\fR] [\fB\-\-squash\fR] [\fB\-\-rebase\fR] [\fB\-\-rebase\-merge\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-\-adopt\-target\fR] [\fB\-\-no\-adopt\-target\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-r\fR|\fB\-\-remove\-branch\fR] [\fB\-\-keep\-branch\fR] [\fB\-\-ff\-only\fR] [\fB\-\-no\-ff\-only\fR] [\fB\-\-source\-worktree\fR] [\fB\-\-skip\-hooks\fR] [\fB\-\-hooks\fR] [\fB\-\-skip\-tag\fR] [\fB\-\-only\-tag\fR] [\fB\-\-set\-default\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
 .SH DESCRIPTION
 .PP
 Merges one or more source branches into a target worktree\*(Aqs branch.
@@ -140,6 +140,23 @@ any: No requirement on the source worktree (relaxes a committed `clean` for this
 .TP
 \fB\-\-skip\-hooks\fR \fI<SELECTOR>\fR
 Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma\-separated
+.TP
+\fB\-\-hooks\fR \fI<MODE>\fR [default: auto]
+How this run\*(Aqs hook jobs execute
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto: Honor each job\*(Aqs own `background:` declaration — the default
+.IP \(bu 2
+foreground: Run every job inline and wait for the whole phase to finish
+.IP \(bu 2
+background: Dispatch every job to the coordinator and return without waiting
+.IP \(bu 2
+off: Skip the hook phase entirely — equivalent to `\-\-skip\-hooks all`
+.RE
 .TP
 \fB\-\-skip\-tag\fR \fI<TAG>\fR
 Skip hook jobs carrying TAG, plus their dependents (repeatable). Sugar for `\-\-skip\-hooks tag:<TAG>` — e.g. `\-\-skip\-tag deep` for a fast gate pass

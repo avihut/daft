@@ -311,6 +311,9 @@ fn cmd_run(args: &Args, forced_args: bool, output: &mut dyn Output) -> Result<()
         } else {
             format!("run {task_name} {}", crate::utils::quote_argv(task_args))
         }),
+        // `daft run` is not a lifecycle-hook caller and has no `--hooks` of
+        // its own; a task's `background:` jobs keep detaching.
+        hook_mode: crate::hooks::HookMode::Auto,
     };
 
     let result =

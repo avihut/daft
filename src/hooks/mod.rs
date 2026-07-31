@@ -49,6 +49,7 @@ mod executor;
 pub mod job_adapter;
 pub mod manager_output;
 pub mod move_hooks;
+pub mod run_mode;
 pub mod template;
 pub mod tracking;
 mod trust;
@@ -67,6 +68,7 @@ pub use environment::{
 };
 pub(crate) use environment::{derived_injection, derived_injection_at};
 pub use executor::{HookAborted, HookExecutor, HookResult};
+pub use run_mode::HookMode;
 pub use trust::{TrustDatabase, TrustEntry, TrustLevel, get_remote_url_for_git_dir};
 
 use crate::settings::HookOutputConfig;
@@ -109,6 +111,29 @@ pub enum HookType {
 }
 
 impl HookType {
+    /// Whether daft performs the operation this hook precedes *immediately
+    /// after* it returns — i.e. whether the phase is a gate.
+    ///
+    /// The distinction is what makes `--hooks background` safe to offer.
+    /// Detaching a post-* phase is the ordinary background-job bargain: the
+    /// command reports success and you follow the work in `daft hooks jobs`.
+    /// Detaching a gate is not the same bargain — it does not delay the gate,
+    /// it removes it, because the gated operation has already happened by the
+    /// time the job runs:
+    ///
+    /// - `PreCreate` is awaited with `?` before `git worktree add`
+    ///   (`core::worktree::checkout`), so a detached job cannot refuse
+    ///   creation.
+    /// - `PreRemove` runs *inside* the worktree being deleted, so a detached
+    ///   job has its working directory removed underneath it.
+    /// - `PreMerge` is the merge gate; detached, the merge lands first.
+    pub fn gates_the_operation_after_it(&self) -> bool {
+        matches!(
+            self,
+            HookType::PreCreate | HookType::PreRemove | HookType::PreMerge
+        )
+    }
+
     /// Returns the canonical filename for this hook type.
     pub fn filename(&self) -> &'static str {
         match self {

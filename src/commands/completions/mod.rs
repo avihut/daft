@@ -1607,6 +1607,42 @@ mod tests {
         );
     }
 
+    /// Every `--hooks` mode must be offered everywhere the flag is.
+    ///
+    /// The generated completions read `HookMode::variants()`, but `daft
+    /// merge`'s live in the `DAFT_FISH_COMPLETIONS` const, which cannot
+    /// interpolate — so that one copy is hand-written and is exactly the kind
+    /// of list that goes stale when a variant is added. Nothing else catches
+    /// it: no generator reads clap's `possible_values`, so a missing mode
+    /// simply never completes.
+    #[test]
+    fn fish_hooks_flag_offers_every_mode_on_every_command_carrying_it() {
+        let fish = fish::generate_daft_fish_completions();
+        let expected = crate::hooks::HookMode::variants().join(" ");
+        assert!(
+            fish.contains(&format!(
+                "__fish_seen_subcommand_from merge worktree-merge' -l hooks -x -a '{expected}'"
+            )),
+            "the hand-written merge line must list every HookMode variant \
+             (expected '{expected}'); update DAFT_FISH_COMPLETIONS"
+        );
+
+        for cmd in [
+            "git-worktree-checkout",
+            "daft-go",
+            "daft-start",
+            "git-worktree-clone",
+            "git-worktree-flow-adopt",
+        ] {
+            let script = fish::generate_fish_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("fish completion for {cmd}: {e}"));
+            assert!(
+                script.contains(&format!("-l hooks -x -a '{expected}'")),
+                "{cmd} carries --hooks but does not complete its values"
+            );
+        }
+    }
+
     /// The `warm` half of the umbrella dispatch (#387). The hardcoded shell
     /// strings are the drift-prone half of completions — flag lists are
     /// generated from clap, but the verb cases and the top-level subcommand

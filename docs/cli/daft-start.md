@@ -161,6 +161,7 @@ repos *api's* manifest declares, and the shell lands in api's new worktree.
 | `-n, --count <N>` | Create N fork worktrees (requires `--fork`; one path per line on stdout; the shell stays where it is) | `1` |
 | `--local` | Skip all remote operations (no fetch, no push) for this invocation | |
 | `--skip-hooks <SELECTOR>` | Skip hooks this run (`all` \| a hook name like `worktree-post-create` \| `tag:<tag>` \| `<job>`); repeatable/comma-separated | |
+| `--hooks <MODE>` | How this run's hook phase executes: `auto` (honor each job's `background:`), `foreground` (run every job inline and wait; a promoted job's failure fails the hook), `background` (dispatch every job and return; gate phases exempt), `off` (same as `--skip-hooks all`) | `auto` |
 | `-c, --carry` | Apply uncommitted changes from the current worktree to the new one | |
 | `--no-carry` | Do not carry uncommitted changes | |
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) | |

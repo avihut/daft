@@ -50,6 +50,7 @@ git worktree-clone [OPTIONS] <REPOSITORY_URL>
 | `-a, --all-branches` | Create a worktree for each remote branch, not just the default |  |
 | `--trust-hooks` | Trust the repository and allow hooks to run without prompting |  |
 | `--skip-hooks <SELECTOR>` | Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated |  |
+| `--hooks <MODE>` | How this run's hook jobs execute | `auto` |
 | `-r, --remote <REMOTE>` | Organize worktree under this remote folder (enables multi-remote mode) |  |
 | `--no-cd` | Do not change directory to the new worktree |  |
 | `--layout <LAYOUT>` | Worktree layout to use for this repository |  |

@@ -132,6 +132,14 @@ pub struct HookExecutionContext<'a> {
     /// `"run dev"`). `None` keeps the hook default (the `hooks run <name>`
     /// special case, else the bare hook name).
     pub trigger_label: Option<String>,
+
+    /// How this fire's jobs execute (`--hooks <mode>`). `Foreground` is ORed
+    /// with the `DAFT_NO_BACKGROUND_JOBS` env var at the dispatch gate, so
+    /// setting both is not an error and the env var's any-value semantics are
+    /// untouched. `Background` detaches every job, but only in a non-gate
+    /// phase. `Off` never reaches here — it is lowered to a `--skip-hooks
+    /// all` selector before the executor is built.
+    pub hook_mode: crate::hooks::HookMode,
 }
 
 /// Execute a YAML-defined hook.
@@ -158,6 +166,9 @@ pub fn execute_yaml_hook(
         default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
         cancel: None,
         trigger_label: None,
+        // Callers wanting a different mode build the context themselves (or
+        // export the env var); this convenience wrapper keeps the default.
+        hook_mode: crate::hooks::HookMode::Auto,
     };
     execute_yaml_hook_with_rc(hook_name, hook_def, ctx, output, &cfg)
 }
@@ -558,6 +569,25 @@ pub fn execute_yaml_hook_with_rc(
         return Ok(HookResult::skipped("All jobs skipped").with_invocation(&invocation_id));
     }
 
+    // `--hooks background`: detach the whole phase. Applied before the
+    // partition so the DAG is partitioned against the effective flags, not
+    // the declared ones — with nothing left in the foreground there is
+    // nothing to promote back, and the coordinator schedules the `needs:`
+    // waves it would otherwise have shared with the foreground runner.
+    //
+    // A gate phase is deliberately exempt (`detaches_all_jobs` consults the
+    // hook type): daft performs the operation a `pre-*` hook precedes as soon
+    // as the hook returns, so detaching one would not defer the gate, it
+    // would delete it — and `worktree-pre-remove` would additionally have its
+    // working directory deleted mid-run.
+    let mut specs = specs;
+    if cfg.hook_mode.detaches_all_jobs(ctx.hook_type) {
+        for spec in &mut specs {
+            spec.background = true;
+        }
+    }
+    let specs = specs;
+
     // Partition into foreground and background phases.
     // Background jobs that are transitively depended on by foreground jobs
     // are promoted to foreground to preserve DAG validity.
@@ -683,8 +713,17 @@ pub fn execute_yaml_hook_with_rc(
             .collect()
     };
 
-    // If DAFT_NO_BACKGROUND_JOBS is set, run background jobs inline as foreground.
-    if std::env::var("DAFT_NO_BACKGROUND_JOBS").is_ok() {
+    // Run background jobs inline when this fire was asked to (`--foreground`)
+    // or when the env var is set. `.is_ok()` — not a truthiness check — is
+    // deliberate and long-standing: any value promotes, including `0` and the
+    // empty string, and anyone already exporting it depends on that.
+    //
+    // Promoted jobs keep their timeout and their failures count. The former
+    // is not new (the coordinator honors `job.timeout` too, so a 300s job
+    // dies either way); the latter is what the promotion is *for* — a
+    // command that waited for a job and then reported success over its
+    // failure would be a false green.
+    if cfg.hook_mode.is_foreground() || std::env::var("DAFT_NO_BACKGROUND_JOBS").is_ok() {
         let bg_results = run_bg_inline_with_prefailed(
             &bg_specs,
             &prefailed_bg,
@@ -763,7 +802,8 @@ pub fn execute_yaml_hook_with_rc(
 
 /// Run background jobs inline (no coordinator), synthesizing `Skipped`
 /// results for any job in `prefailed_bg` *and* its transitive BG→BG
-/// dependents. Used by the `DAFT_NO_BACKGROUND_JOBS` debug path and by
+/// dependents. Used by the promotion path (`--foreground` /
+/// `DAFT_NO_BACKGROUND_JOBS`) and by
 /// the non-Unix fallback, both of which would otherwise silently run BG
 /// jobs whose FG dep failed (no coordinator to consult `prefailed_jobs`).
 ///
@@ -1862,21 +1902,19 @@ mod tests {
     /// per-test marker file. If the cascade fires, the marker must not
     /// exist after the hook returns.
     ///
-    /// `#[serial_test::serial(daft_no_background_jobs)]` is used because
-    /// the test mutates the process-global `DAFT_NO_BACKGROUND_JOBS` env
-    /// var. The same serial key is shared with
-    /// `test_bg_needs_chain_cascade_skips_transitive_in_inline_path` so
-    /// they never race on the env.
+    /// Reaches the inline path through `foreground_jobs` on the execution
+    /// context (`--foreground`) rather than the env var, so the test needs
+    /// neither the RAII guard nor `#[serial]` — the promotion is per-fire
+    /// state, not process-global. The env-var spelling of the same gate
+    /// keeps its own coverage in
+    /// `test_bg_needs_chain_cascade_skips_transitive_in_inline_path`.
     #[test]
-    #[serial_test::serial(daft_no_background_jobs)]
     fn test_bg_needs_failed_fg_skipped_in_inline_path() {
         let marker_dir = TempDir::new().unwrap();
         let marker = marker_dir.path().join("bg-ran.marker");
         // The path lives inside a fresh tempdir, so no special characters
         // need quoting in the shell command.
         let bg_cmd = format!("touch {}", marker.display());
-
-        let _guard = NoBackgroundJobsEnv::set();
 
         let hook_def = HookDef {
             jobs: Some(vec![
@@ -1897,23 +1935,317 @@ mod tests {
         };
         let ctx = make_ctx();
         let mut output = TestOutput::default();
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = NullPresenter::arc();
+        let filter = JobFilter::default();
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: Path::new("/tmp"),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Foreground,
+        };
 
-        let result = execute_yaml_hook(
-            "test-hook",
-            &hook_def,
-            &ctx,
-            &mut output,
-            ".daft",
-            Path::new("/tmp"),
-            &HookOutputConfig::default(),
-        )
-        .unwrap();
+        let result =
+            execute_yaml_hook_with_rc("test-hook", &hook_def, &ctx, &mut output, &cfg).unwrap();
 
         assert!(!result.success, "hook should fail because fg-fail failed");
         assert!(
             !marker.exists(),
             "bg-dependent should have been skipped, but its `touch` ran (marker at {} exists)",
             marker.display()
+        );
+    }
+
+    /// `foreground_jobs: true` alone — no env var in sight — must run a
+    /// `background: true` job inline and only return once it is done.
+    ///
+    /// This is the acceptance criterion for `--foreground`: the marker is
+    /// written by the backgrounded job, so finding it immediately after the
+    /// call returns proves the job was waited for rather than detached. On
+    /// the dispatch path the same hook hands the job to the coordinator and
+    /// returns while it is still starting up.
+    #[test]
+    fn foreground_jobs_field_promotes_background_job_and_waits() {
+        let marker_dir = TempDir::new().unwrap();
+        let marker = marker_dir.path().join("bg-ran.marker");
+
+        let hook_def = HookDef {
+            jobs: Some(vec![JobDef {
+                name: Some("bg".to_string()),
+                run: Some(RunCommand::Simple(format!("touch {}", marker.display()))),
+                background: Some(true),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let ctx = make_ctx();
+        let mut output = TestOutput::default();
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = NullPresenter::arc();
+        let filter = JobFilter::default();
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: Path::new("/tmp"),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Foreground,
+        };
+
+        let result =
+            execute_yaml_hook_with_rc("test-hook", &hook_def, &ctx, &mut output, &cfg).unwrap();
+
+        assert!(result.success);
+        assert!(
+            marker.exists(),
+            "the background job must have completed before the hook returned; \
+             no marker at {}",
+            marker.display()
+        );
+    }
+
+    /// The failure-semantics decision, pinned: a promoted background job
+    /// that fails takes the hook down with it.
+    ///
+    /// On the dispatch path the same job is logged and notified but leaves
+    /// the hook successful ("background jobs … do not affect the hook
+    /// outcome"). Under `--foreground` it folds into
+    /// `job_results_to_hook_result`, and since #765 a failed
+    /// `worktree-post-create` aborts by default — which is the point: a
+    /// command that waited for a job must not report success over its
+    /// failure.
+    #[test]
+    fn foreground_jobs_field_makes_a_failing_background_job_fail_the_hook() {
+        let hook_def = HookDef {
+            jobs: Some(vec![JobDef {
+                name: Some("bg-fail".to_string()),
+                run: Some(RunCommand::Simple("false".to_string())),
+                background: Some(true),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let ctx = make_ctx();
+        let mut output = TestOutput::default();
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = NullPresenter::arc();
+        let filter = JobFilter::default();
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: Path::new("/tmp"),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Foreground,
+        };
+
+        let result =
+            execute_yaml_hook_with_rc("test-hook", &hook_def, &ctx, &mut output, &cfg).unwrap();
+
+        assert!(
+            !result.success,
+            "a promoted background job's failure must fail the hook"
+        );
+    }
+
+    /// `--skip-hooks all` beats `--foreground`: a skipped job stays skipped.
+    ///
+    /// The two flags compose in only one order that is safe. Skips are
+    /// applied before the foreground/background partition, so an emptied
+    /// job list short-circuits before the promotion gate is ever reached —
+    /// if that order were reversed, `--foreground` would turn a no-op skip
+    /// into a live run, which is the worst reading of the pair.
+    #[test]
+    fn skip_all_beats_foreground_jobs() {
+        let marker_dir = TempDir::new().unwrap();
+        let marker = marker_dir.path().join("must-not-run.marker");
+
+        let hook_def = HookDef {
+            jobs: Some(vec![JobDef {
+                name: Some("bg".to_string()),
+                run: Some(RunCommand::Simple(format!("touch {}", marker.display()))),
+                background: Some(true),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let ctx = make_ctx();
+        let mut output = TestOutput::default();
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = NullPresenter::arc();
+        let filter = JobFilter::skipping(&["all".to_string()]);
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: Path::new("/tmp"),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Foreground,
+        };
+
+        let result =
+            execute_yaml_hook_with_rc("test-hook", &hook_def, &ctx, &mut output, &cfg).unwrap();
+
+        assert!(
+            result.skipped,
+            "--skip-hooks all must still skip everything"
+        );
+        assert!(
+            !marker.exists(),
+            "the skipped job must not have been promoted into running; \
+             marker exists at {}",
+            marker.display()
+        );
+    }
+
+    /// `--hooks background` detaches a job the config declared foreground.
+    ///
+    /// The marker must NOT exist when the hook returns: the job was handed to
+    /// the coordinator, which is exactly the bargain `background: true`
+    /// already makes for the jobs that declare it. `make_ctx` builds a
+    /// `PostCreate` context, so this is a non-gate phase.
+    #[test]
+    fn background_mode_detaches_a_declared_foreground_job() {
+        let marker_dir = TempDir::new().unwrap();
+        let marker = marker_dir.path().join("should-not-be-here-yet.marker");
+
+        let hook_def = HookDef {
+            jobs: Some(vec![JobDef {
+                name: Some("fg-by-declaration".to_string()),
+                run: Some(RunCommand::Simple(format!("touch {}", marker.display()))),
+                // No `background:` — the config wants this inline.
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let ctx = make_ctx();
+        assert!(
+            !ctx.hook_type.gates_the_operation_after_it(),
+            "this test needs a non-gate phase to be meaningful"
+        );
+        let mut output = TestOutput::default();
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = NullPresenter::arc();
+        let filter = JobFilter::default();
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: Path::new("/tmp"),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Background,
+        };
+
+        let result =
+            execute_yaml_hook_with_rc("test-hook", &hook_def, &ctx, &mut output, &cfg).unwrap();
+
+        assert!(
+            result.success,
+            "dispatching to the coordinator is a success"
+        );
+        assert!(
+            !marker.exists(),
+            "the job must have been dispatched, not run inline; marker at {} exists",
+            marker.display()
+        );
+    }
+
+    /// The same request against a gate phase changes nothing: the job runs
+    /// inline and its failure still fails the hook. Detaching a gate would
+    /// not defer it — `pre-create` is awaited before `git worktree add`, so a
+    /// detached job could never refuse creation.
+    #[test]
+    fn background_mode_leaves_a_gate_phase_inline() {
+        let hook_def = HookDef {
+            jobs: Some(vec![JobDef {
+                name: Some("gate".to_string()),
+                run: Some(RunCommand::Simple("false".to_string())),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx();
+        ctx.hook_type = crate::hooks::HookType::PreCreate;
+        assert!(ctx.hook_type.gates_the_operation_after_it());
+        let mut output = TestOutput::default();
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = NullPresenter::arc();
+        let filter = JobFilter::default();
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: Path::new("/tmp"),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Background,
+        };
+
+        let result =
+            execute_yaml_hook_with_rc("worktree-pre-create", &hook_def, &ctx, &mut output, &cfg)
+                .unwrap();
+
+        assert!(
+            !result.success,
+            "a gate job must still run inline and still be able to refuse"
+        );
+    }
+
+    /// A promoted job keeps the default timeout it was already stamped with.
+    ///
+    /// The detached path honors `job.timeout` too (the coordinator passes it
+    /// straight into `run_command`), so promotion must not quietly hand a
+    /// job an unlimited budget — a job that dies at 300s when detached must
+    /// not start succeeding just because someone is watching it. Asserted on
+    /// the spec rather than by sleeping for five minutes.
+    #[test]
+    fn background_specs_carry_the_default_timeout() {
+        let hook_def = HookDef {
+            jobs: Some(vec![JobDef {
+                name: Some("bg".to_string()),
+                run: Some(RunCommand::Simple("true".to_string())),
+                background: Some(true),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let ctx = make_ctx();
+        let (specs, _skipped) = crate::hooks::job_adapter::yaml_jobs_to_specs(
+            hook_def.jobs.as_ref().unwrap(),
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &crate::hooks::job_adapter::JobAdapterContext::default(),
+        )
+        .unwrap();
+
+        assert_eq!(specs.len(), 1);
+        assert!(specs[0].background);
+        assert_eq!(
+            specs[0].timeout,
+            Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            "background jobs are stamped with the same default timeout as \
+             foreground ones — promotion must not change the budget"
         );
     }
 
@@ -2135,6 +2467,7 @@ mod tests {
             default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
             cancel: None,
             trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Auto,
         };
         let result =
             execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
@@ -2166,6 +2499,7 @@ mod tests {
             default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
             cancel: None,
             trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Auto,
         };
         let result =
             execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
@@ -2203,6 +2537,7 @@ mod tests {
             default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
             cancel: None,
             trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Auto,
         };
         let result =
             execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
@@ -2267,6 +2602,7 @@ mod tests {
             default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
             cancel: None,
             trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Auto,
         };
         let result =
             execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
@@ -2305,6 +2641,7 @@ mod tests {
             default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
             cancel: None,
             trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Auto,
         };
         // Must NOT error (contrast with the include path's bail!).
         let result =
@@ -2340,6 +2677,7 @@ mod tests {
             default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
             cancel: None,
             trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Auto,
         };
         // hook_name == the selected hook type ⇒ the whole hook is skipped, but
         // it is NOT a silent drop: every job renders as skipped with the same
@@ -2394,6 +2732,7 @@ mod tests {
             default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
             cancel: None,
             trigger_label: None,
+            hook_mode: crate::hooks::HookMode::Auto,
         };
         let result =
             execute_yaml_hook_with_rc("worktree-pre-create", &hook_def, &ctx, &mut output, &cfg)
@@ -2440,6 +2779,7 @@ mod tests {
             default_job_timeout: None,
             cancel: None,
             trigger_label: Some("run dev".to_string()),
+            hook_mode: crate::hooks::HookMode::Auto,
         };
         execute_yaml_hook_with_rc("dev", &hook_def, &ctx, &mut output, &cfg).unwrap();
 

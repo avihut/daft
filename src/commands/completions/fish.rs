@@ -18,6 +18,12 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
     let git_subcommand = command_name.trim_start_matches("git-");
     let is_git_command = command_name.starts_with("git-");
 
+    output.push_str(&hooks_mode_completion(
+        command_name,
+        git_subcommand,
+        is_git_command,
+    ));
+
     // Positional repo-name completion (daft list [<repo>]). The token-count
     // gate limits it to the first argument, which also keeps repo names out
     // of value-flag positions.
@@ -331,6 +337,38 @@ fn generate_verb_alias_flag_completions() -> String {
 ///
 /// Reshuffles the tab-separated output into fish's `name\tdescription` format
 /// where the description reads `<age> · <group>`.
+/// `--hooks <MODE>` value completion, for the commands that carry the flag.
+///
+/// The value set is read from [`crate::hooks::HookMode::variants`] rather than
+/// spelled out, because nothing here reads clap's `possible_values` — the
+/// neighbouring enum flags (`--source-worktree`, `--format`) are all
+/// hand-listed and are exactly how such a list goes stale. `daft merge` cannot
+/// use this: its completions live in the `DAFT_FISH_COMPLETIONS` const, which
+/// cannot interpolate, so `fish_merge_hooks_lists_every_mode` guards that copy
+/// instead.
+fn hooks_mode_completion(command_name: &str, git_subcommand: &str, is_git_command: bool) -> String {
+    if !matches!(
+        command_name,
+        "git-worktree-checkout"
+            | "daft-go"
+            | "daft-start"
+            | "git-worktree-clone"
+            | "git-worktree-flow-adopt"
+    ) {
+        return String::new();
+    }
+    let modes = crate::hooks::HookMode::variants().join(" ");
+    let mut out = format!(
+        "complete -c {command_name} -l hooks -x -a '{modes}' -d 'How hook jobs run this time'\n",
+    );
+    if is_git_command {
+        out.push_str(&format!(
+            "complete -c git -n '__fish_seen_subcommand_from {git_subcommand}' -l hooks -x -a '{modes}' -d 'How hook jobs run this time'\n",
+        ));
+    }
+    out
+}
+
 fn generate_fish_rich_completion(command_name: &str) -> Result<String> {
     let cmd =
         get_command_for_name(command_name).context(format!("Unknown command: {command_name}"))?;
@@ -433,6 +471,12 @@ end
             ));
         }
     }
+    output.push_str(&hooks_mode_completion(
+        command_name,
+        git_subcommand,
+        is_git_command,
+    ));
+
     // Rich commands that also carry --skip-hooks (checkout, go, start)
     // complete its selector vocabulary from daft.yml.
     if matches!(
@@ -713,6 +757,7 @@ complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcomm
 complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from link materialize' -f -a "(daft __complete shared-files '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from link materialize' -f -a "(daft __complete shared-worktrees '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from link materialize' -l override -d 'Replace even if local differs'
+complete -c daft -n '__fish_seen_subcommand_from merge worktree-merge' -l hooks -x -a 'auto foreground background off' -d 'How hook jobs run this time'
 # --format value completions (emit-enabled subcommands)
 complete -c daft -n '__fish_seen_subcommand_from list' -l format -x -a 'json ndjson tsv csv yaml toon markdown'
 complete -c daft -n '__fish_seen_subcommand_from release-notes' -l format -x -a 'json yaml toon markdown'
@@ -737,6 +782,7 @@ complete -c daft -n '__fish_seen_subcommand_from merge worktree-merge' -l ff-onl
 complete -c daft -n '__fish_seen_subcommand_from merge worktree-merge' -l no-ff-only -d 'Relax a committed ff: only policy for this merge'
 complete -c daft -n '__fish_seen_subcommand_from merge worktree-merge' -l source-worktree -x -a 'clean any' -d 'Source worktree requirement (gate policy)'
 complete -c daft -n '__fish_seen_subcommand_from merge worktree-merge' -l skip-hooks -r -d 'Skip hook jobs by selector (never policy)'
+
 complete -c daft -n '__fish_seen_subcommand_from merge worktree-merge' -l skip-tag -r -d 'Skip hook jobs carrying TAG'
 complete -c daft -n '__fish_seen_subcommand_from merge worktree-merge' -l only-tag -r -d 'Run only pre-merge jobs carrying TAG'
 complete -c daft -n '__fish_seen_subcommand_from merge worktree-merge' -l format -x -a 'json yaml toon markdown' -d 'Machine-readable verdict (start mode only)'

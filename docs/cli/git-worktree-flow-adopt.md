@@ -93,6 +93,7 @@ git worktree-flow-adopt [OPTIONS] [REPOSITORY_PATH]
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 | `--trust-hooks` | Trust the repository and allow hooks to run without prompting |  |
 | `--skip-hooks <SELECTOR>` | Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated |  |
+| `--hooks <MODE>` | How this run's hook jobs execute | `auto` |
 | `--dry-run` | Show what would be done without making any changes |  |
 
 ## Global Options

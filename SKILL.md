@@ -585,7 +585,14 @@ process manages them and writes output to log files.
 - If a dependency fails or is cancelled, the dependent job is recorded as
   `Skipped` in `daft hooks jobs` listings.
 - `background: true` at the hook level sets the default for all its jobs.
-- `DAFT_NO_BACKGROUND_JOBS=1` promotes everything to foreground (CI, debugging).
+- `--hooks <auto|foreground|background|off>` picks how a run's hook phase
+  executes, on every command that fires hooks: `go`, `start`, `clone`, `adopt`,
+  `merge`. `foreground` runs background jobs inline and waits (CI, debugging); a
+  promoted job's failure then fails the hook, which for `worktree-post-create`
+  aborts the command. `off` is exactly `--skip-hooks all`. It is orthogonal to
+  `--skip-hooks`, which picks _which_ jobs run, so the two compose.
+  `DAFT_NO_BACKGROUND_JOBS=1` promotes for commands without the flag. Promoted
+  jobs keep the standard job timeout.
 - `daft hooks jobs` lists, cancels, retries, and prunes records; removing a
   worktree cancels its running background jobs.
 

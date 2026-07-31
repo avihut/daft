@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-checkout \- Create a worktree for an existing branch, or a new branch with \-b
 .SH SYNOPSIS
-\fBgit\-worktree\-checkout\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
+\fBgit\-worktree\-checkout\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
 .SH DESCRIPTION
 .PP
 Creates a new worktree for an existing local or remote branch. The worktree
@@ -86,6 +86,23 @@ Skip the repo\*(Aqs pre\-push hook on the automatic upstream push
 .TP
 \fB\-\-skip\-hooks\fR \fI<SELECTOR>\fR
 Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma\-separated
+.TP
+\fB\-\-hooks\fR \fI<MODE>\fR [default: auto]
+How this run\*(Aqs hook jobs execute
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto: Honor each job\*(Aqs own `background:` declaration — the default
+.IP \(bu 2
+foreground: Run every job inline and wait for the whole phase to finish
+.IP \(bu 2
+background: Dispatch every job to the coordinator and return without waiting
+.IP \(bu 2
+off: Skip the hook phase entirely — equivalent to `\-\-skip\-hooks all`
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
