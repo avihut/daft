@@ -326,7 +326,8 @@ pub fn execute_yaml_hook_with_rc(
                     job.background,
                     hook_def.background,
                 ),
-                reason: crate::hooks::job_adapter::SkipCause::Requested.reason(),
+                reason: crate::hooks::job_adapter::SkipCause::Requested
+                    .reason(filter.skip.origin_label()),
                 kind: crate::hooks::job_adapter::SkipKind::Tag,
             });
         }
@@ -357,9 +358,10 @@ pub fn execute_yaml_hook_with_rc(
         // dangerous in the exclude direction.
         if !filter.skip.is_empty() {
             let cascade = crate::hooks::job_adapter::compute_skip_cascade(&jobs, &filter.skip);
+            let origin = filter.skip.origin_label();
             for sel in &cascade.unmatched {
                 output.warning(&format!(
-                    "--skip-hooks: no job or tag matched '{sel}' in hook '{hook_name}'"
+                    "{origin}: no job or tag matched '{sel}' in hook '{hook_name}'"
                 ));
             }
             if !cascade.excluded.is_empty() {
@@ -384,7 +386,7 @@ pub fn execute_yaml_hook_with_rc(
                                         crate::hooks::job_adapter::SkipKind::NotRun
                                     }
                                 },
-                                reason: cause.reason(),
+                                reason: cause.reason(filter.skip.origin_label()),
                             });
                             false
                         }
