@@ -717,6 +717,33 @@ test_remove_unresolvable_path_echoes_verbatim() {
     return 0
 }
 
+# #813: the same miss, one line further down. A path argument that matched no
+# worktree reaches git as `refs/heads/../feature/nope`, and git's refname
+# complaint used to surface verbatim behind "failed to check if branch
+# exists" — a diagnosis of the wrong failure.
+test_remove_unresolvable_path_error_explains_the_miss() {
+    local remote_repo=$(create_test_remote "test-repo-bd-miss-err" "main")
+
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-bd-miss-err/main"
+
+    local err
+    err=$(daft remove ../feature/nope 2>&1 || true)
+    if ! echo "$err" | grep -q "no worktree at that path, and not a valid branch name"; then
+        log_error "error did not explain the miss: $err"
+        return 1
+    fi
+    if echo "$err" | grep -q "failed to check if branch exists"; then
+        log_error "error still leaks git's refname complaint: $err"
+        return 1
+    fi
+    if ! echo "$err" | grep -q -- "../feature/nope"; then
+        log_error "error dropped the user's spelling: $err"
+        return 1
+    fi
+    return 0
+}
+
 # --- Tests for new git-worktree-branch -d/-D command ---
 
 # Test basic branch delete with -d flag
@@ -1004,6 +1031,7 @@ run_branch_delete_tests() {
     run_test "remove_dot_header_names_branch" "test_remove_dot_header_names_branch"
     run_test "remove_dot_header_survives_validation_failure" "test_remove_dot_header_survives_validation_failure"
     run_test "remove_unresolvable_path_echoes_verbatim" "test_remove_unresolvable_path_echoes_verbatim"
+    run_test "remove_unresolvable_path_error_explains_the_miss" "test_remove_unresolvable_path_error_explains_the_miss"
 
     log "Running git-worktree-branch -d/-D integration tests..."
 

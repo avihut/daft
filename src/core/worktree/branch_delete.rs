@@ -728,6 +728,17 @@ fn is_wildcard_pattern(arg: &str) -> bool {
     arg.contains(['*', '?'])
 }
 
+/// True when `arg` reads as a filesystem path rather than a branch name.
+///
+/// Deliberately narrow: only the leading spellings git forbids in a refname
+/// (`.`, `..`, a leading slash) qualify, so this can never reclassify a
+/// legitimate branch. A bare `feat/thing` stays a branch name here even
+/// though [`resolve_single_arg`] would also try it as a directory —
+/// misjudging that direction would replace a real git error with a guess.
+fn looks_like_path(arg: &str) -> bool {
+    matches!(arg, "." | "..") || ["/", "./", "../"].iter().any(|p| arg.starts_with(p))
+}
+
 /// Glob-style match over a whole name: `*` matches any run of characters
 /// (including none), `?` matches exactly one, everything else is literal.
 fn wildcard_match(pattern: &str, text: &str) -> bool {
@@ -1316,7 +1327,17 @@ fn validate_branches(
             Err(e) => {
                 errors.push(ValidationError {
                     branch: branch.clone(),
-                    message: format!("failed to check if branch exists: {e}"),
+                    // A path-shaped argument only reaches here because it
+                    // matched no worktree, so git is being asked about
+                    // `refs/heads/../feat/nope` and answers with a refname
+                    // complaint. Report the miss the user made rather than
+                    // the plumbing failure it turned into; a genuine git
+                    // failure on a real branch name keeps the raw detail.
+                    message: if looks_like_path(branch) {
+                        "no worktree at that path, and not a valid branch name".to_string()
+                    } else {
+                        format!("failed to check if branch exists: {e}")
+                    },
                 });
                 continue;
             }
@@ -2679,6 +2700,27 @@ mod tests {
             header_seed(&params(vec!["a".into(), "b".into(), "c".into()])),
             "Removing 3 branches"
         );
+    }
+
+    /// The path classifier gates a *diagnosis*, so a false positive would
+    /// replace a real git failure with a wrong explanation. Only the
+    /// spellings git forbids in a refname may qualify.
+    #[test]
+    fn looks_like_path_never_claims_a_branch_name() {
+        for arg in [".", "..", "./x", "../feat/nope", "/abs/path"] {
+            assert!(looks_like_path(arg), "{arg} should read as a path");
+        }
+        for arg in [
+            "feat/thing",
+            "main",
+            "release-2",
+            "feat.x",
+            "v1.2.3",
+            "main-fork*",
+            "a..b",
+        ] {
+            assert!(!looks_like_path(arg), "{arg} should read as a branch name");
+        }
     }
 
     #[test]
