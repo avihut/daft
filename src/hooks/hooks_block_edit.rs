@@ -9,10 +9,15 @@
 //! wrong place, broke an anchor, or mis-quoted a value is rejected before
 //! anything reaches disk.
 //!
-//! Appending only. `daft hooks import` runs against a config that does not
-//! yet define the stages being imported (a native stage would have taken
-//! precedence and made the import pointless), so there is no merge case to
-//! get wrong.
+//! Adding only, never replacing. `daft hooks import` runs against a config
+//! that does not yet define the stages being imported (a native stage would
+//! have taken precedence and made the import pointless), so a name collision
+//! is refused outright rather than merged.
+//!
+//! Where the entries land depends on the document: a file with no `hooks:`
+//! key gets one appended, and a file that already has one gets them inserted
+//! inside it at its own indentation. The second case is the common one —
+//! anyone already using daft for worktree hooks has that block.
 //!
 //! Pure text → text; file IO lives in the command layer.
 
@@ -78,20 +83,59 @@ pub fn append_blocks(
         }
     }
 
-    // Editing an existing block textually would mean finding it, matching its
-    // indentation, and threading around comments inside it. Appending a
-    // second `hooks:` key is not valid YAML, so a document that already has
-    // one is declined with a snippet instead — a hand merge the user can see
-    // beats a clever edit they cannot.
-    if !hooks.is_empty() && has_key(text, "hooks") {
-        return Err(BlockEditError::Unsupported(unsupported_message(
-            "hooks", hooks, provenance,
-        )));
+    // A second top-level `hooks:` key is not valid YAML, so when the document
+    // already has one the entries go *inside* it, at its own indentation.
+    // That is the common case, not an exotic one: anyone already using daft
+    // for worktree hooks has a `hooks:` block, and telling them to paste by
+    // hand would make the import useless to exactly the people it is for.
+    // Shapes the insertion cannot read (a flow mapping, an inline scalar) are
+    // still declined with a snippet.
+    let mut out = text.to_string();
+    let mut inserted_any = false;
+    for (key, entries) in [("hooks", hooks), ("tasks", tasks)] {
+        if entries.is_empty() || !has_key(&out, key) {
+            continue;
+        }
+        match insert_into_block(&out, key, entries, provenance) {
+            Some(edited) => {
+                out = edited;
+                inserted_any = true;
+            }
+            None => {
+                return Err(BlockEditError::Unsupported(unsupported_message(
+                    key, entries, provenance,
+                )));
+            }
+        }
     }
-    if !tasks.is_empty() && has_key(text, "tasks") {
-        return Err(BlockEditError::Unsupported(unsupported_message(
-            "tasks", tasks, provenance,
-        )));
+    if inserted_any {
+        // Whatever is left goes through the append path below; both halves are
+        // validated together at the end.
+        let hooks_left: Entries = if has_key(text, "hooks") {
+            Entries::new()
+        } else {
+            hooks.clone()
+        };
+        let tasks_left: Entries = if has_key(text, "tasks") {
+            Entries::new()
+        } else {
+            tasks.clone()
+        };
+        if !hooks_left.is_empty() || !tasks_left.is_empty() {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+            out.push_str(&format!("# {provenance}\n"));
+            if !hooks_left.is_empty() {
+                out.push_str(&render_block("hooks", &hooks_left)?);
+            }
+            if !tasks_left.is_empty() {
+                out.push_str(&render_block("tasks", &tasks_left)?);
+            }
+        }
+        validate(text, &out, hooks, tasks)?;
+        return Ok(out);
     }
 
     let mut out = text.to_string();
@@ -126,20 +170,88 @@ pub fn fresh_document(
 
 /// Render one top-level block.
 fn render_block(key: &str, entries: &Entries) -> Result<String, BlockEditError> {
-    // Serialized as a map so serde does the quoting, then indented under the
-    // block key. Hand-rendering the bodies would mean reimplementing YAML
-    // escaping for every field a hook can carry.
+    Ok(format!("{key}:\n{}", render_entries(entries, 2)?))
+}
+
+/// Render entries as YAML at `indent` spaces, with no enclosing key.
+fn render_entries(entries: &Entries, indent: usize) -> Result<String, BlockEditError> {
+    // Serialized as a map so serde does the quoting, then indented. Hand-
+    // rendering the bodies would mean reimplementing YAML escaping for every
+    // field a hook can carry.
     let body = serde_yaml::to_string(entries)
-        .map_err(|e| BlockEditError::Validation(format!("could not serialize {key}: {e}")))?;
-    let mut out = format!("{key}:\n");
+        .map_err(|e| BlockEditError::Validation(format!("could not serialize entries: {e}")))?;
+    let pad = " ".repeat(indent);
+    let mut out = String::new();
     for line in body.lines() {
         if line.trim().is_empty() {
             out.push('\n');
         } else {
-            out.push_str(&format!("  {line}\n"));
+            out.push_str(&format!("{pad}{line}\n"));
         }
     }
     Ok(out)
+}
+
+/// Insert `entries` at the end of the existing top-level `key:` block.
+///
+/// Returns `None` for a shape this cannot read — an inline value after the
+/// colon (`hooks: {…}`), where finding "the end of the block" has no textual
+/// answer. The caller declines with a paste-me snippet in that case.
+///
+/// A wrong insertion point is not a silent corruption risk: [`validate`]
+/// re-parses the result and compares it against the input before anything is
+/// written.
+fn insert_into_block(text: &str, key: &str, entries: &Entries, provenance: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.trim_end() == format!("{key}:"))?;
+
+    // The block runs until the next line at column zero that is not blank and
+    // not a comment. A trailing comment belongs to whatever follows it, so
+    // the insert goes after the last *indented* line instead.
+    let mut end = lines.len();
+    for (i, line) in lines.iter().enumerate().skip(start + 1) {
+        let is_top_level = !line.starts_with([' ', '\t']) && !line.trim().is_empty();
+        if is_top_level {
+            end = i;
+            break;
+        }
+    }
+    let last_content = (start + 1..end)
+        .rev()
+        .find(|&i| !lines[i].trim().is_empty())
+        .map(|i| i + 1)
+        .unwrap_or(start + 1);
+
+    // Match the block's own indentation rather than assuming two spaces — a
+    // config indented four keeps looking indented four.
+    let indent = lines[start + 1..end]
+        .iter()
+        .find(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+        .map(|line| line.len() - line.trim_start().len())
+        .filter(|n| *n > 0)
+        .unwrap_or(2);
+
+    let body = render_entries(entries, indent).ok()?;
+    let pad = " ".repeat(indent);
+
+    let mut out: Vec<String> = lines[..last_content]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    out.push(String::new());
+    out.push(format!("{pad}# {provenance}"));
+    for line in body.lines() {
+        out.push(line.to_string());
+    }
+    out.extend(lines[last_content..].iter().map(|s| s.to_string()));
+
+    let mut joined = out.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    Some(joined)
 }
 
 /// Whether `text` has a top-level `key:` line.
@@ -284,11 +396,58 @@ shared:
     }
 
     #[test]
-    fn an_existing_hooks_block_is_declined_with_a_snippet_to_paste() {
-        // Appending a second `hooks:` key is not valid YAML, and editing the
-        // existing one textually means threading around its comments. A hand
-        // merge the user can see beats a clever edit they cannot.
-        let original = "hooks:\n  worktree-post-create:\n    jobs: []\n";
+    fn an_existing_hooks_block_receives_the_entries_inside_it() {
+        // The mainline case: a repository already using daft for worktree
+        // hooks has a `hooks:` block, and an import that told those users to
+        // paste by hand would be useless to exactly the people it is for.
+        let original = "# keep me\nhooks:\n  # and me\n  worktree-post-create:\n    jobs: []\n";
+        let out = append_blocks(
+            original,
+            &hooks(&[("pre-commit", "lint")]),
+            &Entries::new(),
+            "from x",
+        )
+        .unwrap();
+
+        let parsed: YamlConfig = serde_yaml::from_str(&out).unwrap();
+        assert!(parsed.hooks.contains_key("pre-commit"));
+        assert!(
+            parsed.hooks.contains_key("worktree-post-create"),
+            "the entry that was already there must survive"
+        );
+        assert!(out.contains("# keep me"), "{out}");
+        assert!(out.contains("# and me"), "{out}");
+        assert!(
+            out.contains("  # from x"),
+            "provenance sits at the block's indentation:\n{out}"
+        );
+        assert_eq!(
+            out.matches("hooks:").count(),
+            1,
+            "a second top-level hooks: key would not be valid YAML:\n{out}"
+        );
+    }
+
+    #[test]
+    fn an_existing_block_keeps_its_own_indentation() {
+        let original = "hooks:\n    worktree-post-create:\n        jobs: []\n";
+        let out = append_blocks(
+            original,
+            &hooks(&[("pre-commit", "lint")]),
+            &Entries::new(),
+            "x",
+        )
+        .unwrap();
+        assert!(out.contains("\n    pre-commit:"), "{out}");
+        let parsed: YamlConfig = serde_yaml::from_str(&out).unwrap();
+        assert!(parsed.hooks.contains_key("pre-commit"));
+    }
+
+    #[test]
+    fn a_flow_mapping_block_is_declined_with_a_snippet_to_paste() {
+        // `hooks: {…}` has no textual "end of block" to insert before, so it
+        // gets the hand-merge path rather than a guess.
+        let original = "hooks: {worktree-post-create: {jobs: []}}\n";
         let err = append_blocks(
             original,
             &hooks(&[("pre-commit", "lint")]),
@@ -301,6 +460,28 @@ shared:
         assert!(
             msg.contains("pre-commit"),
             "the snippet must be included:\n{msg}"
+        );
+    }
+
+    #[test]
+    fn a_trailing_comment_stays_attached_to_what_follows_it() {
+        let original = "hooks:\n  worktree-post-create:\n    jobs: []\n\n# about tasks\ntasks:\n  t:\n    jobs: []\n";
+        let out = append_blocks(
+            original,
+            &hooks(&[("pre-commit", "lint")]),
+            &Entries::new(),
+            "x",
+        )
+        .unwrap();
+        let comment = out.find("# about tasks").expect("comment survives");
+        let tasks_key = out.find("\ntasks:").expect("tasks survives");
+        assert!(
+            comment < tasks_key,
+            "the comment must stay above tasks:, not be orphaned by the insert:\n{out}"
+        );
+        assert!(
+            out.find("pre-commit:").unwrap() < comment,
+            "the insert belongs inside hooks:, above that comment:\n{out}"
         );
     }
 

@@ -765,7 +765,7 @@ hooks:
                 map.insert(
                     "cmd1".to_string(),
                     CommandDef {
-                        run: Some("echo cmd1".to_string()),
+                        run: Some(RunCommand::Simple("echo cmd1".to_string())),
                         ..Default::default()
                     },
                 );
