@@ -620,12 +620,18 @@ process manages them and writes output to log files.
   affects legacy `.daft/hooks/*` scripts. All of it is orthogonal to
   `--skip-hooks`, which picks _which_ jobs run, so the two compose.
   `DAFT_NO_BACKGROUND_JOBS=1` promotes for commands without the flag. Promoted
-  jobs keep the standard job timeout.
+  jobs keep the standard job timeout. Git stages get no flag — git runs the shim
+  — so daft settles it per stage: one git blocks on (`pre-commit`, `commit-msg`,
+  `pre-push`, …) runs its jobs inline whatever they declared, and the rest
+  (`post-commit`, `git-post-merge`, `post-checkout`, `post-rewrite`, …) detach
+  normally.
 - `daft hooks jobs` lists, cancels, retries, and prunes records; removing a
   worktree cancels its running background jobs.
 
 When generating `daft.yml`, mark jobs `background: true` when they warm caches,
-pre-build, or do other work whose results are not needed immediately.
+pre-build, or do other work whose results are not needed immediately. Never on a
+job whose verdict something waits for — a gate git blocks on runs it inline
+anyway, and `pre-merge` detaches and stops gating.
 
 ### Groups
 

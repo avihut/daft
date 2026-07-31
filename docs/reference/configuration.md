@@ -452,11 +452,10 @@ Each strategy decides the branch owner from the commits in the range
 | `daft.hooks.timeout`       | `300`                   | Hook execution timeout in seconds                                           |
 | `daft.hooks.trustPrune`    | `true`                  | Auto-prune stale entries from the trust database (background, once per 24h) |
 
-Two environment variables sit outside git config: `DAFT_HOOKS=0` disables
-git-stage dispatch entirely (the escape hatch for a script that invokes git
-several times, where `--no-verify` cannot reach), and `DAFT_STAGE_GUARD` names
-the stage currently running so a job that re-enters it stands down — daft sets
-that one itself.
+`DAFT_HOOKS=0` is the escape hatch that sits outside git config, for a script
+that invokes git several times where `--no-verify` cannot reach. It and
+`DAFT_STAGE_GUARD` are listed under
+[Environment Variables](#environment-variables).
 
 ### Per-Hook Settings
 
@@ -553,6 +552,8 @@ git config daft.hooks.worktreePostCreate.failMode warn
 | Variable                  | Description                                                                                                              |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `DAFT_CD_FILE`            | Temp file path for shell wrapper CD communication (set by shell wrappers)                                                |
+| `DAFT_HOOKS`              | Set to `0`/`false`/`off`/`no` to disable git-stage dispatch entirely (see [Git stages](/hooks/git-stages))               |
+| `DAFT_STAGE_GUARD`        | The git stage currently running, so a job that re-enters it stands down. Daft sets this itself                           |
 | `DAFT_NO_HINTS`           | Set to suppress contextual hint messages                                                                                 |
 | `DAFT_NO_TRUST_PRUNE`     | Set to disable automatic trust database pruning                                                                          |
 | `DAFT_NO_UPDATE_CHECK`    | Set to disable version update notifications                                                                              |

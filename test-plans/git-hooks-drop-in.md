@@ -30,6 +30,12 @@ git init -q -b main "$WORK/repo" && cd "$WORK/repo"
 - [ ] `daft hooks run pre-commit` fires the stage by hand without committing
 - [ ] A `commit-msg` job sees the message file as `{1}` and as
       `$DAFT_COMMIT_MSG_FILE`
+- [ ] A **failing `pre-commit` job marked `background: true` still blocks the
+      commit**, and the run names the job it ran inline
+- [ ] The same job under `post-commit` detaches instead — the commit returns
+      immediately and the job shows up in `daft hooks jobs`
+- [ ] `daft hooks run pre-commit` honors `background: true` (nothing is waiting
+      on the verdict, so it detaches)
 - [ ] `git-post-merge` in `daft.yml` fires on a real `git merge`; a plain
       `post-merge` key does **not** (it is daft's own lifecycle hook)
 
