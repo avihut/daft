@@ -116,9 +116,13 @@ pub struct Args {
 
     /// How this run's hook phase executes. `auto` honors each job's own
     /// `background:`; `foreground` runs every job inline and waits, so a
-    /// promoted job's failure counts against the hook outcome; `off` skips
-    /// the phase (same as `--skip-hooks all`). Orthogonal to `--skip-hooks`,
-    /// which selects *which* jobs run. See daft-hooks(1).
+    /// promoted job's failure counts against the hook outcome; `background`
+    /// detaches the whole phase, but only where that changes nothing but
+    /// timing — it declines, with a reason, for a phase daft still acts on or
+    /// one declaring an execution order background jobs cannot preserve;
+    /// `off` skips the phase (same as `--skip-hooks all`), and is the only
+    /// mode that also reaches legacy `.daft/hooks/*` scripts. Orthogonal to
+    /// `--skip-hooks`, which selects *which* jobs run. See daft-hooks(1).
     #[arg(
         long,
         value_name = "MODE",
@@ -142,9 +146,7 @@ pub fn run() -> Result<()> {
 
     // `--hooks off` lowers to the `all` selector so the gates below (and the
     // post-adopt short-circuit) see it through one mechanism.
-    if args.hooks == crate::hooks::HookMode::Off && !skip_hooks_all(&args.skip_hooks) {
-        args.skip_hooks.push("all".to_string());
-    }
+    args.hooks.lower_off_into(&mut args.skip_hooks);
 
     if args.trust_hooks && skip_hooks_all(&args.skip_hooks) {
         anyhow::bail!(
@@ -181,7 +183,10 @@ fn run_adopt(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         output.start_spinner("Converting to worktree layout...");
     }
     let hooks_config = crate::core::settings::load_hooks_config()?;
-    let executor = HookExecutor::new(hooks_config)?;
+    // The bridge fires adopt's own hook phase, so it needs the run's mode and
+    // selectors just as much as the post-adopt executor below — an
+    // unconfigured executor here made `--hooks off` a lie for this firing.
+    let executor = HookExecutor::new(hooks_config)?.with_hook_mode(args.hooks, &args.skip_hooks);
     let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
         flow_adopt::execute(&params, &mut bridge)

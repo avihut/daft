@@ -111,26 +111,38 @@ pub enum HookType {
 }
 
 impl HookType {
-    /// Whether daft performs the operation this hook precedes *immediately
-    /// after* it returns — i.e. whether the phase is a gate.
+    /// Whether daft still has work to do in the same command *after* this
+    /// hook returns — work that either depends on the hook or destroys what
+    /// the hook was running in.
     ///
-    /// The distinction is what makes `--hooks background` safe to offer.
-    /// Detaching a post-* phase is the ordinary background-job bargain: the
-    /// command reports success and you follow the work in `daft hooks jobs`.
-    /// Detaching a gate is not the same bargain — it does not delay the gate,
-    /// it removes it, because the gated operation has already happened by the
-    /// time the job runs:
+    /// This is what makes `--hooks background` safe to offer. Detaching a
+    /// phase daft is finished with is the ordinary background-job bargain:
+    /// the command reports success and you follow the work in
+    /// `daft hooks jobs`. Detaching a phase daft is *not* finished with is a
+    /// different thing entirely — the follow-on work races it or deletes it
+    /// out from under itself:
     ///
     /// - `PreCreate` is awaited with `?` before `git worktree add`
     ///   (`core::worktree::checkout`), so a detached job cannot refuse
-    ///   creation.
+    ///   creation — the gate is not deferred, it is removed.
     /// - `PreRemove` runs *inside* the worktree being deleted, so a detached
     ///   job has its working directory removed underneath it.
     /// - `PreMerge` is the merge gate; detached, the merge lands first.
-    pub fn gates_the_operation_after_it(&self) -> bool {
+    /// - `PostClone` is followed immediately by the `worktree-post-create`
+    ///   phase for every branch the clone materializes. The two phases
+    ///   dispatch to separate coordinators and `needs:` is scoped within a
+    ///   single hook, so nothing could restore the ordering that detaching
+    ///   post-clone throws away — repo-root setup would race the per-worktree
+    ///   builds that consume it.
+    ///
+    /// Not every hazard is a property of the hook *type*: `merge`'s
+    /// ephemeral-target path deletes the very worktree `post-merge` ran in,
+    /// which is a property of the invocation. Those are handled at their call
+    /// sites by downgrading the mode.
+    pub fn precedes_more_daft_work(&self) -> bool {
         matches!(
             self,
-            HookType::PreCreate | HookType::PreRemove | HookType::PreMerge
+            HookType::PreCreate | HookType::PreRemove | HookType::PreMerge | HookType::PostClone
         )
     }
 

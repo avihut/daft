@@ -1,0 +1,151 @@
+name: --hooks mode guards — declared ordering and legacy script hooks
+description:
+  "Two places the mode deliberately does something other than the obvious. (1)
+  `--hooks background` declines to detach a phase that declares an execution
+  order: the coordinator schedules `needs:` edges and nothing else, so detaching
+  a `parallel: false` hook would silently reinterpret it as 'run these
+  concurrently'. It runs inline instead and says why. (2) `--hooks off` skips
+  legacy `.daft/hooks/*` scripts, which never reach the YAML executor where the
+  selector plumbing lives — without an explicit gate the flag's own help text is
+  a lie for every repo still on script hooks."
+
+repos:
+  # ── Ordered YAML phase: background must decline ────────────────────────
+  - name: test-ordered-phase
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Ordered phase"
+        commits:
+          - message: "Initial commit"
+      - name: feature/ordered
+        from: main
+    # `parallel: false` is the documented way to serialize a phase without
+    # `needs:` edges. Both jobs append to one file, so concurrent execution
+    # is observable as a wrong ORDER rather than a missing marker — a
+    # detached phase would race and could write either sequence.
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          parallel: false
+          jobs:
+            - name: first
+              run: echo first >> "$DAFT_WORKTREE_PATH/.order"
+            - name: second
+              run: echo second >> "$DAFT_WORKTREE_PATH/.order"
+
+  # ── Legacy script hooks: off must skip them ───────────────────────────
+  - name: test-legacy-scripts
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Legacy scripts"
+        commits:
+          - message: "Initial commit"
+      - name: feature/skipped
+        from: main
+      - name: feature/type-skipped
+        from: main
+      - name: feature/allowed
+        from: main
+    hook_scripts:
+      - name: worktree-post-create
+        content: |
+          #!/bin/bash
+          touch "$DAFT_WORKTREE_PATH/.legacy-ran"
+
+steps:
+  # ── Guard 1: a declared order is preserved, not detached ──────────────
+  - name: Clone the ordered-phase repo
+    run: daft clone --layout contained $REMOTE_TEST_ORDERED_PHASE
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-ordered-phase/main"
+
+  - name: Trust the repo so its hooks run
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-ordered-phase/main"
+    expect:
+      exit_code: 0
+
+  - name: "--hooks background declines an ordered phase and explains why"
+    run: daft go --hooks background feature/ordered 2>&1
+    cwd: "$WORK_DIR/test-ordered-phase/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "does not apply to worktree-post-create"
+        - "parallel: false"
+
+  # The phase ran INLINE, so the file is complete the moment the command
+  # returns — no polling — and in declaration order. Detached, the two jobs
+  # would have been handed to the coordinator in one wave.
+  - name: The ordered phase ran inline, in order
+    run: |
+      f="$WORK_DIR/test-ordered-phase/feature/ordered/.order"
+      test -f "$f" || { echo "ORDER_FILE_MISSING"; exit 1; }
+      printf 'first\nsecond\n' > /tmp/daft-expected-order.$$
+      if diff -q "$f" /tmp/daft-expected-order.$$ >/dev/null; then
+        echo "ORDER_PRESERVED"
+      else
+        echo "ORDER_WRONG"; cat "$f"
+      fi
+      rm -f /tmp/daft-expected-order.$$
+    expect:
+      exit_code: 0
+      output_contains:
+        - "ORDER_PRESERVED"
+
+  # ── Guard 2: off skips legacy script hooks ───────────────────────────
+  - name: Clone the legacy-script repo
+    run: daft clone --layout contained $REMOTE_TEST_LEGACY_SCRIPTS
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-legacy-scripts/main"
+
+  - name: Trust it, so a skip cannot be confused with an untrusted skip
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-legacy-scripts/main"
+    expect:
+      exit_code: 0
+
+  - name: "--hooks off skips the legacy script hook"
+    run: daft go --hooks off feature/skipped 2>&1
+    cwd: "$WORK_DIR/test-legacy-scripts/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-legacy-scripts/feature/skipped"
+      files_not_exist:
+        - "$WORK_DIR/test-legacy-scripts/feature/skipped/.legacy-ran"
+
+  # The gate is `user_requested_skip`, which is satisfied by BOTH whole-fire
+  # opt-outs — `all` and a hook-type selector naming this hook. `--hooks off`
+  # above only exercises the first, so the second gets its own step rather
+  # than riding on a shared implementation nobody proved.
+  - name: A hook-type selector skips the legacy script too
+    run: daft go --skip-hooks worktree-post-create feature/type-skipped 2>&1
+    cwd: "$WORK_DIR/test-legacy-scripts/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-legacy-scripts/feature/type-skipped"
+      files_not_exist:
+        - "$WORK_DIR/test-legacy-scripts/feature/type-skipped/.legacy-ran"
+
+  # The contrast that makes the two steps above mean something: the same
+  # trusted repo, the same script, no flag — it runs. Without this, a scenario
+  # where legacy hooks were broken for an unrelated reason would still pass.
+  - name: Without the flag the same script runs
+    run: daft go feature/allowed 2>&1
+    cwd: "$WORK_DIR/test-legacy-scripts/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-legacy-scripts/feature/allowed/.legacy-ran"

@@ -309,9 +309,12 @@ pub struct Args {
     /// How the merge's hook phase executes. `auto` honors each job's own
     /// `background:`; `foreground` runs every pre-merge/post-merge job inline
     /// and waits — a backgrounded gate job otherwise detaches and stops
-    /// gating; `off` skips the phase (same as `--skip-hooks all`). Scoped to
-    /// the same jobs `--skip-hooks` reaches: the core gate-policy checks run
-    /// regardless. See daft-hooks(1).
+    /// gating; `background` detaches post-merge, while the pre-merge gate
+    /// always runs inline, as does post-merge when the merge used an
+    /// ephemeral worktree or `--remove-branch`, both of which delete the
+    /// directory the jobs would run in; `off` skips the phase (same as
+    /// `--skip-hooks all`). Scoped to the same jobs `--skip-hooks` reaches:
+    /// the core gate-policy checks run regardless. See daft-hooks(1).
     #[arg(
         long,
         value_name = "MODE",
@@ -958,6 +961,9 @@ pub fn run() -> Result<()> {
     // config error ("no jobs matching tags") and post-merge's Warn fail
     // mode then printed on every otherwise-successful merge.
     let only_tags = args.only_tag.clone();
+    // The ephemeral-promotion fire below happens after the runner has taken
+    // ownership of the filter, and it configures its own executor.
+    let promotion_filter = hook_filter.clone();
     let timeline_handle = timeline.as_ref().map(|tl| tl.handle());
     let (outcome_result, gate_invocations) = {
         let mut runner = MergeHookRunner::new(
@@ -969,6 +975,7 @@ pub fn run() -> Result<()> {
             hook_filter,
             only_tags,
             args.hooks,
+            cleanup_requested,
             hooks_output_config.clone(),
             timeline_handle,
         )?;
@@ -1145,6 +1152,8 @@ pub fn run() -> Result<()> {
                     branch,
                     &project_root,
                     &settings,
+                    promotion_filter.clone(),
+                    args.hooks,
                 )
             {
                 eprintln!("warning: worktree-post-create hook failed: {e}");
@@ -1562,9 +1571,17 @@ fn fire_worktree_post_create_hook(
     branch: &str,
     project_root: &Path,
     settings: &DaftSettings,
+    filter: crate::hooks::yaml_executor::JobFilter,
+    hook_mode: crate::hooks::HookMode,
 ) -> Result<()> {
     let hooks_config = load_hooks_config()?;
-    let executor = HookExecutor::new(hooks_config)?;
+    // This fires a real hook phase, so it takes the run's selectors and mode
+    // like every other executor the command builds. The promoted worktree is
+    // canonical (not the ephemeral scratch path), so it outlives the command
+    // and `--hooks background` is safe here.
+    let executor = HookExecutor::new(hooks_config)?
+        .with_job_filter(filter)
+        .with_hook_execution_mode(hook_mode);
 
     let git_dir = get_git_common_dir()?;
 
@@ -1623,6 +1640,13 @@ struct MergeHookRunner<'a> {
     /// detail, and this id is what ties the two together. A fire that never
     /// mints one (hooks disabled, hook-level skip) contributes nothing.
     invocations: Vec<(HookType, String)>,
+    /// The run's `--hooks` mode, kept so `fire_post_merge` can pin a fire
+    /// back to `Auto` and restore it afterwards.
+    hook_mode: crate::hooks::HookMode,
+    /// Whether cleanup removes the source worktree after the merge
+    /// (`--remove-branch` / `daft.merge.cleanup = remove-branch`), which on
+    /// the ref-only fast-forward path is the directory `post-merge` ran in.
+    cleanup_removes_source: bool,
 }
 
 impl<'a> MergeHookRunner<'a> {
@@ -1636,6 +1660,7 @@ impl<'a> MergeHookRunner<'a> {
         filter: crate::hooks::yaml_executor::JobFilter,
         only_tags: Vec<String>,
         hook_mode: crate::hooks::HookMode,
+        cleanup_removes_source: bool,
         output_config: HookOutputConfig,
         timeline: Option<TimelineHandle>,
     ) -> Result<Self> {
@@ -1655,6 +1680,8 @@ impl<'a> MergeHookRunner<'a> {
             output_config,
             timeline,
             invocations: Vec::new(),
+            hook_mode,
+            cleanup_removes_source,
         })
     }
 
@@ -1738,11 +1765,40 @@ impl<'a> HookRunner for MergeHookRunner<'a> {
     }
 
     fn fire_post_merge(&mut self, ctx: &MergeHookContext) -> Result<()> {
+        // `--hooks background` must not detach this fire when the directory
+        // the jobs would run in does not outlive the command. Two shapes do
+        // that, and neither is a property of the hook *type* that
+        // `precedes_more_daft_work` could carry:
+        //
+        //   * an ephemeral target — core created `.daft-tmp/<branch>` to
+        //     merge into, pointed the hook cwd at it, and removes it right
+        //     after this returns;
+        //   * `--remove-branch` — cleanup removes the source worktree, which
+        //     is the cwd fallback on the ref-only fast-forward path.
+        //
+        // Detached, every job would die ENOENT and show red in
+        // `daft hooks jobs` for a merge that actually succeeded. Pin the fire
+        // back to `Auto` (jobs the config declared `background:` still
+        // detach — that is the author's own choice, unchanged by this flag)
+        // and restore afterwards, the same swap `fire_pre_merge` does for
+        // `--only-tag`.
+        let ephemeral = ctx.env.get("DAFT_MERGE_EPHEMERAL").map(String::as_str) == Some("true");
+        let pin_inline = (ephemeral || self.cleanup_removes_source)
+            && self.hook_mode == crate::hooks::HookMode::Background;
+        if pin_inline {
+            self.executor
+                .set_hook_execution_mode(crate::hooks::HookMode::Auto);
+        }
+
         // post-merge's fail mode is Warn by default, so executor.execute()
         // won't return Err. If the user has configured it to Abort, we
         // still surface the error here — the core layer will log it and
         // not roll back the merge.
-        self.fire(HookType::PostMerge, ctx)
+        let result = self.fire(HookType::PostMerge, ctx);
+        if pin_inline {
+            self.executor.set_hook_execution_mode(self.hook_mode);
+        }
+        result
     }
 
     fn pause_spinner(&mut self) {

@@ -589,7 +589,14 @@ process manages them and writes output to log files.
   executes, on every command that fires hooks: `go`, `start`, `clone`, `adopt`,
   `merge`. `foreground` runs background jobs inline and waits (CI, debugging); a
   promoted job's failure then fails the hook, which for `worktree-post-create`
-  aborts the command. `off` is exactly `--skip-hooks all`. It is orthogonal to
+  aborts the command. `background` detaches the whole phase, but only where that
+  changes nothing but timing: it declines for a phase daft still acts on (every
+  `pre-*` gate, `post-clone`, and `post-merge` when the merge used an ephemeral
+  worktree or `--remove-branch`) and for a phase declaring an execution order
+  background jobs cannot preserve (`parallel: false`, `piped:`, `follow:` —
+  express it with `needs:` instead). A declined phase runs inline and daft says
+  so. `off` is exactly `--skip-hooks all`, and is the only mode that also
+  affects legacy `.daft/hooks/*` scripts. All of it is orthogonal to
   `--skip-hooks`, which picks _which_ jobs run, so the two compose.
   `DAFT_NO_BACKGROUND_JOBS=1` promotes for commands without the flag. Promoted
   jobs keep the standard job timeout.

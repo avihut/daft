@@ -126,8 +126,11 @@ pub struct Args {
     /// How this run's hook phase executes. `auto` honors each job's own
     /// `background:`; `foreground` runs every `post-clone` job inline and
     /// waits, so a promoted job's failure counts against the hook outcome;
-    /// `off` skips the phase (same as `--skip-hooks all`). Orthogonal to
-    /// `--skip-hooks`, which selects *which* jobs run. See daft-hooks(1).
+    /// `background` detaches each worktree's `post-create` phase, while
+    /// `post-clone` itself always runs inline — the per-worktree phases that
+    /// consume its setup follow it immediately; `off` skips the phase (same as
+    /// `--skip-hooks all`). Orthogonal to `--skip-hooks`, which selects
+    /// *which* jobs run. See daft-hooks(1).
     #[arg(
         long,
         value_name = "MODE",
@@ -259,12 +262,9 @@ fn skip_hooks_all(skip_hooks: &[String]) -> bool {
 /// Lower `--hooks off` into the `--skip-hooks all` selector.
 ///
 /// Keeps one mechanism for "no hooks this run" so every existing gate keyed
-/// on [`skip_hooks_all`] applies unchanged. Idempotent: an explicit
-/// `--skip-hooks all` alongside the flag adds nothing.
+/// on [`skip_hooks_all`] applies unchanged.
 fn normalize_hook_mode(args: &mut Args) {
-    if args.hooks == crate::hooks::HookMode::Off && !skip_hooks_all(&args.skip_hooks) {
-        args.skip_hooks.push("all".to_string());
-    }
+    args.hooks.lower_off_into(&mut args.skip_hooks);
 }
 
 /// `--install` implies `--trust-hooks`: bootstrapping your own daft.yml in this
@@ -1486,11 +1486,8 @@ fn create_satellite_worktrees_tui(
                                 });
                             }
                             Ok(executor) => {
-                                let mut executor = executor.with_job_filter(
-                                    crate::hooks::yaml_executor::JobFilter::skipping(
-                                        &shared_skip_hooks,
-                                    ),
-                                );
+                                let mut executor =
+                                    executor.with_hook_mode(hook_mode, &shared_skip_hooks);
                                 if shared_trust_hooks {
                                     if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
                                         let _ = executor.trust_repository_with_fingerprint(

@@ -158,9 +158,13 @@ pub struct Args {
 
     /// How this run's hook phase executes. `auto` honors each job's own
     /// `background:`; `foreground` runs every job inline and waits, so a
-    /// promoted job's failure counts against the hook outcome; `off` skips
-    /// the phase (same as `--skip-hooks all`). Orthogonal to `--skip-hooks`,
-    /// which selects *which* jobs run. See daft-hooks(1).
+    /// promoted job's failure counts against the hook outcome; `background`
+    /// detaches the whole phase, but only where that changes nothing but
+    /// timing — it declines, with a reason, for a phase daft still acts on or
+    /// one declaring an execution order background jobs cannot preserve;
+    /// `off` skips the phase (same as `--skip-hooks all`), and is the only
+    /// mode that also reaches legacy `.daft/hooks/*` scripts. Orthogonal to
+    /// `--skip-hooks`, which selects *which* jobs run. See daft-hooks(1).
     #[arg(
         long,
         value_name = "MODE",
@@ -320,8 +324,12 @@ pub struct GoArgs {
     /// How this run's hook phase executes (only applies when `go` creates a
     /// worktree). `auto` honors each job's own `background:`; `foreground`
     /// runs every job inline and waits, so a promoted job's failure counts
-    /// against the hook outcome; `off` skips the phase (same as
-    /// `--skip-hooks all`). Orthogonal to `--skip-hooks`, which selects
+    /// against the hook outcome; `background` detaches the whole phase, but
+    /// only where that changes nothing but timing — it declines, with a
+    /// reason, for a phase daft still acts on or one declaring an execution
+    /// order background jobs cannot preserve; `off` skips the phase (same as
+    /// `--skip-hooks all`), and is the only mode that also reaches legacy
+    /// `.daft/hooks/*` scripts. Orthogonal to `--skip-hooks`, which selects
     /// *which* jobs run. See daft-hooks(1).
     #[arg(
         long,
@@ -504,9 +512,13 @@ pub struct StartArgs {
 
     /// How this run's hook phase executes. `auto` honors each job's own
     /// `background:`; `foreground` runs every job inline and waits, so a
-    /// promoted job's failure counts against the hook outcome; `off` skips
-    /// the phase (same as `--skip-hooks all`). Orthogonal to `--skip-hooks`,
-    /// which selects *which* jobs run. See daft-hooks(1).
+    /// promoted job's failure counts against the hook outcome; `background`
+    /// detaches the whole phase, but only where that changes nothing but
+    /// timing — it declines, with a reason, for a phase daft still acts on or
+    /// one declaring an execution order background jobs cannot preserve;
+    /// `off` skips the phase (same as `--skip-hooks all`), and is the only
+    /// mode that also reaches legacy `.daft/hooks/*` scripts. Orthogonal to
+    /// `--skip-hooks`, which selects *which* jobs run. See daft-hooks(1).
     #[arg(
         long,
         value_name = "MODE",
@@ -521,7 +533,7 @@ impl StartArgs {
     /// The internal `Args` for creating `branch` from `base` with this
     /// invocation's flags.
     fn to_create_args(&self, branch: String, base: Option<String>) -> Args {
-        Args {
+        let mut args = Args {
             branch_name: branch,
             base_branch_name: base,
             create_branch: true,
@@ -538,7 +550,12 @@ impl StartArgs {
             no_verify: self.no_verify,
             skip_hooks: self.skip_hooks.clone(),
             hooks: self.hooks,
-        }
+        };
+        // Lower `off` here, at the funnel every `start` path builds its
+        // `Args` through, so the raw-selector readers downstream (the
+        // untrusted-related-repo notice) see it the way clone and adopt do.
+        args.hooks.lower_off_into(&mut args.skip_hooks);
+        args
     }
 }
 
@@ -1458,8 +1475,13 @@ fn run_start_cross(
     go_to_repo(&row, None, args, original_dir, source_worktree)
 }
 
-fn run_with_args(args: Args, routing: GoRouting) -> Result<()> {
+fn run_with_args(mut args: Args, routing: GoRouting) -> Result<()> {
     init_logging(args.verbose);
+
+    // The `checkout` / `go` funnel's half of the same lowering
+    // `to_create_args` does for `start`. Idempotent, so the `start` paths
+    // that also land here are unaffected.
+    args.hooks.lower_off_into(&mut args.skip_hooks);
 
     let inside_repo = is_git_repository()?;
     if inside_repo {

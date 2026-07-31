@@ -1607,18 +1607,37 @@ mod tests {
         );
     }
 
-    /// Every `--hooks` mode must be offered everywhere the flag is.
+    /// Every `--hooks` mode must be offered everywhere the flag is, in every
+    /// shell that hand-maintains its list.
     ///
-    /// The generated completions read `HookMode::variants()`, but `daft
-    /// merge`'s live in the `DAFT_FISH_COMPLETIONS` const, which cannot
-    /// interpolate — so that one copy is hand-written and is exactly the kind
-    /// of list that goes stale when a variant is added. Nothing else catches
-    /// it: no generator reads clap's `possible_values`, so a missing mode
-    /// simply never completes.
+    /// The generated completions read `HookMode::variants()`, but two copies
+    /// cannot: `daft merge`'s fish line lives in the `DAFT_FISH_COMPLETIONS`
+    /// const, which does not interpolate, and `daft merge`'s Fig spec is
+    /// hand-written per option (only the standalone `git-worktree-*` commands
+    /// get theirs from `cmd.get_arguments()`). Those are exactly the copies
+    /// that go stale — the first cut of this test guarded only fish, and the
+    /// Fig spec had already shipped without the flag at all. Nothing else
+    /// catches it: no generator reads clap's `possible_values`, so a missing
+    /// mode simply never completes.
     #[test]
-    fn fish_hooks_flag_offers_every_mode_on_every_command_carrying_it() {
+    fn hooks_flag_offers_every_mode_in_every_shell() {
+        let modes = crate::hooks::HookMode::variants();
+
+        // Fig: the hand-written `daft merge` subcommand spec. Asserted
+        // against the built structure rather than the serialized string —
+        // a substring search over the whole spec would pass on some *other*
+        // subcommand's `--hooks`, which is the failure this test exists to
+        // catch.
+        let merge_suggestions = fig::hooks_option_suggestions_for_merge()
+            .expect("daft merge's hand-written Fig spec must carry --hooks; add a FigOption in fig.rs beside --skip-hooks");
+        assert_eq!(
+            merge_suggestions,
+            modes.to_vec(),
+            "daft merge's Fig spec must suggest every HookMode variant, in order"
+        );
+
         let fish = fish::generate_daft_fish_completions();
-        let expected = crate::hooks::HookMode::variants().join(" ");
+        let expected = modes.join(" ");
         assert!(
             fish.contains(&format!(
                 "__fish_seen_subcommand_from merge worktree-merge' -l hooks -x -a '{expected}'"

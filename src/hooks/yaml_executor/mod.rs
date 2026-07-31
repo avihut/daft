@@ -575,18 +575,31 @@ pub fn execute_yaml_hook_with_rc(
     // nothing to promote back, and the coordinator schedules the `needs:`
     // waves it would otherwise have shared with the foreground runner.
     //
-    // A gate phase is deliberately exempt (`detaches_all_jobs` consults the
-    // hook type): daft performs the operation a `pre-*` hook precedes as soon
-    // as the hook returns, so detaching one would not defer the gate, it
-    // would delete it — and `worktree-pre-remove` would additionally have its
-    // working directory deleted mid-run.
+    // `detaches_all_jobs` declines for a phase daft is not finished with, and
+    // for a phase that declares an ordering the coordinator cannot express
+    // (it schedules `needs:` edges only). Both guards keep the phase inline
+    // rather than reinterpreting it, and the decline is announced — a mode
+    // that silently did nothing would be indistinguishable from a config with
+    // no background-eligible work.
     let mut specs = specs;
-    if cfg.hook_mode.detaches_all_jobs(ctx.hook_type) {
+    if cfg.hook_mode.detaches_all_jobs(ctx.hook_type, exec_mode) {
         for spec in &mut specs {
             spec.background = true;
         }
     }
     let specs = specs;
+    // Announced on `output`, not through the presenter: this is a fact about
+    // the *invocation*, and the presenter is the phase's channel — the
+    // collapsed rail's presenter drops `on_message` outright, and the
+    // embedded CLI one has no renderer until `on_phase_start`. Either way a
+    // user who passed `--hooks background` and then waited would be left
+    // unable to tell a declined flag from a config with no background work.
+    if let Some(reason) = cfg
+        .hook_mode
+        .detach_declined_reason(ctx.hook_type, exec_mode)
+    {
+        output.notice(&reason);
+    }
 
     // Partition into foreground and background phases.
     // Background jobs that are transitively depended on by foreground jobs
@@ -2118,7 +2131,15 @@ mod tests {
     /// the coordinator, which is exactly the bargain `background: true`
     /// already makes for the jobs that declare it. `make_ctx` builds a
     /// `PostCreate` context, so this is a non-gate phase.
+    ///
+    /// Carries the `daft_no_background_jobs` key even though it sets no env
+    /// var, because it asserts the *absence* of promotion and the gate at the
+    /// dispatch site (`is_foreground() || env::var(...).is_ok()`) has a
+    /// process-global second term. A sibling test still sets that var, and
+    /// `serial_test` only serializes tests sharing a key — without this the
+    /// job runs inline inside that window and the marker appears.
     #[test]
+    #[serial_test::serial(daft_no_background_jobs)]
     fn background_mode_detaches_a_declared_foreground_job() {
         let marker_dir = TempDir::new().unwrap();
         let marker = marker_dir.path().join("should-not-be-here-yet.marker");
@@ -2134,8 +2155,8 @@ mod tests {
         };
         let ctx = make_ctx();
         assert!(
-            !ctx.hook_type.gates_the_operation_after_it(),
-            "this test needs a non-gate phase to be meaningful"
+            !ctx.hook_type.precedes_more_daft_work(),
+            "this test needs a phase daft is finished with to be meaningful"
         );
         let mut output = TestOutput::default();
         let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = NullPresenter::arc();
@@ -2183,7 +2204,7 @@ mod tests {
         };
         let mut ctx = make_ctx();
         ctx.hook_type = crate::hooks::HookType::PreCreate;
-        assert!(ctx.hook_type.gates_the_operation_after_it());
+        assert!(ctx.hook_type.precedes_more_daft_work());
         let mut output = TestOutput::default();
         let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = NullPresenter::arc();
         let filter = JobFilter::default();

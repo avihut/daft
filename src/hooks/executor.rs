@@ -363,6 +363,16 @@ impl HookExecutor {
         self.job_filter = filter;
     }
 
+    /// Replace the hook execution mode between fires.
+    ///
+    /// `daft merge` needs this too, for a hazard no hook *type* can express:
+    /// whether this particular invocation is about to delete the directory
+    /// the hook ran in. An ephemeral merge target and `--remove-branch` both
+    /// do, so `post-merge` is pinned back to `Auto` for those fires.
+    pub fn set_hook_execution_mode(&mut self, mode: crate::hooks::HookMode) {
+        self.hook_mode = mode;
+    }
+
     /// Plan-time mirror of [`Self::execute`]'s discovery: whether this hook
     /// phase has anything discoverable to run from `hook_source_worktree` —
     /// a YAML definition, legacy scripts, or deprecated files pending
@@ -462,6 +472,29 @@ impl HookExecutor {
                     "Error loading YAML config, falling back to script hooks: {e}"
                 ));
             }
+        }
+
+        // `--hooks off` / `--skip-hooks all` must skip script hooks too. The
+        // selector plumbing lives in the YAML executor, which legacy never
+        // reaches, so a whole-fire opt-out has to be honored here or the
+        // flag's own help text ("off skips the phase") is false for every
+        // repo still on `.daft/hooks/*` scripts.
+        //
+        // Gated here rather than at the top of `execute` on purpose: the YAML
+        // path renders attributed per-job skips for the same selectors, and
+        // short-circuiting earlier would throw that away.
+        //
+        // Only the whole-fire selectors apply. Partial ones (job names, tags)
+        // cannot: a script hook is one opaque file with no job names to match.
+        // `foreground` needs nothing — `scripts_to_specs` never sets
+        // `background`, so legacy already runs everything inline — and
+        // `background` has no coordinator path to detach into, which
+        // `docs/hooks/yaml-reference.md` states.
+        if self.user_requested_skip(ctx.hook_type) {
+            return Ok(HookResult::skipped(format!(
+                "{} script hooks skipped by request",
+                ctx.hook_type
+            )));
         }
 
         // Fallback: legacy script execution
