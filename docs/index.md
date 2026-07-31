@@ -9,4 +9,11 @@ hero:
   tagline:
     Naturally organize your worktree workflow and stretch it out across multiple
     repos
+  actions:
+    - theme: brand
+      text: Get started
+      link: /getting-started/quick-start
+    - theme: alt
+      text: Why daft
+      link: /about/why-daft
 ---

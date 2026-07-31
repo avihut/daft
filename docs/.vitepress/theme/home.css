@@ -27,6 +27,9 @@
   margin-right: auto;
   max-width: none;
 }
+.VPHome .VPHero .actions {
+  justify-content: center;
+}
 .dl-eyebrow {
   font-family: var(--vp-font-family-mono);
   font-size: 11px;
@@ -223,10 +226,6 @@
 }
 .dl-btn:hover {
   transform: translateY(-1px);
-}
-.dl-btn.is-primary {
-  background: var(--vp-c-text-1);
-  color: var(--vp-c-bg);
 }
 .dl-btn.is-gold {
   background: var(--vp-button-brand-bg);

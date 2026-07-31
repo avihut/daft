@@ -202,9 +202,5 @@ onBeforeUnmount(() => {
         </p>
       </a>
     </div>
-    <div class="dl-ctas">
-      <a class="dl-btn is-primary" href="/getting-started/quick-start">Get started</a>
-      <a class="dl-btn is-ghost" href="/about/why-daft">Why daft</a>
-    </div>
   </div>
 </template>
