@@ -813,6 +813,14 @@ worth knowing there that a `pre-merge` job marked `background: true` detaches
 and stops gating; `--hooks foreground` is how you force such a gate to be a real
 one.
 
+[Git stages](/hooks/git-stages) get no flag at all — git runs the shim with the
+arguments its hook protocol defines — so daft settles it per stage instead. A
+stage git blocks on (`pre-commit`, `commit-msg`, `pre-push`, …) runs its jobs
+inline against their own `background: true`, for exactly the reason `pre-merge`
+is worth forcing above, and names the job it did that to. The stages git does
+not act on (`post-commit`, `git-post-merge`, `post-checkout`, `post-rewrite`, …)
+honor the declaration and detach.
+
 On Windows there is no coordinator and background jobs already run inline, so
 the mode and the variable change nothing there.
 
