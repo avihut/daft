@@ -1,0 +1,84 @@
+name: --hooks foreground reaches the fork and sandbox journeys too
+description:
+  "start --fork and the detached sandbox visit build their own HookExecutor, so
+  the flag has to be wired at each of them separately — a miss here is silent
+  (the command succeeds, the job just detaches). Both journeys must promote: the
+  marker a background job writes exists the moment the command returns, with no
+  polling."
+
+repos:
+  - name: test-fg-journeys
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Foreground flag journeys"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: write-marker
+              background: true
+              run: sleep 1 && touch "$DAFT_WORKTREE_PATH/.bg-job-ran"
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_FG_JOURNEYS
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-fg-journeys/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-fg-journeys/main"
+    expect:
+      exit_code: 0
+
+  - name: A fork's background job finished before the command returned
+    run: |
+      WT=$(daft start --fork --hooks foreground 2>/dev/null)
+      test -d "$WT" || { echo "FORK_NOT_CREATED"; exit 1; }
+      if [ -f "$WT/.bg-job-ran" ]; then
+        echo "FORK_MARKER_EXISTS"
+      else
+        echo "FORK_MARKER_MISSING"
+        exit 1
+      fi
+    cwd: "$WORK_DIR/test-fg-journeys/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "FORK_MARKER_EXISTS"
+
+  - name: Tag the current tip so a sandbox has something to pin to
+    run: git -c tag.gpgSign=false tag v1.0
+    cwd: "$WORK_DIR/test-fg-journeys/main"
+    expect:
+      exit_code: 0
+
+  - name: A detached sandbox's background job also ran inline
+    run: daft go --hooks foreground v1.0 2>&1
+    cwd: "$WORK_DIR/test-fg-journeys/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-fg-journeys/v1.0"
+      output_contains:
+        - "detached sandbox"
+
+  - name: The sandbox marker exists immediately
+    run: |
+      if [ -f "$WORK_DIR/test-fg-journeys/v1.0/.bg-job-ran" ]; then
+        echo "SANDBOX_MARKER_EXISTS"
+      else
+        echo "SANDBOX_MARKER_MISSING"
+        exit 1
+      fi
+    expect:
+      exit_code: 0
+      output_contains:
+        - "SANDBOX_MARKER_EXISTS"

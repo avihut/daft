@@ -85,6 +85,7 @@ git worktree-checkout [OPTIONS] <BRANCH_NAME> [BASE_BRANCH_NAME]
 | `--local` | Skip all remote operations (no fetch, no push) |  |
 | `--no-verify` | Skip the repo's pre-push hook on the automatic upstream push |  |
 | `--skip-hooks <SELECTOR>` | Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated |  |
+| `--hooks <MODE>` | How this run's hook jobs execute | `auto` |
 
 ## Global Options
 

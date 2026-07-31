@@ -114,6 +114,24 @@ pub struct Args {
     )]
     skip_hooks: Vec<String>,
 
+    /// How this run's hook phase executes. `auto` honors each job's own
+    /// `background:`; `foreground` runs every job inline and waits, so a
+    /// promoted job's failure counts against the hook outcome; `background`
+    /// detaches the whole phase, but only where that changes nothing but
+    /// timing — it declines, with a reason, for a phase daft still acts on or
+    /// one declaring an execution order background jobs cannot preserve;
+    /// `off` skips the phase (same as `--skip-hooks all`), and is the only
+    /// mode that also reaches legacy `.daft/hooks/*` scripts. Orthogonal to
+    /// `--skip-hooks`, which selects *which* jobs run. See daft-hooks(1).
+    #[arg(
+        long,
+        value_name = "MODE",
+        value_enum,
+        default_value_t = crate::hooks::HookMode::Auto,
+        help = "How this run's hook jobs execute"
+    )]
+    hooks: crate::hooks::HookMode,
+
     #[arg(
         long = "dry-run",
         help = "Show what would be done without making any changes"
@@ -122,12 +140,18 @@ pub struct Args {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(crate::get_clap_args("git-worktree-flow-adopt"));
+    let mut args = Args::parse_from(crate::get_clap_args("git-worktree-flow-adopt"));
 
     init_logging(args.verbose);
 
+    // `--hooks off` lowers to the `all` selector so the gates below (and the
+    // post-adopt short-circuit) see it through one mechanism.
+    args.hooks.lower_off_into(&mut args.skip_hooks);
+
     if args.trust_hooks && skip_hooks_all(&args.skip_hooks) {
-        anyhow::bail!("--trust-hooks and --skip-hooks all cannot be used together.");
+        anyhow::bail!(
+            "--trust-hooks cannot be combined with skipping every hook (--skip-hooks all / --hooks off)."
+        );
     }
 
     // Local-or-global so a repo-local `daft.gitoxide = false` opt-out is
@@ -159,7 +183,10 @@ fn run_adopt(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         output.start_spinner("Converting to worktree layout...");
     }
     let hooks_config = crate::core::settings::load_hooks_config()?;
-    let executor = HookExecutor::new(hooks_config)?;
+    // The bridge fires adopt's own hook phase, so it needs the run's mode and
+    // selectors just as much as the post-adopt executor below — an
+    // unconfigured executor here made `--hooks off` a lie for this firing.
+    let executor = HookExecutor::new(hooks_config)?.with_hook_mode(args.hooks, &args.skip_hooks);
     let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
         flow_adopt::execute(&params, &mut bridge)
@@ -221,14 +248,13 @@ fn run_post_adopt_hook(
     output: &mut dyn Output,
 ) -> Result<()> {
     if skip_hooks_all(&args.skip_hooks) {
-        output.step("Skipping hooks (--skip-hooks all)");
+        output.step(&format!("Skipping hooks ({})", args.hooks.skip_all_label()));
         return Ok(());
     }
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
-    let mut executor = HookExecutor::new(hooks_config)?.with_job_filter(
-        crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
-    );
+    let mut executor =
+        HookExecutor::new(hooks_config)?.with_hook_mode(args.hooks, &args.skip_hooks);
 
     if args.trust_hooks {
         output.step("Trusting repository for hooks (--trust-hooks flag)");

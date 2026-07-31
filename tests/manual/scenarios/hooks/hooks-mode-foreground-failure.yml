@@ -1,0 +1,58 @@
+name: A promoted background job's failure fails the command
+description:
+  "The failure-semantics half of --hooks foreground (#820). A background: true
+  job that fails is logged-and-notified on the detached path and leaves the hook
+  successful; promoted with --hooks foreground it folds into the hook outcome,
+  so a failed worktree-post-create aborts by default (#765) and the command
+  exits non-zero. Without the flag the identical repo checks out cleanly — the
+  contrast is the point: --hooks foreground does materially more than wait."
+
+repos:
+  - name: test-fg-fail
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Foreground flag failure test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/promoted-failure
+        from: main
+      - name: feature/detached-failure
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: failing-bg
+              background: true
+              run: exit 1
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_FG_FAIL
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-fg-fail/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-fg-fail/main"
+    expect:
+      exit_code: 0
+
+  - name: A failing promoted job takes the command down with it
+    run: daft go --hooks foreground feature/promoted-failure 2>&1
+    cwd: "$WORK_DIR/test-fg-fail/main"
+    expect:
+      exit_code: 1
+
+  - name: The same job detached leaves the checkout successful
+    run: daft go feature/detached-failure 2>&1
+    cwd: "$WORK_DIR/test-fg-fail/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-fg-fail/feature/detached-failure"

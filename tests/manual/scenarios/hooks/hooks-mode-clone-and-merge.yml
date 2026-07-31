@@ -1,0 +1,100 @@
+name: --hooks reaches the clone and merge phases
+description:
+  "clone and merge build their own HookExecutors, so the mode has to be wired at
+  each separately — a miss is silent (the command succeeds, the job just
+  detaches). post-clone and post-merge background jobs must both be finished by
+  the time the command returns under --hooks foreground. The merge half matters
+  twice over: nothing forbids `background: true` on a gate job, so a
+  backgrounded pre-merge job detaches and stops gating until promoted."
+
+repos:
+  - name: test-hm-clone
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# clone/merge hook mode"
+        commits:
+          - message: "Initial commit"
+      - name: feature/mergeable
+        from: main
+        files:
+          - path: feature.txt
+            content: "work"
+        commits:
+          - message: "Add feature"
+    daft_yml: |
+      hooks:
+        post-clone:
+          jobs:
+            - name: clone-marker
+              background: true
+              run: touch "$DAFT_WORKTREE_PATH/.post-clone-ran"
+        post-merge:
+          jobs:
+            - name: merge-marker
+              background: true
+              run: touch "$DAFT_WORKTREE_PATH/.post-merge-ran"
+
+steps:
+  # `--trust-hooks` is required, not incidental: a freshly cloned repo is
+  # untrusted, so post-clone hooks would not run at all and the assertion
+  # below would pass vacuously for the wrong reason. It composes with
+  # `--hooks foreground` (only `--hooks off` conflicts with it).
+  - name: Clone with --hooks foreground
+    run:
+      daft clone --layout contained --trust-hooks --hooks foreground
+      $REMOTE_TEST_HM_CLONE 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hm-clone/main"
+
+  # The assertion consumes the marker: it is an untracked file inside the
+  # worktree, and daft merge refuses a target with uncommitted changes, so
+  # leaving it behind would fail the merge half for an unrelated reason.
+  - name: The post-clone background job finished before clone returned
+    run: |
+      if [ -f "$WORK_DIR/test-hm-clone/main/.post-clone-ran" ]; then
+        echo "CLONE_MARKER_EXISTS"
+        rm -f "$WORK_DIR/test-hm-clone/main/.post-clone-ran"
+      else
+        echo "CLONE_MARKER_MISSING"
+        exit 1
+      fi
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CLONE_MARKER_EXISTS"
+
+  - name: Trust the repository for the merge phase
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-hm-clone/main"
+    expect:
+      exit_code: 0
+
+  - name: Materialize the feature branch to merge from
+    run: daft go feature/mergeable 2>&1
+    cwd: "$WORK_DIR/test-hm-clone/main"
+    expect:
+      exit_code: 0
+
+  - name: Merge with --hooks foreground
+    run: daft merge feature/mergeable --no-edit --hooks foreground 2>&1
+    cwd: "$WORK_DIR/test-hm-clone/main"
+    expect:
+      exit_code: 0
+
+  - name: The post-merge background job finished before merge returned
+    run: |
+      if [ -f "$WORK_DIR/test-hm-clone/main/.post-merge-ran" ]; then
+        echo "MERGE_MARKER_EXISTS"
+      else
+        echo "MERGE_MARKER_MISSING"
+        exit 1
+      fi
+    expect:
+      exit_code: 0
+      output_contains:
+        - "MERGE_MARKER_EXISTS"

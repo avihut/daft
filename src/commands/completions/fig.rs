@@ -1128,6 +1128,28 @@ fn build_fig_config_subcommand() -> FigSubcommand {
     }
 }
 
+/// The mode names `daft merge`'s hand-written Fig spec offers for `--hooks`,
+/// or `None` if the option is missing entirely.
+///
+/// Exists for the completions drift guard: `merge`'s options are hand-listed
+/// (only the standalone `git-worktree-*` commands derive theirs from clap), so
+/// this is the copy that silently loses a new [`HookMode`] variant. Reading it
+/// back off the built structure beats grepping the serialized spec, where a
+/// different subcommand's `--hooks` would satisfy the search.
+///
+/// [`HookMode`]: crate::hooks::HookMode
+#[cfg(test)]
+pub(super) fn hooks_option_suggestions_for_merge() -> Option<Vec<String>> {
+    build_fig_merge_subcommand("merge")
+        .options
+        .iter()
+        .flatten()
+        .find(|o| matches!(&o.name, FigName::Single(n) if n == "--hooks"))
+        .and_then(|o| o.args.as_ref())
+        .and_then(|a| a.suggestions.as_ref())
+        .map(|s| s.iter().map(|sug| sug.name.clone()).collect())
+}
+
 fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
     let branch_generator = FigGenerator {
         script: vec![
@@ -1268,6 +1290,25 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
                         description: "Relax the committed clean-source requirement".into(),
                     },
                 ]),
+                template: None,
+            }),
+        },
+        FigOption {
+            name: FigName::Single("--hooks".into()),
+            description: "How this run's hook jobs execute".into(),
+            args: Some(FigOptionArg {
+                // Hand-listed like every other enum-valued flag in this spec.
+                // `hooks_flag_offers_every_mode_in_every_shell` fails if a new
+                // `HookMode` variant does not reach here.
+                suggestions: Some(
+                    crate::hooks::HookMode::variants()
+                        .iter()
+                        .map(|mode| FigSuggestion {
+                            name: (*mode).into(),
+                            description: crate::hooks::HookMode::describe(mode).into(),
+                        })
+                        .collect(),
+                ),
                 template: None,
             }),
         },

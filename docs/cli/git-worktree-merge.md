@@ -80,6 +80,7 @@ git worktree-merge [OPTIONS] [SOURCE_OR_TARGET]
 | `--no-ff-only` | Allow a non-fast-forward merge for this invocation, overriding a committed `merge: ff: only` policy (announced when it does) |  |
 | `--source-worktree <STATE>` | Required state of the source branch's worktree: `clean` refuses a missing or dirty source worktree (supplies `merge: source_worktree: clean`); `any` relaxes a committed `clean` for this invocation |  |
 | `--skip-hooks <SELECTOR>` | Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated |  |
+| `--hooks <MODE>` | How this run's hook jobs execute | `auto` |
 | `--skip-tag <TAG>` | Skip hook jobs carrying TAG, plus their dependents (repeatable). Sugar for `--skip-hooks tag:<TAG>` — e.g. `--skip-tag deep` for a fast gate pass |  |
 | `--only-tag <TAG>` | Run only hook jobs carrying TAG (repeatable) |  |
 | `--set-default` | Write the resolved style/cleanup choices to `git config --local` after the merge succeeds |  |

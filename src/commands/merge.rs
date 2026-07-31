@@ -82,7 +82,7 @@ pub struct Args {
             "adopt_target", "no_adopt_target", "yes",
             "remove_branch", "keep_branch", "set_default",
             "ff_only", "no_ff_only", "source_worktree",
-            "skip_hooks", "skip_tag", "only_tag",
+            "skip_hooks", "skip_tag", "only_tag", "hooks",
             // --abort/--quit reach no verdict, so a format request there
             // would parse and emit nothing. Reject it at parse time.
             "format", "template", "no_headers",
@@ -109,7 +109,7 @@ pub struct Args {
             "adopt_target", "no_adopt_target", "yes",
             "remove_branch", "keep_branch", "set_default",
             "ff_only", "no_ff_only", "source_worktree",
-            "skip_hooks", "skip_tag", "only_tag",
+            "skip_hooks", "skip_tag", "only_tag", "hooks",
             "format", "template", "no_headers",
         ],
     )]
@@ -132,7 +132,7 @@ pub struct Args {
             "adopt_target", "no_adopt_target", "yes",
             "remove_branch", "keep_branch", "set_default",
             "ff_only", "no_ff_only", "source_worktree",
-            "skip_hooks", "skip_tag", "only_tag",
+            "skip_hooks", "skip_tag", "only_tag", "hooks",
             "format", "template", "no_headers",
         ],
     )]
@@ -305,6 +305,24 @@ pub struct Args {
         help = "Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
     )]
     pub skip_hooks: Vec<String>,
+
+    /// How the merge's hook phase executes. `auto` honors each job's own
+    /// `background:`; `foreground` runs every pre-merge/post-merge job inline
+    /// and waits — a backgrounded gate job otherwise detaches and stops
+    /// gating; `background` detaches post-merge, while the pre-merge gate
+    /// always runs inline, as does post-merge when the merge used an
+    /// ephemeral worktree or `--remove-branch`, both of which delete the
+    /// directory the jobs would run in; `off` skips the phase (same as
+    /// `--skip-hooks all`). Scoped to the same jobs `--skip-hooks` reaches:
+    /// the core gate-policy checks run regardless. See daft-hooks(1).
+    #[arg(
+        long,
+        value_name = "MODE",
+        value_enum,
+        default_value_t = crate::hooks::HookMode::Auto,
+        help = "How this run's hook jobs execute"
+    )]
+    pub hooks: crate::hooks::HookMode,
 
     /// Skip hook jobs carrying TAG, plus their dependents (repeatable).
     /// Sugar for `--skip-hooks tag:<TAG>` — e.g. `--skip-tag deep` for a
@@ -928,7 +946,9 @@ pub fn run() -> Result<()> {
     // (`--only-tag`). Applies to pre-merge/post-merge JOBS only — the gate
     // policy checks run in core regardless.
     let hook_filter = {
-        let mut f = crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks);
+        // `--hooks off` lowers to the `all` selector, so it rides the same
+        // path as `--skip-hooks all` and needs no separate short-circuit.
+        let mut f = args.hooks.job_filter(&args.skip_hooks);
         f.skip.tags.extend(args.skip_tag.iter().cloned());
         f.skip
             .raw
@@ -941,6 +961,9 @@ pub fn run() -> Result<()> {
     // config error ("no jobs matching tags") and post-merge's Warn fail
     // mode then printed on every otherwise-successful merge.
     let only_tags = args.only_tag.clone();
+    // The ephemeral-promotion fire below happens after the runner has taken
+    // ownership of the filter, and it configures its own executor.
+    let promotion_filter = hook_filter.clone();
     let timeline_handle = timeline.as_ref().map(|tl| tl.handle());
     let (outcome_result, gate_invocations) = {
         let mut runner = MergeHookRunner::new(
@@ -951,6 +974,8 @@ pub fn run() -> Result<()> {
             source_worktree.clone(),
             hook_filter,
             only_tags,
+            args.hooks,
+            cleanup_requested,
             hooks_output_config.clone(),
             timeline_handle,
         )?;
@@ -1127,6 +1152,8 @@ pub fn run() -> Result<()> {
                     branch,
                     &project_root,
                     &settings,
+                    promotion_filter.clone(),
+                    args.hooks,
                 )
             {
                 eprintln!("warning: worktree-post-create hook failed: {e}");
@@ -1544,9 +1571,17 @@ fn fire_worktree_post_create_hook(
     branch: &str,
     project_root: &Path,
     settings: &DaftSettings,
+    filter: crate::hooks::yaml_executor::JobFilter,
+    hook_mode: crate::hooks::HookMode,
 ) -> Result<()> {
     let hooks_config = load_hooks_config()?;
-    let executor = HookExecutor::new(hooks_config)?;
+    // This fires a real hook phase, so it takes the run's selectors and mode
+    // like every other executor the command builds. The promoted worktree is
+    // canonical (not the ephemeral scratch path), so it outlives the command
+    // and `--hooks background` is safe here.
+    let executor = HookExecutor::new(hooks_config)?
+        .with_job_filter(filter)
+        .with_hook_execution_mode(hook_mode);
 
     let git_dir = get_git_common_dir()?;
 
@@ -1605,6 +1640,13 @@ struct MergeHookRunner<'a> {
     /// detail, and this id is what ties the two together. A fire that never
     /// mints one (hooks disabled, hook-level skip) contributes nothing.
     invocations: Vec<(HookType, String)>,
+    /// The run's `--hooks` mode, kept so `fire_post_merge` can pin a fire
+    /// back to `Auto` and restore it afterwards.
+    hook_mode: crate::hooks::HookMode,
+    /// Whether cleanup removes the source worktree after the merge
+    /// (`--remove-branch` / `daft.merge.cleanup = remove-branch`), which on
+    /// the ref-only fast-forward path is the directory `post-merge` ran in.
+    cleanup_removes_source: bool,
 }
 
 impl<'a> MergeHookRunner<'a> {
@@ -1617,11 +1659,15 @@ impl<'a> MergeHookRunner<'a> {
         source_worktree: PathBuf,
         filter: crate::hooks::yaml_executor::JobFilter,
         only_tags: Vec<String>,
+        hook_mode: crate::hooks::HookMode,
+        cleanup_removes_source: bool,
         output_config: HookOutputConfig,
         timeline: Option<TimelineHandle>,
     ) -> Result<Self> {
         let hooks_config = load_hooks_config()?;
-        let executor = HookExecutor::new(hooks_config)?.with_job_filter(filter.clone());
+        let executor = HookExecutor::new(hooks_config)?
+            .with_job_filter(filter.clone())
+            .with_hook_execution_mode(hook_mode);
         Ok(Self {
             executor,
             base_filter: filter,
@@ -1634,6 +1680,8 @@ impl<'a> MergeHookRunner<'a> {
             output_config,
             timeline,
             invocations: Vec::new(),
+            hook_mode,
+            cleanup_removes_source,
         })
     }
 
@@ -1717,11 +1765,40 @@ impl<'a> HookRunner for MergeHookRunner<'a> {
     }
 
     fn fire_post_merge(&mut self, ctx: &MergeHookContext) -> Result<()> {
+        // `--hooks background` must not detach this fire when the directory
+        // the jobs would run in does not outlive the command. Two shapes do
+        // that, and neither is a property of the hook *type* that
+        // `precedes_more_daft_work` could carry:
+        //
+        //   * an ephemeral target — core created `.daft-tmp/<branch>` to
+        //     merge into, pointed the hook cwd at it, and removes it right
+        //     after this returns;
+        //   * `--remove-branch` — cleanup removes the source worktree, which
+        //     is the cwd fallback on the ref-only fast-forward path.
+        //
+        // Detached, every job would die ENOENT and show red in
+        // `daft hooks jobs` for a merge that actually succeeded. Pin the fire
+        // back to `Auto` (jobs the config declared `background:` still
+        // detach — that is the author's own choice, unchanged by this flag)
+        // and restore afterwards, the same swap `fire_pre_merge` does for
+        // `--only-tag`.
+        let ephemeral = ctx.env.get("DAFT_MERGE_EPHEMERAL").map(String::as_str) == Some("true");
+        let pin_inline = (ephemeral || self.cleanup_removes_source)
+            && self.hook_mode == crate::hooks::HookMode::Background;
+        if pin_inline {
+            self.executor
+                .set_hook_execution_mode(crate::hooks::HookMode::Auto);
+        }
+
         // post-merge's fail mode is Warn by default, so executor.execute()
         // won't return Err. If the user has configured it to Abort, we
         // still surface the error here — the core layer will log it and
         // not roll back the merge.
-        self.fire(HookType::PostMerge, ctx)
+        let result = self.fire(HookType::PostMerge, ctx);
+        if pin_inline {
+            self.executor.set_hook_execution_mode(self.hook_mode);
+        }
+        result
     }
 
     fn pause_spinner(&mut self) {
@@ -2009,6 +2086,42 @@ fn finish_merge(result: Result<MergeTermination>) -> Result<()> {
 mod tests {
     use super::*;
     use crate::core::worktree::merge::GateRefusalKind;
+    use clap::Parser;
+
+    /// `--abort`/`--continue`/`--quit` resume or discard an in-progress merge
+    /// and never reach the hook phase, so every hook-selection flag is
+    /// rejected at parse time. `--hooks` joins its siblings there — accepting
+    /// it would parse a mode that then silently does nothing.
+    #[test]
+    fn hooks_mode_is_rejected_alongside_the_resume_flags() {
+        for resume in ["--abort", "--continue", "--quit"] {
+            let parsed =
+                Args::try_parse_from(["git-worktree-merge", resume, "--hooks", "foreground"]);
+            assert!(
+                parsed.is_err(),
+                "{resume} must reject --hooks, as it already rejects --skip-hooks"
+            );
+        }
+    }
+
+    /// The same flag on an ordinary merge parses and defaults to `auto`.
+    #[test]
+    fn hooks_mode_parses_on_a_normal_merge_and_defaults_to_auto() {
+        let args = Args::try_parse_from(["git-worktree-merge", "--hooks", "foreground"])
+            .expect("--hooks is valid on a merge that actually runs hooks");
+        assert_eq!(args.hooks, crate::hooks::HookMode::Foreground);
+
+        let bare = Args::try_parse_from(["git-worktree-merge"]).expect("bare merge parses");
+        assert_eq!(bare.hooks, crate::hooks::HookMode::Auto);
+    }
+
+    /// `off` folds into the filter the hook runner receives, so a merge asked
+    /// to skip hooks produces the same `all` selector `--skip-hooks all` does.
+    #[test]
+    fn hooks_off_produces_the_all_selector_for_the_merge_runner() {
+        let args = Args::try_parse_from(["git-worktree-merge", "--hooks", "off"]).unwrap();
+        assert!(args.hooks.job_filter(&args.skip_hooks).skip.all);
+    }
 
     fn payload_sections(payload: &EmitPayload) -> Vec<String> {
         match payload {

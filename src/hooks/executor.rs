@@ -281,6 +281,7 @@ pub struct HookExecutor {
     prompt_callback: Option<PromptCallback>,
     bypass_trust: bool,
     job_filter: JobFilter,
+    hook_mode: crate::hooks::HookMode,
 }
 
 impl HookExecutor {
@@ -293,6 +294,7 @@ impl HookExecutor {
             prompt_callback: None,
             bypass_trust: false,
             job_filter: JobFilter::default(),
+            hook_mode: crate::hooks::HookMode::Auto,
         })
     }
 
@@ -304,6 +306,7 @@ impl HookExecutor {
             prompt_callback: None,
             bypass_trust: false,
             job_filter: JobFilter::default(),
+            hook_mode: crate::hooks::HookMode::Auto,
         }
     }
 
@@ -327,6 +330,30 @@ impl HookExecutor {
         self
     }
 
+    /// Apply a `--hooks <mode>` + `--skip-hooks <selectors>` pair.
+    ///
+    /// The two flags are orthogonal — mode decides *how* the phase runs,
+    /// selectors decide *which* jobs run — so every command carrying both
+    /// configures the executor through this one call rather than getting the
+    /// combination subtly different per site.
+    pub fn with_hook_mode(self, mode: crate::hooks::HookMode, skip_hooks: &[String]) -> Self {
+        self.with_job_filter(mode.job_filter(skip_hooks))
+            .with_hook_execution_mode(mode)
+    }
+
+    /// Run `background: true` jobs inline instead of dispatching them to the
+    /// coordinator (`--hooks foreground`).
+    ///
+    /// This is the same promotion `DAFT_NO_BACKGROUND_JOBS` triggers, so it
+    /// inherits that path's semantics: a promoted job's failure folds into
+    /// the hook outcome, and the default job timeout keeps applying — it
+    /// already does on the detached path, so a job that would be killed at
+    /// 300s must not start succeeding just because someone is watching.
+    pub fn with_hook_execution_mode(mut self, mode: crate::hooks::HookMode) -> Self {
+        self.hook_mode = mode;
+        self
+    }
+
     /// Replace the job filter between fires.
     ///
     /// `daft merge` needs this: `--only-tag` narrows *the gate*, so it must
@@ -334,6 +361,16 @@ impl HookExecutor {
     /// never tagged.
     pub fn set_job_filter(&mut self, filter: JobFilter) {
         self.job_filter = filter;
+    }
+
+    /// Replace the hook execution mode between fires.
+    ///
+    /// `daft merge` needs this too, for a hazard no hook *type* can express:
+    /// whether this particular invocation is about to delete the directory
+    /// the hook ran in. An ephemeral merge target and `--remove-branch` both
+    /// do, so `post-merge` is pinned back to `Auto` for those fires.
+    pub fn set_hook_execution_mode(&mut self, mode: crate::hooks::HookMode) {
+        self.hook_mode = mode;
     }
 
     /// Plan-time mirror of [`Self::execute`]'s discovery: whether this hook
@@ -435,6 +472,29 @@ impl HookExecutor {
                     "Error loading YAML config, falling back to script hooks: {e}"
                 ));
             }
+        }
+
+        // `--hooks off` / `--skip-hooks all` must skip script hooks too. The
+        // selector plumbing lives in the YAML executor, which legacy never
+        // reaches, so a whole-fire opt-out has to be honored here or the
+        // flag's own help text ("off skips the phase") is false for every
+        // repo still on `.daft/hooks/*` scripts.
+        //
+        // Gated here rather than at the top of `execute` on purpose: the YAML
+        // path renders attributed per-job skips for the same selectors, and
+        // short-circuiting earlier would throw that away.
+        //
+        // Only the whole-fire selectors apply. Partial ones (job names, tags)
+        // cannot: a script hook is one opaque file with no job names to match.
+        // `foreground` needs nothing — `scripts_to_specs` never sets
+        // `background`, so legacy already runs everything inline — and
+        // `background` has no coordinator path to detach into, which
+        // `docs/hooks/yaml-reference.md` states.
+        if self.user_requested_skip(ctx.hook_type) {
+            return Ok(HookResult::skipped(format!(
+                "{} script hooks skipped by request",
+                ctx.hook_type
+            )));
         }
 
         // Fallback: legacy script execution
@@ -599,6 +659,7 @@ impl HookExecutor {
             default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
             cancel: None,
             trigger_label: None,
+            hook_mode: self.hook_mode,
         };
         // An Err from the yaml executor here is an execution-preparation
         // failure (invalid glob, unresolvable root: template, failing files:

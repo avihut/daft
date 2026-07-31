@@ -4,7 +4,7 @@
 .SH NAME
 daft start \- Create a new branch and worktree, or a throwaway fork with \-\-fork
 .SH SYNOPSIS
-\fBdaft start\fR [\fB\-\-repo\fR] [\fB\-\-with\-related\fR] [\fB\-\-fork\fR] [\fB\-n\fR|\fB\-\-count\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCH|COMMIT\-ISH\fR] [\fIBASE_OR_BRANCH\fR] [\fIBASE\fR] 
+\fBdaft start\fR [\fB\-\-repo\fR] [\fB\-\-with\-related\fR] [\fB\-\-fork\fR] [\fB\-n\fR|\fB\-\-count\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCH|COMMIT\-ISH\fR] [\fIBASE_OR_BRANCH\fR] [\fIBASE\fR] 
 .SH DESCRIPTION
 .PP
 Creates a new branch and a corresponding worktree in a single operation. The
@@ -107,6 +107,23 @@ Skip the repo\*(Aqs pre\-push hook on the automatic upstream push
 .TP
 \fB\-\-skip\-hooks\fR \fI<SELECTOR>\fR
 Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma\-separated
+.TP
+\fB\-\-hooks\fR \fI<MODE>\fR [default: auto]
+How this run\*(Aqs hook jobs execute
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto: Honor each job\*(Aqs own `background:` declaration — the default
+.IP \(bu 2
+foreground: Run every job inline and wait for the whole phase to finish
+.IP \(bu 2
+background: Dispatch every job to the coordinator and return without waiting
+.IP \(bu 2
+off: Skip the hook phase entirely — equivalent to `\-\-skip\-hooks all`
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

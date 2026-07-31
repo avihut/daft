@@ -623,8 +623,103 @@ The `background_output` field controls notification behavior:
 | `log`    | Always written          | Yes                              |
 | `silent` | Written only on failure | No                               |
 
-Default is `log`. Set `DAFT_NO_BACKGROUND_JOBS=1` to promote all background jobs
-to foreground.
+Default is `log`.
+
+#### Choosing how a run's hook jobs execute
+
+Every command that fires hooks and accepts `--skip-hooks` also accepts
+`--hooks <mode>`: `daft go`, `daft start`, `daft clone`, `daft adopt`, and
+`daft merge`.
+
+| Mode         | Effect                                                             |
+| ------------ | ------------------------------------------------------------------ |
+| `auto`       | Honor each job's own `background:`. The default.                   |
+| `foreground` | Run every job inline and wait for the whole phase.                 |
+| `background` | Dispatch every job and return without waiting, where that is safe. |
+| `off`        | Skip the hook phase — exactly `--skip-hooks all`.                  |
+
+The two hook flags answer different questions and compose freely: `--hooks`
+decides **how** the phase runs, `--skip-hooks` decides **which** jobs run. So
+`--hooks foreground --skip-hooks clippy` waits for everything except `clippy`,
+which is skipped. `--skip-hooks` keeps its own open vocabulary — hook names,
+`tag:<tag>`, and any job name from your `daft.yml` — which is why it is not
+folded into the mode.
+
+`background` is the mirror image of `foreground`, and it is the same bargain
+`background: true` already makes per job — the command reports success once the
+worktree is usable, and you follow the rest through `daft hooks jobs`. It is
+what to reach for when a repo's `daft.yml` is more conservative than you need
+right now: nothing waits, including jobs the config declared foreground.
+
+`background` detaches a phase only when doing so changes _when_ the work happens
+and nothing else. Two guards decide that, and neither is a matter of taste. When
+either declines, the phase runs inline and daft says which guard fired — the
+mode never silently does nothing.
+
+**1. daft must be finished with the phase.** A phase daft still acts on cannot
+be detached, because the follow-on work would race it or delete it:
+
+- `worktree-pre-create`, `worktree-pre-remove`, and `pre-merge` each precede an
+  operation daft performs the moment they return, so detaching one would not
+  defer the gate, it would delete it — the worktree would be created, or the
+  merge would land, before the job meant to have a say ran at all.
+  `worktree-pre-remove` is worse still: it runs _inside_ the worktree being
+  deleted, so a detached job would have its working directory removed underneath
+  it. If you want a gate not to run, that is what `off` is for.
+- `post-clone` is followed immediately by `worktree-post-create` for every
+  branch the clone materializes. The two phases dispatch to separate
+  coordinators and `needs:` only reaches within a single hook, so nothing could
+  restore the ordering that detaching post-clone throws away: repo-root setup
+  would race the per-worktree builds that consume it.
+- `post-merge` detaches normally, but not when the merge ran in an ephemeral
+  worktree (a target branch with no checkout) or when `--remove-branch` cleans
+  up the source. Both delete the directory the jobs would run in.
+
+**2. The phase must not declare an execution order.** Background jobs are
+scheduled from `needs:` edges alone, so a hook with `parallel: false`, `piped:`,
+or `follow:` keeps running inline. Detaching one would silently reinterpret it
+as "run these concurrently", and a `piped:` hook would additionally lose its
+stdout→stdin wiring while still reporting success. Express the ordering with
+`needs:` instead and the phase becomes eligible.
+
+In practice that leaves two phases the flag can reach, which are the ones it is
+for: `worktree-post-create` (from `go`, `start`, `clone`, and `adopt`) and
+`post-merge` (from `merge`, outside the two cleanup shapes above) — in both
+cases only when the phase declares no ordering of its own.
+`worktree-post-remove` is not in the list: no command that fires it accepts
+`--hooks`.
+
+`--hooks background` has no effect on legacy `.daft/hooks/*` script hooks: there
+is no per-job structure to dispatch. `foreground` is likewise a no-op there,
+because script hooks already run inline. `off` does apply — it skips them.
+
+`DAFT_NO_BACKGROUND_JOBS` promotes background jobs for any command, including
+ones without the flag; it promotes on **any** value, `0` and the empty string
+included. Setting it alongside `--hooks foreground` is not an error.
+
+Promotion is not just a different scheduler, and two of the differences are
+visible:
+
+- **A promoted job's failure fails the hook.** Detached, a failing background
+  job is logged and notified but leaves the hook successful. Promoted, it folds
+  into the hook outcome — and since a failing `worktree-post-create` aborts by
+  default, `--hooks foreground` can turn a command that works today into a
+  refusal. That is the intended behavior for a mode whose whole purpose is to
+  stop and show you the failure; skip an individual offender with
+  `--skip-hooks <job>` rather than dropping the promotion.
+- **The job timeout still applies.** Promoted jobs keep the same 300-second
+  default every job is stamped with — the coordinator enforces it on the
+  detached path too, so a job that dies at five minutes detached dies at five
+  minutes promoted. Promotion changes who is waiting, not the budget.
+
+On `daft merge` the mode reaches the same jobs `--skip-hooks` does — the
+pre-merge and post-merge job lists, never the core gate-policy checks. It is
+worth knowing there that a `pre-merge` job marked `background: true` detaches
+and stops gating; `--hooks foreground` is how you force such a gate to be a real
+one.
+
+On Windows there is no coordinator and background jobs already run inline, so
+the mode and the variable change nothing there.
 
 ## Log configuration
 

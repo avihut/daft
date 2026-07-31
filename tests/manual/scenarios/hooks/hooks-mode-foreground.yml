@@ -1,0 +1,176 @@
+name: The --hooks foreground flag promotes background jobs for one run
+description:
+  "daft go --hooks foreground runs every background: true job inline and returns
+  only once the hook phase is complete. The marker a backgrounded job writes
+  must exist immediately after the command returns — no polling — and the job
+  must still be recorded in 'daft hooks jobs'. A second checkout without the
+  flag leaves the same job detached, which is what makes this per-run."
+
+repos:
+  - name: test-fg-flag
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Foreground flag test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/fg-test
+        from: main
+      - name: feature/no-flag
+        from: main
+      - name: feature/no-hooks
+        from: main
+      - name: feature/detach-all
+        from: main
+    # The `sleep 1` is load-bearing, not padding: the last step asserts the
+    # marker is ABSENT right after an unflagged run, which is only a real
+    # signal while the detached job is still sleeping. Shorten it and that
+    # step starts racing the coordinator.
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: write-marker
+              background: true
+              run: sleep 1 && touch "$DAFT_WORKTREE_PATH/.bg-job-ran"
+            # No `background:` — `auto` runs this inline and waits for it,
+            # which is what makes it a probe for `--hooks background`.
+            - name: fg-by-declaration
+              run: sleep 1 && touch "$DAFT_WORKTREE_PATH/.fg-declared-ran"
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_FG_FLAG
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-fg-flag/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-fg-flag/main"
+    expect:
+      exit_code: 0
+
+  - name: Open a worktree with --hooks foreground
+    run: daft go --hooks foreground feature/fg-test 2>&1
+    cwd: "$WORK_DIR/test-fg-flag/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-fg-flag/feature/fg-test"
+
+  - name: The background job already finished when the command returned
+    run: |
+      if [ -f "$WORK_DIR/test-fg-flag/feature/fg-test/.bg-job-ran" ]; then
+        echo "MARKER_EXISTS"
+      else
+        echo "MARKER_MISSING"
+        exit 1
+      fi
+    expect:
+      exit_code: 0
+      output_contains:
+        - "MARKER_EXISTS"
+
+  - name: The promoted job is still recorded in the job history
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-fg-flag/feature/fg-test"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "write-marker"
+
+  - name: A newly created branch's background job also ran inline
+    run: daft start fg-created --hooks foreground 2>&1
+    cwd: "$WORK_DIR/test-fg-flag/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-fg-flag/fg-created"
+
+  - name: The start marker exists immediately
+    run: |
+      if [ -f "$WORK_DIR/test-fg-flag/fg-created/.bg-job-ran" ]; then
+        echo "START_MARKER_EXISTS"
+      else
+        echo "START_MARKER_MISSING"
+        exit 1
+      fi
+    expect:
+      exit_code: 0
+      output_contains:
+        - "START_MARKER_EXISTS"
+
+  - name: --hooks background detaches a job the config declared foreground
+    run: daft go --hooks background feature/detach-all 2>&1
+    cwd: "$WORK_DIR/test-fg-flag/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-fg-flag/feature/detach-all"
+
+  - name: The declared-foreground job was dispatched, not awaited
+    run: |
+      # The `fg-by-declaration` job has no `background:` — under `auto` it
+      # would be finished by now. Under `background` it is in the coordinator,
+      # so the marker is still absent right after the command returned, then
+      # appears once the job lands.
+      if [ -f "$WORK_DIR/test-fg-flag/feature/detach-all/.fg-declared-ran" ]; then
+        echo "NOT_DETACHED"
+        exit 1
+      fi
+      echo "DETACHED"
+      for i in $(seq 1 20); do
+        if [ -f "$WORK_DIR/test-fg-flag/feature/detach-all/.fg-declared-ran" ]; then
+          echo "COMPLETED_IN_BACKGROUND"
+          exit 0
+        fi
+        sleep 0.5
+      done
+      echo "NEVER_COMPLETED"
+      exit 1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "DETACHED"
+        - "COMPLETED_IN_BACKGROUND"
+
+  - name: --hooks off skips the phase, so nothing runs at all
+    run: daft go --hooks off feature/no-hooks 2>&1
+    cwd: "$WORK_DIR/test-fg-flag/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-fg-flag/feature/no-hooks"
+
+  - name: The off-mode worktree never got a marker, foreground or otherwise
+    run: |
+      sleep 2
+      if [ -f "$WORK_DIR/test-fg-flag/feature/no-hooks/.bg-job-ran" ]; then
+        echo "MARKER_PRESENT_DESPITE_OFF"
+        exit 1
+      else
+        echo "NO_MARKER"
+      fi
+    expect:
+      exit_code: 0
+      output_contains:
+        - "NO_MARKER"
+
+  - name: Without the flag the same job detaches (marker not yet written)
+    run: |
+      daft go feature/no-flag > /dev/null 2>&1
+      if [ -f "$WORK_DIR/test-fg-flag/feature/no-flag/.bg-job-ran" ]; then
+        echo "MARKER_UNEXPECTEDLY_PRESENT"
+        exit 1
+      else
+        echo "STILL_DETACHED"
+      fi
+    cwd: "$WORK_DIR/test-fg-flag/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "STILL_DETACHED"
