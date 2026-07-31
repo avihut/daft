@@ -29,11 +29,10 @@ features:
       height: 26
     title: Worktrees
     details:
-      Every branch gets its own directory. Run feature-A and feature-B in
-      different terminals at the same time — no stashing, no context switching.
-      Merge across worktrees from anywhere with `daft merge`.
+      Every branch gets its own directory. Work on three things at once —
+      nothing stashed, nothing rebuilt.
     link: /worktrees/
-    linkText: Worktrees pillar
+    linkText: Explore worktrees
   - icon:
       light: /brand/glyph-hooks.svg
       dark: /brand/glyph-hooks-dark.svg
@@ -41,11 +40,10 @@ features:
       height: 26
     title: Hooks
     details:
-      Boundaries at every code-evolution stage — the local-parallel-to-CI
-      surface. Worktree lifecycle and PR-style merge gates today; the full
-      git-hooks lifecycle is on the roadmap.
+      New worktrees boot ready to run — deps installed, env loaded, merge gates
+      enforced. All declarative.
     link: /hooks/
-    linkText: Hooks pillar
+    linkText: Explore hooks
   - icon:
       light: /brand/glyph-graph.svg
       dark: /brand/glyph-graph-dark.svg
@@ -53,11 +51,10 @@ features:
       height: 26
     title: Graph
     details:
-      Coordinate changes across repositories. A self-maintaining repo catalog
-      plus a committed relations manifest — jump between repos with `daft go`,
-      open one branch everywhere, run commands across the set.
+      Your repos, one connected set. Jump between them, open a branch
+      everywhere, run commands across all of it.
     link: /graph/
-    linkText: Graph pillar
+    linkText: Explore the graph
   - icon:
       light: /brand/glyph-recipes.svg
       dark: /brand/glyph-recipes-dark.svg
@@ -65,10 +62,10 @@ features:
       height: 26
     title: Recipes
     details:
-      Patterns for adopting daft alongside your existing tooling — mise, direnv,
-      asdf, monorepos, fork workflows, CI integration.
+      Proven setups for daft with mise, direnv, monorepos, forks, and CI. Copy,
+      paste, adapt.
     link: /recipes/
-    linkText: Recipes
+    linkText: Browse recipes
 ---
 
 # daft - Git Extensions Toolkit
