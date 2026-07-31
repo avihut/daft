@@ -136,6 +136,69 @@
   font-weight: 650;
 }
 
+/* --- trust tiles ----------------------------------------------------- */
+
+.dl-trust {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 26px;
+}
+.dl-tile {
+  display: block;
+  border-radius: 16px;
+  padding: 24px 26px;
+  color: inherit;
+  border: 1px solid var(--vp-c-divider);
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease;
+}
+.dl-tile:hover {
+  transform: translateY(-3px);
+}
+.dl-tile.is-git {
+  background: color-mix(in srgb, var(--daft-gold) 8%, var(--vp-c-bg));
+}
+.dl-tile.is-git:hover {
+  border-color: color-mix(in srgb, var(--daft-gold) 45%, var(--vp-c-divider));
+}
+.dl-tile.is-agents {
+  background: color-mix(in srgb, #1b9aaa 7%, var(--vp-c-bg));
+}
+.dl-tile.is-agents:hover {
+  border-color: color-mix(in srgb, #1b9aaa 40%, var(--vp-c-divider));
+}
+.dl-tile svg {
+  width: 27px;
+  height: 27px;
+}
+.dl-tile svg .stroke {
+  stroke: var(--vp-c-text-1);
+}
+.dl-tile svg .fill {
+  fill: var(--vp-c-text-1);
+}
+.dl-tile.is-git svg .accent {
+  fill: var(--daft-gold);
+}
+.dl-tile.is-agents svg .accent {
+  fill: #1b9aaa;
+}
+.dl-tile h3 {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.015em;
+  color: var(--vp-c-text-1);
+  margin: 12px 0 6px;
+}
+.dl-tile p {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--vp-c-text-2);
+  margin: 0;
+}
+
 /* --- buttons -------------------------------------------------------- */
 
 .dl-ctas {
@@ -340,7 +403,8 @@
     min-height: 300px;
   }
   .dl-cmdgrid,
-  .dl-ba {
+  .dl-ba,
+  .dl-trust {
     grid-template-columns: 1fr;
   }
   .dl-sec {
@@ -353,7 +417,8 @@
     animation: none;
   }
   .dl-btn:hover,
-  .dl-cmdcard:hover {
+  .dl-cmdcard:hover,
+  .dl-tile:hover {
     transform: none;
   }
 }
