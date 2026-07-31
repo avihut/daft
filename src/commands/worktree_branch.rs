@@ -715,9 +715,11 @@ fn run_branch_delete(
     // Plan-execute rail timeline (#651). The seed resolves a worktree-path
     // shorthand to the branch it names (#813) so the first frame is already
     // right — including on the paths that never commit a plan and so never
-    // reach the core's `PlanCommit::header` replacement.
-    let header = branch_delete::header_seed(&params);
-    let mut timeline = Timeline::new(TimelineMode::auto(quiet), output.is_verbose(), header);
+    // reach the core's `PlanCommit::header` replacement. Only the live
+    // region draws a header, so a non-TTY run skips the resolution probe.
+    let mode = TimelineMode::auto(quiet);
+    let header = branch_delete::header_seed(&params, mode.renders_header());
+    let mut timeline = Timeline::new(mode, output.is_verbose(), header);
     timeline.set_verbose_density(hook_output_config.verbose);
     let interactive = timeline.is_interactive();
 

@@ -156,6 +156,17 @@ pub fn sandbox_dirname(spelling: &str) -> Option<String> {
     Some(spelling.replace('/', "-"))
 }
 
+/// The directory a sandbox for `spelling` at `commit` will occupy: the name
+/// the spelling earns, or a hex prefix of the commit when it earns none.
+///
+/// One helper so every render site names the sandbox the same way (#813).
+/// Spelling it out per call site is how `daft go <full-sha>` came to narrate
+/// three names for one worktree — the 40-char spelling, a 7-char
+/// [`short_oid`], and the 12-char directory it actually made.
+pub fn dirname_for(spelling: &str, commit: &str) -> String {
+    sandbox_dirname(spelling).unwrap_or_else(|| derived_dirname(commit))
+}
+
 /// Visit the canonical sandbox for `params.commit`: navigate to it if it
 /// exists, materialize it otherwise. The `daft go <commit-ish>` engine.
 pub fn execute_visit(

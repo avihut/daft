@@ -1004,7 +1004,7 @@ fn fork_stem(spelling: &str, commit: &str, git: &GitCommand) -> String {
             .map(|b| b.replace('/', "-"))
             .unwrap_or_else(|| sandbox::derived_dirname(commit))
     } else {
-        sandbox::sandbox_dirname(spelling).unwrap_or_else(|| sandbox::derived_dirname(commit))
+        sandbox::dirname_for(spelling, commit)
     }
 }
 
@@ -1728,9 +1728,9 @@ fn run_in_repo(
 
     let result = if let Some(commit) = sandbox_early {
         output.result(&format!(
-            "'{}' is not a branch; opening a detached sandbox at {}",
+            "'{}' is not a branch; opening detached sandbox '{}'",
             args.branch_name,
-            crate::core::worktree::sandbox::short_oid(&commit)
+            crate::core::worktree::sandbox::dirname_for(&args.branch_name, &commit)
         ));
         sandbox_entry(
             &args,
@@ -1809,9 +1809,9 @@ fn run_in_repo(
                 {
                     change_directory(&original_dir).ok();
                     output.result(&format!(
-                        "Branch '{branch}' not found; opening a detached sandbox at {} \
+                        "Branch '{branch}' not found; opening detached sandbox '{}' \
                          (use --start to create a branch named '{branch}')",
-                        crate::core::worktree::sandbox::short_oid(&commit)
+                        crate::core::worktree::sandbox::dirname_for(branch, &commit)
                     ));
                     sandbox_entry(&args, &branch.clone(), commit, &settings, &git, &mut output)
                 } else {
@@ -2395,8 +2395,7 @@ fn run_sandbox_visit(
         });
     }
 
-    let dirname =
-        sandbox::sandbox_dirname(spelling).unwrap_or_else(|| sandbox::derived_dirname(&commit));
+    let dirname = sandbox::dirname_for(spelling, &commit);
     let params = sandbox::SandboxParams {
         spelling: spelling.to_string(),
         commit,

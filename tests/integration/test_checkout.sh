@@ -1075,8 +1075,9 @@ test_go_fetch_on_rail_expands() {
 # Scoped to the sandbox rail on purpose. `daft go <sha>` first tries the
 # branch reading, and that attempt's collapsed face legitimately shows the
 # spelling — daft is trying to open a branch of that name and has not probed
-# yet. The "Branch '<sha>' not found; opening a detached sandbox" line
-# between the two is what marks the handover.
+# yet. The "Branch '<sha>' not found; opening detached sandbox '<dirname>'"
+# line between the two is what marks the handover — and it names the sandbox,
+# so the spelling appears exactly once, before daft knows better.
 test_go_sandbox_header_names_dirname() {
     local remote_repo=$(create_test_remote "test-repo-sandbox-hdr" "main")
     git-worktree-clone --layout contained "$remote_repo" || return 1

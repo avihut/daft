@@ -539,12 +539,18 @@ pub(crate) fn display_path(path: &Path) -> String {
 /// Multi-target keeps its count form: a count is true from raw args and
 /// stays true, and the committed plan names each branch on its own group
 /// row.
-pub fn header_seed(params: &BranchDeleteParams) -> String {
+///
+/// `resolve` is the caller's answer to "will this header be drawn?"
+/// ([`TimelineMode::renders_header`]). Only the live region draws it, so a
+/// non-TTY removal — a script, a hook, CI — skips the `git worktree list`
+/// the resolution costs and keeps the raw spelling nobody will read.
+pub fn header_seed(params: &BranchDeleteParams, resolve: bool) -> String {
     match params.branches.as_slice() {
-        [only] => format!(
+        [only] if resolve => format!(
             "Removing {}",
             display_identity(only, params.use_gitoxide, params.is_quiet)
         ),
+        [only] => format!("Removing {only}"),
         rest => format!("Removing {} branches", rest.len()),
     }
 }
@@ -2692,14 +2698,23 @@ mod tests {
             force_flag_label: "-D/--force".to_string(),
         };
 
-        assert_eq!(
-            header_seed(&params(vec![".".into(), "feat-y".into()])),
-            "Removing 2 branches"
-        );
-        assert_eq!(
-            header_seed(&params(vec!["a".into(), "b".into(), "c".into()])),
-            "Removing 3 branches"
-        );
+        // `resolve` is a perf gate on the single-target arm only: a count
+        // never consults the filesystem, so both settings must agree.
+        for resolve in [true, false] {
+            assert_eq!(
+                header_seed(&params(vec![".".into(), "feat-y".into()]), resolve),
+                "Removing 2 branches"
+            );
+            assert_eq!(
+                header_seed(&params(vec!["a".into(), "b".into(), "c".into()]), resolve),
+                "Removing 3 branches"
+            );
+        }
+
+        // With resolution off — the non-TTY path, where no header is drawn —
+        // a single target keeps the raw spelling rather than paying for a
+        // `git worktree list` nobody reads.
+        assert_eq!(header_seed(&params(vec![".".into()]), false), "Removing .");
     }
 
     /// The path classifier gates a *diagnosis*, so a false positive would
