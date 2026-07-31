@@ -712,14 +712,11 @@ fn run_branch_delete(
     let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
     let executor = HookExecutor::new(hooks_config)?;
 
-    // Plan-execute rail timeline (#651). This header is a seed built from
-    // raw args; the core replaces it at plan commit with the resolved
-    // targets (`daft remove .` → `Removing <branch>`, count as validated).
-    let header = if branches.len() == 1 {
-        format!("Removing {}", branches[0])
-    } else {
-        format!("Removing {} branches", branches.len())
-    };
+    // Plan-execute rail timeline (#651). The seed resolves a worktree-path
+    // shorthand to the branch it names (#813) so the first frame is already
+    // right — including on the paths that never commit a plan and so never
+    // reach the core's `PlanCommit::header` replacement.
+    let header = branch_delete::header_seed(&params);
     let mut timeline = Timeline::new(TimelineMode::auto(quiet), output.is_verbose(), header);
     timeline.set_verbose_density(hook_output_config.verbose);
     let interactive = timeline.is_interactive();

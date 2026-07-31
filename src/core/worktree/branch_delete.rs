@@ -401,8 +401,11 @@ fn build_plan(
     hook_rows: &HookRowPlan,
 ) -> PlanCommit {
     let multi = exec_order.len() > 1;
-    // Replace the seeded header: raw args may be worktree-path shorthands
-    // (`daft remove .`), and the count can shrink during validation.
+    // Replace the seeded header with what validation actually settled on.
+    // The seed already resolves a path shorthand to its branch (#813), so
+    // this is a no-op for the plain single-target case; it earns its keep
+    // when the *count* moves — a wildcard expanding to N sandboxes, or
+    // validation dropping targets down to one.
     let header = if multi {
         format!("Removing {} branches", exec_order.len())
     } else {
@@ -512,6 +515,72 @@ pub(crate) fn display_path(path: &Path) -> String {
         .map(|rel| rel.display().to_string())
         .map(|rel| if rel.is_empty() { ".".to_string() } else { rel })
         .unwrap_or_else(|| path.display().to_string())
+}
+
+// ── Header seed ────────────────────────────────────────────────────────────
+
+/// The rail header for a removal, resolved before the rail opens (#813).
+///
+/// The rail's header carries *identity* — what is being acted on — while the
+/// annotation column beside each step carries *location*. A seed built from
+/// raw args alone puts a path in the identity slot, so `daft remove .`
+/// announces that it is removing `.`, which names nothing the user
+/// recognizes. Resolving here means the first frame already reads
+/// `Removing feat/thing`, and the annotation still reads `.` — the two
+/// together say "the thing at `.` is feat/thing" without narrating it.
+///
+/// It also keeps the header agreeing with the text below it on the paths
+/// that never commit a plan. A dirty worktree aborts with
+/// `cannot delete 'feat/thing': has uncommitted changes` while the seed is
+/// the only line still on screen; a header reading `.` (or a bare count)
+/// disagrees with that error, and no later replacement can fix it because
+/// [`PlanCommit::header`] only lands when a plan commits.
+///
+/// Multi-target keeps its count form: a count is true from raw args and
+/// stays true, and the committed plan names each branch on its own group
+/// row.
+pub fn header_seed(params: &BranchDeleteParams) -> String {
+    match params.branches.as_slice() {
+        [only] => format!(
+            "Removing {}",
+            display_identity(only, params.use_gitoxide, params.is_quiet)
+        ),
+        rest => format!("Removing {} branches", rest.len()),
+    }
+}
+
+/// The identity to render for one raw removal argument.
+///
+/// Display-only and best-effort by construction: it returns a `String` for
+/// rendering, never a target, so it cannot change which entity gets removed
+/// — [`resolve_branch_args`] alone decides that. Anything it fails to
+/// resolve comes back as the user's own spelling, which is what the
+/// validation error will echo too: replacing an unresolvable `../typo` with
+/// a guess is worse than showing a path.
+fn display_identity(arg: &str, use_gitoxide: bool, quiet: bool) -> String {
+    let verbatim = || arg.to_string();
+    let (Ok(project_root), Ok(git_dir)) = (get_project_root(), get_git_common_dir()) else {
+        return verbatim();
+    };
+    let git = GitCommand::new(quiet).with_gitoxide(use_gitoxide);
+    let Ok(entries) = parse_worktree_list(&git) else {
+        return verbatim();
+    };
+
+    match resolve_single_arg(arg, &entries, &project_root) {
+        ResolveResult::Branch(name) => name,
+        // A daft sandbox has no branch, so its dirname is its identity. A
+        // detached worktree daft has no record of keeps the user's spelling:
+        // the removal refuses it either way, and the refusal quotes the path.
+        ResolveResult::DetachedHead(path) => {
+            let identities = crate::core::worktree::identity_store::read_identities(&git_dir);
+            sandbox_target_by_path(&path, &identities)
+                .map_or_else(verbatim, |target| target.dirname)
+        }
+        // A branch name, a sandbox dirname, or a path that matched nothing.
+        // All three are already the best spelling available here.
+        ResolveResult::PassThrough => verbatim(),
+    }
 }
 
 // ── Argument resolution ────────────────────────────────────────────────────
@@ -2577,6 +2646,39 @@ mod tests {
         let b = branch("feat-y");
         let plan = build_plan(&[&a, &b], &params, &all_hook_rows(2));
         assert_eq!(plan.header.as_deref(), Some("Removing 2 branches"));
+    }
+
+    /// #813: multi-target keeps the count form, and it is reachable without
+    /// touching a repo — the seed only resolves when there is exactly one
+    /// argument to resolve. The single-target spellings are covered where
+    /// they actually render, in `tests/integration/test_branch_delete.sh`.
+    #[test]
+    fn header_seed_keeps_the_count_form_for_multiple_targets() {
+        let params = |branches: Vec<String>| BranchDeleteParams {
+            branches,
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
+        };
+
+        assert_eq!(
+            header_seed(&params(vec![".".into(), "feat-y".into()])),
+            "Removing 2 branches"
+        );
+        assert_eq!(
+            header_seed(&params(vec!["a".into(), "b".into(), "c".into()])),
+            "Removing 3 branches"
+        );
     }
 
     #[test]

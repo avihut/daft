@@ -598,6 +598,125 @@ test_branch_delete_by_dot() {
     return 0
 }
 
+# --- #813: the rail header names the worktree, not the path argument ---
+
+BD_PTY_RUN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pty_run.py"
+
+# Run daft with the live rail enabled (pattern from test_checkout.sh): the
+# framework's DAFT_TESTING hides the interactive region — the subject of
+# these tests — so it comes off and the background spawns it suppresses are
+# turned off individually. TERM is pinned because indicatif hides its whole
+# draw target under an unset or `dumb` TERM, as on a bare CI runner.
+_bd_rail_daft() {
+    env -u DAFT_TESTING \
+        TERM=xterm-256color \
+        DAFT_NO_UPDATE_CHECK=1 \
+        DAFT_NO_TRUST_PRUNE=1 \
+        DAFT_NO_LOG_CLEAN=1 \
+        DAFT_NO_HINTS=1 \
+        "$@"
+}
+
+# Strip ANSI and split the pty's carriage-returned repaints into lines.
+_bd_rail_clean() {
+    sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r/\n/g' "$1"
+}
+
+# The planning face is the *first* thing painted, before any plan commits.
+# Grepping the whole log would pass on the committed header alone (which was
+# always right), so the assertion has to be pinned to the first `Removing`
+# line the terminal ever saw.
+_bd_first_removing_line() {
+    _bd_rail_clean "$1" | grep -o 'Removing [^ ]*' | head -1
+}
+
+# #813: `daft remove .` announced "Removing ." — the raw argument in the
+# slot that carries identity. The committed header resolved it, but the
+# planning face is what the user reads first, and on the runs that never
+# commit a plan it is all they read.
+test_remove_dot_header_names_branch() {
+    local remote_repo=$(create_test_remote "test-repo-bd-hdr" "main")
+
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-bd-hdr"
+    local project_root
+    project_root=$(pwd -P)
+
+    git-worktree-checkout -b feature/header || return 1
+    cd "feature/header"
+
+    local log="$project_root/remove-dot-rail.log"
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-hdr.XXXXXX")
+    DAFT_CD_FILE="$cd_file" _bd_rail_daft "$BD_PTY_RUN" "$log" daft remove . >/dev/null 2>&1
+    rm -f "$cd_file"
+
+    local first
+    first=$(_bd_first_removing_line "$log")
+    if [[ "$first" != "Removing feature/header" ]]; then
+        log_error "first header line was '$first', expected 'Removing feature/header'"
+        _bd_rail_clean "$log" | head -20
+        return 1
+    fi
+    return 0
+}
+
+# #813: the header must agree with the error underneath it. A dirty worktree
+# aborts during validation, so no plan ever commits and the seed is the only
+# header the run will ever have — the case the PlanCommit replacement cannot
+# reach.
+test_remove_dot_header_survives_validation_failure() {
+    local remote_repo=$(create_test_remote "test-repo-bd-hdr-fail" "main")
+
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-bd-hdr-fail"
+    local project_root
+    project_root=$(pwd -P)
+
+    git-worktree-checkout -b feature/dirty-header || return 1
+    cd "feature/dirty-header"
+    echo "uncommitted" > scratch.txt
+
+    local log="$project_root/remove-dirty-rail.log"
+    _bd_rail_daft "$BD_PTY_RUN" "$log" daft remove . >/dev/null 2>&1
+
+    local first
+    first=$(_bd_first_removing_line "$log")
+    if [[ "$first" != "Removing feature/dirty-header" ]]; then
+        log_error "first header line was '$first', expected 'Removing feature/dirty-header'"
+        _bd_rail_clean "$log" | head -20
+        return 1
+    fi
+    # The worktree must survive — this is a display change only.
+    if [[ ! -d "$project_root/feature/dirty-header" ]]; then
+        log_error "dirty worktree was removed"
+        return 1
+    fi
+    return 0
+}
+
+# #813 do-not-regress: an argument that resolves to nothing must still be
+# echoed exactly as typed. Replacing an unresolvable path with a guess is
+# worse than showing the path.
+test_remove_unresolvable_path_echoes_verbatim() {
+    local remote_repo=$(create_test_remote "test-repo-bd-hdr-miss" "main")
+
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-bd-hdr-miss/main"
+    local log="$PWD/remove-miss-rail.log"
+
+    _bd_rail_daft "$BD_PTY_RUN" "$log" daft remove ../feature/nope >/dev/null 2>&1
+
+    local first
+    first=$(_bd_first_removing_line "$log")
+    if [[ "$first" != "Removing ../feature/nope" ]]; then
+        log_error "first header line was '$first', expected 'Removing ../feature/nope'"
+        _bd_rail_clean "$log" | head -20
+        return 1
+    fi
+    return 0
+}
+
 # --- Tests for new git-worktree-branch -d/-D command ---
 
 # Test basic branch delete with -d flag
@@ -882,6 +1001,9 @@ run_branch_delete_tests() {
     run_test "branch_delete_by_relative_path" "test_branch_delete_by_relative_path"
     run_test "branch_delete_by_absolute_path" "test_branch_delete_by_absolute_path"
     run_test "branch_delete_by_dot" "test_branch_delete_by_dot"
+    run_test "remove_dot_header_names_branch" "test_remove_dot_header_names_branch"
+    run_test "remove_dot_header_survives_validation_failure" "test_remove_dot_header_survives_validation_failure"
+    run_test "remove_unresolvable_path_echoes_verbatim" "test_remove_unresolvable_path_echoes_verbatim"
 
     log "Running git-worktree-branch -d/-D integration tests..."
 
