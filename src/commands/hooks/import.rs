@@ -15,6 +15,26 @@ use crate::styles::{bold, cyan, dim, green};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
+/// Fold a definition's legacy `commands:` map into its `jobs:` list.
+///
+/// The map is unordered, so the jobs are sorted by name to keep the written
+/// file stable across runs — an import that reshuffled its output every time
+/// would make the diff unreadable.
+fn commands_to_jobs(
+    mut def: crate::hooks::yaml_config::HookDef,
+) -> crate::hooks::yaml_config::HookDef {
+    let Some(commands) = def.commands.take() else {
+        return def;
+    };
+    let mut converted: Vec<_> = commands
+        .iter()
+        .map(|(name, cmd)| cmd.to_job_def(name))
+        .collect();
+    converted.sort_by(|a, b| a.name.cmp(&b.name));
+    def.jobs.get_or_insert_with(Vec::new).extend(converted);
+    def
+}
+
 /// Convert an incumbent hooks config into `daft.yml` entries.
 pub(super) fn cmd_import(dry_run: bool, output: &mut dyn Output) -> Result<()> {
     let root = super::find_worktree_root()?;
@@ -27,8 +47,25 @@ pub(super) fn cmd_import(dry_run: bool, output: &mut dyn Output) -> Result<()> {
         );
     };
 
-    let hooks: Entries = spec.config.hooks.clone().into_iter().collect();
-    let tasks: Entries = spec.config.tasks.clone().into_iter().collect();
+    // Emitted in daft's own idiom, not transliterated. The incumbent's older
+    // `commands:` map is an accepted alias on a hook, but `tasks:` rejects it
+    // outright — an import that wrote it would produce a daft.yml that
+    // `daft hooks validate` fails on, one command after telling the user it
+    // succeeded.
+    let hooks: Entries = spec
+        .config
+        .hooks
+        .clone()
+        .into_iter()
+        .map(|(name, def)| (name, commands_to_jobs(def)))
+        .collect();
+    let tasks: Entries = spec
+        .config
+        .tasks
+        .clone()
+        .into_iter()
+        .map(|(name, def)| (name, commands_to_jobs(def)))
+        .collect();
     if hooks.is_empty() && tasks.is_empty() {
         anyhow::bail!(
             "{} defines no hooks daft can run — nothing to import",
