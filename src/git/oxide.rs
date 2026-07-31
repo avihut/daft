@@ -255,7 +255,7 @@ pub fn config_entries_global(section_name: &str) -> Result<Vec<super::config::Co
 /// The shared walk. Takes the parsed config rather than a repository so the
 /// in-repo and global paths cannot drift in how they read provenance.
 fn config_entries_in(
-    config: &gix::config::File<'_>,
+    config: &gix::config::File,
     section_name: &str,
 ) -> Vec<super::config::ConfigEntry> {
     use super::config::ConfigEntry;
@@ -279,10 +279,10 @@ fn config_entries_in(
         let mut seen = HashSet::new();
 
         for name in body.value_names() {
-            if !seen.insert(name.to_string().to_ascii_lowercase()) {
+            if !seen.insert(name.to_ascii_lowercase()) {
                 continue;
             }
-            let Some(value) = body.value(name.as_ref()) else {
+            let Some(value) = body.value(&name) else {
                 continue;
             };
             let key = match &subsection {
