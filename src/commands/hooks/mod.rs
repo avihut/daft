@@ -650,6 +650,47 @@ pub(super) fn styled_trust_level(level: TrustLevel) -> String {
     }
 }
 
+/// Hooks discovered in a repository, kept apart by where they come from.
+///
+/// The two sources answer different questions and must not be conflated: a
+/// YAML key is a definition, a script is a file on disk with a permission bit.
+/// Merging them once cost a red "(not executable)" against every `daft.yml`
+/// hook — a warning about a file that was never supposed to exist.
+pub(super) struct ProjectHooks {
+    /// Script hooks found in `.daft/hooks/` directories. Real paths.
+    pub scripts: Vec<std::path::PathBuf>,
+    /// Hook keys declared in a `daft.yml`. Names, not paths.
+    pub yaml_names: Vec<String>,
+    /// Stage names from a config daft did not write, and the file they came
+    /// from. Present only when that config is what would actually run — a
+    /// `daft.yml` git stage takes the whole repository native.
+    pub incumbent: Option<(std::path::PathBuf, Vec<String>)>,
+}
+
+impl ProjectHooks {
+    /// Every hook name from either source, sorted and deduplicated.
+    ///
+    /// For the callers that want to say "this repository has hooks X, Y, Z"
+    /// without caring which form each one takes.
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .scripts
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .chain(self.yaml_names.iter().cloned())
+            .chain(
+                self.incumbent
+                    .iter()
+                    .flat_map(|(_, names)| names.iter().cloned()),
+            )
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+}
+
 /// Find project hooks in the current repository.
 ///
 /// Checks for hooks in two forms:
@@ -658,7 +699,7 @@ pub(super) fn styled_trust_level(level: TrustLevel) -> String {
 ///
 /// For non-bare repos, checks the repo root directly.
 /// For bare repos, checks worktree subdirectories.
-pub(super) fn find_project_hooks(git_dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+pub(super) fn find_project_hooks(git_dir: &Path) -> Result<ProjectHooks> {
     let project_root = git_dir.parent().context("Invalid git directory")?;
     // Use config_get("core.bare") instead of path heuristics — the path-based
     // check fails for contained layouts where git_dir is <repo>/.git (the parent
@@ -670,7 +711,9 @@ pub(super) fn find_project_hooks(git_dir: &Path) -> Result<Vec<std::path::PathBu
         .flatten()
         .is_some_and(|v| v.to_lowercase() == "true");
 
-    let mut hooks = Vec::new();
+    let mut scripts: Vec<std::path::PathBuf> = Vec::new();
+    let mut yaml_names: Vec<String> = Vec::new();
+    let mut incumbent: Option<(std::path::PathBuf, Vec<String>)> = None;
     let mut found_yaml = false;
 
     // Directories to check for hooks
@@ -705,14 +748,31 @@ pub(super) fn find_project_hooks(git_dir: &Path) -> Result<Vec<std::path::PathBu
                         && let Ok(config) =
                             serde_yaml::from_str::<crate::hooks::yaml_config::YamlConfig>(&contents)
                     {
-                        for hook_name in config.hooks.keys() {
-                            hooks.push(std::path::PathBuf::from(hook_name));
-                        }
+                        yaml_names.extend(config.hooks.keys().cloned());
                         found_yaml = true;
                     }
                     break;
                 }
             }
+        }
+
+        // A config daft did not write, when it is what would actually run.
+        // Callers name hooks to answer "trust this repository?" and "what runs
+        // here?" — both answers are wrong if a taken-over config is invisible.
+        if incumbent.is_none()
+            && let crate::hooks::incumbent::StageSource::Incumbent(path) =
+                crate::hooks::incumbent::resolve_stage_source(
+                    dir,
+                    crate::hooks::yaml_config_loader::load_merged_config(dir)
+                        .ok()
+                        .flatten()
+                        .as_ref(),
+                )
+            && let Ok(Some(spec)) = crate::hooks::incumbent::detect(dir)
+        {
+            let mut names: Vec<String> = spec.config.hooks.keys().cloned().collect();
+            names.sort();
+            incumbent = Some((path, names));
         }
 
         // Check for legacy script hooks in .daft/hooks/
@@ -725,31 +785,35 @@ pub(super) fn find_project_hooks(git_dir: &Path) -> Result<Vec<std::path::PathBu
             {
                 let hook_path = hook_entry.path();
                 if hook_path.is_file() {
-                    hooks.push(hook_path);
+                    scripts.push(hook_path);
                 }
             }
         }
 
-        if found_yaml || !hooks.is_empty() {
+        if found_yaml || !scripts.is_empty() || incumbent.is_some() {
             break; // Found hooks in one location, that's enough
         }
     }
 
     // Sort by filename for consistent output
-    hooks.sort_by(|a, b| {
+    scripts.sort_by(|a, b| {
         a.file_name()
             .unwrap_or_default()
             .cmp(b.file_name().unwrap_or_default())
     });
-
-    // Deduplicate (YAML hook names and legacy scripts might overlap)
-    hooks.dedup_by(|a, b| {
+    scripts.dedup_by(|a, b| {
         a.file_name()
             .unwrap_or_default()
             .eq(b.file_name().unwrap_or_default())
     });
+    yaml_names.sort();
+    yaml_names.dedup();
 
-    Ok(hooks)
+    Ok(ProjectHooks {
+        scripts,
+        yaml_names,
+        incumbent,
+    })
 }
 
 /// Find the worktree root directory.
@@ -768,4 +832,91 @@ pub(super) fn find_worktree_root() -> Result<PathBuf> {
             .context("Invalid UTF-8 in git output")?
             .trim(),
     ))
+}
+
+#[cfg(test)]
+mod project_hooks_tests {
+    use super::*;
+    use crate::test_support::CwdGuard;
+    use serial_test::serial;
+    use std::fs;
+
+    /// A repo with `daft.yml` hooks and one real script in `.daft/hooks/`.
+    fn repo_with_both(dir: &Path) {
+        crate::utils::git_command_at(dir)
+            .args(["init", "-q", "-b", "main", "."])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git init");
+        fs::write(
+            dir.join("daft.yml"),
+            "hooks:\n  pre-commit:\n    jobs: [{name: ok, run: \"true\"}]\n  \
+             worktree-post-create:\n    jobs: [{name: ok, run: \"true\"}]\n",
+        )
+        .unwrap();
+        let hooks_dir = dir.join(PROJECT_HOOKS_DIR);
+        fs::create_dir_all(&hooks_dir).unwrap();
+        fs::write(hooks_dir.join("post-clone"), "#!/bin/sh\necho hi\n").unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn yaml_hook_keys_are_never_reported_as_script_files() {
+        // Regression: YAML keys used to be pushed into the same Vec<PathBuf> as
+        // real scripts, so `hooks status` rendered every daft.yml hook under
+        // ".daft/hooks" with a red "(not executable)" — a permission complaint
+        // about a file that does not exist. Widening the schema to git stages
+        // made it say that about `pre-commit` too.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        repo_with_both(&root);
+        let _cwd = CwdGuard::enter(&root);
+
+        let found = find_project_hooks(&root.join(".git")).unwrap();
+
+        let script_names: Vec<_> = found
+            .scripts
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            script_names,
+            vec!["post-clone"],
+            "only real files under .daft/hooks/ belong in `scripts`"
+        );
+        assert!(
+            found.scripts.iter().all(|p| p.is_file()),
+            "every entry in `scripts` must be a path that exists: {:?}",
+            found.scripts
+        );
+        assert_eq!(
+            found.yaml_names,
+            vec!["pre-commit".to_string(), "worktree-post-create".to_string()],
+            "daft.yml keys belong in `yaml_names`, sorted"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn names_unions_both_sources_for_the_trust_prompt() {
+        // The trust prompt asks "trust these hooks?" and must name every hook
+        // the repo has, from either form — that is what `find_project_hooks`
+        // conflated the two for in the first place.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        repo_with_both(&root);
+        let _cwd = CwdGuard::enter(&root);
+
+        let found = find_project_hooks(&root.join(".git")).unwrap();
+
+        assert_eq!(
+            found.names(),
+            vec![
+                "post-clone".to_string(),
+                "pre-commit".to_string(),
+                "worktree-post-create".to_string()
+            ]
+        );
+    }
 }

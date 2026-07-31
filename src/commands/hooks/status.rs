@@ -88,6 +88,65 @@ fn report_stage_shims(cwd: &Path, output: &mut dyn Output) {
     output.info("");
 }
 
+/// Report stages that come from a config daft did not write.
+///
+/// Returns whether anything was reported, so the caller can suppress the
+/// "no hooks found" advice — a repository running a taken-over config has
+/// hooks, they are simply not in daft's own file yet.
+fn report_incumbent_stages(
+    cwd: &Path,
+    config: Option<&yaml_config::YamlConfig>,
+    output: &mut dyn Output,
+) -> bool {
+    use crate::hooks::incumbent::{self, StageSource};
+
+    let root = match crate::commands::hooks::find_worktree_root() {
+        Ok(root) => root,
+        Err(_) => cwd.to_path_buf(),
+    };
+    let StageSource::Incumbent(path) = incumbent::resolve_stage_source(&root, config) else {
+        return false;
+    };
+    let Ok(Some(spec)) = incumbent::detect(&root) else {
+        // The file exists but did not parse. `hooks install` and every run
+        // report the reason in full; repeating it here would bury the trust
+        // state this screen is about.
+        output.info(&format!(
+            "{} {} {}",
+            bold("Stages run from"),
+            cyan(&path.display().to_string()),
+            red("(unreadable — see daft hooks validate)")
+        ));
+        output.info("");
+        return true;
+    };
+
+    let mut names: Vec<&str> = spec.config.hooks.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    output.info(&format!(
+        "{} {} {}:",
+        bold("Stages run from"),
+        cyan(&path.display().to_string()),
+        dim("(taken over as-is)")
+    ));
+    for name in names {
+        output.list_item(&cyan(name));
+    }
+    if !spec.unsupported.is_empty() {
+        for note in &spec.unsupported {
+            output.info(&format!("  {} {}", yellow("not supported:"), note));
+        }
+    }
+    output.info(&format!(
+        "  {} {} {}",
+        dim("Next:"),
+        cyan(&crate::daft_cmd("hooks import")),
+        dim("converts it into daft.yml")
+    ));
+    output.info("");
+    true
+}
+
 /// Show trust status and available hooks.
 pub(super) fn cmd_status(path: &Path, short: bool, output: &mut dyn Output) -> Result<()> {
     // Resolve the path to absolute
@@ -155,12 +214,10 @@ pub(super) fn cmd_status(path: &Path, short: bool, output: &mut dyn Output) -> R
                     dim("(repository)")
                 ));
             }
-            // Combine shell hook names and YAML hook names (deduped)
-            let mut all_names: Vec<String> = hooks
-                .iter()
-                .filter_map(|h| h.file_name())
-                .map(|n| n.to_string_lossy().to_string())
-                .collect();
+            // Combine shell hook names and YAML hook names (deduped). The
+            // merged config is authoritative over what `find_project_hooks`
+            // scraped, since it applies overlays the scrape does not.
+            let mut all_names: Vec<String> = hooks.names();
             for name in &yaml_hook_names {
                 if !all_names.contains(name) {
                     all_names.push(name.clone());
@@ -225,14 +282,20 @@ pub(super) fn cmd_status(path: &Path, short: bool, output: &mut dyn Output) -> R
                 for name in &yaml_hook_names {
                     output.list_item(&cyan(name));
                 }
-                if !hooks.is_empty() {
+                if !hooks.scripts.is_empty() {
                     output.info("");
                 }
             }
 
+            // Stages running from a config daft did not write. Reported here
+            // and not only in the shim block above, because "16 shims
+            // installed" and "no hooks found" side by side reads as a broken
+            // install when it is in fact a working takeover.
+            let taken_over = report_incumbent_stages(&abs_path, yaml_cfg.as_ref(), output);
+
             // Shell script hooks section
-            if hooks.is_empty() {
-                if yaml_hook_names.is_empty() {
+            if hooks.scripts.is_empty() {
+                if yaml_hook_names.is_empty() && !taken_over {
                     output.info(&format!(
                         "{} {}:",
                         bold("No hooks found in"),
@@ -249,7 +312,7 @@ pub(super) fn cmd_status(path: &Path, short: bool, output: &mut dyn Output) -> R
                     bold("Shell hooks in"),
                     cyan(PROJECT_HOOKS_DIR)
                 ));
-                for hook in &hooks {
+                for hook in &hooks.scripts {
                     let name = hook.file_name().unwrap_or_default().to_string_lossy();
                     let executable = is_executable(hook);
                     let status = if executable {
@@ -261,8 +324,12 @@ pub(super) fn cmd_status(path: &Path, short: bool, output: &mut dyn Output) -> R
                 }
             }
 
-            // Check for deprecated hook filenames among discovered shell hooks
+            // Check for deprecated hook filenames among discovered shell hooks.
+            // Scripts only: the remedy printed below is `hooks migrate`, which
+            // renames files — it would not touch a deprecated YAML key, and
+            // validation rejects those with its own suggestion.
             let deprecated_hooks: Vec<_> = hooks
+                .scripts
                 .iter()
                 .filter_map(|hook_path| {
                     let name = hook_path.file_name()?.to_str()?;
