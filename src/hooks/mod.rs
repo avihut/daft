@@ -161,11 +161,26 @@ impl HookType {
     /// ephemeral-target path deletes the very worktree `post-merge` ran in,
     /// which is a property of the invocation. Those are handled at their call
     /// sites by downgrading the mode.
+    ///
+    /// For a [`Git`](HookType::Git) stage the follow-on work is git's rather
+    /// than daft's, and the answer is the same for the same reason. A gate
+    /// stage is dispatched with git blocked on the shim's exit status, so
+    /// detaching it does not defer the gate — the commit lands, the push
+    /// goes out, and `prepare-commit-msg` returns before it wrote the
+    /// message file git is about to read. The observer stages carry no such
+    /// debt: their operation has already happened, which is exactly the
+    /// ordinary background bargain. [`crate::hooks::git_stage`] pins the
+    /// gates to `Foreground` at dispatch for the same reason, since git
+    /// hands the shim no `--hooks` flag to say it with.
     pub fn precedes_more_daft_work(&self) -> bool {
-        matches!(
-            self,
-            HookType::PreCreate | HookType::PreRemove | HookType::PreMerge | HookType::PostClone
-        )
+        match self {
+            HookType::PreCreate
+            | HookType::PreRemove
+            | HookType::PreMerge
+            | HookType::PostClone => true,
+            HookType::Git(stage) => stage.aborts_operation(),
+            _ => false,
+        }
     }
 
     /// Returns the canonical filename for this hook type.
