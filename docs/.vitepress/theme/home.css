@@ -13,7 +13,8 @@
 }
 .VPHome .VPHero .main {
   margin: 0 auto;
-  max-width: 840px;
+  width: 100%;
+  max-width: 940px;
 }
 .VPHome .VPHero .text {
   max-width: none;
@@ -24,7 +25,7 @@
 .VPHome .VPHero .tagline {
   margin-left: auto;
   margin-right: auto;
-  max-width: 56ch;
+  max-width: none;
 }
 .dl-eyebrow {
   font-family: var(--vp-font-family-mono);
@@ -254,6 +255,12 @@
   padding: 18px 20px;
   background: var(--vp-c-bg-soft);
 }
+.dl-pane.is-bad {
+  box-shadow: inset 3px 0 0 var(--daft-rust);
+}
+.dl-pane.is-good {
+  box-shadow: inset 3px 0 0 var(--daft-gold);
+}
 .dl-pane h3 {
   font-family: var(--vp-font-family-mono);
   font-size: 11px;
@@ -277,9 +284,7 @@
   overflow-x: auto;
 }
 .dl-pane .x {
-  color: var(--vp-c-text-3);
-  text-decoration: line-through;
-  text-decoration-color: var(--daft-rust);
+  color: var(--vp-c-text-2);
 }
 .dl-pane .w {
   color: var(--daft-rust-text);

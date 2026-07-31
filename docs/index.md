@@ -7,6 +7,6 @@ layout: home
 hero:
   text: Stop switching branches. Run all of them.
   tagline:
-    Six commands replace the stash-checkout-reinstall loop. Watch a project grow
-    — every command in the session below is real daft.
+    Naturally organize your worktree workflow and stretch it out across multiple
+    repos
 ---
