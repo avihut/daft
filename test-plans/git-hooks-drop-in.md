@@ -80,9 +80,14 @@ git init -q -b main "$WORK/repo" && cd "$WORK/repo"
 - [ ] A repository with only a `lefthook.yml` takes over on install, and the
       output names the file as the source
 - [ ] Its `pre-commit` gate blocks a bad commit
+- [ ] A `glob:` in the older `commands:` map form is honoured — a job scoped to
+      `*.rs` does **not** run on a `.md`-only commit
 - [ ] `remotes:` is reported on install and on each firing run
 - [ ] `min_version:` is reported once, not per stage
-- [ ] `LEFTHOOK=0` disables the run; `LEFTHOOK_EXCLUDE=job` skips that job
+- [ ] `LEFTHOOK=0` disables the run; `LEFTHOOK_EXCLUDE=job` skips that job, and
+      the skip is attributed to `LEFTHOOK_EXCLUDE` rather than `--skip-hooks`
+- [ ] `daft hooks status` names the file its stages come from, and lists them
+- [ ] `daft hooks trust` names that file before asking
 - [ ] Adding any git stage to `daft.yml` flips the source to native
 - [ ] A `lefthook.toml` reports the format rather than "no config found"
 
@@ -91,11 +96,16 @@ git init -q -b main "$WORK/repo" && cd "$WORK/repo"
 - [ ] `daft hooks import --dry-run` previews without writing
 - [ ] `import` into an existing `daft.yml` preserves every comment and blank
       line
+- [ ] A `daft.yml` that already has a `hooks:` block receives the entries
+      **inside** it, at its own indentation — one `hooks:` key, not two
+- [ ] Every field survives the conversion — `glob`, `stage_fixed`, `root` and
+      the rest, not just `run`
 - [ ] Custom hook names land in `tasks:` and run via `daft run <name>`
-- [ ] `daft hooks validate` passes on the result
+- [ ] `daft hooks validate` passes on the result — including when the source
+      used the `commands:` map form (tasks reject it, so import rewrites it)
 - [ ] `lefthook.yml` is left on disk, and the `git rm` is printed
-- [ ] A `daft.yml` that already has a `hooks:` block is declined with a
-      pasteable snippet
+- [ ] A shape the editor cannot read (`hooks: {…}` as a flow mapping) is
+      declined with a pasteable snippet
 
 ## git-lfs
 
