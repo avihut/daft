@@ -156,6 +156,32 @@ it before any job can (a process cannot read its stdin twice), so it is
 republished as a variable — and jobs that want it as a stream declare
 `use_stdin: true`.
 
+## Background jobs under a stage
+
+[`--hooks <mode>`](/hooks/yaml-reference#choosing-how-a-run-s-hook-jobs-execute)
+is a flag on daft's own commands. Git has no such flag to pass — it runs the
+shim with the arguments its hook protocol defines — so daft decides per stage,
+from the one thing that settles it: whether git is going to act on the answer.
+
+**A stage git acts on runs inline, whatever the job declared.** Git blocks on
+the hook and reads its exit status; a job handed to the coordinator outlives
+that read. So `background: true` under `pre-commit` would not make the gate
+asynchronous, it would delete it — the commit lands while the check is still
+starting. Daft runs those jobs inline instead and says which one it did that to.
+The rule is the "Blocks on failure: yes" column of the table above — including
+`prepare-commit-msg`, which has to have written the message file before git
+reads it.
+
+**Everywhere else `background:` means what it says.** By the time `post-commit`,
+`post-merge`, `post-checkout`, or `post-rewrite` fires, the operation has
+already happened; deferring work past it changes when the work runs and nothing
+else, which is the whole point of declaring it. Those jobs detach to the
+coordinator and you follow them with `daft hooks jobs`, exactly as in a
+lifecycle hook.
+
+`daft hooks run <stage>` honors the declaration in every case: firing a stage by
+hand has no commit waiting on the verdict.
+
 ## Trust
 
 The same gate as every other hook: a repository is untrusted until you say
@@ -192,6 +218,15 @@ repositories that wire LFS some other way.
 - `DAFT_HOOKS=0` — disables daft's dispatch for every stage, for when a script
   invokes git several times and `--no-verify` cannot reach through it.
 - `daft hooks run <stage>` — fire a stage by hand, without making a commit.
+
+`--skip-hooks` and `--hooks off` are **not** among them. They select over the
+hook phases a daft command runs itself; the stages fire from a shim in a
+separate process git started, which never sees the flags. So
+`daft merge --hooks off` skips daft's own `pre-merge` and `post-merge` and still
+runs git's `pre-merge-commit` — the same thing that happens today with any other
+hooks manager installed, and the reason a taken-over config keeps gating exactly
+as it did. `DAFT_HOOKS=0` is the lever that reaches both, because a subprocess
+inherits it.
 
 ## Coming from another hooks manager
 
