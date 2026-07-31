@@ -1,153 +1,86 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { createRepoGraph, type RepoGraph } from "../repo-graph";
+import { nextTick, ref } from "vue";
+import { compile } from "../graph/engine";
+import { HERO_SCRIPT } from "../graph/hero-script";
+import RepoDiagram from "../graph/RepoDiagram.vue";
 
-interface TermLine {
-  kind: "cmd" | "out" | "ok";
+// Pure and window-free, so it runs during SSR too: the server renders the
+// full transcript (readable without JS) and the first client tick trims it
+// back to wherever the timeline actually is.
+const COMPILED = compile(HERO_SCRIPT);
+const ALL_LINES = COMPILED.term;
+
+interface ShownLine {
+  kind: string;
   text: string;
+  step: number;
+  checkpoint: boolean;
 }
 
-interface Step {
-  cmd: string;
-  out: TermLine[];
-  play?: (graph: RepoGraph) => void;
+function shown(count: number): ShownLine[] {
+  return ALL_LINES.slice(0, count).map((l) => ({
+    kind: l.kind,
+    text: l.text,
+    step: l.step,
+    checkpoint: l.checkpoint,
+  }));
 }
 
-// The session replayed on loop. Every command is real daft; each one's
-// graph effect fires the moment the command finishes typing.
-const STEPS: Step[] = [
-  {
-    cmd: "daft clone git@github.com:acme/shop.git",
-    out: [{ kind: "out", text: "cloned shop · worktree main/ ready" }],
-    play: (g) => {
-      const r = g.addRepo("shop", 0.38, 0.48);
-      g.addWorktree(r, "main");
-    },
-  },
-  {
-    cmd: "daft start feature/checkout",
-    out: [{ kind: "out", text: "branch + worktree created · pushed -u origin" }],
-    play: (g) => g.addWorktree(0, "feature/checkout"),
-  },
-  {
-    cmd: "daft start bugfix/tax-rounding",
-    out: [{ kind: "out", text: "branch + worktree created · pushed -u origin" }],
-    play: (g) => g.addWorktree(0, "bugfix/tax-rounding"),
-  },
-  {
-    cmd: "daft clone git@github.com:acme/shop-api.git",
-    out: [{ kind: "out", text: "cloned shop-api · worktree main/ ready" }],
-    play: (g) => {
-      const r = g.addRepo("shop-api", 0.74, 0.3);
-      g.addWorktree(r, "main");
-      g.relate(0, 1);
-    },
-  },
-  {
-    cmd: "daft merge feature/checkout",
-    out: [
-      { kind: "ok", text: "✓ fmt   ✓ clippy   ✓ tests" },
-      { kind: "out", text: "merged into main · worktree removed" },
-    ],
-    play: (g) => g.merge(0, "feature/checkout"),
-  },
-  {
-    cmd: "daft prune",
-    out: [{ kind: "out", text: "pruned 1 merged branch" }],
-  },
-];
-
-const FULL_TRANSCRIPT: TermLine[] = STEPS.flatMap((step) => [
-  { kind: "cmd" as const, text: step.cmd },
-  ...step.out,
-]);
-
-// SSR and no-JS render the full transcript; the animation replaces it on mount.
-const lines = ref<TermLine[]>(FULL_TRANSCRIPT);
+const lines = ref<ShownLine[]>(shown(ALL_LINES.length));
 const typing = ref<string | null>(null);
+const activeStep = ref(0);
 const termEl = ref<HTMLElement | null>(null);
-const canvasEl = ref<HTMLCanvasElement | null>(null);
+const diagram = ref<InstanceType<typeof RepoDiagram> | null>(null);
+let lastSig = "";
 
-let graph: RepoGraph | null = null;
-let timers: number[] = [];
-let stopped = false;
-
-function later(fn: () => void, ms: number): void {
-  if (stopped) return;
-  timers.push(
-    window.setTimeout(() => {
-      // Stall instead of advancing while the tab is hidden.
-      if (document.hidden) later(fn, 500);
-      else fn();
-    }, ms),
-  );
-}
-
-function scrollTerm(): void {
+function scrollTerm(force: boolean): void {
   nextTick(() => {
     const el = termEl.value;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    // Follow the tail only when the reader is already there — a user who
+    // scrolled up to reread stays where they are.
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 56;
+    if (force || nearBottom) el.scrollTop = el.scrollHeight;
   });
 }
 
-function runStep(index: number): void {
-  if (index >= STEPS.length) {
-    later(() => {
-      lines.value = [];
-      graph?.reset();
-      later(() => runStep(0), 700);
-    }, 4200);
-    return;
-  }
-  const step = STEPS[index];
-  typing.value = "";
-  scrollTerm();
-  let ci = 0;
-  const type = () => {
-    if (ci < step.cmd.length) {
-      typing.value = step.cmd.slice(0, ++ci);
-      later(type, 26 + Math.random() * 30);
-    } else {
-      later(() => {
-        typing.value = null;
-        lines.value.push({ kind: "cmd", text: step.cmd });
-        if (graph) step.play?.(graph);
-        let oi = 0;
-        const emit = () => {
-          if (oi < step.out.length) {
-            lines.value.push(step.out[oi++]);
-            scrollTerm();
-            later(emit, 420);
-          } else {
-            later(() => runStep(index + 1), 900);
-          }
-        };
-        emit();
-      }, 350);
+function onTick(t: number): void {
+  let count = 0;
+  let typingText: string | null = null;
+  for (const line of ALL_LINES) {
+    if (line.at > t) break;
+    if (line.kind === "cmd" && t < line.typed) {
+      const progress = (t - line.at) / (line.typed - line.at);
+      typingText = line.text.slice(
+        0,
+        Math.floor(line.text.length * Math.max(0, progress)),
+      );
+      break;
     }
-  };
-  type();
+    count++;
+  }
+  const sig = `${count}:${typingText === null ? -1 : typingText.length}`;
+  if (sig === lastSig) return;
+  lastSig = sig;
+  const grew =
+    count > lines.value.length || (typingText !== null && typingText.length > 0);
+  lines.value = shown(count);
+  typing.value = typingText;
+  if (grew) scrollTerm(false);
 }
 
-onMounted(() => {
-  if (canvasEl.value) graph = createRepoGraph(canvasEl.value);
-  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (reduced) {
-    // Static: full transcript stays, graph jumps to the final state.
-    if (graph) for (const step of STEPS) step.play?.(graph);
-    return;
-  }
-  lines.value = [];
-  later(() => runStep(0), 600);
-});
+function jumpTo(step: number): void {
+  diagram.value?.seekCheckpoint(step);
+  scrollTerm(true);
+}
 
-onBeforeUnmount(() => {
-  stopped = true;
-  for (const t of timers) window.clearTimeout(t);
-  timers = [];
-  graph?.destroy();
-  graph = null;
-});
+// The daft verb renders gold — the shell mirrors the diagram's color law.
+function daftPart(text: string): string {
+  return text.startsWith("daft") ? "daft" : "";
+}
+function restPart(text: string): string {
+  return text.startsWith("daft") ? text.slice(4) : text;
+}
 </script>
 
 <template>
@@ -155,17 +88,40 @@ onBeforeUnmount(() => {
     <div class="dl-stage">
       <div ref="termEl" class="dl-term" aria-label="A daft session, replayed">
         <div class="dl-term-dots" aria-hidden="true"><i /><i /><i /></div>
-        <div v-for="(line, i) in lines" :key="i" class="dl-ln" :class="`is-${line.kind}`">
-          <span v-if="line.kind === 'cmd'" class="dl-prompt">$ </span>{{ line.text }}
+        <div
+          v-for="(line, i) in lines"
+          :key="i"
+          class="dl-ln"
+          :class="[`is-${line.kind}`, { 'is-active-step': line.step === activeStep }]"
+          @click="line.kind === 'cmd' && jumpTo(line.step)"
+        >
+          <button
+            v-if="line.checkpoint"
+            class="dl-chk"
+            :class="{ on: line.step === activeStep }"
+            type="button"
+            :aria-label="`Jump to step ${line.step + 1}: ${HERO_SCRIPT[line.step].title}`"
+            :title="HERO_SCRIPT[line.step].title"
+            @click.stop="jumpTo(line.step)"
+          />
+          <template v-if="line.kind === 'cmd'"><span class="dl-prompt">$ </span><span class="dl-daft">{{ daftPart(line.text) }}</span>{{ restPart(line.text) }}</template>
+          <template v-else>{{ line.text }}</template>
         </div>
         <div v-if="typing !== null" class="dl-ln is-cmd">
-          <span class="dl-prompt">$ </span>{{ typing }}<span class="dl-caret" />
+          <span class="dl-prompt">$ </span><span class="dl-daft">{{ daftPart(typing) }}</span>{{ restPart(typing) }}<span class="dl-caret" />
         </div>
       </div>
-      <div class="dl-graph"><canvas ref="canvasEl" /></div>
+      <RepoDiagram
+        ref="diagram"
+        class="dl-graph"
+        :script="HERO_SCRIPT"
+        @tick="onTick"
+        @step="(i) => (activeStep = i)"
+      />
     </div>
     <p class="dl-cap">
       A <b>real daft session</b> — and your project taking shape as it runs.
+      Click a command to step through it.
     </p>
     <div class="dl-trust">
       <a class="dl-tile is-git" href="/about/why-daft">
