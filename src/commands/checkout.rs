@@ -2419,10 +2419,17 @@ fn run_sandbox_visit(
     let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
     let executor = HookExecutor::new(hooks_config)?.with_hook_mode(args.hooks, &args.skip_hooks);
 
+    // The header names the sandbox, not the spelling that summoned it
+    // (#813): `daft go <full-sha>` opens a worktree called `baddade`, and
+    // seeding the spelling puts forty hex characters in the identity slot.
+    // A sandbox visit never commits a plan, so this seed is the whole run —
+    // there is no `PlanCommit::header` replacement to correct it later. When
+    // the spelling *is* the dirname (a tag, an existing sandbox addressed by
+    // name) this resolves to the same string.
     let mut timeline = Timeline::new(
         TimelineMode::auto(output.is_quiet()),
         output.is_verbose(),
-        format!("Opening {spelling}"),
+        format!("Opening {}", params.dirname),
     );
     timeline.set_verbose_density(hook_output_config.verbose);
 

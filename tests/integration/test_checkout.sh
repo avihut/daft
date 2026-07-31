@@ -1066,6 +1066,45 @@ test_go_fetch_on_rail_expands() {
     return 0
 }
 
+# #813: `daft go <full-sha>` opens a sandbox whose directory is a 12-hex
+# prefix of the commit, but the sandbox rail's header was seeded with the
+# spelling — forty hex characters in the slot that carries identity. A
+# sandbox visit never commits a plan for the *branch* reading, so nothing
+# downstream corrects it: this seed is the whole sandbox run.
+#
+# Scoped to the sandbox rail on purpose. `daft go <sha>` first tries the
+# branch reading, and that attempt's collapsed face legitimately shows the
+# spelling — daft is trying to open a branch of that name and has not probed
+# yet. The "Branch '<sha>' not found; opening a detached sandbox" line
+# between the two is what marks the handover.
+test_go_sandbox_header_names_dirname() {
+    local remote_repo=$(create_test_remote "test-repo-sandbox-hdr" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-sandbox-hdr/main"
+
+    local full dirname
+    full=$(git rev-parse HEAD)
+    # `sandbox::derived_dirname` — DERIVED_DIRNAME_HEX = 12.
+    dirname="${full:0:12}"
+
+    local log="$PWD/go-sandbox-hdr.log"
+    _rail_daft "$CHECKOUT_PTY_RUN" "$log" daft go "$full" --no-cd || return 1
+
+    local clean
+    clean=$(_rail_clean "$log")
+    if ! echo "$clean" | grep -q "┌  Opening $dirname"; then
+        log_error "sandbox rail header did not name the sandbox '$dirname'"
+        echo "$clean" | head -20
+        return 1
+    fi
+    if echo "$clean" | grep -q "┌  Opening $full"; then
+        log_error "sandbox rail header still carries the full spelling"
+        return 1
+    fi
+    assert_directory_exists "../$dirname" || return 1
+    return 0
+}
+
 # #812: the `-x` sequence is planned onto the creation rail and runs inside
 # the region's lifetime. None of that is reachable from the YAML suite —
 # `commit_plan` early-returns off Interactive and the runner captures stderr,
@@ -1238,6 +1277,9 @@ run_checkout_tests() {
     # Rail behavior under a PTY (#782)
     run_test "go_fetch_hop_no_rail_receipt" "test_go_fetch_hop_no_rail_receipt"
     run_test "go_fetch_on_rail_expands" "test_go_fetch_on_rail_expands"
+
+    # Rail header names the sandbox, not the spelling (#813)
+    run_test "go_sandbox_header_names_dirname" "test_go_sandbox_header_names_dirname"
 
     # `-x` rows on the creation rail under a PTY (#812)
     run_test "start_exec_rows_on_rail" "test_start_exec_rows_on_rail"
