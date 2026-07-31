@@ -1,52 +1,99 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
-import { createPlayer, type Player, type StepDef } from "./engine";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  attachDiagram,
+  createPlayer,
+  observeVisibility,
+  type DiagramView,
+  type Player,
+  type StepDef,
+} from "./engine";
 
 const props = withDefaults(
   defineProps<{
     script: StepDef[];
+    /**
+     * Player from a composition host pairing this viewer with others. Pass a
+     * ref that starts `null`; the viewer attaches when it arrives, and the
+     * host owns play state and visibility gating. Omit the prop entirely and
+     * the viewer creates and owns its own player.
+     */
+    player?: Player | null;
     /** Show the play/pause control chip. */
     controls?: boolean;
-    /** Start the timeline on mount (ignored under reduced motion). */
+    /** Own player only: start the timeline on mount (off = reduced motion). */
     autoplay?: boolean;
     /** Render the settled end state instead of playing — static diagrams. */
     still?: boolean;
+    /** Own player only: wrap back to the start when the timeline ends. */
+    loop?: boolean;
   }>(),
-  { controls: true, autoplay: true, still: false },
+  {
+    player: undefined,
+    controls: true,
+    autoplay: true,
+    still: false,
+    loop: true,
+  },
 );
 
 const emit = defineEmits<{ tick: [t: number]; step: [index: number] }>();
 
+const panelEl = ref<HTMLElement | null>(null);
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 const stepIdx = ref(0);
 const playing = ref(false);
 const titles = props.script.map((s) => s.title);
-let player: Player | null = null;
 
-onMounted(() => {
-  if (!canvasEl.value) return;
-  player = createPlayer({
-    canvas: canvasEl.value,
-    script: props.script,
-    autoplay: props.autoplay && !props.still,
-    onTick: (t) => emit("tick", t),
-    onStep: (i) => {
+const owns = props.player === undefined;
+let player: Player | null = null;
+let view: DiagramView | null = null;
+const cleanups: (() => void)[] = [];
+
+function attach(p: Player): void {
+  if (view || !canvasEl.value) return;
+  player = p;
+  view = attachDiagram(canvasEl.value, p);
+  stepIdx.value = p.current();
+  playing.value = p.playing();
+  cleanups.push(
+    p.onFrame((t) => emit("tick", t)),
+    p.onStep((i) => {
       stepIdx.value = i;
       emit("step", i);
-    },
-    onPlayState: (p) => {
-      playing.value = p;
-    },
-  });
-  if (props.still) player?.settle(props.script.length - 1);
-  // Dev-only handle so the timeline can be driven from the console/tests.
-  if (import.meta.env.DEV && player) {
-    Object.assign(window, { __daftPlayer: player });
+    }),
+    p.onPlayState((on) => {
+      playing.value = on;
+    }),
+  );
+}
+
+onMounted(() => {
+  if (owns) {
+    const p = createPlayer({
+      script: props.script,
+      autoplay: props.autoplay && !props.still,
+      loop: props.loop,
+    });
+    attach(p);
+    if (props.still) p.settle(props.script.length - 1);
+    else if (panelEl.value) cleanups.push(observeVisibility(panelEl.value, p));
+  } else {
+    watch(
+      () => props.player,
+      (p) => {
+        if (p) attach(p);
+      },
+      { immediate: true },
+    );
   }
 });
 
 onBeforeUnmount(() => {
-  player?.destroy();
+  for (const off of cleanups) off();
+  view?.destroy();
+  if (owns) player?.destroy();
+  view = null;
   player = null;
 });
 
@@ -61,7 +108,7 @@ defineExpose({
 </script>
 
 <template>
-  <div class="dg-panel">
+  <div ref="panelEl" class="dg-panel">
     <canvas ref="canvasEl" />
     <div v-if="controls" class="dg-controls">
       <button

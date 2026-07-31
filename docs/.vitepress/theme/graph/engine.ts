@@ -319,20 +319,31 @@ function readPalette(): Palette {
 /* -------------------------------- player --------------------------------- */
 
 export interface PlayerOptions {
-  canvas: HTMLCanvasElement;
   script: StepDef[];
   /** Ignored (forced off) when the user prefers reduced motion. */
   autoplay?: boolean;
-  onTick?: (t: number) => void;
-  onStep?: (index: number) => void;
-  onPlayState?: (playing: boolean) => void;
+  /** Wrap to the start when the timeline ends (default). Off = end paused. */
+  loop?: boolean;
 }
 
+/**
+ * The headless timeline player: one clock per diagram, no rendering. Viewers
+ * (the canvas diagram, the terminal) subscribe via `onFrame` and derive their
+ * entire presentation from the compiled script plus the clock value — which
+ * is what keeps any number of viewers in perfect sync, and what makes seeks
+ * in either direction safe: a viewer that sees time move backward replays
+ * its state from scratch.
+ */
 export interface Player {
   compiled: Compiled;
   reducedMotion: boolean;
-  toggle(): void;
   playing(): boolean;
+  clock(): number;
+  play(): void;
+  pause(): void;
+  toggle(): void;
+  /** Jump to an absolute time (seconds); play state is left untouched. */
+  seek(t: number): void;
   seekStep(index: number): void;
   /**
    * Jump to a step's checkpoint — its first command just typed — and pause,
@@ -344,6 +355,17 @@ export interface Player {
   next(): void;
   prev(): void;
   current(): number;
+  setRate(rate: number): void;
+  setLoop(on: boolean): void;
+  /**
+   * Visibility gating, owned by whoever created the player: `suspend` stops
+   * the frame loop without touching play state, `resume` picks it back up.
+   */
+  suspend(): void;
+  resume(): void;
+  onFrame(fn: (t: number) => void): () => void;
+  onStep(fn: (index: number) => void): () => void;
+  onPlayState(fn: (playing: boolean) => void): () => void;
   destroy(): void;
 }
 
@@ -351,45 +373,25 @@ function ease(x: number): number {
   return 1 - (1 - Math.min(Math.max(x, 0), 1)) ** 3;
 }
 
-export function createPlayer(opts: PlayerOptions): Player | null {
-  const ctx = opts.canvas.getContext("2d");
-  if (!ctx) return null;
-  const canvas = opts.canvas;
+export function createPlayer(opts: PlayerOptions): Player {
   const compiled = compile(opts.script);
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  let palette = readPalette();
-  let width = 0;
-  let height = 0;
-  let scene: Scene = { repos: [], rels: [], arcs: [], syncs: [] };
-  let evIdx = 0;
   let clock = 0;
   let playing = false;
-  let visible = false;
+  let suspended = false;
   let raf = 0;
   let lastFrame = 0;
   let stepIdx = -1;
+  let rate = 1;
+  let loop = opts.loop !== false;
 
-  function resetScene(): void {
-    scene = { repos: [], rels: [], arcs: [], syncs: [] };
-    evIdx = 0;
-  }
+  const frameSubs = new Set<(t: number) => void>();
+  const stepSubs = new Set<(index: number) => void>();
+  const playSubs = new Set<(playing: boolean) => void>();
 
-  function advanceEvents(): void {
-    while (
-      evIdx < compiled.events.length &&
-      compiled.events[evIdx].at <= clock
-    ) {
-      const ev = compiled.events[evIdx++];
-      applyAct(scene, ev.act, ev.at);
-    }
-  }
-
-  function setClock(t: number): void {
-    if (t < clock) resetScene();
-    clock = t;
-    advanceEvents();
-    notifyStep();
+  function emitFrame(): void {
+    for (const fn of frameSubs) fn(clock);
   }
 
   function currentStep(): number {
@@ -404,17 +406,201 @@ export function createPlayer(opts: PlayerOptions): Player | null {
     const i = currentStep();
     if (i !== stepIdx) {
       stepIdx = i;
-      opts.onStep?.(i);
+      for (const fn of stepSubs) fn(i);
+    }
+  }
+
+  function schedule(): void {
+    if (playing && !suspended && !raf) {
+      lastFrame = performance.now();
+      raf = requestAnimationFrame(frame);
     }
   }
 
   function setPlaying(on: boolean): void {
     if (playing === on) return;
     playing = on;
-    opts.onPlayState?.(on);
-    if (on && visible && !raf) {
-      lastFrame = performance.now();
-      raf = requestAnimationFrame(frame);
+    for (const fn of playSubs) fn(on);
+    schedule();
+  }
+
+  function frame(now: number): void {
+    raf = 0;
+    if (!playing || suspended) return;
+    const dt = Math.min((now - lastFrame) / 1000, 0.05) * rate;
+    lastFrame = now;
+    clock += dt;
+    if (clock > compiled.duration) {
+      if (loop) {
+        clock = 0; // viewers see time move backward and replay from scratch
+      } else {
+        clock = compiled.duration;
+        setPlaying(false);
+      }
+    }
+    notifyStep();
+    emitFrame();
+    schedule();
+  }
+
+  function setClock(t: number): void {
+    clock = Math.min(Math.max(t, 0), compiled.duration);
+    notifyStep();
+    emitFrame();
+  }
+
+  function stepAt(index: number): CompiledStep {
+    return compiled.steps[
+      Math.min(Math.max(index, 0), compiled.steps.length - 1)
+    ];
+  }
+
+  function settle(index: number): void {
+    setClock(stepAt(index).end - 0.05);
+  }
+
+  function seekStep(index: number): void {
+    // Reduced motion lands on the settled end of the step; otherwise the
+    // step replays animated from its start.
+    if (reduced) {
+      settle(index);
+      return;
+    }
+    setClock(stepAt(index).at);
+  }
+
+  function seekCheckpoint(index: number): void {
+    setPlaying(false);
+    if (reduced) {
+      settle(index);
+      return;
+    }
+    const step = stepAt(index);
+    setClock(Math.min(step.cue + 0.02, step.end - 0.05));
+  }
+
+  const player: Player = {
+    compiled,
+    reducedMotion: reduced,
+    playing: () => playing,
+    clock: () => clock,
+    play: () => setPlaying(true),
+    pause: () => setPlaying(false),
+    toggle: () => setPlaying(!playing),
+    seek: setClock,
+    seekStep,
+    seekCheckpoint,
+    settle,
+    next: () =>
+      seekStep(Math.min(currentStep() + 1, compiled.steps.length - 1)),
+    prev: () => seekStep(Math.max(currentStep() - 1, 0)),
+    current: currentStep,
+    setRate(value: number) {
+      rate = Math.min(Math.max(value, 0.1), 4);
+    },
+    setLoop(on: boolean) {
+      loop = on;
+    },
+    suspend() {
+      suspended = true;
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+    },
+    resume() {
+      suspended = false;
+      schedule();
+    },
+    onFrame(fn) {
+      frameSubs.add(fn);
+      return () => frameSubs.delete(fn);
+    },
+    onStep(fn) {
+      stepSubs.add(fn);
+      return () => stepSubs.delete(fn);
+    },
+    onPlayState(fn) {
+      playSubs.add(fn);
+      return () => playSubs.delete(fn);
+    },
+    destroy() {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      frameSubs.clear();
+      stepSubs.clear();
+      playSubs.clear();
+    },
+  };
+
+  if (reduced) seekStep(compiled.steps.length - 1);
+  else if (opts.autoplay !== false) setPlaying(true);
+  notifyStep();
+
+  // Dev-only handle so the timeline can be driven from the console/tests.
+  if (import.meta.env.DEV) Object.assign(window, { __daftPlayer: player });
+
+  return player;
+}
+
+/**
+ * Pause a player's frame loop while `el` is offscreen. Wire this from the
+ * component that owns the player — a solo viewer, or the host composing two
+ * viewers around one — and disconnect with the returned function.
+ */
+export function observeVisibility(el: Element, player: Player): () => void {
+  const io = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) player.resume();
+        else player.suspend();
+      }
+    },
+    { threshold: 0.05 },
+  );
+  io.observe(el);
+  return () => io.disconnect();
+}
+
+/* ------------------------------ canvas view ------------------------------ */
+
+export interface DiagramView {
+  destroy(): void;
+}
+
+/**
+ * The diagram viewer: attaches the canvas renderer to a player. Scene state
+ * is event-sourced from the compiled script — when the clock moves backward
+ * (loop wrap, seek), the scene resets and replays, so any moment renders
+ * identically no matter how it was reached.
+ */
+export function attachDiagram(
+  canvas: HTMLCanvasElement,
+  player: Player,
+): DiagramView | null {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const compiled = player.compiled;
+  const reduced = player.reducedMotion;
+
+  let palette = readPalette();
+  let width = 0;
+  let height = 0;
+  let scene: Scene = { repos: [], rels: [], arcs: [], syncs: [] };
+  let evIdx = 0;
+  let lastT = 0;
+
+  function resetScene(): void {
+    scene = { repos: [], rels: [], arcs: [], syncs: [] };
+    evIdx = 0;
+  }
+
+  function syncScene(t: number): void {
+    if (t < lastT) resetScene();
+    lastT = t;
+    while (evIdx < compiled.events.length && compiled.events[evIdx].at <= t) {
+      const ev = compiled.events[evIdx++];
+      applyAct(scene, ev.act, ev.at);
     }
   }
 
@@ -563,7 +749,7 @@ export function createPlayer(opts: PlayerOptions): Player | null {
 
   function draw(): void {
     if (!ctx) return;
-    const t = clock;
+    const t = lastT;
     ctx.clearRect(0, 0, width, height);
     const view = makeView(t);
 
@@ -882,25 +1068,12 @@ export function createPlayer(opts: PlayerOptions): Player | null {
     }
   }
 
-  /* ------------------------------- frame loop ---------------------------- */
+  /* ------------------------------- wiring -------------------------------- */
 
-  function frame(now: number): void {
-    raf = 0;
-    if (!visible) return;
+  const offFrame = player.onFrame((t) => {
+    syncScene(t);
     draw();
-    if (!playing) return; // paused: a single settled frame, no busy loop
-    const dt = Math.min((now - lastFrame) / 1000, 0.05);
-    lastFrame = now;
-    clock += dt;
-    if (clock > compiled.duration) {
-      resetScene();
-      clock = 0;
-    }
-    advanceEvents();
-    notifyStep();
-    opts.onTick?.(clock);
-    raf = requestAnimationFrame(frame);
-  }
+  });
 
   const themeObserver = new MutationObserver(() => {
     palette = readPalette();
@@ -924,97 +1097,20 @@ export function createPlayer(opts: PlayerOptions): Player | null {
   });
   resizeObserver.observe(canvas);
 
-  const visibilityObserver = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        visible = entry.isIntersecting;
-        if (visible && !raf) {
-          lastFrame = performance.now();
-          raf = requestAnimationFrame(frame);
-        }
-      }
-    },
-    { threshold: 0.05 },
-  );
-  visibilityObserver.observe(canvas);
+  const onClick = (): void => {
+    if (!reduced) player.toggle();
+  };
+  canvas.addEventListener("click", onClick);
 
-  function stepAt(index: number): CompiledStep {
-    return compiled.steps[
-      Math.min(Math.max(index, 0), compiled.steps.length - 1)
-    ];
-  }
+  syncScene(player.clock());
+  draw();
 
-  function settle(index: number): void {
-    setClock(stepAt(index).end - 0.05);
-    opts.onTick?.(clock);
-    draw();
-  }
-
-  function seekStep(index: number): void {
-    // Reduced motion lands on the settled end of the step; otherwise the
-    // step replays animated from its start.
-    if (reduced) {
-      settle(index);
-      return;
-    }
-    setClock(stepAt(index).at);
-    opts.onTick?.(clock);
-    draw();
-  }
-
-  function seekCheckpoint(index: number): void {
-    setPlaying(false);
-    if (reduced) {
-      settle(index);
-      return;
-    }
-    const step = stepAt(index);
-    setClock(Math.min(step.cue + 0.02, step.end - 0.05));
-    opts.onTick?.(clock);
-    draw();
-  }
-
-  const player: Player = {
-    compiled,
-    reducedMotion: reduced,
-    toggle() {
-      setPlaying(!playing);
-    },
-    playing() {
-      return playing;
-    },
-    seekStep,
-    seekCheckpoint,
-    settle,
-    next() {
-      seekStep(Math.min(currentStep() + 1, compiled.steps.length - 1));
-    },
-    prev() {
-      seekStep(Math.max(currentStep() - 1, 0));
-    },
-    current() {
-      return currentStep();
-    },
+  return {
     destroy() {
-      if (raf) cancelAnimationFrame(raf);
-      raf = 0;
+      offFrame();
       themeObserver.disconnect();
       resizeObserver.disconnect();
-      visibilityObserver.disconnect();
+      canvas.removeEventListener("click", onClick);
     },
   };
-
-  canvas.addEventListener("click", () => {
-    if (!reduced) player.toggle();
-  });
-
-  if (reduced) {
-    seekStep(compiled.steps.length - 1);
-  } else if (opts.autoplay !== false) {
-    setPlaying(true);
-  }
-  notifyStep();
-  opts.onTick?.(clock);
-
-  return player;
 }

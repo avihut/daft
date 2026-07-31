@@ -1,123 +1,39 @@
 <script setup lang="ts">
-import { nextTick, ref } from "vue";
-import { compile } from "../graph/engine";
+import { onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
+import {
+  createPlayer,
+  observeVisibility,
+  type Player,
+} from "../graph/engine";
 import { HERO_SCRIPT } from "../graph/hero-script";
 import RepoDiagram from "../graph/RepoDiagram.vue";
+import RepoTerminal from "../graph/RepoTerminal.vue";
 
-// Pure and window-free, so it runs during SSR too: the server renders the
-// full transcript (readable without JS) and the first client tick trims it
-// back to wherever the timeline actually is.
-const COMPILED = compile(HERO_SCRIPT);
-const ALL_LINES = COMPILED.term;
+// The hero is nothing bespoke: the landing script replayed on loop through
+// the two standard viewers, which share one player so they cannot drift.
+// Anything the hero "can do" is a player/viewer capability, not hero code.
+const player = shallowRef<Player | null>(null);
+const stageEl = ref<HTMLElement | null>(null);
+let stopVisibility: (() => void) | null = null;
 
-interface ShownLine {
-  kind: string;
-  text: string;
-  step: number;
-  checkpoint: boolean;
-}
+onMounted(() => {
+  const p = createPlayer({ script: HERO_SCRIPT, autoplay: true, loop: true });
+  player.value = p;
+  if (stageEl.value) stopVisibility = observeVisibility(stageEl.value, p);
+});
 
-function shown(count: number): ShownLine[] {
-  return ALL_LINES.slice(0, count).map((l) => ({
-    kind: l.kind,
-    text: l.text,
-    step: l.step,
-    checkpoint: l.checkpoint,
-  }));
-}
-
-const lines = ref<ShownLine[]>(shown(ALL_LINES.length));
-const typing = ref<string | null>(null);
-const activeStep = ref(0);
-const termEl = ref<HTMLElement | null>(null);
-const diagram = ref<InstanceType<typeof RepoDiagram> | null>(null);
-let lastSig = "";
-
-function scrollTerm(force: boolean): void {
-  nextTick(() => {
-    const el = termEl.value;
-    if (!el) return;
-    // Follow the tail only when the reader is already there — a user who
-    // scrolled up to reread stays where they are.
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 56;
-    if (force || nearBottom) el.scrollTop = el.scrollHeight;
-  });
-}
-
-function onTick(t: number): void {
-  let count = 0;
-  let typingText: string | null = null;
-  for (const line of ALL_LINES) {
-    if (line.at > t) break;
-    if (line.kind === "cmd" && t < line.typed) {
-      const progress = (t - line.at) / (line.typed - line.at);
-      typingText = line.text.slice(
-        0,
-        Math.floor(line.text.length * Math.max(0, progress)),
-      );
-      break;
-    }
-    count++;
-  }
-  const sig = `${count}:${typingText === null ? -1 : typingText.length}`;
-  if (sig === lastSig) return;
-  lastSig = sig;
-  const grew =
-    count > lines.value.length || (typingText !== null && typingText.length > 0);
-  lines.value = shown(count);
-  typing.value = typingText;
-  if (grew) scrollTerm(false);
-}
-
-function jumpTo(step: number): void {
-  diagram.value?.seekCheckpoint(step);
-  scrollTerm(true);
-}
-
-// The daft verb renders gold — the shell mirrors the diagram's color law.
-function daftPart(text: string): string {
-  return text.startsWith("daft") ? "daft" : "";
-}
-function restPart(text: string): string {
-  return text.startsWith("daft") ? text.slice(4) : text;
-}
+onBeforeUnmount(() => {
+  stopVisibility?.();
+  player.value?.destroy();
+  player.value = null;
+});
 </script>
 
 <template>
   <div class="dl-wrap">
-    <div class="dl-stage">
-      <div ref="termEl" class="dl-term" aria-label="A daft session, replayed">
-        <div class="dl-term-dots" aria-hidden="true"><i /><i /><i /></div>
-        <div
-          v-for="(line, i) in lines"
-          :key="i"
-          class="dl-ln"
-          :class="[`is-${line.kind}`, { 'is-active-step': line.step === activeStep }]"
-          @click="line.kind === 'cmd' && jumpTo(line.step)"
-        >
-          <button
-            v-if="line.checkpoint"
-            class="dl-chk"
-            :class="{ on: line.step === activeStep }"
-            type="button"
-            :aria-label="`Jump to step ${line.step + 1}: ${HERO_SCRIPT[line.step].title}`"
-            :title="HERO_SCRIPT[line.step].title"
-            @click.stop="jumpTo(line.step)"
-          />
-          <template v-if="line.kind === 'cmd'"><span class="dl-prompt">$ </span><span class="dl-daft">{{ daftPart(line.text) }}</span>{{ restPart(line.text) }}</template>
-          <template v-else>{{ line.text }}</template>
-        </div>
-        <div v-if="typing !== null" class="dl-ln is-cmd">
-          <span class="dl-prompt">$ </span><span class="dl-daft">{{ daftPart(typing) }}</span>{{ restPart(typing) }}<span class="dl-caret" />
-        </div>
-      </div>
-      <RepoDiagram
-        ref="diagram"
-        class="dl-graph"
-        :script="HERO_SCRIPT"
-        @tick="onTick"
-        @step="(i) => (activeStep = i)"
-      />
+    <div ref="stageEl" class="dl-stage">
+      <RepoTerminal :script="HERO_SCRIPT" :player="player" />
+      <RepoDiagram class="dl-graph" :script="HERO_SCRIPT" :player="player" />
     </div>
     <p class="dl-cap">
       A <b>real daft session</b> — and your project taking shape as it runs.
