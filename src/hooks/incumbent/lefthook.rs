@@ -51,7 +51,11 @@ const OTHER_FORMATS: &[&str] = &[
 const DISABLE_VAR: &str = "LEFTHOOK";
 
 /// Environment variable naming jobs to skip.
-const EXCLUDE_VAR: &str = "LEFTHOOK_EXCLUDE";
+///
+/// Public so the skips it causes can be attributed to it by name — reporting
+/// them against daft's own `--skip-hooks` would name a flag the user did not
+/// pass.
+pub const EXCLUDE_VAR: &str = "LEFTHOOK_EXCLUDE";
 
 /// The incumbent config file in `root`, if there is one.
 pub fn config_path(root: &Path) -> Option<PathBuf> {

@@ -90,6 +90,11 @@ pub struct SkipSelectors {
     pub hook_types: Vec<crate::hooks::HookType>,
     /// Original selector tokens, retained for no-match warning attribution.
     pub raw: Vec<String>,
+    /// What asked for the skip, for messages that attribute it. `None` is the
+    /// `--skip-hooks` flag. Set when something else populates these selectors
+    /// — an incumbent config's own exclusion variable, say — so the report
+    /// names a knob the user actually turned.
+    pub origin: Option<&'static str>,
 }
 
 impl SkipSelectors {
@@ -98,7 +103,15 @@ impl SkipSelectors {
     pub fn is_empty(&self) -> bool {
         !self.all && self.names.is_empty() && self.tags.is_empty() && self.hook_types.is_empty()
     }
+
+    /// What to name as the source of these skips in user-facing text.
+    pub fn origin_label(&self) -> &'static str {
+        self.origin.unwrap_or(SKIP_HOOKS_FLAG)
+    }
 }
+
+/// The flag that requests skips by default, and the label reported for them.
+pub const SKIP_HOOKS_FLAG: &str = "--skip-hooks";
 
 /// Parse raw `--skip-hooks` tokens into a [`SkipSelectors`].
 ///
@@ -149,9 +162,13 @@ pub enum SkipCause {
 
 impl SkipCause {
     /// Render the user-facing skip reason for this cause.
-    pub fn reason(&self) -> String {
+    ///
+    /// `origin` names what asked — see [`SkipSelectors::origin_label`]. A skip
+    /// attributed to a flag the user never passed is a small lie that costs
+    /// them the search for where it came from.
+    pub fn reason(&self, origin: &str) -> String {
         match self {
-            SkipCause::Requested => "requested (--skip-hooks)".to_string(),
+            SkipCause::Requested => format!("requested ({origin})"),
             SkipCause::DependsOn(dep) => format!("depends on {dep} (skipped)"),
         }
     }
@@ -2609,10 +2626,36 @@ mod tests {
 
     #[test]
     fn cause_reason_strings() {
-        assert_eq!(SkipCause::Requested.reason(), "requested (--skip-hooks)");
         assert_eq!(
-            SkipCause::DependsOn("build".into()).reason(),
+            SkipCause::Requested.reason(SKIP_HOOKS_FLAG),
+            "requested (--skip-hooks)"
+        );
+        assert_eq!(
+            SkipCause::DependsOn("build".into()).reason(SKIP_HOOKS_FLAG),
             "depends on build (skipped)"
         );
+    }
+
+    #[test]
+    fn a_skip_reports_the_knob_that_actually_asked_for_it() {
+        // Running an incumbent config, its own exclusion variable populates
+        // the same selectors daft's flag does. Attributing the skip to
+        // `--skip-hooks` would send the user looking for a flag nobody passed.
+        let selectors = SkipSelectors {
+            names: vec!["fmt".into()],
+            raw: vec!["fmt".into()],
+            origin: Some("LEFTHOOK_EXCLUDE"),
+            ..Default::default()
+        };
+        assert_eq!(
+            SkipCause::Requested.reason(selectors.origin_label()),
+            "requested (LEFTHOOK_EXCLUDE)"
+        );
+
+        let from_the_flag = SkipSelectors {
+            names: vec!["fmt".into()],
+            ..Default::default()
+        };
+        assert_eq!(from_the_flag.origin_label(), SKIP_HOOKS_FLAG);
     }
 }

@@ -36,11 +36,7 @@ pub(super) fn cmd_set_trust(
         let project_root = git_dir.parent().context("Invalid git directory")?;
 
         // Build hooks list string
-        let hook_names: Vec<_> = hooks
-            .iter()
-            .filter_map(|h| h.file_name())
-            .map(|n| n.to_string_lossy().to_string())
-            .collect();
+        let hook_names = hooks.names();
         let hooks_str = if hook_names.is_empty() {
             "none".to_string()
         } else {
@@ -49,6 +45,12 @@ pub(super) fn cmd_set_trust(
 
         output.info(&format!("{}", project_root.display()));
         output.info(&format!("  Hooks: {hooks_str}"));
+        // Naming the file matters most exactly here: consenting to run a
+        // config someone else's tool wrote is a different decision from
+        // consenting to daft.yml, and the prompt is where it gets made.
+        if let Some((path, _)) = &hooks.incumbent {
+            output.info(&format!("  From:  {}", path.display()));
+        }
 
         if current_level == new_level {
             output.info(&format!(
@@ -234,11 +236,7 @@ pub(super) fn cmd_deny(path: &Path, force: bool, output: &mut dyn Output) -> Res
         }
 
         let hooks = find_project_hooks(&git_dir)?;
-        let hook_names: Vec<_> = hooks
-            .iter()
-            .filter_map(|h| h.file_name())
-            .map(|n| n.to_string_lossy().to_string())
-            .collect();
+        let hook_names = hooks.names();
         let hooks_str = if hook_names.is_empty() {
             "none".to_string()
         } else {
