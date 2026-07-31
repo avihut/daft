@@ -242,6 +242,12 @@ pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()
         hooks_config.output.verbose = true;
     }
     let output_config = hooks_config.output.clone();
+    // No `--hooks <mode>` here, and the default `Auto` is the right one even
+    // for a git stage: `hooks run pre-commit` fires the stage by hand, with
+    // no commit waiting on the answer. The dispatcher pins those to
+    // `Foreground` because git is blocked on the shim — nothing is blocked
+    // on this, so a job that declared `background:` keeps meaning it. Same
+    // call `daft run` makes for a task.
     let executor = HookExecutor::new(hooks_config)?
         .with_bypass_trust(true)
         .with_job_filter(filter);
