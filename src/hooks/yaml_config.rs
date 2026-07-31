@@ -1115,36 +1115,24 @@ pub struct JobDef {
     pub use_stdin: Option<bool>,
 }
 
-/// Legacy command definition (alias for JobDef).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct CommandDef {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub script: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runner: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skip: Option<SkipCondition>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub env: Option<HashMap<String, String>>,
-}
+/// Legacy command definition: a [`JobDef`] whose name is the map key.
+///
+/// This really is an alias, and must stay one. It was once a six-field subset,
+/// which meant a `commands:` entry silently lost `glob`, `stage_fixed`, `root`,
+/// `needs` and the rest — the fields were not even deserialized. Configs daft
+/// takes over from another manager overwhelmingly use this older form, so the
+/// subset made a taken-over gate run differently from what its file said.
+pub type CommandDef = JobDef;
 
-impl CommandDef {
-    /// Convert a legacy CommandDef to a JobDef.
+impl JobDef {
+    /// Take this definition's name from the key it was declared under.
+    ///
+    /// The map key wins over any `name:` inside the entry — in the map form the
+    /// key *is* the identity, and two sources for one name is a way to disagree.
     pub fn to_job_def(&self, name: &str) -> JobDef {
         JobDef {
             name: Some(name.to_string()),
-            run: self.run.as_ref().map(|r| RunCommand::Simple(r.clone())),
-            script: self.script.clone(),
-            runner: self.runner.clone(),
-            tags: self.tags.clone(),
-            skip: self.skip.clone(),
-            env: self.env.clone(),
-            ..Default::default()
+            ..self.clone()
         }
     }
 }
@@ -1761,6 +1749,52 @@ hooks:
     }
 
     #[test]
+    fn a_commands_entry_keeps_every_field_a_job_would() {
+        // Regression: `commands:` used to deserialize into a six-field subset,
+        // so everything else — `glob` above all — was dropped before anything
+        // could act on it. A taken-over config (which usually uses this older
+        // form) then ran jobs its own file said to skip.
+        let yaml = r#"
+hooks:
+  pre-commit:
+    commands:
+      fmt:
+        glob: "*.rs"
+        exclude: ["vendor/**"]
+        run: cargo fmt
+        root: crates/core
+        stage_fixed: true
+        file_types: text
+        priority: 3
+        fail_text: formatting failed
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let cmd = &config.hooks["pre-commit"].commands.as_ref().unwrap()["fmt"];
+
+        assert_eq!(
+            cmd.glob.as_ref().unwrap(),
+            &StringOrList::Single("*.rs".into())
+        );
+        assert_eq!(
+            cmd.exclude.as_deref(),
+            Some(["vendor/**".to_string()].as_slice())
+        );
+        assert_eq!(cmd.root.as_deref(), Some("crates/core"));
+        assert_eq!(cmd.stage_fixed, Some(true));
+        assert_eq!(cmd.priority, Some(3));
+        assert_eq!(cmd.fail_text.as_deref(), Some("formatting failed"));
+        assert!(cmd.file_types.is_some());
+
+        // The map key names the job, overriding any `name:` inside the entry.
+        assert_eq!(cmd.to_job_def("fmt").name.as_deref(), Some("fmt"));
+        assert_eq!(
+            cmd.to_job_def("fmt").glob,
+            cmd.glob,
+            "conversion must not drop what deserialization kept"
+        );
+    }
+
+    #[test]
     fn test_group_def() {
         let yaml = r#"
 hooks:
@@ -1835,7 +1869,7 @@ hooks:
     #[test]
     fn test_command_def_to_job_def() {
         let cmd = CommandDef {
-            run: Some("cargo test".to_string()),
+            run: Some(RunCommand::Simple("cargo test".to_string())),
             tags: Some(vec!["test".to_string()]),
             ..Default::default()
         };
