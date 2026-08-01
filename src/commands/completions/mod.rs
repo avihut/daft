@@ -163,6 +163,25 @@ pub(super) fn repo_flag_capture(command_name: &str) -> (&'static str, &'static s
     )
 }
 
+/// Whether a command carries a `--hooks <MODE>` flag whose value completes to
+/// [`HookMode::variants`](crate::hooks::HookMode::variants).
+///
+/// Derived from clap rather than a `matches!` list, unlike its neighbours
+/// here: the flag already sits on six commands and is meant to spread to any
+/// command that fires hooks, so a hand-kept list would be one more place to
+/// forget. Every generator asks this — a command that gains `--hooks` gains
+/// its value completion in all four shells with no completions edit at all.
+///
+/// `daft merge` cannot be answered here (its completions are hand-written per
+/// shell, not generated from a `Command`); `hooks_flag_offers_every_mode_in_every_shell`
+/// guards those copies instead.
+pub(super) fn command_has_hooks_flag(command_name: &str) -> bool {
+    get_command_for_name(command_name).is_some_and(|cmd| {
+        cmd.get_arguments()
+            .any(|arg| arg.get_long() == Some("hooks"))
+    })
+}
+
 /// Whether a command carries a `--from <worktree>` flag whose value completes
 /// to worktree names — the same candidate set as its positional, so both slots
 /// answer from the command's own `daft __complete` arm rather than a second
@@ -1608,20 +1627,98 @@ mod tests {
     }
 
     /// Every `--hooks` mode must be offered everywhere the flag is, in every
-    /// shell that hand-maintains its list.
+    /// shell — as *values*, not just as a flag name in a list.
     ///
-    /// The generated completions read `HookMode::variants()`, but two copies
-    /// cannot: `daft merge`'s fish line lives in the `DAFT_FISH_COMPLETIONS`
-    /// const, which does not interpolate, and `daft merge`'s Fig spec is
-    /// hand-written per option (only the standalone `git-worktree-*` commands
-    /// get theirs from `cmd.get_arguments()`). Those are exactly the copies
-    /// that go stale — the first cut of this test guarded only fish, and the
-    /// Fig spec had already shipped without the flag at all. Nothing else
-    /// catches it: no generator reads clap's `possible_values`, so a missing
-    /// mode simply never completes.
+    /// The generated completions read `HookMode::variants()`; the four
+    /// `daft merge` copies cannot. Its bash, zsh, and fish lines live in
+    /// `DAFT_*_COMPLETIONS` consts, which do not interpolate, and its Fig spec
+    /// is hand-written per option (only the standalone commands get theirs
+    /// from `cmd.get_arguments()`). Those are the copies that go stale — the
+    /// first cut of this test guarded fish alone, and both the Fig spec and
+    /// every bash and zsh script had already shipped with the flag completing
+    /// nothing. Nothing else catches it: no generator reads clap's
+    /// `possible_values`, so a missing value set is not silence but a wrong
+    /// answer — `daft go --hooks <TAB>` fell through to branch names.
+    ///
+    /// The two const arms are asserted inside a window cut to the merge block,
+    /// for the reason the Fig assertion goes through the built structure: a
+    /// whole-script search passes on some *other* command's `--hooks` block.
     #[test]
     fn hooks_flag_offers_every_mode_in_every_shell() {
         let modes = crate::hooks::HookMode::variants();
+        let space_separated = modes.join(" ");
+
+        // The generated scripts, per command that carries the flag.
+        for cmd in COMMANDS.iter().filter(|c| command_has_hooks_flag(c)) {
+            let bash = bash::generate_bash_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("bash completion for {cmd}: {e}"));
+            assert!(
+                bash.contains(&format!(
+                    r#"if [[ "$prev" == "--hooks" ]]; then
+        COMPREPLY=( $(compgen -W "{space_separated}" -- "$cur") )"#
+                )),
+                "{cmd}'s bash script must complete --hooks values, not fall through \
+                 to the positional source"
+            );
+
+            let zsh = zsh::generate_zsh_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("zsh completion for {cmd}: {e}"));
+            assert!(
+                zsh.contains("_describe 'hook mode' hook_modes"),
+                "{cmd}'s zsh script must complete --hooks values"
+            );
+            for mode in modes {
+                assert!(
+                    zsh.contains(&format!("'{mode}:")),
+                    "{cmd}'s zsh --hooks block is missing the `{mode}` mode"
+                );
+            }
+
+            // Fig: standalone specs are built from clap, so the assertion is
+            // that the enum reached the option — the shape Fig needs.
+            let fig = fig::generate_fig_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("fig completion for {cmd}: {e}"));
+            for mode in modes {
+                assert!(
+                    fig.contains(&format!(r#""name": "{mode}""#)),
+                    "{cmd}'s Fig spec must suggest the `{mode}` mode for --hooks"
+                );
+            }
+        }
+
+        // `daft merge`'s two hand-written shell arms, each read inside its own
+        // block so a neighbour's `--hooks` cannot satisfy the search.
+        for (shell, script) in [
+            ("bash", bash::DAFT_BASH_COMPLETIONS),
+            ("zsh", zsh::DAFT_ZSH_COMPLETIONS),
+        ] {
+            let start = script
+                .find("# merge: flag + branch completion")
+                .unwrap_or_else(|| panic!("{shell} umbrella must carry a merge arm"));
+            let end = script[start..]
+                .find("# verb aliases:")
+                .map(|o| start + o)
+                .unwrap_or(script.len());
+            let merge_arm = &script[start..end];
+            let hooks_at = merge_arm.find(r#""--hooks" ]]; then"#).unwrap_or_else(|| {
+                panic!("daft merge's {shell} arm lists --hooks but completes no values")
+            });
+            // Narrowed again to the block's own body, because the modes are
+            // ordinary words: the window's opening comment says "not
+            // auto-generated", so a merge-arm-wide `contains("auto")` is true
+            // whether or not the flag completes anything — it passed against a
+            // deliberately gutted value list before this narrowing.
+            let body = &merge_arm[hooks_at..];
+            let body = &body[..body.find("fi\n").unwrap_or(body.len())];
+            for mode in modes {
+                assert!(
+                    body.contains(mode),
+                    "daft merge's {shell} arm is missing the `{mode}` mode; \
+                     update the literal in DAFT_{}_COMPLETIONS",
+                    shell.to_uppercase()
+                );
+            }
+        }
 
         // Fig: the hand-written `daft merge` subcommand spec. Asserted
         // against the built structure rather than the serialized string —
@@ -1637,29 +1734,54 @@ mod tests {
         );
 
         let fish = fish::generate_daft_fish_completions();
-        let expected = modes.join(" ");
         assert!(
             fish.contains(&format!(
-                "__fish_seen_subcommand_from merge worktree-merge' -l hooks -x -a '{expected}'"
+                "__fish_seen_subcommand_from merge worktree-merge' -l hooks -x -a '{space_separated}'"
             )),
             "the hand-written merge line must list every HookMode variant \
-             (expected '{expected}'); update DAFT_FISH_COMPLETIONS"
+             (expected '{space_separated}'); update DAFT_FISH_COMPLETIONS"
         );
 
-        for cmd in [
-            "git-worktree-checkout",
-            "daft-go",
-            "daft-start",
-            "git-worktree-clone",
-            "git-worktree-flow-adopt",
-        ] {
+        for cmd in COMMANDS.iter().filter(|c| command_has_hooks_flag(c)) {
             let script = fish::generate_fish_completion_string(cmd)
                 .unwrap_or_else(|e| panic!("fish completion for {cmd}: {e}"));
             assert!(
-                script.contains(&format!("-l hooks -x -a '{expected}'")),
+                script.contains(&format!("-l hooks -x -a '{space_separated}'")),
                 "{cmd} carries --hooks but does not complete its values"
             );
         }
+    }
+
+    /// The predicate every generator now asks must actually find the commands
+    /// that carry the flag. Deriving from clap removes the hand-kept list, but
+    /// it also removes the thing a reader can eyeball — so pin the set here:
+    /// a rename that makes `get_command_for_name` miss would otherwise turn
+    /// every assertion in `hooks_flag_offers_every_mode_in_every_shell` into a
+    /// loop over nothing, and vacuously pass.
+    #[test]
+    fn hooks_flag_predicate_finds_the_commands_that_carry_it() {
+        let carriers: Vec<&str> = COMMANDS
+            .iter()
+            .copied()
+            .filter(|c| command_has_hooks_flag(c))
+            .collect();
+        assert_eq!(
+            carriers,
+            vec![
+                "git-worktree-clone",
+                "git-worktree-checkout",
+                "git-worktree-flow-adopt",
+                "daft-go",
+                "daft-start",
+            ],
+            "the set of commands carrying --hooks changed; if a command gained \
+             the flag this is the only edit completions need, if one lost it \
+             check nothing else regressed"
+        );
+        assert!(
+            !command_has_hooks_flag("git-worktree-list"),
+            "a command without --hooks must not emit a value block"
+        );
     }
 
     /// The `warm` half of the umbrella dispatch (#387). The hardcoded shell

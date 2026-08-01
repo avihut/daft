@@ -318,6 +318,24 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                     suggestions: Some(suggestions),
                     template: None,
                 })
+            } else if long == "--hooks" {
+                // The standalone commands' half of what
+                // `hooks_option_suggestions_for_merge` guards by hand for
+                // `daft merge`. Fig is the one engine that shows a gloss
+                // beside each candidate, so it reads both halves of the enum's
+                // declaration.
+                Some(FigOptionArg {
+                    suggestions: Some(
+                        crate::hooks::HookMode::variants()
+                            .iter()
+                            .map(|mode| FigSuggestion {
+                                name: (*mode).to_string(),
+                                description: crate::hooks::HookMode::describe(mode).to_string(),
+                            })
+                            .collect(),
+                    ),
+                    template: None,
+                })
             } else if long == "--format" {
                 emit_formats_for(command_name).map(|formats| {
                     let suggestions = formats

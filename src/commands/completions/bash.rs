@@ -1,9 +1,31 @@
 use super::{
-    allows_path_completion, command_has_repo_flag, command_has_repo_positional,
-    command_has_worktree_from_flag, emit_formats_for, extract_flags, get_command_for_name,
-    repo_flag_capture, uses_fetch_on_miss, uses_rich_completions, value_taking_flags,
+    allows_path_completion, command_has_hooks_flag, command_has_repo_flag,
+    command_has_repo_positional, command_has_worktree_from_flag, emit_formats_for, extract_flags,
+    get_command_for_name, repo_flag_capture, uses_fetch_on_miss, uses_rich_completions,
+    value_taking_flags,
 };
 use anyhow::{Context, Result};
+
+/// The `--hooks <MODE>` value block, shared by the plain and rich generators.
+///
+/// Both spell the current and previous words the same way (`$cur` / `$prev`,
+/// from `_init_completion`) at the same indent, so one string serves both — a
+/// second copy is how the two drift. The mode list is read from
+/// [`HookMode::variants`](crate::hooks::HookMode::variants) rather than spelled
+/// out; bash has no per-candidate description, so the glosses from
+/// `HookMode::describe` stay behind in zsh and Fig.
+fn hooks_mode_block() -> String {
+    let modes = crate::hooks::HookMode::variants().join(" ");
+    format!(
+        r#"    # Hook-mode value completion for --hooks
+    if [[ "$prev" == "--hooks" ]]; then
+        COMPREPLY=( $(compgen -W "{modes}" -- "$cur") )
+        return 0
+    fi
+
+"#
+    )
+}
 
 /// Generate bash completion string
 pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<String> {
@@ -83,6 +105,11 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
         output.push_str("        return 0\n");
         output.push_str("    fi\n");
         output.push('\n');
+    }
+
+    // Value completion for --hooks flag (the run's hook execution mode)
+    if command_has_hooks_flag(command_name) {
+        output.push_str(&hooks_mode_block());
     }
 
     // Value completion for --columns flag
@@ -384,12 +411,20 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
         ""
     };
 
+    // …and its `--hooks` mode, from the same shared block the plain generator
+    // emits. Both sit before the `-*` branch: a flag value is not a flag.
+    let hooks_pre = if command_has_hooks_flag(command_name) {
+        hooks_mode_block()
+    } else {
+        String::new()
+    };
+
     let mut output = format!(
         r#"_{func_name}() {{
     local cur prev words cword
     {init_completion}
 
-{repo_flag_pre}{from_flag_pre}{skip_hooks_pre}    if [[ "$cur" == -* ]]; then
+{repo_flag_pre}{from_flag_pre}{skip_hooks_pre}{hooks_pre}    if [[ "$cur" == -* ]]; then
         local flags="{flags_joined}"
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
         return 0
@@ -954,6 +989,13 @@ _daft() {
             local branches
             branches=$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null)
             COMPREPLY=( $(compgen -W "$branches" -- "$cur") )
+            return 0
+        fi
+        # --hooks mode values. Spelled out, not read from HookMode::variants():
+        # this const does not interpolate. `hooks_flag_offers_every_mode_in_every_shell`
+        # is what keeps the literal honest.
+        if [[ "$prev" == "--hooks" ]]; then
+            COMPREPLY=( $(compgen -W "auto foreground background off" -- "$cur") )
             return 0
         fi
         # --cleanup mode values
