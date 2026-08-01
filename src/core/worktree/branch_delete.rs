@@ -443,7 +443,7 @@ fn build_plan(
         }
         if let Some(ref wt) = branch.worktree_path {
             rows.push(Row::Step(
-                StepSpec::new(key(StageId::RemoveWorktree)).with_annotation(display_path(wt)),
+                StepSpec::new(key(StageId::RemoveWorktree)).with_annotation(doomed_path(wt)),
             ));
         }
         if !params.remote_only && !params.keep_local_branch && !branch.worktree_only {
@@ -517,6 +517,36 @@ pub(crate) fn display_path(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+/// Path annotation for the row that *removes* a worktree (#813).
+///
+/// [`display_path`]'s relative spelling is the wrong tool here whenever the
+/// cwd sits inside the doomed directory — the common case, since
+/// `daft remove .` is how you delete the worktree you are standing in. A
+/// relative path is only meaningful while its anchor exists, and this row's
+/// anchor is what the row destroys: `.` (or `..` from a subdirectory) names
+/// a *different* directory by the time the rail closes and the shell has
+/// cd'd out. It also names nothing the user recognizes on the way past.
+///
+/// Absolute, `~`-abbreviated, is true before and after. Every other position
+/// keeps the relative spelling, which stays true and stays short.
+fn doomed_path(worktree: &Path) -> String {
+    doomed_spelling(
+        worktree,
+        std::env::current_dir().ok().as_deref(),
+        display_path(worktree),
+    )
+}
+
+/// The choice itself, with the cwd handed in — the process-global one makes
+/// this untestable in a shared test binary.
+fn doomed_spelling(worktree: &Path, cwd: Option<&Path>, relative: String) -> String {
+    if cwd.is_some_and(|cwd| cwd.starts_with(worktree)) || relative == "." {
+        crate::output::format::tilde_path(&worktree.display().to_string())
+    } else {
+        relative
+    }
+}
+
 // ── Header seed ────────────────────────────────────────────────────────────
 
 /// The rail header for a removal, resolved before the rail opens (#813).
@@ -526,8 +556,9 @@ pub(crate) fn display_path(path: &Path) -> String {
 /// raw args alone puts a path in the identity slot, so `daft remove .`
 /// announces that it is removing `.`, which names nothing the user
 /// recognizes. Resolving here means the first frame already reads
-/// `Removing feat/thing`, and the annotation still reads `.` — the two
-/// together say "the thing at `.` is feat/thing" without narrating it.
+/// `Removing feat/thing`, with the location spelled out beside the row that
+/// removes it ([`doomed_path`]) — the two together say "feat/thing, the one
+/// at ~/code/repo/feat/thing" without narrating it.
 ///
 /// It also keeps the header agreeing with the text below it on the paths
 /// that never commit a plan. A dirty worktree aborts with
@@ -2715,6 +2746,41 @@ mod tests {
         // a single target keeps the raw spelling rather than paying for a
         // `git worktree list` nobody reads.
         assert_eq!(header_seed(&params(vec![".".into()]), false), "Removing .");
+    }
+
+    /// #813: a relative path is only true while its anchor exists, and this
+    /// row's anchor is what the row deletes. Standing anywhere inside the
+    /// doomed worktree must spell it out; standing outside keeps the short
+    /// relative form, which survives the removal.
+    #[test]
+    fn doomed_path_spells_out_the_worktree_the_cwd_stands_in() {
+        let wt = Path::new("/repo/feat/x");
+
+        // The worktree itself, and a subdirectory of it — `.` and `..` both
+        // point somewhere else once the shell is cd'd out.
+        for cwd in ["/repo/feat/x", "/repo/feat/x/src/deep"] {
+            assert_eq!(
+                doomed_spelling(wt, Some(Path::new(cwd)), ".".to_string()),
+                "/repo/feat/x",
+                "cwd {cwd} is inside the doomed worktree"
+            );
+        }
+
+        // A sibling name must not trip the prefix check: `/repo/feat/xy` is
+        // not inside `/repo/feat/x`.
+        assert_eq!(
+            doomed_spelling(wt, Some(Path::new("/repo/feat/xy")), "../x".to_string()),
+            "../x"
+        );
+
+        // Standing outside: the relative spelling stays.
+        assert_eq!(
+            doomed_spelling(wt, Some(Path::new("/repo/main")), "../feat/x".to_string()),
+            "../feat/x"
+        );
+
+        // No cwd at all (a deleted cwd): the `.` fallback still catches it.
+        assert_eq!(doomed_spelling(wt, None, ".".to_string()), "/repo/feat/x");
     }
 
     /// The path classifier gates a *diagnosis*, so a false positive would
