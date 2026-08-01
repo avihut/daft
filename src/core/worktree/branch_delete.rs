@@ -1339,11 +1339,14 @@ fn validate_branches(
                     // A path-shaped argument only reaches here because it
                     // matched no worktree, so git is being asked about
                     // `refs/heads/../feat/nope` and answers with a refname
-                    // complaint. Report the miss the user made rather than
-                    // the plumbing failure it turned into; a genuine git
-                    // failure on a real branch name keeps the raw detail.
+                    // complaint. Lead with the miss the user made rather than
+                    // the plumbing failure it turned into — but keep git's own
+                    // words in a trailing clause: `show_ref_exists` also fails
+                    // when git cannot be spawned or the repo is locked, and
+                    // there the headline is an assertion about the spelling
+                    // that was never actually tested.
                     message: if looks_like_path(branch) {
-                        "no worktree at that path, and not a valid branch name".to_string()
+                        format!("no worktree at that path, and not a valid branch name (git: {e})")
                     } else {
                         format!("failed to check if branch exists: {e}")
                     },
