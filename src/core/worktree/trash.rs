@@ -394,6 +394,28 @@ mod tests {
         reap_now(&trash_dir(&tmp.path().join(".git")));
     }
 
+    /// The convergence guarantee: whatever a dead reaper left behind is
+    /// reclaimed by the next removal in the repo. This is what makes a failed
+    /// background delete delayed rather than permanent.
+    #[test]
+    fn sweep_reclaims_what_a_dead_reaper_left() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git_dir = tmp.path().join(".git");
+        let trash = trash_dir(&git_dir);
+        std::fs::create_dir_all(trash.join("stranded/deep")).unwrap();
+        std::fs::write(trash.join("stranded/deep/f.txt"), "x").unwrap();
+
+        sweep(&git_dir);
+
+        assert!(!trash.join("stranded").exists());
+    }
+
+    #[test]
+    fn sweep_without_a_trash_dir_is_a_no_op() {
+        let tmp = tempfile::tempdir().unwrap();
+        sweep(&tmp.path().join(".git"));
+    }
+
     #[test]
     fn entry_names_do_not_collide() {
         let a = entry_name(Path::new("/repo/feature"));

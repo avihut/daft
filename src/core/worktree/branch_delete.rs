@@ -250,6 +250,11 @@ pub fn execute(
 ) -> Result<BranchDeleteResult> {
     let git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
     let git_dir = get_git_common_dir()?;
+    // Reclaim anything a previous reaper failed to finish (#200). This is what
+    // makes a failed background delete *delayed* rather than permanent, so
+    // deferring the delete is not a way to lose track of disk space. Cheap when
+    // the trash is empty, which is the ordinary case.
+    trash::sweep(&git_dir);
     let default_branch =
         get_default_branch_local(&git_dir, &params.remote_name, params.use_gitoxide)
             .context("Cannot determine default branch")?;
