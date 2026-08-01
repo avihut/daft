@@ -67,6 +67,15 @@ pub fn labels_for(id: StageId) -> StepLabels {
             done: "Checked out branch",
             skipped: "not checked out",
         },
+        // A sandbox pins HEAD to a commit; there is no branch to name, and
+        // saying "branch" here made the row describe something that does not
+        // exist in the run the user is watching (#813).
+        StageId::CheckOutDetached => StepLabels {
+            pending: "Check out commit",
+            active: "Checking out commit",
+            done: "Checked out commit",
+            skipped: "not checked out",
+        },
         StageId::CreateWorktree | StageId::CreateBaseWorktree => StepLabels {
             pending: "Create worktree",
             active: "Creating worktree",
@@ -226,6 +235,7 @@ pub fn subject_inks_for(id: StageId) -> SubjectInks {
         | StageId::Tracking
         | StageId::CreateBranch
         | StageId::CheckOut
+        | StageId::CheckOutDetached
         | StageId::Push
         | StageId::DeleteRemote
         | StageId::CloneBare => (SubjectInk::Plain, SubjectInk::Remote),

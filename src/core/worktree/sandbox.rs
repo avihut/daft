@@ -348,7 +348,9 @@ fn create_sandbox(
     };
     let mut plan_rows = vec![
         Row::Step(StepSpec::new(StepKey::new(StageId::PreCreateHooks))),
-        Row::Step(StepSpec::new(StepKey::new(StageId::CheckOut)).with_annotation(annotation)),
+        Row::Step(
+            StepSpec::new(StepKey::new(StageId::CheckOutDetached)).with_annotation(annotation),
+        ),
         Row::Step(
             StepSpec::new(StepKey::new(StageId::CreateWorktree))
                 .with_annotation(super::branch_delete::display_path(&worktree_path)),
@@ -434,10 +436,13 @@ fn create_sandbox(
         return Err(anyhow::anyhow!("Pre-create hook failed"));
     }
 
-    sink.on_stage(&StepKey::new(StageId::CheckOut), StageEvent::Started);
+    sink.on_stage(
+        &StepKey::new(StageId::CheckOutDetached),
+        StageEvent::Started,
+    );
     if let Err(e) = git.worktree_add_detached(&worktree_path, &params.commit) {
         sink.on_stage(
-            &StepKey::new(StageId::CheckOut),
+            &StepKey::new(StageId::CheckOutDetached),
             StageEvent::Failed {
                 detail: "failed (see below)".to_string(),
             },
@@ -446,7 +451,7 @@ fn create_sandbox(
         return Err(anyhow::anyhow!("Failed to create git worktree: {e}"));
     }
     sink.on_stage(
-        &StepKey::new(StageId::CheckOut),
+        &StepKey::new(StageId::CheckOutDetached),
         StageEvent::Completed { annotation: None },
     );
 

@@ -44,6 +44,15 @@ pub enum StageId {
     CreateBranch,
     /// Materialize the branch checkout (both journeys).
     CheckOut,
+    /// Materialize a *detached* checkout: the sandbox journey
+    /// (`daft go <commit-ish>`, `daft start --fork`), which pins HEAD to a
+    /// commit and never touches a branch.
+    ///
+    /// Its own id rather than a [`StepSpec::with_label`] override on
+    /// [`Self::CheckOut`], because an override is one fixed string across
+    /// every face and this row still needs its tenses — "Checking out
+    /// commit" while it runs, "Checked out commit" once it has (#813).
+    CheckOutDetached,
     /// Create the worktree directory.
     CreateWorktree,
     /// Push the new branch and set upstream (`daft start`).

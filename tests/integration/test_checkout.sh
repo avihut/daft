@@ -1106,6 +1106,40 @@ test_go_sandbox_header_names_dirname() {
     return 0
 }
 
+# #813: a sandbox pins HEAD to a commit and never touches a branch, but its
+# rail reused the branch journey's stage, so the row read "Checked out
+# branch" beside an annotation naming a commit — the row described something
+# that does not exist in the run being watched.
+test_go_sandbox_row_names_a_commit_not_a_branch() {
+    local remote_repo=$(create_test_remote "test-repo-sandbox-noun" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-sandbox-noun/main"
+
+    local full dirname
+    full=$(git rev-parse HEAD)
+    dirname="${full:0:12}"
+
+    local log="$PWD/go-sandbox-noun.log"
+    _rail_daft "$CHECKOUT_PTY_RUN" "$log" daft go "$full" --no-cd || return 1
+
+    # Scoped past the handover line: the branch attempt above it is a real
+    # branch checkout and keeps the branch noun.
+    local sandbox_rail
+    sandbox_rail=$(_rail_clean "$log" | sed -n '/opening detached sandbox/,$p')
+    if ! echo "$sandbox_rail" | grep -q "Checked out commit"; then
+        log_error "sandbox rail did not name a commit"
+        echo "$sandbox_rail" | head -20
+        return 1
+    fi
+    if echo "$sandbox_rail" | grep -q "Checked out branch"; then
+        log_error "sandbox rail still claims it checked out a branch"
+        echo "$sandbox_rail" | head -20
+        return 1
+    fi
+    assert_directory_exists "../$dirname" || return 1
+    return 0
+}
+
 # #812: the `-x` sequence is planned onto the creation rail and runs inside
 # the region's lifetime. None of that is reachable from the YAML suite —
 # `commit_plan` early-returns off Interactive and the runner captures stderr,
@@ -1281,6 +1315,7 @@ run_checkout_tests() {
 
     # Rail header names the sandbox, not the spelling (#813)
     run_test "go_sandbox_header_names_dirname" "test_go_sandbox_header_names_dirname"
+    run_test "go_sandbox_row_names_a_commit_not_a_branch" "test_go_sandbox_row_names_a_commit_not_a_branch"
 
     # `-x` rows on the creation rail under a PTY (#812)
     run_test "start_exec_rows_on_rail" "test_start_exec_rows_on_rail"
