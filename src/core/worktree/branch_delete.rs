@@ -1323,30 +1323,41 @@ fn validate_branches(
             continue;
         }
 
-        // Check 1: Branch exists locally
+        // Check 1: Branch exists locally.
+        //
+        // A path-shaped argument only reaches here because it matched no
+        // worktree, so git is being asked about `refs/heads/../feat/nope`.
+        // Which arm that lands in is a *backend* detail, not a user-visible
+        // distinction: gitoxide rejects the malformed refname and errors,
+        // `git show-ref` simply finds nothing and answers no. Both mean the
+        // same thing to the person who typed a path, so both say it — telling
+        // them "branch not found" about `../feature/nope` calls their path a
+        // branch, which is the mislabel this whole change exists to remove.
+        let path_shaped_miss = || "no worktree at that path, and not a valid branch name";
         match ctx.git.show_ref_exists(&format!("refs/heads/{branch}")) {
             Ok(true) => {}
             Ok(false) => {
                 errors.push(ValidationError {
                     branch: branch.clone(),
-                    message: "branch not found".to_string(),
+                    message: if looks_like_path(branch) {
+                        path_shaped_miss().to_string()
+                    } else {
+                        "branch not found".to_string()
+                    },
                 });
                 continue;
             }
             Err(e) => {
                 errors.push(ValidationError {
                     branch: branch.clone(),
-                    // A path-shaped argument only reaches here because it
-                    // matched no worktree, so git is being asked about
-                    // `refs/heads/../feat/nope` and answers with a refname
-                    // complaint. Lead with the miss the user made rather than
-                    // the plumbing failure it turned into — but keep git's own
+                    // Lead with the miss the user made rather than the
+                    // plumbing failure it turned into — but keep git's own
                     // words in a trailing clause: `show_ref_exists` also fails
                     // when git cannot be spawned or the repo is locked, and
                     // there the headline is an assertion about the spelling
                     // that was never actually tested.
                     message: if looks_like_path(branch) {
-                        format!("no worktree at that path, and not a valid branch name (git: {e})")
+                        format!("{} (git: {e})", path_shaped_miss())
                     } else {
                         format!("failed to check if branch exists: {e}")
                     },
