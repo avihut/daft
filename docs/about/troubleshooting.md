@@ -68,6 +68,23 @@ over.
 `daft list` prints all worktrees. With `--format json` you get machine-readable
 output.
 
+## I removed a worktree but the disk space hasn't come back
+
+That is expected, briefly. `daft remove` and `daft prune` move the worktree
+aside and return as soon as the parts you are waiting on are done — the branch
+is gone, git is consistent, and the path is free to reuse immediately. The
+directory itself is deleted by a background process a moment later, which is why
+removing a worktree full of `node_modules` takes about as long as removing an
+empty one instead of tens of seconds.
+
+If space still has not returned after a while, `daft doctor` reports any
+worktrees that are still waiting, and `daft doctor --fix` reclaims them
+immediately. Removals also sweep leftovers on their way through, so the next
+`daft remove` or `daft prune` in that repo picks up anything stranded.
+
+To make removal reclaim space before it returns — for a script that checks free
+space straight afterwards, say — set `DAFT_NO_TRASH_REAP=1`.
+
 ## When in doubt
 
 Run `daft doctor`. It diagnoses install, shell integration, layout health, and
