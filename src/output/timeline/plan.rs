@@ -211,7 +211,10 @@ pub enum SubjectInk {
     /// A remote name or ref (`origin`, `← origin/master`, `→ origin/x`) —
     /// ANSI cyan, the network.
     Remote,
-    /// An ordinary filesystem path (worktree directory) — manila.
+    /// A filesystem entity — manila. Ordinary paths (`copy:` entries, the
+    /// worktree directory `daft push` resolves), and worktrees themselves:
+    /// a worktree *is* a directory, so it wears manila whether the row
+    /// names it or locates it (#813).
     Path,
     /// A shared file — violet, daft-managed and linked across worktrees.
     Shared,
@@ -239,17 +242,16 @@ pub fn subject_inks_for(id: StageId) -> SubjectInks {
         | StageId::Push
         | StageId::DeleteRemote
         | StageId::CloneBare => (SubjectInk::Plain, SubjectInk::Remote),
-        // Worktree subjects: these rows name the worktree their label
-        // promises — a branch, or a sandbox's directory name — so they stay
-        // plain. Manila would say "path" about something that is not one
-        // (#813).
-        StageId::CreateWorktree | StageId::CreateBaseWorktree | StageId::RemoveWorktree => {
-            (SubjectInk::Plain, SubjectInk::Plain)
-        }
-        // Path subjects: worktree directories are manila. `daft push`'s row
-        // records *where* the pre-push hook will run, which is a location and
-        // stays one.
-        StageId::ResolveWorktree => (SubjectInk::Plain, SubjectInk::Path),
+        // Worktree subjects: manila. A worktree is a filesystem entity, and
+        // the ink types the entity, not the spelling — so these rows stay
+        // manila even though their annotation now names the worktree (its
+        // branch, or a sandbox's directory name) rather than locating it
+        // (#813). `daft push`'s row still spells a directory, because what
+        // it records is *where* the pre-push hook will run.
+        StageId::CreateWorktree
+        | StageId::CreateBaseWorktree
+        | StageId::RemoveWorktree
+        | StageId::ResolveWorktree => (SubjectInk::Plain, SubjectInk::Path),
         // Shared files: the row's label IS the path, violet.
         StageId::SharedFile => (SubjectInk::Shared, SubjectInk::Plain),
         // Copied paths: the row's label is likewise the entry, but manila —
@@ -314,15 +316,18 @@ mod tests {
             subject_inks_for(StageId::Push).annotation,
             SubjectInk::Remote
         );
-        // #813: this row names the worktree its label promises, not the
-        // directory it occupies, so manila would mislabel a name as a path.
+        // #813: these rows annotate with the worktree's *name*, not its
+        // path — but a worktree is a filesystem entity either way, so the
+        // manila ink types it the same. Plain would drop them to the
+        // pending tier's grey (`render::row_body`'s `ann_fallback`), which
+        // is the one thing the identity-ink carve-out exists to prevent.
         assert_eq!(
             subject_inks_for(StageId::CreateWorktree).annotation,
-            SubjectInk::Plain
+            SubjectInk::Path
         );
         assert_eq!(
             subject_inks_for(StageId::RemoveWorktree).annotation,
-            SubjectInk::Plain
+            SubjectInk::Path
         );
         assert_eq!(
             subject_inks_for(StageId::SharedFile).label,

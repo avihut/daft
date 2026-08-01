@@ -63,14 +63,15 @@ Color follows one grammar. State lives in the glyph (green done, bold-red
 failed, yellow attention, cyan spinner) and daft's own vocabulary stays plain,
 with section headings bold. Subjects wear identity inks that never change with
 state — so the committed plan is as readable as the receipt: remote names and
-refs (`origin`, `← origin/master`, `→ origin/x`) are cyan, paths are manila,
-shared files are violet, and background work is blue. A row whose subject is a
-worktree names it — the branch it is for, or a sandbox's directory name — and
-stays plain; manila is for rows whose subject really is a location. The
-exceptions are deliberate: hook job names take their outcome's color (the scheme
-the standalone hook renderer's summary also speaks), failure details and skip
-reasons always render plain, and a dimmed row — pending glyphs, expected skips,
-`(not run)` — never keeps an identity ink.
+refs (`origin`, `← origin/master`, `→ origin/x`) are cyan, filesystem entities
+are manila, shared files are violet, and background work is blue. Manila types
+the entity rather than the spelling, so a row whose subject is a worktree wears
+it whether the row names that worktree — the branch it is for, or a sandbox's
+directory name — or spells the directory it occupies. The exceptions are
+deliberate: hook job names take their outcome's color (the scheme the standalone
+hook renderer's summary also speaks), failure details and skip reasons always
+render plain, and a dimmed row — pending glyphs, expected skips, `(not run)` —
+never keeps an identity ink.
 
 - The rail opens the moment the command starts (after any pre-flight prompts) as
   a single collapsed line — the active spinner, the header's own text, and the
