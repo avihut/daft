@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.0](https://github.com/avihut/daft/compare/v1.26.0...v1.27.0) - 2026-08-01
+
+
+### Bug Fixes
+
+- Worktree shorthands report the resolved worktree, not the raw path argument (#822)
+- Write the cd target before -x runs, so an interrupt cannot cost it (#815)
+
+
+### Features
+
+- **hooks**: --hooks <auto|foreground|background|off> to pick a run's hook execution mode (#821)
+- Show -x commands as rows on the plan-execute rail (#814)
 ## [1.26.0](https://github.com/avihut/daft/compare/v1.25.0...v1.26.0) - 2026-07-30
 
 
