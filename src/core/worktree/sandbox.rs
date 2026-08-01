@@ -176,9 +176,65 @@ pub fn execute_visit(
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> Result<SandboxResult> {
     let git_dir = crate::core::repo::get_git_common_dir()?;
+    let resolution = resolve_visit(params, git, &git_dir)?;
 
+    // Records whose worktree is gone (removed outside daft), dropped so the
+    // next visit rebuilds cleanly. The resolution reports them rather than
+    // forgetting them itself, so the read-only header probe can share it.
+    for id in &resolution.stale_ids {
+        if let Some(store) = super::identity_store::IdentityStore::open(&git_dir) {
+            store.forget_id(id);
+        }
+    }
+
+    match resolution.target {
+        Some(target) => navigate(
+            &target.dirname,
+            &target.path,
+            &params.commit,
+            &params.spelling,
+            &git_dir,
+            sink,
+        ),
+        None => create_sandbox(params, git, project_root, &git_dir, sink),
+    }
+}
+
+/// The existing worktree a visit navigates to.
+pub struct VisitTarget {
+    /// The worktree's own directory name — its identity, which is *not*
+    /// always `params.dirname`: idempotence B matches on the commit, so a
+    /// sandbox minted as `v1.0` is where `daft go <that-sha>` lands (#813).
+    pub dirname: String,
+    pub path: PathBuf,
+}
+
+/// What [`execute_visit`] resolved before doing anything.
+pub struct VisitResolution {
+    /// The worktree to navigate to, or `None` to mint a fresh sandbox.
+    pub target: Option<VisitTarget>,
+    /// Canonical records whose worktree no longer exists. Returned instead of
+    /// being forgotten in place so this stays a pure query: the rail's header
+    /// asks the same question purely to render a name, and a display path must
+    /// not mutate the identity store.
+    stale_ids: Vec<String>,
+}
+
+/// Apply both idempotence rules and report where a visit would land.
+///
+/// Extracted so the rail's header and the visit itself cannot answer
+/// differently. Seeding the header from `params.dirname` was wrong for exactly
+/// one case, and it is the case where being wrong looks most like being right:
+/// arm B navigates by *commit*, so `daft go <sha>` lands in the sandbox a tag
+/// minted yesterday, and the header would announce a plausible-looking
+/// 12-hex name for a directory that does not exist (#813).
+pub fn resolve_visit(
+    params: &SandboxParams,
+    git: &GitCommand,
+    git_dir: &Path,
+) -> Result<VisitResolution> {
     let entries = detached_entries(git)?;
-    let records = super::identity_store::read_identities(&git_dir);
+    let records = super::identity_store::read_identities(git_dir);
 
     // Idempotence A — the spelling's own directory name. A detached worktree
     // already sitting at that name is the destination, unless it is a fork:
@@ -193,54 +249,76 @@ pub fn execute_visit(
     {
         let kind = record_for(&records, &entry.path).map(|r| r.kind);
         if kind != Some(WorktreeKind::Fork) {
-            return navigate(
-                &dir,
-                &entry.path.clone(),
-                &params.commit,
-                &params.spelling,
-                &git_dir,
-                sink,
-            );
+            return Ok(VisitResolution {
+                target: Some(VisitTarget {
+                    dirname: dir,
+                    path: entry.path.clone(),
+                }),
+                stale_ids: Vec::new(),
+            });
         }
     }
 
     // Idempotence B — the commit. Whatever the spelling (`HEAD~2` today, the
     // tag yesterday, the raw SHA in a script), one commit has at most one
     // canonical sandbox. Forks are excluded by construction (`Canonical`
-    // match only); a record whose worktree is gone is dropped so the next
-    // visit rebuilds cleanly.
+    // match only).
     let mut canonical: Vec<&WorktreeIdentityRow> = records
         .values()
         .filter(|r| r.kind == WorktreeKind::Canonical)
         .filter(|r| r.pinned_commit.as_deref() == Some(params.commit.as_str()))
         .collect();
     canonical.sort_by_key(|r| std::cmp::Reverse(r.updated_at));
+    let mut stale_ids = Vec::new();
     for row in canonical {
         let live = entries.iter().find(|e| {
             super::identity_store::worktree_id_for(&e.path).as_deref() == Some(&row.worktree_id)
         });
         match live {
             Some(entry) => {
-                return navigate(
-                    &row.branch,
-                    &entry.path.clone(),
-                    &params.commit,
-                    &params.spelling,
-                    &git_dir,
-                    sink,
-                );
+                return Ok(VisitResolution {
+                    target: Some(VisitTarget {
+                        dirname: row.branch.clone(),
+                        path: entry.path.clone(),
+                    }),
+                    stale_ids,
+                });
             }
-            None => {
-                // The worktree is gone but the record survived (removed
-                // outside daft). Best-effort cleanup, then keep looking.
-                if let Some(store) = super::identity_store::IdentityStore::open(&git_dir) {
-                    store.forget_id(&row.worktree_id);
-                }
-            }
+            None => stale_ids.push(row.worktree_id.clone()),
         }
     }
 
-    create_sandbox(params, git, project_root, &git_dir, sink)
+    Ok(VisitResolution {
+        target: None,
+        stale_ids,
+    })
+}
+
+/// The name to seed the visit rail's header with: the worktree the visit will
+/// actually land on, falling back to the name a fresh sandbox would get.
+///
+/// Display-only and best-effort by construction, like
+/// [`branch_delete::header_seed`](super::branch_delete::header_seed): it
+/// returns a `String`, never a target, so it cannot change where the visit
+/// goes — [`resolve_visit`] alone decides that, and is asked again there.
+///
+/// `resolve` is the caller's answer to "will this header be drawn?"
+/// ([`TimelineMode::renders_header`](crate::output::timeline::TimelineMode::renders_header)).
+/// A visit never commits a plan, so this seed is the only header the run will
+/// ever have — but only the live region draws one, so a non-TTY visit skips
+/// the `git worktree list` the resolution costs.
+pub fn visit_header_name(params: &SandboxParams, git: &GitCommand, resolve: bool) -> String {
+    let derived = || params.dirname.clone();
+    if !resolve {
+        return derived();
+    }
+    let Ok(git_dir) = crate::core::repo::get_git_common_dir() else {
+        return derived();
+    };
+    match resolve_visit(params, git, &git_dir) {
+        Ok(resolution) => resolution.target.map_or_else(derived, |t| t.dirname),
+        Err(_) => derived(),
+    }
 }
 
 /// Mint a fresh sandbox at `params.commit`, unconditionally. The
