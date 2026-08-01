@@ -5,6 +5,7 @@
 use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
 use crate::core::worktree::ports::{ForgeMergedWitness, NoopStageRunner};
 use crate::core::worktree::push::{PushAction, push_with_hooks, resolve_delete_pre_push};
+use crate::core::worktree::trash::{self, Disposition};
 use crate::core::{
     ConflictSide, ConsolidationChoice, ConsolidationPrompter, ConsolidationRequest, HookRunner,
     ProgressSink, RefinedFileSummary,
@@ -2349,13 +2350,21 @@ fn delete_single_branch(
         } else if wt_path.exists() {
             sink.on_step(&format!("Removing worktree at {}...", wt_path.display()));
             sink.on_stage(&stage_key(StageId::RemoveWorktree), StageEvent::Started);
-            match remove_worktree_completing_orphans(ctx.git, wt_path, force, sink) {
-                Ok(()) => {
+            match remove_worktree_completing_orphans(ctx.git, &ctx.git_dir, wt_path, force, sink) {
+                Ok(disposition) => {
                     result.worktree_removed = true;
                     sink.on_step(&format!("Removed worktree '{}'", branch.name));
+                    // Say so when the space is still coming back: the path is
+                    // free and git is consistent, but `df` will not agree for
+                    // another moment. Silence here would make the command
+                    // claim more than it did.
+                    let annotation = match disposition {
+                        Disposition::Deferred => Some("reclaiming space in background".to_string()),
+                        Disposition::Declined => None,
+                    };
                     sink.on_stage(
                         &stage_key(StageId::RemoveWorktree),
-                        StageEvent::Completed { annotation: None },
+                        StageEvent::Completed { annotation },
                     );
                 }
                 Err(e) => {
@@ -2548,12 +2557,21 @@ fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeListEntry>> {
 /// error stands untouched.
 fn remove_worktree_completing_orphans(
     git: &GitCommand,
+    git_common_dir: &Path,
     wt_path: &Path,
     force: bool,
     sink: &mut dyn ProgressSink,
-) -> Result<()> {
+) -> Result<Disposition> {
+    // Try to get the directory out of the way without walking it (#200).
+    // Declining is not a failure — it means the fast path did not apply, and
+    // the ordinary removal below runs exactly as it always has, including
+    // git's own refusal of a dirty worktree.
+    if trash::dispose(git, git_common_dir, wt_path, force) == Disposition::Deferred {
+        return Ok(Disposition::Deferred);
+    }
+
     let orig = match git.worktree_remove(wt_path, force) {
-        Ok(()) => return Ok(()),
+        Ok(()) => return Ok(Disposition::Declined),
         Err(e) => e,
     };
     let target = std::fs::canonicalize(wt_path).unwrap_or_else(|_| wt_path.to_path_buf());
@@ -2573,7 +2591,7 @@ fn remove_worktree_completing_orphans(
         wt_path.display()
     ));
     match std::fs::remove_dir_all(wt_path) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(Disposition::Declined),
         Err(e) => Err(orig.context(format!("the direct delete of the leftover failed too: {e}"))),
     }
 }
@@ -3184,9 +3202,80 @@ mod tests {
         assert!(wt.exists());
 
         let git = GitCommand::new(true);
-        remove_worktree_completing_orphans(&git, &wt, false, &mut crate::core::NullSink)
-            .expect("a disowned directory must still get deleted");
+        remove_worktree_completing_orphans(
+            &git,
+            &tmp.path().join(".git"),
+            &wt,
+            false,
+            &mut crate::core::NullSink,
+        )
+        .expect("a disowned directory must still get deleted");
         assert!(!wt.exists(), "the leftover directory must be gone");
+    }
+
+    /// The #200 fast path: a clean worktree is renamed aside rather than
+    /// walked, and git's admin record goes with it. Asserts the *observable*
+    /// contract — path free, worktree unregistered — not the rename itself.
+    #[test]
+    #[serial]
+    fn a_clean_worktree_is_disposed_without_walking_it() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let wt = tmp.path().join("feature");
+        setup_worktree(tmp.path(), "feature-branch", &wt);
+        std::env::set_current_dir(tmp.path()).unwrap();
+        // A populated but *clean* tree: the case the fast path is for. Leaving
+        // these untracked would (correctly) make `dispose` decline.
+        std::fs::create_dir_all(wt.join("deps/pkg")).unwrap();
+        std::fs::write(wt.join("deps/pkg/index.js"), "x").unwrap();
+        git_quiet(&wt, &["add", "."]);
+        commit_empty(&wt, "deps");
+
+        let git = GitCommand::new(true);
+        let disposition = remove_worktree_completing_orphans(
+            &git,
+            &tmp.path().join(".git"),
+            &wt,
+            false,
+            &mut crate::core::NullSink,
+        )
+        .expect("a clean worktree must be removable");
+
+        assert_eq!(disposition, Disposition::Deferred, "expected the fast path");
+        assert!(!wt.exists(), "the path must be free");
+        let listed = git.worktree_list_porcelain().unwrap();
+        assert!(
+            !listed.contains("feature"),
+            "git must no longer register the worktree: {listed}"
+        );
+    }
+
+    /// The acceptance test for #200: whatever the fast path does to the admin
+    /// record, the freed name must be immediately reusable. This is what fails
+    /// if the record drop only appeared to work.
+    #[test]
+    #[serial]
+    fn a_disposed_worktree_path_is_immediately_reusable() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let wt = tmp.path().join("feature");
+        setup_worktree(tmp.path(), "feature-branch", &wt);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let git = GitCommand::new(true);
+        remove_worktree_completing_orphans(
+            &git,
+            &tmp.path().join(".git"),
+            &wt,
+            true,
+            &mut crate::core::NullSink,
+        )
+        .expect("removal must succeed");
+
+        setup_worktree(tmp.path(), "feature-branch-2", &wt);
+        assert!(wt.exists(), "the same path must be reusable straight away");
     }
 
     /// A still-registered worktree whose removal fails keeps the original
@@ -3205,10 +3294,24 @@ mod tests {
         std::fs::write(wt.join("junk.txt"), "x").unwrap();
 
         let git = GitCommand::new(true);
-        let err = remove_worktree_completing_orphans(&git, &wt, false, &mut crate::core::NullSink)
-            .expect_err("a registered dirty worktree must keep refusing");
+        let err = remove_worktree_completing_orphans(
+            &git,
+            &tmp.path().join(".git"),
+            &wt,
+            false,
+            &mut crate::core::NullSink,
+        )
+        .expect_err("a registered dirty worktree must keep refusing");
         assert!(err.to_string().contains("Git worktree remove failed"));
         assert!(wt.exists(), "the worktree must be untouched");
+        // The fast path must not have moved it aside either: renaming a dirty
+        // tree would retire git's own refusal, which is the last guard between
+        // validation and an irreversible delete (#200).
+        assert!(
+            !crate::core::worktree::trash::trash_dir(&tmp.path().join(".git")).exists()
+                || crate::core::worktree::trash::pending(&tmp.path().join(".git")).is_empty(),
+            "a dirty worktree must never reach the trash"
+        );
     }
 
     #[test]

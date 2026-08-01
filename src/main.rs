@@ -134,6 +134,14 @@ fn main() -> Result<()> {
                         let _ = commands::forge_cache::run_refresh_forge();
                         return Ok(());
                     }
+                    "__reap-trash" => {
+                        if let Some(dir) = args.get(2) {
+                            let _ = daft::core::worktree::trash::run_reap_trash(
+                                std::path::Path::new(dir),
+                            );
+                        }
+                        return Ok(());
+                    }
                     "__dump-store" => {
                         if let Err(e) = commands::dump_store::run() {
                             eprintln!("daft __dump-store: {e:#}");
