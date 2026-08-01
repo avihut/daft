@@ -28,15 +28,21 @@ export default defineConfig({
     hostname: "https://daft.avihu.dev",
   },
   head: [
+    // PNG first, SVG last: SVG-capable browsers take the later `sizes: "any"`
+    // entry (the floating dodo); Safari and legacy fall back to the PNG tile.
+    [
+      "link",
+      { rel: "icon", type: "image/png", href: "/favicon.png", sizes: "48x48" },
+    ],
     [
       "link",
       {
         rel: "icon",
         type: "image/svg+xml",
         href: "/brand/daft-donut-favicon.svg",
+        sizes: "any",
       },
     ],
-    ["link", { rel: "icon", type: "image/png", href: "/favicon.png" }],
     [
       "link",
       {
