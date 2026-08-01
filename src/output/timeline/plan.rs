@@ -239,11 +239,17 @@ pub fn subject_inks_for(id: StageId) -> SubjectInks {
         | StageId::Push
         | StageId::DeleteRemote
         | StageId::CloneBare => (SubjectInk::Plain, SubjectInk::Remote),
-        // Path subjects: worktree directories are manila.
-        StageId::CreateWorktree
-        | StageId::CreateBaseWorktree
-        | StageId::RemoveWorktree
-        | StageId::ResolveWorktree => (SubjectInk::Plain, SubjectInk::Path),
+        // Worktree subjects: these rows name the worktree their label
+        // promises — a branch, or a sandbox's directory name — so they stay
+        // plain. Manila would say "path" about something that is not one
+        // (#813).
+        StageId::CreateWorktree | StageId::CreateBaseWorktree | StageId::RemoveWorktree => {
+            (SubjectInk::Plain, SubjectInk::Plain)
+        }
+        // Path subjects: worktree directories are manila. `daft push`'s row
+        // records *where* the pre-push hook will run, which is a location and
+        // stays one.
+        StageId::ResolveWorktree => (SubjectInk::Plain, SubjectInk::Path),
         // Shared files: the row's label IS the path, violet.
         StageId::SharedFile => (SubjectInk::Shared, SubjectInk::Plain),
         // Copied paths: the row's label is likewise the entry, but manila —
@@ -308,9 +314,15 @@ mod tests {
             subject_inks_for(StageId::Push).annotation,
             SubjectInk::Remote
         );
+        // #813: this row names the worktree its label promises, not the
+        // directory it occupies, so manila would mislabel a name as a path.
         assert_eq!(
             subject_inks_for(StageId::CreateWorktree).annotation,
-            SubjectInk::Path
+            SubjectInk::Plain
+        );
+        assert_eq!(
+            subject_inks_for(StageId::RemoveWorktree).annotation,
+            SubjectInk::Plain
         );
         assert_eq!(
             subject_inks_for(StageId::SharedFile).label,

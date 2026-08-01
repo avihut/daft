@@ -351,9 +351,11 @@ fn create_sandbox(
         Row::Step(
             StepSpec::new(StepKey::new(StageId::CheckOutDetached)).with_annotation(annotation),
         ),
+        // A sandbox has no branch, so its name is its directory name — the
+        // identity it answers to in `list`, `go` and `remove` (#813).
         Row::Step(
             StepSpec::new(StepKey::new(StageId::CreateWorktree))
-                .with_annotation(super::branch_delete::display_path(&worktree_path)),
+                .with_annotation(params.dirname.clone()),
         ),
     ];
     if should_carry {

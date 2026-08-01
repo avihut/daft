@@ -444,9 +444,11 @@ pub fn execute(
     plan_rows.extend([
         Row::Step(StepSpec::new(StepKey::new(StageId::PreCreateHooks))),
         Row::Step(checkout_spec),
+        // The row's subject is the worktree its label names — the branch it
+        // is for, not the directory it occupies (#813).
         Row::Step(
             StepSpec::new(StepKey::new(StageId::CreateWorktree))
-                .with_annotation(super::branch_delete::display_path(&worktree_path)),
+                .with_annotation(params.branch_name.clone()),
         ),
     ]);
     if should_carry {

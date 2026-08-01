@@ -1106,11 +1106,62 @@ test_go_sandbox_header_names_dirname() {
     return 0
 }
 
+# #813: the branch journey's `Created worktree` row carried a path relative
+# to the cwd, so the row's label promised a worktree and its subject was a
+# location — in the path colour, which said so twice. The subject is the
+# worktree: the branch it is for.
+test_go_row_names_the_worktree_not_its_path() {
+    local remote_repo=$(create_test_remote "test-repo-row-name" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-row-name/main"
+
+    local log="$PWD/go-row-name.log"
+    _rail_daft "$CHECKOUT_PTY_RUN" "$log" daft go develop || return 1
+
+    local annotation
+    annotation=$(_rail_clean "$log" |
+        grep -o 'Created worktree  *[^ ]*' | head -1 |
+        sed 's/Created worktree  *//')
+    if [[ "$annotation" != "develop" ]]; then
+        log_error "create row annotated '$annotation', expected 'develop'"
+        _rail_clean "$log" | head -20
+        return 1
+    fi
+    return 0
+}
+
+# #813: same row, the `daft start` journey — a separate plan builder, so a
+# separate render site.
+test_start_row_names_the_worktree_not_its_path() {
+    local remote_repo=$(create_test_remote "test-repo-row-start" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-row-start/main"
+    git config daft.checkout.push false
+
+    # Outside the repo: `daft start` carries untracked files into the new
+    # worktree, and a log written here would leave with them.
+    local log="$TEMP_BASE_DIR/start-row-name.log"
+    _rail_daft "$CHECKOUT_PTY_RUN" "$log" daft start feature/row-name || return 1
+
+    local annotation
+    annotation=$(_rail_clean "$log" |
+        grep -o 'Created worktree  *[^ ]*' | head -1 |
+        sed 's/Created worktree  *//')
+    if [[ "$annotation" != "feature/row-name" ]]; then
+        log_error "create row annotated '$annotation', expected 'feature/row-name'"
+        _rail_clean "$log" | head -20
+        return 1
+    fi
+    return 0
+}
+
 # #813: a sandbox pins HEAD to a commit and never touches a branch, but its
 # rail reused the branch journey's stage, so the row read "Checked out
 # branch" beside an annotation naming a commit — the row described something
-# that does not exist in the run being watched.
-test_go_sandbox_row_names_a_commit_not_a_branch() {
+# that does not exist in the run being watched. Its `Created worktree` row
+# has the same job as the branch journey's: name the worktree, which for a
+# sandbox is its directory name.
+test_go_sandbox_rows_name_the_sandbox() {
     local remote_repo=$(create_test_remote "test-repo-sandbox-noun" "main")
     git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-sandbox-noun/main"
@@ -1133,6 +1184,16 @@ test_go_sandbox_row_names_a_commit_not_a_branch() {
     fi
     if echo "$sandbox_rail" | grep -q "Checked out branch"; then
         log_error "sandbox rail still claims it checked out a branch"
+        echo "$sandbox_rail" | head -20
+        return 1
+    fi
+
+    local annotation
+    annotation=$(echo "$sandbox_rail" |
+        grep -o 'Created worktree  *[^ ]*' | head -1 |
+        sed 's/Created worktree  *//')
+    if [[ "$annotation" != "$dirname" ]]; then
+        log_error "create row annotated '$annotation', expected '$dirname'"
         echo "$sandbox_rail" | head -20
         return 1
     fi
@@ -1315,7 +1376,9 @@ run_checkout_tests() {
 
     # Rail header names the sandbox, not the spelling (#813)
     run_test "go_sandbox_header_names_dirname" "test_go_sandbox_header_names_dirname"
-    run_test "go_sandbox_row_names_a_commit_not_a_branch" "test_go_sandbox_row_names_a_commit_not_a_branch"
+    run_test "go_sandbox_rows_name_the_sandbox" "test_go_sandbox_rows_name_the_sandbox"
+    run_test "go_row_names_the_worktree_not_its_path" "test_go_row_names_the_worktree_not_its_path"
+    run_test "start_row_names_the_worktree_not_its_path" "test_start_row_names_the_worktree_not_its_path"
 
     # `-x` rows on the creation rail under a PTY (#812)
     run_test "start_exec_rows_on_rail" "test_start_exec_rows_on_rail"

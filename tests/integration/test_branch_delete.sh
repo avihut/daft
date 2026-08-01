@@ -695,12 +695,11 @@ test_remove_dot_header_survives_validation_failure() {
     return 0
 }
 
-# #813: the row that removes the worktree annotated itself `.` whenever the
-# cwd sat inside the doomed directory — which is every `daft remove .`. A
-# relative path is only true while its anchor exists, and this row's anchor
-# is what the row deletes: once the rail closes and the shell has cd'd out,
-# `.` names a different directory.
-test_remove_dot_row_names_the_doomed_directory() {
+# #813: the row's label promises a worktree, so its subject is the worktree —
+# the branch it is for. It used to carry a path relative to the cwd, which
+# for every `daft remove .` (the way you delete the worktree you are standing
+# in) rendered as a bare `.`: the argument echoed back, naming nothing.
+test_remove_dot_row_names_the_worktree() {
     local remote_repo=$(create_test_remote "test-repo-bd-row" "main")
 
     git-worktree-clone --layout contained "$remote_repo" || return 1
@@ -721,12 +720,10 @@ test_remove_dot_row_names_the_doomed_directory() {
     # "Removed"; the pending/active faces say "Remove"/"Removing".
     local annotation
     annotation=$(_bd_rail_clean "$log" |
-        grep -o 'Removed worktree  *[^ ]*' | tail -1 |
+        grep -o 'Removed worktree  *[^ ]*' | head -1 |
         sed 's/Removed worktree  *//')
-    # Absolute (the suite's workdir is outside $HOME, so no `~` folding) and
-    # naming the directory that went away.
-    if [[ "$annotation" != /*/feature/annotation ]]; then
-        log_error "removal row annotated '$annotation', expected an absolute path ending in /feature/annotation"
+    if [[ "$annotation" != "feature/annotation" ]]; then
+        log_error "removal row annotated '$annotation', expected 'feature/annotation'"
         _bd_rail_clean "$log" | head -20
         return 1
     fi
@@ -1068,7 +1065,7 @@ run_branch_delete_tests() {
     run_test "branch_delete_by_dot" "test_branch_delete_by_dot"
     run_test "remove_dot_header_names_branch" "test_remove_dot_header_names_branch"
     run_test "remove_dot_header_survives_validation_failure" "test_remove_dot_header_survives_validation_failure"
-    run_test "remove_dot_row_names_the_doomed_directory" "test_remove_dot_row_names_the_doomed_directory"
+    run_test "remove_dot_row_names_the_worktree" "test_remove_dot_row_names_the_worktree"
     run_test "remove_unresolvable_path_echoes_verbatim" "test_remove_unresolvable_path_echoes_verbatim"
     run_test "remove_unresolvable_path_error_explains_the_miss" "test_remove_unresolvable_path_error_explains_the_miss"
 
