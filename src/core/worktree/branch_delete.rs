@@ -401,8 +401,11 @@ fn build_plan(
     hook_rows: &HookRowPlan,
 ) -> PlanCommit {
     let multi = exec_order.len() > 1;
-    // Replace the seeded header: raw args may be worktree-path shorthands
-    // (`daft remove .`), and the count can shrink during validation.
+    // Replace the seeded header with what validation actually settled on.
+    // The seed already resolves a path shorthand to its branch (#813), so
+    // this is a no-op for the plain single-target case; it earns its keep
+    // when the *count* moves — a wildcard expanding to N sandboxes, or
+    // validation dropping targets down to one.
     let header = if multi {
         format!("Removing {} branches", exec_order.len())
     } else {
@@ -438,9 +441,13 @@ fn build_plan(
                 StepSpec::new(key(StageId::DeleteRemote)).with_annotation(annotation),
             ));
         }
-        if let Some(ref wt) = branch.worktree_path {
+        // The row's subject is the worktree its label names, not the
+        // directory it occupied (#813) — `branch.name` is the branch for a
+        // branch worktree and the directory name for a sandbox, which is
+        // exactly the identity each answers to.
+        if branch.worktree_path.is_some() {
             rows.push(Row::Step(
-                StepSpec::new(key(StageId::RemoveWorktree)).with_annotation(display_path(wt)),
+                StepSpec::new(key(StageId::RemoveWorktree)).with_annotation(branch.name.clone()),
             ));
         }
         if !params.remote_only && !params.keep_local_branch && !branch.worktree_only {
@@ -512,6 +519,77 @@ pub(crate) fn display_path(path: &Path) -> String {
         .map(|rel| rel.display().to_string())
         .map(|rel| if rel.is_empty() { ".".to_string() } else { rel })
         .unwrap_or_else(|| path.display().to_string())
+}
+
+// ── Header seed ────────────────────────────────────────────────────────────
+
+/// The rail header for a removal, resolved before the rail opens (#813).
+///
+/// The rail's header carries *identity* — what is being acted on. A seed
+/// built from raw args alone puts a path in that slot, so `daft remove .`
+/// announces that it is removing `.`, which names nothing the user
+/// recognizes. Resolving here means the first frame already reads
+/// `Removing feat/thing`, matching the row that removes it and the error
+/// that may replace them both.
+///
+/// It also keeps the header agreeing with the text below it on the paths
+/// that never commit a plan. A dirty worktree aborts with
+/// `cannot delete 'feat/thing': has uncommitted changes` while the seed is
+/// the only line still on screen; a header reading `.` (or a bare count)
+/// disagrees with that error, and no later replacement can fix it because
+/// [`PlanCommit::header`] only lands when a plan commits.
+///
+/// Multi-target keeps its count form: a count is true from raw args and
+/// stays true, and the committed plan names each branch on its own group
+/// row.
+///
+/// `resolve` is the caller's answer to "will this header be drawn?"
+/// ([`TimelineMode::renders_header`]). Only the live region draws it, so a
+/// non-TTY removal — a script, a hook, CI — skips the `git worktree list`
+/// the resolution costs and keeps the raw spelling nobody will read.
+pub fn header_seed(params: &BranchDeleteParams, resolve: bool) -> String {
+    match params.branches.as_slice() {
+        [only] if resolve => format!(
+            "Removing {}",
+            display_identity(only, params.use_gitoxide, params.is_quiet)
+        ),
+        [only] => format!("Removing {only}"),
+        rest => format!("Removing {} branches", rest.len()),
+    }
+}
+
+/// The identity to render for one raw removal argument.
+///
+/// Display-only and best-effort by construction: it returns a `String` for
+/// rendering, never a target, so it cannot change which entity gets removed
+/// — [`resolve_branch_args`] alone decides that. Anything it fails to
+/// resolve comes back as the user's own spelling, which is what the
+/// validation error will echo too: replacing an unresolvable `../typo` with
+/// a guess is worse than showing a path.
+fn display_identity(arg: &str, use_gitoxide: bool, quiet: bool) -> String {
+    let verbatim = || arg.to_string();
+    let (Ok(project_root), Ok(git_dir)) = (get_project_root(), get_git_common_dir()) else {
+        return verbatim();
+    };
+    let git = GitCommand::new(quiet).with_gitoxide(use_gitoxide);
+    let Ok(entries) = parse_worktree_list(&git) else {
+        return verbatim();
+    };
+
+    match resolve_single_arg(arg, &entries, &project_root) {
+        ResolveResult::Branch(name) => name,
+        // A daft sandbox has no branch, so its dirname is its identity. A
+        // detached worktree daft has no record of keeps the user's spelling:
+        // the removal refuses it either way, and the refusal quotes the path.
+        ResolveResult::DetachedHead(path) => {
+            let identities = crate::core::worktree::identity_store::read_identities(&git_dir);
+            sandbox_target_by_path(&path, &identities)
+                .map_or_else(verbatim, |target| target.dirname)
+        }
+        // A branch name, a sandbox dirname, or a path that matched nothing.
+        // All three are already the best spelling available here.
+        ResolveResult::PassThrough => verbatim(),
+    }
 }
 
 // ── Argument resolution ────────────────────────────────────────────────────
@@ -657,6 +735,17 @@ fn sandbox_target_by_name(
 /// a metachar cannot belong to a branch or sandbox name.
 fn is_wildcard_pattern(arg: &str) -> bool {
     arg.contains(['*', '?'])
+}
+
+/// True when `arg` reads as a filesystem path rather than a branch name.
+///
+/// Deliberately narrow: only the leading spellings git forbids in a refname
+/// (`.`, `..`, a leading slash) qualify, so this can never reclassify a
+/// legitimate branch. A bare `feat/thing` stays a branch name here even
+/// though [`resolve_single_arg`] would also try it as a directory —
+/// misjudging that direction would replace a real git error with a guess.
+fn looks_like_path(arg: &str) -> bool {
+    matches!(arg, "." | "..") || ["/", "./", "../"].iter().any(|p| arg.starts_with(p))
 }
 
 /// Glob-style match over a whole name: `*` matches any run of characters
@@ -1234,20 +1323,44 @@ fn validate_branches(
             continue;
         }
 
-        // Check 1: Branch exists locally
+        // Check 1: Branch exists locally.
+        //
+        // A path-shaped argument only reaches here because it matched no
+        // worktree, so git is being asked about `refs/heads/../feat/nope`.
+        // Which arm that lands in is a *backend* detail, not a user-visible
+        // distinction: gitoxide rejects the malformed refname and errors,
+        // `git show-ref` simply finds nothing and answers no. Both mean the
+        // same thing to the person who typed a path, so both say it — telling
+        // them "branch not found" about `../feature/nope` calls their path a
+        // branch, which is the mislabel this whole change exists to remove.
+        let path_shaped_miss = || "no worktree at that path, and not a valid branch name";
         match ctx.git.show_ref_exists(&format!("refs/heads/{branch}")) {
             Ok(true) => {}
             Ok(false) => {
                 errors.push(ValidationError {
                     branch: branch.clone(),
-                    message: "branch not found".to_string(),
+                    message: if looks_like_path(branch) {
+                        path_shaped_miss().to_string()
+                    } else {
+                        "branch not found".to_string()
+                    },
                 });
                 continue;
             }
             Err(e) => {
                 errors.push(ValidationError {
                     branch: branch.clone(),
-                    message: format!("failed to check if branch exists: {e}"),
+                    // Lead with the miss the user made rather than the
+                    // plumbing failure it turned into — but keep git's own
+                    // words in a trailing clause: `show_ref_exists` also fails
+                    // when git cannot be spawned or the repo is locked, and
+                    // there the headline is an assertion about the spelling
+                    // that was never actually tested.
+                    message: if looks_like_path(branch) {
+                        format!("{} (git: {e})", path_shaped_miss())
+                    } else {
+                        format!("failed to check if branch exists: {e}")
+                    },
                 });
                 continue;
             }
@@ -2577,6 +2690,69 @@ mod tests {
         let b = branch("feat-y");
         let plan = build_plan(&[&a, &b], &params, &all_hook_rows(2));
         assert_eq!(plan.header.as_deref(), Some("Removing 2 branches"));
+    }
+
+    /// #813: multi-target keeps the count form, and it is reachable without
+    /// touching a repo — the seed only resolves when there is exactly one
+    /// argument to resolve. The single-target spellings are covered where
+    /// they actually render, in `tests/integration/test_branch_delete.sh`.
+    #[test]
+    fn header_seed_keeps_the_count_form_for_multiple_targets() {
+        let params = |branches: Vec<String>| BranchDeleteParams {
+            branches,
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
+        };
+
+        // `resolve` is a perf gate on the single-target arm only: a count
+        // never consults the filesystem, so both settings must agree.
+        for resolve in [true, false] {
+            assert_eq!(
+                header_seed(&params(vec![".".into(), "feat-y".into()]), resolve),
+                "Removing 2 branches"
+            );
+            assert_eq!(
+                header_seed(&params(vec!["a".into(), "b".into(), "c".into()]), resolve),
+                "Removing 3 branches"
+            );
+        }
+
+        // With resolution off — the non-TTY path, where no header is drawn —
+        // a single target keeps the raw spelling rather than paying for a
+        // `git worktree list` nobody reads.
+        assert_eq!(header_seed(&params(vec![".".into()]), false), "Removing .");
+    }
+
+    /// The path classifier gates a *diagnosis*, so a false positive would
+    /// replace a real git failure with a wrong explanation. Only the
+    /// spellings git forbids in a refname may qualify.
+    #[test]
+    fn looks_like_path_never_claims_a_branch_name() {
+        for arg in [".", "..", "./x", "../feat/nope", "/abs/path"] {
+            assert!(looks_like_path(arg), "{arg} should read as a path");
+        }
+        for arg in [
+            "feat/thing",
+            "main",
+            "release-2",
+            "feat.x",
+            "v1.2.3",
+            "main-fork*",
+            "a..b",
+        ] {
+            assert!(!looks_like_path(arg), "{arg} should read as a branch name");
+        }
     }
 
     #[test]

@@ -1004,7 +1004,7 @@ fn fork_stem(spelling: &str, commit: &str, git: &GitCommand) -> String {
             .map(|b| b.replace('/', "-"))
             .unwrap_or_else(|| sandbox::derived_dirname(commit))
     } else {
-        sandbox::sandbox_dirname(spelling).unwrap_or_else(|| sandbox::derived_dirname(commit))
+        sandbox::dirname_for(spelling, commit)
     }
 }
 
@@ -1726,11 +1726,14 @@ fn run_in_repo(
         None
     };
 
+    // Explains the reinterpretation; deliberately does not name the sandbox.
+    // Nothing here has resolved one yet — idempotence may land this visit in a
+    // sandbox another spelling of the same commit minted, under that name —
+    // and the rail's header on the very next line names it correctly (#813).
     let result = if let Some(commit) = sandbox_early {
         output.result(&format!(
-            "'{}' is not a branch; opening a detached sandbox at {}",
+            "'{}' is not a branch; opening a detached sandbox",
             args.branch_name,
-            crate::core::worktree::sandbox::short_oid(&commit)
         ));
         sandbox_entry(
             &args,
@@ -1808,10 +1811,12 @@ fn run_in_repo(
                     && let Some(commit) = resolve_commitish(branch)
                 {
                     change_directory(&original_dir).ok();
+                    // Unnamed for the same reason as the early-sandbox arm
+                    // above: the rail's header names the worktree once the
+                    // visit has resolved which one it is.
                     output.result(&format!(
-                        "Branch '{branch}' not found; opening a detached sandbox at {} \
-                         (use --start to create a branch named '{branch}')",
-                        crate::core::worktree::sandbox::short_oid(&commit)
+                        "Branch '{branch}' not found; opening a detached sandbox \
+                         (use --start to create a branch named '{branch}')"
                     ));
                     sandbox_entry(&args, &branch.clone(), commit, &settings, &git, &mut output)
                 } else {
@@ -2395,8 +2400,7 @@ fn run_sandbox_visit(
         });
     }
 
-    let dirname =
-        sandbox::sandbox_dirname(spelling).unwrap_or_else(|| sandbox::derived_dirname(&commit));
+    let dirname = sandbox::dirname_for(spelling, &commit);
     let params = sandbox::SandboxParams {
         spelling: spelling.to_string(),
         commit,
@@ -2419,11 +2423,17 @@ fn run_sandbox_visit(
     let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
     let executor = HookExecutor::new(hooks_config)?.with_hook_mode(args.hooks, &args.skip_hooks);
 
-    let mut timeline = Timeline::new(
-        TimelineMode::auto(output.is_quiet()),
-        output.is_verbose(),
-        format!("Opening {spelling}"),
-    );
+    // The header names the sandbox, not the spelling that summoned it
+    // (#813): `daft go <full-sha>` opens a worktree called `baddade`, and
+    // seeding the spelling puts forty hex characters in the identity slot.
+    // A sandbox visit never commits a plan, so this seed is the whole run —
+    // there is no `PlanCommit::header` replacement to correct it later, which
+    // is also why the seed asks where the visit will *land* rather than what a
+    // fresh sandbox would be called: one commit reached by two spellings has
+    // one sandbox, under whichever name minted it first.
+    let mode = TimelineMode::auto(output.is_quiet());
+    let header = sandbox::visit_header_name(&params, git, mode.renders_header());
+    let mut timeline = Timeline::new(mode, output.is_verbose(), format!("Opening {header}"));
     timeline.set_verbose_density(hook_output_config.verbose);
 
     timeline.open_planning();

@@ -20,8 +20,9 @@ pub(crate) const BLUE: &str = "\x1b[38;5;75m";
 /// Soft violet — shared files (daft-managed, linked across worktrees).
 pub(crate) const VIOLET: &str = "\x1b[38;5;141m";
 
-/// Manila — ordinary filesystem paths (worktree directories). File folders
-/// are manila; it also sits warm, away from the cool code/network cluster.
+/// Manila — filesystem entities: ordinary paths, and worktrees, which are
+/// directories however a row spells them (#813). File folders are manila; it
+/// also sits warm, away from the cool code/network cluster.
 pub(crate) const MANILA: &str = "\x1b[38;5;180m";
 
 /// Check whether progress visuals should be suppressed entirely.

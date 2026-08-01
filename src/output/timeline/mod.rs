@@ -106,6 +106,17 @@ pub enum TimelineMode {
 }
 
 impl TimelineMode {
+    /// Whether the header seeded at [`Timeline::new`] will ever be drawn.
+    ///
+    /// Only the live region renders it — `Plain` leaves commands to their
+    /// legacy output and `Hidden` draws nothing at all. Callers that pay to
+    /// *build* a good header (resolving a path shorthand to the worktree it
+    /// names, #813) ask first, so a non-TTY run does not buy a string
+    /// nobody reads.
+    pub fn renders_header(self) -> bool {
+        matches!(self, Self::Interactive { .. })
+    }
+
     /// Predicate order: quiet → Hidden; `cfg(test)`/`DAFT_TESTING` → Hidden;
     /// non-TTY stderr or colors disabled → Plain; else Interactive.
     ///

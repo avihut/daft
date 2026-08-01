@@ -44,6 +44,15 @@ pub enum StageId {
     CreateBranch,
     /// Materialize the branch checkout (both journeys).
     CheckOut,
+    /// Materialize a *detached* checkout: the sandbox journey
+    /// (`daft go <commit-ish>`, `daft start --fork`), which pins HEAD to a
+    /// commit and never touches a branch.
+    ///
+    /// Its own id rather than a [`StepSpec::with_label`] override on
+    /// [`Self::CheckOut`], because an override is one fixed string across
+    /// every face and this row still needs its tenses — "Checking out
+    /// commit" while it runs, "Checked out commit" once it has (#813).
+    CheckOutDetached,
     /// Create the worktree directory.
     CreateWorktree,
     /// Push the new branch and set upstream (`daft start`).
@@ -273,9 +282,15 @@ impl StepSpec {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct PlanCommit {
     /// Optional resolved replacement for the header text seeded at
-    /// `Timeline::new`. The seed is built by the command layer from raw
-    /// args; a core sets this when resolution improves on it (`daft remove
-    /// .` resolves the worktree-path shorthand to its branch name).
+    /// `Timeline::new`. A core sets this when execution learns something the
+    /// seed could not: a wildcard expanding to N sandboxes, or validation
+    /// dropping targets so the count shrinks.
+    ///
+    /// Not for resolving the *spelling* of a target — the command layer does
+    /// that before it seeds (#813), because a replacement only ever lands on
+    /// the runs that commit a plan, and the runs that don't (validation
+    /// failure, early exit) are exactly where a header naming the wrong
+    /// thing does the most damage.
     pub header: Option<String>,
     /// Optional annotation appended to the timeline header (e.g. `← master`
     /// once the base branch is resolved). The header text itself is seeded

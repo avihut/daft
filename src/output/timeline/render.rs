@@ -4,8 +4,9 @@
 //! into one connected object; state lives in the leading glyph; labels speak
 //! daft's vocabulary plain (bold for section headings); subjects wear
 //! identity inks constant across states — cyan for the network, manila for
-//! paths, violet for shared files, blue for background work; durations are
-//! dim, parenthesized, and only shown at ≥ 1s. Outcome colors — green
+//! filesystem entities (paths, and worktrees, whether a row names one or
+//! locates it), violet for shared files, blue for background work; durations
+//! are dim, parenthesized, and only shown at ≥ 1s. Outcome colors — green
 //! success (never bold), bold-red failure, yellow attention — stay on the
 //! glyph for spine steps and additionally flood the name on hook-job rows
 //! (the verbose block's scheme, so both hook presentations agree). Dim is
@@ -452,10 +453,35 @@ mod tests {
     #[test]
     fn path_subject_is_manila() {
         let face = RowFace::Done { duration: None };
-        let line = final_row(&face, "Created worktree", Some("../x"), 16, PATH_ANN, true);
+        let line = final_row(
+            &face,
+            "Created worktree",
+            Some("feat/x"),
+            16,
+            PATH_ANN,
+            true,
+        );
         assert!(
-            line.contains(&format!("{MANILA}../x{}", styles::RESET)),
+            line.contains(&format!("{MANILA}feat/x{}", styles::RESET)),
             "got: {line:?}"
+        );
+    }
+
+    #[test]
+    fn worktree_subject_keeps_its_ink_on_the_plan_face() {
+        // #813: the worktree rows annotate with the worktree's *name*. An
+        // untyped annotation falls back to the pending tier's grey (see
+        // `pending_glyph_dims_but_the_label_stays_plain`), which would put
+        // the rail's most important noun in its dimmest ink — the one thing
+        // the identity-ink carve-out on this face exists to prevent.
+        let line = pending_row("Create worktree", Some("feat/x"), 16, PATH_ANN, true);
+        assert!(
+            line.contains(&format!("{MANILA}feat/x{}", styles::RESET)),
+            "the name must keep manila on the committed plan: {line:?}"
+        );
+        assert!(
+            !line.contains(&format!("{GREY}feat/x")),
+            "the name must not recede to the untyped tier: {line:?}"
         );
     }
 

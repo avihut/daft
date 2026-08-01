@@ -1,7 +1,7 @@
 use super::{
-    VERB_ALIAS_GROUPS, allows_path_completion, command_has_repo_positional, emit_formats_for,
-    get_command_for_name, get_flag_descriptions, uses_fetch_on_miss, uses_rich_completions,
-    value_taking_flags,
+    VERB_ALIAS_GROUPS, allows_path_completion, command_has_hooks_flag, command_has_repo_positional,
+    emit_formats_for, get_command_for_name, get_flag_descriptions, uses_fetch_on_miss,
+    uses_rich_completions, value_taking_flags,
 };
 use anyhow::{Context, Result};
 
@@ -347,14 +347,7 @@ fn generate_verb_alias_flag_completions() -> String {
 /// cannot interpolate, so `fish_merge_hooks_lists_every_mode` guards that copy
 /// instead.
 fn hooks_mode_completion(command_name: &str, git_subcommand: &str, is_git_command: bool) -> String {
-    if !matches!(
-        command_name,
-        "git-worktree-checkout"
-            | "daft-go"
-            | "daft-start"
-            | "git-worktree-clone"
-            | "git-worktree-flow-adopt"
-    ) {
+    if !command_has_hooks_flag(command_name) {
         return String::new();
     }
     let modes = crate::hooks::HookMode::variants().join(" ");

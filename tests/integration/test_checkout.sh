@@ -1066,6 +1066,192 @@ test_go_fetch_on_rail_expands() {
     return 0
 }
 
+# #813: `daft go <full-sha>` opens a sandbox whose directory is a 12-hex
+# prefix of the commit, but the sandbox rail's header was seeded with the
+# spelling — forty hex characters in the slot that carries identity. A
+# sandbox visit never commits a plan for the *branch* reading, so nothing
+# downstream corrects it: this seed is the whole sandbox run.
+#
+# Scoped to the sandbox rail on purpose. `daft go <sha>` first tries the
+# branch reading, and that attempt's collapsed face legitimately shows the
+# spelling — daft is trying to open a branch of that name and has not probed
+# yet. The "Branch '<sha>' not found; opening a detached sandbox" line between
+# the two is what marks the handover. It names no sandbox: which one this
+# lands in is not known until the visit resolves, and the header below it is
+# where that answer belongs.
+test_go_sandbox_header_names_dirname() {
+    local remote_repo=$(create_test_remote "test-repo-sandbox-hdr" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-sandbox-hdr/main"
+
+    local full dirname
+    full=$(git rev-parse HEAD)
+    # `sandbox::derived_dirname` — DERIVED_DIRNAME_HEX = 12.
+    dirname="${full:0:12}"
+
+    local log="$PWD/go-sandbox-hdr.log"
+    _rail_daft "$CHECKOUT_PTY_RUN" "$log" daft go "$full" --no-cd || return 1
+
+    local clean
+    clean=$(_rail_clean "$log")
+    if ! echo "$clean" | grep -q "┌  Opening $dirname"; then
+        log_error "sandbox rail header did not name the sandbox '$dirname'"
+        echo "$clean" | head -20
+        return 1
+    fi
+    if echo "$clean" | grep -q "┌  Opening $full"; then
+        log_error "sandbox rail header still carries the full spelling"
+        return 1
+    fi
+    assert_directory_exists "../$dirname" || return 1
+    return 0
+}
+
+# #813: one commit has one sandbox, whatever spelling summoned it. A visit
+# that lands on an existing sandbox must name *that* worktree, not the name a
+# fresh one would have been given — seeding the header from the spelling's
+# derived name was wrong in the one case where being wrong looks most like
+# being right: `<12 hex>` is exactly the shape of a real sandbox name, so the
+# header asserted a directory that does not exist, four lines above the line
+# naming the one that does.
+test_go_sandbox_header_names_the_sandbox_it_lands_in() {
+    local remote_repo=$(create_test_remote "test-repo-sandbox-land" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-sandbox-land/main"
+
+    local full derived
+    full=$(git rev-parse HEAD)
+    derived="${full:0:12}"
+    git tag v1.0 HEAD || return 1
+
+    # Mint the canonical sandbox for this commit under the tag's name.
+    daft go v1.0 --no-cd >/dev/null 2>&1 || return 1
+    assert_directory_exists "../v1.0" || return 1
+
+    # Now reach the same commit by a spelling that derives a different name.
+    local log="$PWD/go-sandbox-land.log"
+    _rail_daft "$CHECKOUT_PTY_RUN" "$log" daft go "$full" --no-cd || return 1
+
+    # Read the planning face, not a `┌` frame: a visit that *navigates*
+    # commits no plan, so this rail never draws one — which is the same reason
+    # the seed has to be right in the first place. Scoped past the handover
+    # line for two reasons: the branch attempt above it legitimately shows the
+    # spelling, and the derived name is a prefix of that spelling, so an
+    # unscoped negative grep matches the branch rail and always "fails".
+    local sandbox_rail
+    sandbox_rail=$(_rail_clean "$log" | sed -n '/opening a detached sandbox/,$p')
+    if ! echo "$sandbox_rail" | grep -q "Opening v1.0"; then
+        log_error "header must name the sandbox the visit lands in ('v1.0')"
+        echo "$sandbox_rail" | head -20
+        return 1
+    fi
+    if echo "$sandbox_rail" | grep -q "Opening $derived"; then
+        log_error "header named '$derived', a directory the visit never creates"
+        echo "$sandbox_rail" | head -20
+        return 1
+    fi
+    if [[ -d "../$derived" ]]; then
+        log_error "the visit minted a second sandbox for one commit"
+        return 1
+    fi
+    return 0
+}
+
+# #813: the branch journey's `Created worktree` row carried a path relative
+# to the cwd, so the row's label promised a worktree and its subject was a
+# location — in the path colour, which said so twice. The subject is the
+# worktree: the branch it is for.
+test_go_row_names_the_worktree_not_its_path() {
+    local remote_repo=$(create_test_remote "test-repo-row-name" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-row-name/main"
+
+    local log="$PWD/go-row-name.log"
+    _rail_daft "$CHECKOUT_PTY_RUN" "$log" daft go develop || return 1
+
+    local annotation
+    annotation=$(_rail_clean "$log" |
+        grep -o 'Created worktree  *[^ ]*' | head -1 |
+        sed 's/Created worktree  *//')
+    if [[ "$annotation" != "develop" ]]; then
+        log_error "create row annotated '$annotation', expected 'develop'"
+        _rail_clean "$log" | head -20
+        return 1
+    fi
+    return 0
+}
+
+# #813: same row, the `daft start` journey — a separate plan builder, so a
+# separate render site.
+test_start_row_names_the_worktree_not_its_path() {
+    local remote_repo=$(create_test_remote "test-repo-row-start" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-row-start/main"
+    git config daft.checkout.push false
+
+    # Outside the repo: `daft start` carries untracked files into the new
+    # worktree, and a log written here would leave with them.
+    local log="$TEMP_BASE_DIR/start-row-name.log"
+    _rail_daft "$CHECKOUT_PTY_RUN" "$log" daft start feature/row-name || return 1
+
+    local annotation
+    annotation=$(_rail_clean "$log" |
+        grep -o 'Created worktree  *[^ ]*' | head -1 |
+        sed 's/Created worktree  *//')
+    if [[ "$annotation" != "feature/row-name" ]]; then
+        log_error "create row annotated '$annotation', expected 'feature/row-name'"
+        _rail_clean "$log" | head -20
+        return 1
+    fi
+    return 0
+}
+
+# #813: a sandbox pins HEAD to a commit and never touches a branch, but its
+# rail reused the branch journey's stage, so the row read "Checked out
+# branch" beside an annotation naming a commit — the row described something
+# that does not exist in the run being watched. Its `Created worktree` row
+# has the same job as the branch journey's: name the worktree, which for a
+# sandbox is its directory name.
+test_go_sandbox_rows_name_the_sandbox() {
+    local remote_repo=$(create_test_remote "test-repo-sandbox-noun" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-sandbox-noun/main"
+
+    local full dirname
+    full=$(git rev-parse HEAD)
+    dirname="${full:0:12}"
+
+    local log="$PWD/go-sandbox-noun.log"
+    _rail_daft "$CHECKOUT_PTY_RUN" "$log" daft go "$full" --no-cd || return 1
+
+    # Scoped past the handover line: the branch attempt above it is a real
+    # branch checkout and keeps the branch noun.
+    local sandbox_rail
+    sandbox_rail=$(_rail_clean "$log" | sed -n '/opening a detached sandbox/,$p')
+    if ! echo "$sandbox_rail" | grep -q "Checked out commit"; then
+        log_error "sandbox rail did not name a commit"
+        echo "$sandbox_rail" | head -20
+        return 1
+    fi
+    if echo "$sandbox_rail" | grep -q "Checked out branch"; then
+        log_error "sandbox rail still claims it checked out a branch"
+        echo "$sandbox_rail" | head -20
+        return 1
+    fi
+
+    local annotation
+    annotation=$(echo "$sandbox_rail" |
+        grep -o 'Created worktree  *[^ ]*' | head -1 |
+        sed 's/Created worktree  *//')
+    if [[ "$annotation" != "$dirname" ]]; then
+        log_error "create row annotated '$annotation', expected '$dirname'"
+        echo "$sandbox_rail" | head -20
+        return 1
+    fi
+    assert_directory_exists "../$dirname" || return 1
+    return 0
+}
+
 # #812: the `-x` sequence is planned onto the creation rail and runs inside
 # the region's lifetime. None of that is reachable from the YAML suite —
 # `commit_plan` early-returns off Interactive and the runner captures stderr,
@@ -1238,6 +1424,13 @@ run_checkout_tests() {
     # Rail behavior under a PTY (#782)
     run_test "go_fetch_hop_no_rail_receipt" "test_go_fetch_hop_no_rail_receipt"
     run_test "go_fetch_on_rail_expands" "test_go_fetch_on_rail_expands"
+
+    # Rail header names the sandbox, not the spelling (#813)
+    run_test "go_sandbox_header_names_dirname" "test_go_sandbox_header_names_dirname"
+    run_test "go_sandbox_header_names_the_sandbox_it_lands_in" "test_go_sandbox_header_names_the_sandbox_it_lands_in"
+    run_test "go_sandbox_rows_name_the_sandbox" "test_go_sandbox_rows_name_the_sandbox"
+    run_test "go_row_names_the_worktree_not_its_path" "test_go_row_names_the_worktree_not_its_path"
+    run_test "start_row_names_the_worktree_not_its_path" "test_start_row_names_the_worktree_not_its_path"
 
     # `-x` rows on the creation rail under a PTY (#812)
     run_test "start_exec_rows_on_rail" "test_start_exec_rows_on_rail"

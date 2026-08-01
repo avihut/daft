@@ -67,6 +67,15 @@ pub fn labels_for(id: StageId) -> StepLabels {
             done: "Checked out branch",
             skipped: "not checked out",
         },
+        // A sandbox pins HEAD to a commit; there is no branch to name, and
+        // saying "branch" here made the row describe something that does not
+        // exist in the run the user is watching (#813).
+        StageId::CheckOutDetached => StepLabels {
+            pending: "Check out commit",
+            active: "Checking out commit",
+            done: "Checked out commit",
+            skipped: "not checked out",
+        },
         StageId::CreateWorktree | StageId::CreateBaseWorktree => StepLabels {
             pending: "Create worktree",
             active: "Creating worktree",
@@ -202,7 +211,10 @@ pub enum SubjectInk {
     /// A remote name or ref (`origin`, `← origin/master`, `→ origin/x`) —
     /// ANSI cyan, the network.
     Remote,
-    /// An ordinary filesystem path (worktree directory) — manila.
+    /// A filesystem entity — manila. Ordinary paths (`copy:` entries, the
+    /// worktree directory `daft push` resolves), and worktrees themselves:
+    /// a worktree *is* a directory, so it wears manila whether the row
+    /// names it or locates it (#813).
     Path,
     /// A shared file — violet, daft-managed and linked across worktrees.
     Shared,
@@ -226,10 +238,16 @@ pub fn subject_inks_for(id: StageId) -> SubjectInks {
         | StageId::Tracking
         | StageId::CreateBranch
         | StageId::CheckOut
+        | StageId::CheckOutDetached
         | StageId::Push
         | StageId::DeleteRemote
         | StageId::CloneBare => (SubjectInk::Plain, SubjectInk::Remote),
-        // Path subjects: worktree directories are manila.
+        // Worktree subjects: manila. A worktree is a filesystem entity, and
+        // the ink types the entity, not the spelling — so these rows stay
+        // manila even though their annotation now names the worktree (its
+        // branch, or a sandbox's directory name) rather than locating it
+        // (#813). `daft push`'s row still spells a directory, because what
+        // it records is *where* the pre-push hook will run.
         StageId::CreateWorktree
         | StageId::CreateBaseWorktree
         | StageId::RemoveWorktree
@@ -298,8 +316,17 @@ mod tests {
             subject_inks_for(StageId::Push).annotation,
             SubjectInk::Remote
         );
+        // #813: these rows annotate with the worktree's *name*, not its
+        // path — but a worktree is a filesystem entity either way, so the
+        // manila ink types it the same. Plain would drop them to the
+        // pending tier's grey (`render::row_body`'s `ann_fallback`), which
+        // is the one thing the identity-ink carve-out exists to prevent.
         assert_eq!(
             subject_inks_for(StageId::CreateWorktree).annotation,
+            SubjectInk::Path
+        );
+        assert_eq!(
+            subject_inks_for(StageId::RemoveWorktree).annotation,
             SubjectInk::Path
         );
         assert_eq!(

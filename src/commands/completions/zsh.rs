@@ -1,9 +1,46 @@
 use super::{
-    allows_path_completion, command_has_repo_flag, command_has_repo_positional,
-    command_has_worktree_from_flag, emit_formats_for, extract_flags, get_command_for_name,
-    repo_flag_capture, uses_fetch_on_miss, uses_rich_completions, value_taking_flags,
+    allows_path_completion, command_has_hooks_flag, command_has_repo_flag,
+    command_has_repo_positional, command_has_worktree_from_flag, emit_formats_for, extract_flags,
+    get_command_for_name, repo_flag_capture, uses_fetch_on_miss, uses_rich_completions,
+    value_taking_flags,
 };
 use anyhow::{Context, Result};
+
+/// The `--hooks <MODE>` value block, shared by the plain and rich generators.
+///
+/// `prev_expr` is how the caller's script spells the word before the cursor —
+/// the two generators differ there (`$prev_word` vs an inline `words` index)
+/// and in nothing else, so one string serves both.
+///
+/// Unlike bash, zsh shows a gloss beside each candidate, so this reads both
+/// [`HookMode::variants`](crate::hooks::HookMode::variants) and
+/// [`HookMode::describe`](crate::hooks::HookMode::describe). The glosses are
+/// prose and contain apostrophes (`"Honor each job's own …"`), which would
+/// close the single-quoted `_describe` element early and emit a script that
+/// parses as something else entirely — so each is escaped `'` → `'\''`.
+/// A substring assertion cannot see that breakage; `zsh -n` over the emitted
+/// script can, which is what `test_completions.sh` runs.
+fn hooks_mode_block(prev_expr: &str) -> String {
+    let items: String = crate::hooks::HookMode::variants()
+        .iter()
+        .map(|mode| {
+            let gloss = crate::hooks::HookMode::describe(mode).replace('\'', r"'\''");
+            format!("            '{mode}:{gloss}'\n")
+        })
+        .collect();
+    format!(
+        r#"    # Hook-mode value completion for --hooks
+    if [[ "{prev_expr}" == "--hooks" ]]; then
+        local -a hook_modes
+        hook_modes=(
+{items}        )
+        _describe 'hook mode' hook_modes
+        return
+    fi
+
+"#
+    )
+}
 
 /// Generate zsh completion string
 pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<String> {
@@ -40,11 +77,18 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
             | "daft-start"
     );
 
+    // Value completion for --hooks flag (the run's hook execution mode)
+    let has_hooks = command_has_hooks_flag(command_name);
+
     // Value completion for --repo flag (catalog repo names)
     let has_repo_flag = command_has_repo_flag(command_name);
 
-    // Emit the prev_word variable once if any prev-based completion is needed
-    if has_branch_completions || has_layout || has_skip_hooks || has_repo_flag {
+    // Emit the prev_word variable once if any prev-based completion is needed.
+    // `has_hooks` earns its own term rather than riding on `has_skip_hooks`:
+    // the two travel together today, but a command that gains `--hooks` alone
+    // would emit a block reading an undeclared variable — which in zsh is
+    // empty, so the block silently never fires.
+    if has_branch_completions || has_layout || has_skip_hooks || has_hooks || has_repo_flag {
         output.push_str("    local prev_word=\"${words[$((CURRENT-1))]}\"\n");
     }
 
@@ -96,6 +140,10 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("        return\n");
         output.push_str("    fi\n");
         output.push('\n');
+    }
+
+    if has_hooks {
+        output.push_str(&hooks_mode_block("$prev_word"));
     }
 
     // Value completion for --columns flag
@@ -341,6 +389,14 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
         ""
     };
 
+    // …and its `--hooks` mode, from the same shared block the plain generator
+    // emits. Both sit before the `-*` branch: a flag value is not a flag.
+    let hooks_pre = if command_has_hooks_flag(command_name) {
+        hooks_mode_block("${words[$((CURRENT-1))]}")
+    } else {
+        String::new()
+    };
+
     // Value completion for --repo flag (catalog repo names)
     let repo_flag_pre = if command_has_repo_flag(command_name) {
         "    if [[ \"${words[$((CURRENT-1))]}\" == \"--repo\" ]]; then\n        local -a repos\n        repos=( ${(f)\"$(daft __complete repo-name \"$curword\" 2>/dev/null | cut -f1)\"} )\n        (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- \"${repos[@]}\"\n        return\n    fi\n\n"
@@ -415,7 +471,7 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
 __{func_name}_impl() {{
     local curword="${{words[$CURRENT]}}"
 
-{repo_flag_pre}{from_flag_pre}{skip_hooks_pre}    if [[ "$curword" == -* ]]; then
+{repo_flag_pre}{from_flag_pre}{skip_hooks_pre}{hooks_pre}    if [[ "$curword" == -* ]]; then
         local -a flags
         flags=(
 {flags_block}        )
@@ -1152,6 +1208,14 @@ _daft() {
             local -a branches
             branches=(${(f)"$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null)"})
             compadd -a branches
+            return
+        fi
+        # --hooks mode values. Spelled out, not read from HookMode::variants():
+        # this const does not interpolate. `hooks_flag_offers_every_mode_in_every_shell`
+        # is what keeps the literal honest. Bare `compadd`, not the generators'
+        # `_describe` — a gloss here would have to carry its own escaping.
+        if [[ "$prev_word" == "--hooks" ]]; then
+            compadd auto foreground background off
             return
         fi
         # --cleanup values
