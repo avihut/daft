@@ -927,9 +927,9 @@ fn remove_worktree(
         // failure — it means the fast path did not apply, and the ordinary
         // removal below runs unchanged, including git's refusal of a dirty
         // worktree.
-        let deferred = crate::core::worktree::trash::dispose(ctx.git, &ctx.git_dir, wt_path, force)
-            == crate::core::worktree::trash::Disposition::Deferred;
-        if !deferred && let Err(e) = ctx.git.worktree_remove(wt_path, force) {
+        let handled = crate::core::worktree::trash::dispose(ctx.git, &ctx.git_dir, wt_path, force)
+            != crate::core::worktree::trash::Disposition::Declined;
+        if !handled && let Err(e) = ctx.git.worktree_remove(wt_path, force) {
             sink.on_warning(&format!(
                 "Failed to remove worktree {}: {e}. Skipping deletion of branch {branch_name}.",
                 wt_path.display()

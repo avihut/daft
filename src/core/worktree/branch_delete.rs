@@ -2365,7 +2365,9 @@ fn delete_single_branch(
                     // claim more than it did.
                     let annotation = match disposition {
                         Disposition::Deferred => Some("reclaiming space in background".to_string()),
-                        Disposition::Declined => None,
+                        // Reclaimed and Declined both mean the space is
+                        // already back by the time this row settles.
+                        Disposition::Reclaimed | Disposition::Declined => None,
                     };
                     sink.on_stage(
                         &stage_key(StageId::RemoveWorktree),
@@ -2571,8 +2573,9 @@ fn remove_worktree_completing_orphans(
     // Declining is not a failure — it means the fast path did not apply, and
     // the ordinary removal below runs exactly as it always has, including
     // git's own refusal of a dirty worktree.
-    if trash::dispose(git, git_common_dir, wt_path, force) == Disposition::Deferred {
-        return Ok(Disposition::Deferred);
+    let disposition = trash::dispose(git, git_common_dir, wt_path, force);
+    if disposition != Disposition::Declined {
+        return Ok(disposition);
     }
 
     let orig = match git.worktree_remove(wt_path, force) {
@@ -3247,7 +3250,14 @@ mod tests {
         )
         .expect("a clean worktree must be removable");
 
-        assert_eq!(disposition, Disposition::Deferred, "expected the fast path");
+        // `Reclaimed`, not `Deferred`: tests never spawn a reaper, so the
+        // rename still happens but the delete completes inline. The point is
+        // that it is not `Declined` — the fast path applied.
+        assert_eq!(
+            disposition,
+            Disposition::Reclaimed,
+            "expected the fast path to apply"
+        );
         assert!(!wt.exists(), "the path must be free");
         let listed = git.worktree_list_porcelain().unwrap();
         assert!(

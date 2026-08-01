@@ -42,12 +42,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// trash directory there as a worktree.
 const TRASH_SUBDIR: &str = "trash";
 
-/// Whether [`dispose`] deferred the delete or the caller must do it itself.
+/// What [`dispose`] actually did. The distinction between the first two is
+/// user-facing: only `Deferred` may claim the space is still coming back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Disposition {
-    /// Renamed aside and handed to a reaper. The path is free; the disk space
-    /// is not yet back.
+    /// Renamed aside and handed to a detached reaper. The path is free; the
+    /// disk space is not yet back.
     Deferred,
+    /// Renamed aside and reclaimed before returning, because background work
+    /// was suppressed. Indistinguishable from `Deferred` to the caller's
+    /// control flow, but *not* to the user: the space is already back, so
+    /// saying "reclaiming in background" here would be a lie — and one that
+    /// hides the cost, since the walk did happen on the critical path.
+    Reclaimed,
     /// The fast path did not apply. The caller must remove the worktree the
     /// ordinary way — this is not an error, and carries no diagnosis with it.
     Declined,
@@ -143,8 +150,7 @@ pub fn dispose(
         return Disposition::Declined;
     }
 
-    schedule_reap(&trash);
-    Disposition::Deferred
+    schedule_reap(&trash)
 }
 
 /// Reap anything left in this repo's trash: leftovers from a reaper that died,
@@ -278,7 +284,7 @@ fn still_registered(git: &GitCommand, canonical: &Path) -> bool {
 /// or leave unreaped directories that change `read_dir`-based assertions.
 /// [`crate::should_skip_background_tasks`] is the same gate the other
 /// background tasks use.
-fn schedule_reap(trash: &Path) {
+fn schedule_reap(trash: &Path) -> Disposition {
     // `cfg!(test)` is not redundant with the env gates: under `cargo test`
     // `current_exe()` is the *test* binary, so a spawn would fork the test
     // harness with `__reap-trash` as a filter argument rather than starting a
@@ -288,11 +294,13 @@ fn schedule_reap(trash: &Path) {
         || std::env::var_os("DAFT_NO_TRASH_REAP").is_some()
     {
         reap_now(trash);
-        return;
+        return Disposition::Reclaimed;
     }
     if spawn_reaper(trash).is_err() {
         reap_now(trash);
+        return Disposition::Reclaimed;
     }
+    Disposition::Deferred
 }
 
 #[cfg(unix)]
