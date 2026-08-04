@@ -56,6 +56,27 @@ pub trait LiveScreen {
     /// Advance animations. Called at the driver's tick rate with the elapsed
     /// time since the render loop started.
     fn on_tick(&mut self, render_start_elapsed: Duration);
+
+    /// What `Esc` means on this screen (#826). Defaults to [`EscOutcome::Ignored`],
+    /// so a screen that has not thought about it cannot acquire the binding by
+    /// accident — which is what keeps `Esc` away from `daft sync`'s mid-flight
+    /// rebases and pushes.
+    fn on_escape(&mut self) -> EscOutcome {
+        EscOutcome::Ignored
+    }
+}
+
+/// A screen's answer to `Esc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EscOutcome {
+    /// `Esc` does nothing here. The default.
+    Ignored,
+    /// The screen dropped its decorative work and wants the loop to continue
+    /// so the essential cells can still land. The driver flips the abandon
+    /// signal so the producer stops too.
+    Abandoned,
+    /// End the run now, on the same path as Ctrl-C.
+    ExitNow,
 }
 
 /// Drives the inline TUI render loop, consuming collector events and updating
@@ -70,6 +91,10 @@ pub struct TuiRenderer<S: LiveScreen> {
     /// Ctrl-C key event observed during the render loop, the renderer flips
     /// the signal and exits cleanly after one final draw.
     pub(crate) cancel_signal: Option<Arc<AtomicBool>>,
+    /// Optional decorative-cancel flag, flipped when the screen answers
+    /// [`EscOutcome::Abandoned`]. Distinct from `cancel_signal`: it stops the
+    /// producer's slow decoration (the size walk) and leaves the rest running.
+    pub(crate) abandon_signal: Option<Arc<AtomicBool>>,
 }
 
 impl<S: LiveScreen> TuiRenderer<S> {
@@ -79,6 +104,7 @@ impl<S: LiveScreen> TuiRenderer<S> {
             receiver,
             extra_rows: 0,
             cancel_signal: None,
+            abandon_signal: None,
         }
     }
 
@@ -94,6 +120,14 @@ impl<S: LiveScreen> TuiRenderer<S> {
     /// producer observes it between cluster calls and exits cooperatively.
     pub fn with_cancel_signal(mut self, cancel: Arc<AtomicBool>) -> Self {
         self.cancel_signal = Some(cancel);
+        self
+    }
+
+    /// Attach the producer's decorative-cancel flag. Flipped when the screen
+    /// answers [`EscOutcome::Abandoned`], so the slow decoration stops while
+    /// the essential work the run is still waiting on carries on.
+    pub fn with_abandon_signal(mut self, abandon: Arc<AtomicBool>) -> Self {
+        self.abandon_signal = Some(abandon);
         self
     }
 
@@ -175,14 +209,26 @@ impl<S: LiveScreen> TuiRenderer<S> {
             // final draw.
             if event::poll(Duration::from_millis(0)).unwrap_or(false)
                 && let Ok(Event::Key(key)) = event::read()
-                && key.code == KeyCode::Char('c')
-                && key.modifiers.contains(KeyModifiers::CONTROL)
             {
-                if let Some(sig) = &self.cancel_signal {
+                let ctrl_c =
+                    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+                // Esc asks the screen what it means here; Ctrl-C never does.
+                let esc = match key.code {
+                    KeyCode::Esc => self.state.on_escape(),
+                    _ => EscOutcome::Ignored,
+                };
+                if esc == EscOutcome::Abandoned
+                    && let Some(sig) = &self.abandon_signal
+                {
                     sig.store(true, Ordering::Relaxed);
                 }
-                self.state.mark_cancelled();
-                final_draw_and_return!();
+                if ctrl_c || esc == EscOutcome::ExitNow {
+                    if let Some(sig) = &self.cancel_signal {
+                        sig.store(true, Ordering::Relaxed);
+                    }
+                    self.state.mark_cancelled();
+                    final_draw_and_return!();
+                }
             }
 
             // Tick spinner animation.
@@ -207,8 +253,22 @@ impl TuiState {
         }
     }
 
+    /// One row when the verbose footer is on, or when `Esc` has abandoned
+    /// something and the footer is carrying the acknowledgement. Must agree
+    /// with `render_footer`'s own gate or the line is drawn into a zero-height
+    /// chunk and silently vanishes.
+    ///
+    /// This can flip 0 → 1 mid-run, after `viewport_height` has already sized
+    /// the inline viewport. That is safe rather than lucky: the table reserves
+    /// two rows for "header + cursor parking", so the footer takes the parking
+    /// row and the cursor parks one lower — no data row is clipped, and
+    /// nothing has to be reserved up front for a footer that may never appear.
     fn footer_height(&self) -> u16 {
-        if self.show_hook_sub_rows { 1 } else { 0 }
+        if self.show_hook_sub_rows || self.live.has_abandoned() {
+            1
+        } else {
+            0
+        }
     }
 
     /// Size summary footer: 2 rows (blank separator + total) when the Size
@@ -364,6 +424,23 @@ impl LiveScreen for TuiState {
         self.render_start_elapsed = render_start_elapsed;
         self.tick();
     }
+
+    /// Two-stage: the first `Esc` gives up on the decorative cells and keeps
+    /// waiting for the essential ones; a second exits, because the essential
+    /// work can itself be the slow part (a `git status` on a fat worktree is
+    /// not interruptible mid-command) and the user needs a way out that isn't
+    /// Ctrl-C.
+    fn on_escape(&mut self) -> EscOutcome {
+        if !self.live.esc_abandons {
+            return EscOutcome::Ignored;
+        }
+        if self.live.has_abandoned() {
+            return EscOutcome::ExitNow;
+        }
+        self.live
+            .abandon(crate::core::worktree::info_field::FieldSet::DECORATIVE);
+        EscOutcome::Abandoned
+    }
 }
 
 /// RAII guard that enables crossterm raw mode now and restores cooked mode
@@ -500,6 +577,56 @@ mod tests {
         assert!(state.done);
         assert!(LiveScreen::is_complete(&state));
         assert!(LiveScreen::is_cancelled(&state));
+    }
+
+    /// Same reason as above — a crossterm `Event` can't easily be synthesized
+    /// here, so this exercises the trait method the Esc arm calls.
+    #[test]
+    fn escape_is_ignored_unless_the_screen_opted_in() {
+        // The default that keeps Esc away from sync/prune/clone: they build
+        // their `TuiState` internally and never set the flag.
+        let mut state = escape_test_state();
+        assert_eq!(LiveScreen::on_escape(&mut state), EscOutcome::Ignored);
+        // ...and it stays inert, however many times it is pressed.
+        assert_eq!(LiveScreen::on_escape(&mut state), EscOutcome::Ignored);
+        assert!(!state.live.has_abandoned());
+        assert!(!state.live.cancelled);
+    }
+
+    #[test]
+    fn escape_abandons_first_then_exits() {
+        let mut state = escape_test_state();
+        state.live.esc_abandons = true;
+
+        // First press: drop the decorations, keep the run alive so the
+        // essential cells can still land.
+        assert_eq!(LiveScreen::on_escape(&mut state), EscOutcome::Abandoned);
+        assert!(state.live.has_abandoned());
+        assert!(!LiveScreen::is_complete(&state));
+        assert!(!LiveScreen::is_cancelled(&state));
+
+        // Second press: the way out when the essential work is itself slow.
+        assert_eq!(LiveScreen::on_escape(&mut state), EscOutcome::ExitNow);
+    }
+
+    fn escape_test_state() -> TuiState {
+        let phases = Vec::<crate::core::worktree::sync_dag::OperationPhase>::new();
+        let infos = vec![crate::core::worktree::list::WorktreeInfo::empty("a")];
+        TuiState::new(
+            phases,
+            infos,
+            std::path::PathBuf::from("/tmp"),
+            std::path::PathBuf::from("/tmp"),
+            crate::core::worktree::list::Stat::Summary,
+            0,
+            None,
+            false,
+            None,
+            None,
+            true,
+            false,
+            crate::core::worktree::info_field::FieldSet::EMPTY,
+        )
     }
 
     #[test]

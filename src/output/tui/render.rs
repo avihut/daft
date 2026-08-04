@@ -88,10 +88,14 @@ fn render_sort_summary_spans(spec: &SortSpec) -> Vec<Span<'static>> {
     spans
 }
 
-/// Render a verbose-mode footer below the table showing inflight cell
-/// count and elapsed time. No-op when not in verbose mode.
+/// Render the footer below the table.
+///
+/// Two reasons it appears: verbose mode (inflight cell count + elapsed time),
+/// and an `Esc` that abandoned the decorative cells — a keypress with no
+/// visible answer reads as a broken key, and the essential cells it is still
+/// waiting on can take a while. No-op when neither applies.
 pub fn render_footer(state: &TuiState, frame: &mut Frame, area: Rect) {
-    if !state.show_hook_sub_rows {
+    if !state.show_hook_sub_rows && !state.live.has_abandoned() {
         return;
     }
     let inflight: usize = state
@@ -100,8 +104,24 @@ pub fn render_footer(state: &TuiState, frame: &mut Frame, area: Rect) {
         .iter()
         .filter(|fs| !fs.contains(crate::core::worktree::info_field::FieldSet::ALL))
         .count();
-    let elapsed_secs = state.render_start_elapsed.as_secs_f32();
-    let mut text = format!(" inflight: {inflight} \u{00B7} elapsed: {elapsed_secs:.1}s");
+    let mut text = if state.show_hook_sub_rows {
+        let elapsed_secs = state.render_start_elapsed.as_secs_f32();
+        format!(" inflight: {inflight} \u{00B7} elapsed: {elapsed_secs:.1}s")
+    } else {
+        String::new()
+    };
+    if state.live.has_abandoned() && !state.live.cancelled {
+        // Name what is still owed, so the wait reads as progress rather than a
+        // hang, and name the way out — `Esc` is the key they just pressed, so
+        // "again" is the whole instruction.
+        let waiting = if inflight == 1 {
+            " waiting for 1 worktree".to_string()
+        } else {
+            format!(" waiting for {inflight} worktrees")
+        };
+        text.push_str(&waiting);
+        text.push_str(" \u{00B7} esc again to exit");
+    }
     if state.live.cancelled {
         text.push_str(" \u{00B7} cancelled");
     }
@@ -1768,6 +1788,99 @@ mod tests {
         );
     }
 
+    /// What `Esc` actually looks like (#826). The closures are bound to a real
+    /// `LiveTable`, exactly as `render_table` wires them — hand-modelling them
+    /// hides the ordering that makes this work, namely that a cell holding a
+    /// value never reaches the `is_cell_unloaded` branch at all.
+    #[test]
+    fn abandoned_size_column_settles_the_cached_figure_and_marks_only_the_bare_cell() {
+        use crate::core::worktree::info_field::FieldSet;
+
+        let mut cached_info = WorktreeInfo::empty("cached");
+        cached_info.size_bytes = Some(4096);
+        let mut state = make_test_state(0);
+        state.live = crate::output::tui::LiveTable::new(
+            vec![cached_info, WorktreeInfo::empty("bare")],
+            state.live.cfg,
+        );
+        state.live.abandon(FieldSet::DECORATIVE);
+
+        let render_size_cell = |state: &TuiState, row_idx: usize| -> String {
+            let wt = &state.live.rows[row_idx];
+            let ctx = ColumnContext {
+                project_root: &state.live.cfg.project_root,
+                cwd: &state.live.cfg.cwd,
+                now: chrono::Utc::now().timestamp(),
+                stat: Stat::Summary,
+                forge_prs: None,
+                colors: true,
+            };
+            let vals = format::compute_column_values(&wt.info, &ctx);
+            let backend = TestBackend::new(10, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    let cell = render_cell(
+                        &Column::Size,
+                        wt,
+                        &vals,
+                        0,
+                        Stat::Summary,
+                        10,
+                        Default::default(),
+                        |fs| state.live.is_cell_loading(row_idx, fs),
+                        |fs| state.live.is_cell_unloaded(row_idx, fs),
+                        |fs| state.live.is_cell_stale(row_idx, fs),
+                        |fs| state.live.is_cell_stale_settled(fs),
+                        false, // NOT the final frame — settling must come from
+                               // the abandon, not from the run ending.
+                    );
+                    let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
+                    frame.render_widget(table, frame.area());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..10)
+                .map(|x| buffer[(x, 0)].symbol().to_string())
+                .collect()
+        };
+
+        let cached_row = state
+            .live
+            .rows
+            .iter()
+            .position(|r| r.info.name == "cached")
+            .unwrap();
+        let bare_row = state
+            .live
+            .rows
+            .iter()
+            .position(|r| r.info.name == "bare")
+            .unwrap();
+
+        // The cached figure survives Esc — that is the whole point.
+        let cached = render_size_cell(&state, cached_row);
+        assert!(
+            cached.contains("4.0K") || cached.contains("4K"),
+            "abandoning must keep the cached figure, not blank it; got {cached:?}"
+        );
+        assert!(
+            !cached.contains('\u{2014}'),
+            "a row with a cached size must never fall through to the em-dash; got {cached:?}"
+        );
+        assert!(
+            !cached.contains('\u{25AC}'),
+            "an abandoned cell must stop shimmering; got {cached:?}"
+        );
+
+        // A row that never had a cached figure has nothing to settle.
+        let bare = render_size_cell(&state, bare_row);
+        assert!(
+            bare.contains('\u{2014}'),
+            "a bare cell should render the didn't-load marker; got {bare:?}"
+        );
+    }
+
     #[test]
     fn render_cell_size_stale_breathes_on_the_skeleton_ramp() {
         // A stale (persisted, not-yet-refreshed) Size cell renders its value —
@@ -2007,6 +2120,59 @@ mod tests {
             .collect();
         assert!(row.contains("cancelled"), "row was: {row:?}");
         assert!(row.contains("inflight:"), "row was: {row:?}");
+    }
+
+    /// Silence after a keypress reads as a broken key, and the essential cells
+    /// Esc is still waiting on can take a while — so the acknowledgement must
+    /// appear even in non-verbose mode, where there is otherwise no footer.
+    #[test]
+    fn render_footer_acknowledges_the_abandon_even_when_not_verbose() {
+        let mut state = make_test_state(0);
+        assert!(!state.show_hook_sub_rows, "precondition: not verbose");
+        state
+            .live
+            .abandon(crate::core::worktree::info_field::FieldSet::DECORATIVE);
+
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_footer(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(row.contains("waiting for"), "row was: {row:?}");
+        assert!(row.contains("esc again to exit"), "row was: {row:?}");
+        // The verbose-only diagnostics stay verbose-only.
+        assert!(!row.contains("inflight:"), "row was: {row:?}");
+    }
+
+    /// Once the run ends there is nothing left to wait for, and nothing an
+    /// extra Esc could do — offering it would be a lie on the final frame.
+    #[test]
+    fn render_footer_drops_the_abandon_line_once_cancelled() {
+        let mut state = make_test_state(0);
+        state
+            .live
+            .abandon(crate::core::worktree::info_field::FieldSet::DECORATIVE);
+        state.live.mark_cancelled();
+
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_footer(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(!row.contains("esc again"), "row was: {row:?}");
+        assert!(row.contains("cancelled"), "row was: {row:?}");
     }
 
     #[test]

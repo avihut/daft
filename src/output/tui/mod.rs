@@ -18,7 +18,7 @@ pub use catalog_table::{
     CatalogEvent, CatalogRepoCells, CatalogTable, CatalogWorktreeCells, tree_glyph,
 };
 pub use columns::Column;
-pub use driver::{LiveScreen, RawModeGuard, TuiRenderer, enable_raw_mode_guard};
+pub use driver::{EscOutcome, LiveScreen, RawModeGuard, TuiRenderer, enable_raw_mode_guard};
 pub use live_table::{LiveTable, LiveTableConfig};
 pub use operation_table::{CompletedTable, OperationTable, TableConfig};
 pub use presenter::TuiPresenter;

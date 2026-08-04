@@ -99,6 +99,19 @@ pub struct LiveTable {
     /// loading shimmer. `mark_cancelled` also sets `collection_complete = true`
     /// so `is_cell_loading` naturally returns false post-cancel.
     pub cancelled: bool,
+    /// Fields the user abandoned with `Esc` (#826) — table-wide, because a
+    /// keypress drops a whole column class, never one row. Unlike `cancelled`
+    /// this does **not** set `collection_complete`: the run keeps going and
+    /// keeps drawing until the essential cells land. Its effect is confined to
+    /// the three cell predicates below — the abandoned column stops
+    /// shimmering, settles any cached figure it holds, and falls back to the
+    /// "didn't load" marker only where there was no cached value to show.
+    pub abandoned: FieldSet,
+    /// Whether `Esc` means anything on this screen. False by default, which is
+    /// what keeps `daft sync` / `prune` / `clone` safe by construction — they
+    /// build their `TuiState` internally, and a default of true would bind a
+    /// twitchy key to aborting a mid-flight rebase. The live list opts in.
+    pub esc_abandons: bool,
     pub source_log: PatchSourceLog,
     /// Per-row bitmask of "patches received".
     pub received_patches: Vec<FieldSet>,
@@ -156,6 +169,8 @@ impl LiveTable {
             pending_resort: true,
             collection_complete: false,
             cancelled: false,
+            abandoned: FieldSet::EMPTY,
+            esc_abandons: false,
             source_log: PatchSourceLog::default(),
             received_patches,
             stale_fields,
@@ -253,6 +268,20 @@ impl LiveTable {
         self.pending_resort = true;
     }
 
+    /// Give up on `fields` without ending the run. Deliberately touches
+    /// neither `collection_complete` (the renderer must keep drawing until the
+    /// essential cells land) nor `pending_resort` (abandoning changes how a
+    /// cell is drawn, never its value, so the ordering still holds).
+    pub fn abandon(&mut self, fields: FieldSet) {
+        self.abandoned |= fields;
+    }
+
+    /// Whether anything has been abandoned yet — the first `Esc` abandons,
+    /// a second one exits.
+    pub fn has_abandoned(&self) -> bool {
+        !self.abandoned.is_empty()
+    }
+
     pub fn tick(&mut self) {
         if self.pending_resort {
             self.resort_and_repartition();
@@ -337,6 +366,13 @@ impl LiveTable {
     /// the collectors — and is cleared by its own conclusion event or by
     /// cancel.
     pub fn is_cell_loading(&self, row_idx: usize, field: FieldSet) -> bool {
+        // An abandoned field is no longer in flight, whatever the collectors
+        // are still doing — the shimmer would promise a value that is not
+        // coming. Checked ahead of the out-of-band PR skeleton, which has its
+        // own reason to be true and would otherwise outlive the abandon.
+        if self.abandoned.intersects(field) {
+            return false;
+        }
         if field.contains(FieldSet::FORGE_REF) && self.cfg.forge_prs_loading && !self.cancelled {
             return true;
         }
@@ -347,8 +383,14 @@ impl LiveTable {
     /// "data didn't load" marker because the user cancelled before the
     /// patch arrived. Mutually exclusive with `is_cell_loading` after
     /// `mark_cancelled()` runs (which sets `collection_complete = true`).
+    ///
+    /// An abandoned field reaches the same marker, but only where there is
+    /// nothing better to show: the render path checks this branch *after* the
+    /// cell's value, so a row holding a cached figure settles that figure
+    /// (`is_cell_stale_settled`) and never falls through to here.
     pub fn is_cell_unloaded(&self, row_idx: usize, field: FieldSet) -> bool {
-        self.cancelled && !self.received_patches[row_idx].contains(field)
+        (self.cancelled || self.abandoned.intersects(field))
+            && !self.received_patches[row_idx].contains(field)
     }
 
     /// True when the cell for `field` on `row_idx` holds a persisted (stale)
@@ -380,11 +422,16 @@ impl LiveTable {
     /// stays muted (still unverified) but no longer signals activity that will
     /// never come.
     ///
-    /// Only the PR column can know this today — `ForgePrsRefreshed(None)` is an
-    /// explicit "nothing more is coming" verdict. A stale *size* has no such
-    /// per-row signal (the walk simply never patches that row), so it keeps
-    /// breathing until the final frame settles it.
+    /// Two things can know this. `ForgePrsRefreshed(None)` is the PR column's
+    /// explicit "nothing more is coming" verdict. `Esc` is the general one: an
+    /// abandoned field's refresh has been called off by the user, which is the
+    /// same conclusion arrived at deliberately — so a stale *size*, which has
+    /// no per-row signal of its own and otherwise breathes until the final
+    /// frame, settles the moment it is abandoned.
     pub fn is_cell_stale_settled(&self, field: FieldSet) -> bool {
+        if self.abandoned.intersects(field) {
+            return true;
+        }
         field.contains(FieldSet::FORGE_REF)
             && self.cfg.forge_prs_stale == ForgePrStaleness::Unrefreshed
     }
@@ -698,6 +745,70 @@ mod tests {
         t.cfg.forge_prs_loading = true;
         assert!(t.is_cell_loading(0, FieldSet::FORGE_REF));
         t.mark_cancelled();
+        assert!(!t.is_cell_loading(0, FieldSet::FORGE_REF));
+    }
+
+    /// Abandoning stops the shimmer and settles the breath. What each cell
+    /// *renders* is asserted at the render layer, where the predicates are
+    /// consulted in order and a cell holding a value never reaches
+    /// `is_cell_unloaded` — see
+    /// `render::tests::abandoned_size_column_settles_the_cached_figure_and_marks_only_the_bare_cell`.
+    #[test]
+    fn abandon_stops_the_shimmer_and_settles_the_breath() {
+        let mut t = LiveTable::new(
+            vec![info_with_size("cached", 4096), info("uncached")],
+            cfg(),
+        );
+        let cached = t.rows.iter().position(|r| r.info.name == "cached").unwrap();
+        let bare = t
+            .rows
+            .iter()
+            .position(|r| r.info.name == "uncached")
+            .unwrap();
+
+        // Before: the seeded row breathes its cached figure, the bare one
+        // shimmers.
+        assert!(t.is_cell_stale(cached, FieldSet::SIZE));
+        assert!(!t.is_cell_stale_settled(FieldSet::SIZE));
+        assert!(t.is_cell_loading(bare, FieldSet::SIZE));
+
+        t.abandon(FieldSet::DECORATIVE);
+
+        // Nothing shimmers any more — the walk is not coming back.
+        assert!(!t.is_cell_loading(cached, FieldSet::SIZE));
+        assert!(!t.is_cell_loading(bare, FieldSet::SIZE));
+        // The cached figure stays, and stops moving.
+        assert!(t.is_cell_stale(cached, FieldSet::SIZE));
+        assert!(t.is_cell_stale_settled(FieldSet::SIZE));
+        // A row with no value to show is what the "didn't load" marker is for.
+        assert!(t.is_cell_unloaded(bare, FieldSet::SIZE));
+    }
+
+    /// Abandoning is not cancelling: the run keeps going so the essential
+    /// cells can still land. Coupling these would make `Esc` exit instantly
+    /// and silently drop the cells the user is still owed.
+    #[test]
+    fn abandon_leaves_the_run_live_and_the_essential_cells_alone() {
+        let mut t = LiveTable::new(vec![info("a")], cfg());
+        t.abandon(FieldSet::DECORATIVE);
+
+        assert!(!t.collection_complete);
+        assert!(!t.cancelled);
+        assert!(t.has_abandoned());
+        // An essential cell is untouched — still in flight, still not a marker.
+        assert!(t.is_cell_loading(0, FieldSet::CHANGES));
+        assert!(!t.is_cell_unloaded(0, FieldSet::CHANGES));
+    }
+
+    /// The PR skeleton is out-of-band (`forge_prs_loading` outlives the
+    /// collectors), so it needs the abandon check ahead of it or it keeps
+    /// shimmering after the user asked it to stop.
+    #[test]
+    fn abandon_clears_the_out_of_band_forge_skeleton() {
+        let mut t = LiveTable::new(vec![info("feat/x")], cfg());
+        t.cfg.forge_prs_loading = true;
+        assert!(t.is_cell_loading(0, FieldSet::FORGE_REF));
+        t.abandon(FieldSet::DECORATIVE);
         assert!(!t.is_cell_loading(0, FieldSet::FORGE_REF));
     }
 

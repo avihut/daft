@@ -28,6 +28,18 @@ impl FieldSet {
     /// Fields whose values can change after a `git fetch`.
     pub const REMOTE_DERIVED: Self = Self(Self::REMOTE_AHEAD_BEHIND.0 | Self::REMOTE_LINES.0);
 
+    /// Fields the live list can abandon on `Esc` without losing the answer the
+    /// user came for: both hold a *last-known* value in a stale-then-refresh
+    /// cache, so dropping the refresh costs freshness, never the cell.
+    /// Everything else is essential — `Esc` keeps waiting for it.
+    ///
+    /// Only `SIZE` is slow inside the collector (`FORGE_REF` is a local
+    /// `branch.<name>.merge` read; the network refresh is the detached
+    /// `daft __refresh-forge` child). `FORGE_REF` earns its bit on the other
+    /// two seams: it breaks the live list's forge barrier and settles the PR
+    /// cells so they stop signalling activity that is no longer coming.
+    pub const DECORATIVE: Self = Self(Self::SIZE.0 | Self::FORGE_REF.0);
+
     /// Fields keyed by a branch name. A branchless target (a sandbox, or any
     /// worktree with no branch to query) has no value for these: the
     /// streaming collector masks them out of its request, and the live table
@@ -144,6 +156,30 @@ mod tests {
         assert!(FieldSet::REMOTE_DERIVED.contains(FieldSet::REMOTE_LINES));
         assert!(!FieldSet::REMOTE_DERIVED.contains(FieldSet::SIZE));
         assert!(!FieldSet::REMOTE_DERIVED.contains(FieldSet::CHANGES));
+    }
+
+    #[test]
+    fn decorative_is_exactly_the_stale_then_refresh_cells() {
+        // Both members hold a last-known value the renderer can settle, which
+        // is what makes them safe to abandon.
+        assert!(FieldSet::DECORATIVE.contains(FieldSet::SIZE));
+        assert!(FieldSet::DECORATIVE.contains(FieldSet::FORGE_REF));
+        // Everything else is essential: `Esc` waits for these, so a stray bit
+        // here would silently drop a cell the user is still owed.
+        for member in [
+            FieldSet::BASE_AHEAD_BEHIND,
+            FieldSet::REMOTE_AHEAD_BEHIND,
+            FieldSet::CHANGES,
+            FieldSet::LAST_COMMIT,
+            FieldSet::BRANCH_AGE,
+            FieldSet::OWNER,
+            FieldSet::BASE_LINES,
+            FieldSet::CHANGES_LINES,
+            FieldSet::REMOTE_LINES,
+            FieldSet::MTIME,
+        ] {
+            assert!(!FieldSet::DECORATIVE.contains(member));
+        }
     }
 
     #[test]
