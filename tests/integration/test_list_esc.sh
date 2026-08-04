@@ -99,10 +99,17 @@ _esc_fixture() {
 # The headline behaviour: Esc drops the size walk, the run keeps going until
 # the essential cells land, and the cached figures stay on screen.
 #
-# The `waiting for` assertion is doing double duty — it is the acknowledgement
-# under test, and it is also the proof that the key was processed as an
-# abandon. The footer renders on no other path, so a run whose walk finished
-# before the key arrived fails here rather than passing vacuously.
+# The `esc again to exit` assertion is doing double duty — it is the
+# acknowledgement under test, and it is also the proof that the key was
+# processed as an abandon. The footer renders on no other path, so a run whose
+# walk finished before the key arrived fails here rather than passing
+# vacuously.
+#
+# It has to be *that* half of the line, not the count beside it: the count is
+# suppressed at zero ("waiting for 0 worktrees" is worse than silence), and the
+# essential cells here are trivial git work on a clean tree, so whether any
+# painted frame still had an outstanding row is a 16 ms race. The offer of a
+# way out is unconditional for as long as the wait lasts.
 test_list_esc_abandons_the_walk_and_finishes() {
     _esc_fixture "esc-abandon" || return 1
     local log="$TEMP_BASE_DIR/esc-abandon.log"
@@ -127,12 +134,8 @@ test_list_esc_abandons_the_walk_and_finishes() {
         log_error "abandoning should still be a successful run; got exit $rc"
         return 1
     fi
-    if ! grep -q "waiting for" <<<"$out"; then
-        log_error "Esc produced no acknowledgement — the abandon never registered"
-        return 1
-    fi
     if ! grep -q "esc again to exit" <<<"$out"; then
-        log_error "the acknowledgement did not offer the way out"
+        log_error "Esc produced no acknowledgement — the abandon never registered"
         return 1
     fi
     # The cached figures are the whole point: abandoning must not blank a cell
@@ -168,13 +171,16 @@ test_list_esc_abandons_the_walk_and_finishes() {
 # The second cue is the footer the first Esc just produced — text the next
 # frame genuinely writes, which is what `--send-after` needs (a cue that is
 # merely already on screen is never resent; ratatui sends changed cells only).
+# It cues on the way-out offer rather than the count beside it: the count is
+# suppressed once nothing is outstanding, and a cue that never appears hangs
+# the suite instead of failing it.
 test_list_esc_twice_exits() {
     _esc_fixture "esc-twice" || return 1
     local log="$TEMP_BASE_DIR/esc-twice.log"
 
     _esc_daft env DAFT_SIZE_WALK_JOBS=1 python3 "$ESC_PTY_RUN" \
         --send-after 'feat-a:\x1b' \
-        --send-after 'waiting for:\x1b' \
+        --send-after 'esc again to exit:\x1b' \
         "$log" \
         daft list --columns +size >/dev/null 2>&1
     local rc=$?
@@ -186,7 +192,7 @@ test_list_esc_twice_exits() {
         log_error "a second Esc should exit cleanly; got exit $rc"
         return 1
     fi
-    if ! grep -q "waiting for" <<<"$out"; then
+    if ! grep -q "esc again to exit" <<<"$out"; then
         log_error "the first Esc never registered, so the second proves nothing"
         return 1
     fi
