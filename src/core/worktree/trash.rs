@@ -42,6 +42,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// trash directory there as a worktree.
 const TRASH_SUBDIR: &str = "trash";
 
+/// Shared prefix for every "the fast path did not apply" line, so that
+/// `--verbose` output can be grepped for the reason with one pattern.
+///
+/// Worth the constant: a decline is otherwise indistinguishable from a fast
+/// removal — same exit code, same rows, only a missing annotation — so a
+/// removal that quietly walks the tree looks exactly like one that did not.
+/// Diagnosing that from the outside is guesswork, and was.
+const DECLINED: &str = "fast removal declined";
+
 /// What [`dispose`] actually did. The distinction between the first two is
 /// user-facing: only `Deferred` may claim the space is still coming back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +109,7 @@ pub fn dispose(
     // A main working tree has a `.git` *directory*; a linked worktree has a
     // `.git` file. Never rename the former — it holds the repo itself.
     if worktree_path.join(".git").is_dir() {
+        crate::log_debug!("{DECLINED}: main working tree");
         return Disposition::Declined;
     }
 
@@ -111,7 +121,14 @@ pub fn dispose(
             // Dirty, or we could not tell: decline and let git refuse. Failing
             // closed matters here — a status probe that errors must not be
             // read as "clean".
-            _ => return Disposition::Declined,
+            Ok(true) => {
+                crate::log_debug!("{DECLINED}: worktree has uncommitted changes");
+                return Disposition::Declined;
+            }
+            Err(e) => {
+                crate::log_debug!("{DECLINED}: could not check for changes: {e}");
+                return Disposition::Declined;
+            }
         }
     }
 
@@ -122,7 +139,7 @@ pub fn dispose(
 
     let trash = trash_dir(git_common_dir);
     if let Err(e) = std::fs::create_dir_all(&trash) {
-        crate::log_debug!("trash dir creation failed at {}: {e}", trash.display());
+        crate::log_debug!("{DECLINED}: cannot create {}: {e}", trash.display());
         return Disposition::Declined;
     }
 
@@ -131,11 +148,12 @@ pub fn dispose(
         // EXDEV (worktree on another filesystem — the `centralized` layout, or
         // `--at` pointing off-volume) lands here, as does any permission
         // problem. Both are ordinary-path territory.
-        crate::log_debug!("worktree rename to trash failed: {e}");
+        crate::log_debug!("{DECLINED}: rename into the trash failed: {e}");
         return Disposition::Declined;
     }
 
     if !drop_worktree_record(git, worktree_path, &canonical) {
+        crate::log_debug!("{DECLINED}: git would not drop the worktree record");
         // The directory is already gone from its original path, so the
         // ordinary path cannot run any more. Recover by putting it back.
         if let Err(e) = std::fs::rename(&dest, worktree_path) {
@@ -202,26 +220,43 @@ pub fn run_reap_trash(trash: &Path) -> anyhow::Result<()> {
         anyhow::bail!("refusing to reap {}: not a daft trash dir", trash.display());
     }
 
-    // Single-flight, mirroring `log_clean::run_clean_logs`. Two reapers racing
-    // over the same directory would each see the other's half-deleted trees and
-    // log spurious failures. The lock sits beside the trash dir rather than
-    // inside it, so draining the trash does not delete the lock.
+    reap_locked(trash);
+    Ok(())
+}
+
+/// Drain `trash` while holding the single-flight lock, mirroring
+/// `log_clean::run_clean_logs`. Returns `false` when another reaper already
+/// holds it, meaning the trash is being drained but not by us.
+///
+/// Every reap goes through here, including the inline one: two reapers racing
+/// over the same directory would each see the other's half-deleted trees and
+/// log spurious failures, and back-to-back removals are exactly when a
+/// foreground sweep meets a still-running detached reaper.
+///
+/// The lock sits beside the trash dir rather than inside it, so draining the
+/// trash does not delete the lock.
+fn reap_locked(trash: &Path) -> bool {
     let lock_path = trash.with_extension("lock");
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    let lock_file = std::fs::OpenOptions::new()
+    let opened = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&lock_path)?;
+        .open(&lock_path);
+    let Ok(lock_file) = opened else {
+        // No lock file to be had. Reaping unlocked risks a noisy race; not
+        // reaping at all risks trash that never drains. Prefer the noise.
+        reap_now(trash);
+        return true;
+    };
     use fs2::FileExt;
     if lock_file.try_lock_exclusive().is_err() {
-        return Ok(()); // another reaper is already draining this trash
+        return false;
     }
-
     reap_now(trash);
-    Ok(())
+    true
 }
 
 /// Worktrees still awaiting deletion, for `daft doctor`.
@@ -293,14 +328,28 @@ fn schedule_reap(trash: &Path) -> Disposition {
         || crate::should_skip_background_tasks(crate::cli::argv())
         || std::env::var_os("DAFT_NO_TRASH_REAP").is_some()
     {
-        reap_now(trash);
-        return Disposition::Reclaimed;
+        crate::log_debug!("reclaiming inline: background reaping is suppressed");
+        return reap_inline(trash);
     }
-    if spawn_reaper(trash).is_err() {
-        reap_now(trash);
-        return Disposition::Reclaimed;
+    if let Err(e) = spawn_reaper(trash) {
+        crate::log_debug!("reclaiming inline: could not spawn a reaper: {e}");
+        return reap_inline(trash);
     }
+    crate::log_debug!("deferred: a detached reaper is reclaiming the space");
     Disposition::Deferred
+}
+
+/// Drain the trash on the critical path, reporting what actually happened.
+///
+/// Losing the lock race is not `Reclaimed`: another reaper holds the trash and
+/// may not be finished, so claiming the space is already back would overstate
+/// it in exactly the direction that hides a slow removal.
+fn reap_inline(trash: &Path) -> Disposition {
+    if reap_locked(trash) {
+        Disposition::Reclaimed
+    } else {
+        Disposition::Deferred
+    }
 }
 
 #[cfg(unix)]
@@ -422,6 +471,38 @@ mod tests {
     fn sweep_without_a_trash_dir_is_a_no_op() {
         let tmp = tempfile::tempdir().unwrap();
         sweep(&tmp.path().join(".git"));
+    }
+
+    /// Every reap takes the single-flight lock, the inline one included — a
+    /// foreground sweep must not race a detached reaper that is still walking
+    /// the same tree. Back-to-back removals are when that actually happens.
+    #[test]
+    fn an_inline_reap_yields_to_a_reaper_already_holding_the_lock() {
+        use fs2::FileExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let git_dir = tmp.path().join(".git");
+        let trash = trash_dir(&git_dir);
+        std::fs::create_dir_all(trash.join("busy")).unwrap();
+
+        // Stand in for a live reaper holding the lock.
+        let held = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(trash.with_extension("lock"))
+            .unwrap();
+        held.try_lock_exclusive().unwrap();
+
+        // Deferred, not Reclaimed: someone else owns the drain, and it may not
+        // be finished. Claiming the space is back would be the overstatement
+        // that hides a still-running walk.
+        assert_eq!(reap_inline(&trash), Disposition::Deferred);
+        assert!(trash.join("busy").exists(), "must not touch a locked trash");
+
+        FileExt::unlock(&held).unwrap();
+        assert_eq!(reap_inline(&trash), Disposition::Reclaimed);
+        assert!(!trash.join("busy").exists());
     }
 
     #[test]
