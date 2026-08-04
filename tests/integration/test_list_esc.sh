@@ -135,10 +135,26 @@ test_list_esc_abandons_the_walk_and_finishes() {
         log_error "the acknowledgement did not offer the way out"
         return 1
     fi
-    # The cached figure is the whole point: abandoning must not blank a cell
+    # The cached figures are the whole point: abandoning must not blank a cell
     # that already had a last-known value.
-    if ! grep -qE '[0-9]+(\.[0-9]+)?[BKMG]' <<<"$out"; then
-        log_error "no size figure survived the abandon"
+    #
+    # Counting *distinct* figures is what keeps this from passing vacuously.
+    # The Size column's TOTAL row renders whether or not a single cell kept its
+    # value, so "some figure appears somewhere" is satisfied by the total
+    # alone. A healthy run shows a row figure and a different total (three
+    # worktrees of equal size, so the total is 3x a row); a run that blanked
+    # its cells shows one figure, the 0B total, and dashes where the rows were.
+    local figures
+    figures=$(grep -oE '[0-9]+(\.[0-9]+)?[BKMGT]' <<<"$out" | sort -u | wc -l)
+    if [[ $figures -lt 2 ]]; then
+        log_error "no cached size figure survived the abandon (only the TOTAL rendered)"
+        return 1
+    fi
+    # Independently: nothing fell through to the didn't-load marker. Every Size
+    # cell had a cached value to settle onto, and an abandoned PR cell must go
+    # blank rather than claim a failure to load.
+    if grep -q $'—' <<<"$out"; then
+        log_error "an abandoned cell rendered the didn't-load marker over a cached value"
         return 1
     fi
     log_success "Esc abandons the walk and the run finishes on its own"

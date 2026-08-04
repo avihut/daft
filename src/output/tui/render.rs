@@ -88,45 +88,80 @@ fn render_sort_summary_spans(spec: &SortSpec) -> Vec<Span<'static>> {
     spans
 }
 
-/// Render the footer below the table.
+/// Rows still owed a field this run has not stopped producing.
+///
+/// Abandoned-and-settled fields are masked out. Without that, `Esc` freezes
+/// the number: the rows it counts are exactly the ones whose SIZE patch is
+/// never coming, so the footer would hold its pre-`Esc` value for the whole
+/// remaining wait — the one figure meant to show progress, stuck.
+fn inflight_rows(state: &TuiState) -> usize {
+    let owed = crate::core::worktree::info_field::FieldSet::ALL & !state.live.settled_fields();
+    state
+        .live
+        .received_patches
+        .iter()
+        .filter(|fs| !fs.contains(owed))
+        .count()
+}
+
+/// The footer's text for this frame — empty when there is no footer.
+///
+/// The single source for both the line and `TuiState::footer_height`: a height
+/// that disagrees with this either draws the line into a zero-height chunk
+/// where it silently vanishes, or reserves a row nothing fills.
 ///
 /// Two reasons it appears: verbose mode (inflight cell count + elapsed time),
 /// and an `Esc` that abandoned the decorative cells — a keypress with no
 /// visible answer reads as a broken key, and the essential cells it is still
-/// waiting on can take a while. No-op when neither applies.
-pub fn render_footer(state: &TuiState, frame: &mut Frame, area: Rect) {
-    if !state.show_hook_sub_rows && !state.live.has_abandoned() {
-        return;
-    }
-    let inflight: usize = state
-        .live
-        .received_patches
-        .iter()
-        .filter(|fs| !fs.contains(crate::core::worktree::info_field::FieldSet::ALL))
-        .count();
-    let mut text = if state.show_hook_sub_rows {
+/// waiting on can take a while.
+///
+/// The abandon half is deliberately transient. It offers a way out of a wait,
+/// so it goes the moment there is nothing left to wait for — including on the
+/// final frame, whatever ended the run. That also keeps the height back at its
+/// pre-`Esc` value for that frame, which is what `viewport_height` sized the
+/// inline viewport for, so the cursor parks exactly where it always did.
+pub fn footer_text(state: &TuiState, final_frame: bool) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if state.show_hook_sub_rows {
         let elapsed_secs = state.render_start_elapsed.as_secs_f32();
-        format!(" inflight: {inflight} \u{00B7} elapsed: {elapsed_secs:.1}s")
-    } else {
-        String::new()
-    };
-    // Only while there is still something to wait for. Once collection
-    // completes — normally, or via a cancel — the line would be offering an
-    // exit from a run that has already ended.
-    if state.live.has_abandoned() && !state.live.collection_complete {
+        parts.push(format!("inflight: {}", inflight_rows(state)));
+        parts.push(format!("elapsed: {elapsed_secs:.1}s"));
+    }
+    if state.live.has_abandoned()
+        && !final_frame
+        && !state.live.collection_complete
+        && !state.live.cancelled
+    {
         // Name what is still owed, so the wait reads as progress rather than a
         // hang, and name the way out — `Esc` is the key they just pressed, so
-        // "again" is the whole instruction.
-        let waiting = if inflight == 1 {
-            " waiting for 1 worktree".to_string()
-        } else {
-            format!(" waiting for {inflight} worktrees")
-        };
-        text.push_str(&waiting);
-        text.push_str(" \u{00B7} esc again to exit");
+        // "again" is the whole instruction. The count can legitimately reach
+        // zero before the completion sentinel fires; "waiting for 0" is worse
+        // than silence, so only the way out survives.
+        let inflight = inflight_rows(state);
+        if inflight == 1 {
+            parts.push("waiting for 1 worktree".to_string());
+        } else if inflight > 1 {
+            parts.push(format!("waiting for {inflight} worktrees"));
+        }
+        parts.push("esc again to exit".to_string());
     }
-    if state.live.cancelled {
-        text.push_str(" \u{00B7} cancelled");
+    // Verbose only, as before the abandon line existed: a non-verbose Ctrl-C
+    // has never printed a footer, and an abandon that ends in one should not
+    // start.
+    if state.live.cancelled && state.show_hook_sub_rows {
+        parts.push("cancelled".to_string());
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!(" {}", parts.join(" \u{00B7} "))
+}
+
+/// Render the footer below the table. No-op when [`footer_text`] is empty.
+pub fn render_footer(state: &TuiState, frame: &mut Frame, area: Rect, final_frame: bool) {
+    let text = footer_text(state, final_frame);
+    if text.is_empty() {
+        return;
     }
     let line = Line::from(Span::styled(
         text,
@@ -243,15 +278,38 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect, final_frame
     // If a future column also gets a summary row, thread its width through
     // the same way; `column_content_width`'s `extra_width` is single-valued.
     let total_size: Option<String> = if columns.contains(&Column::Size) {
-        let total_bytes: u64 = state
+        let (total_bytes, measured, missing) = state
             .live
             .rows
             .iter()
             .filter(|wt| wt.info.kind == EntryKind::Worktree)
             .filter(|wt| !matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned)))
-            .filter_map(|wt| wt.info.size_bytes)
-            .sum();
-        Some(format_human_size(total_bytes))
+            .fold(
+                (0u64, 0usize, 0usize),
+                |(sum, measured, missing), wt| match wt.info.size_bytes {
+                    Some(bytes) => (sum.saturating_add(bytes), measured + 1, missing),
+                    None => (sum, measured, missing + 1),
+                },
+            );
+        // A walk the user called off leaves rows with no figure at all, and
+        // those contribute nothing to the sum. Unlike Ctrl-C, the run then ends
+        // normally — final frame, exit 0 — so an unmarked short number reads as
+        // the answer. Computed here rather than at the summary row below so the
+        // marker is inside the width hint.
+        let abandoned_walk = state
+            .live
+            .abandoned
+            .intersects(crate::core::worktree::info_field::FieldSet::SIZE);
+        Some(match (abandoned_walk && missing > 0, measured > 0) {
+            // Some rows measured, some not: the sum is a floor, not the answer.
+            (true, true) => format!("\u{2265}{}", format_human_size(total_bytes)),
+            // Nothing measured at all. The sum is zero, which `format_human_size`
+            // renders `<1K` — a claim about a total nobody measured, and
+            // `≥<1K` on top of it is a double inequality that says nothing.
+            // The cells themselves read `—` here; the total says the same.
+            (true, false) => DASH.to_string(),
+            _ => format_human_size(total_bytes),
+        })
     } else {
         None
     };
@@ -1584,7 +1642,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_footer(&state, frame, frame.area());
+                render_footer(&state, frame, frame.area(), false);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -1602,7 +1660,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_footer(&state, frame, frame.area());
+                render_footer(&state, frame, frame.area(), false);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -2180,7 +2238,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_footer(&state, frame, frame.area());
+                render_footer(&state, frame, frame.area(), false);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -2206,7 +2264,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_footer(&state, frame, frame.area());
+                render_footer(&state, frame, frame.area(), false);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -2235,7 +2293,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_footer(&state, frame, frame.area());
+                render_footer(&state, frame, frame.area(), false);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -2246,27 +2304,85 @@ mod tests {
         assert!(!row.contains("esc again"), "row was: {row:?}");
     }
 
+    /// A second Esc ends the run, so the way-out offer goes with it. What is
+    /// left is nothing at all: `cancelled` is a verbose-mode diagnostic, and a
+    /// non-verbose Ctrl-C has never printed a footer — an abandon that ends in
+    /// one must not start. Asserted through `footer_text` because that is what
+    /// `footer_height` reads: a non-empty string here would reserve a row on
+    /// the final frame and push the parked cursor out of the viewport.
     #[test]
-    fn render_footer_drops_the_abandon_line_once_cancelled() {
+    fn render_footer_drops_the_whole_line_once_cancelled_and_not_verbose() {
         let mut state = make_test_state(0);
         state
             .live
             .abandon(crate::core::worktree::info_field::FieldSet::DECORATIVE);
         state.live.mark_cancelled();
+        assert_eq!(footer_text(&state, false), "");
+        assert_eq!(footer_text(&state, true), "");
+    }
 
-        let backend = TestBackend::new(80, 1);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                render_footer(&state, frame, frame.area());
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let row: String = (0..buffer.area.width)
-            .map(|x| buffer[(x, 0)].symbol().to_string())
-            .collect();
-        assert!(!row.contains("esc again"), "row was: {row:?}");
-        assert!(row.contains("cancelled"), "row was: {row:?}");
+    /// The verbose half is unchanged by the abandon work: `inflight` /
+    /// `elapsed` still render, and `cancelled` still joins them.
+    #[test]
+    fn render_footer_keeps_the_verbose_diagnostics_when_cancelled_after_abandon() {
+        let mut state = make_test_state(1);
+        state.render_start_elapsed = std::time::Duration::from_millis(1234);
+        state
+            .live
+            .abandon(crate::core::worktree::info_field::FieldSet::DECORATIVE);
+        state.live.mark_cancelled();
+        let text = footer_text(&state, false);
+        assert!(text.contains("inflight:"), "text was: {text:?}");
+        assert!(text.contains("cancelled"), "text was: {text:?}");
+        assert!(!text.contains("esc again"), "text was: {text:?}");
+    }
+
+    /// The abandon line is transient: `footer_text` drops it on the final
+    /// frame even while the run still looks unfinished, which is what keeps
+    /// `footer_height` back at its pre-`Esc` value when `render` parks the
+    /// cursor. Without this the cursor lands one row past the viewport
+    /// `viewport_height` sized, and the shell prompt overwrites the footer.
+    #[test]
+    fn footer_text_drops_the_abandon_line_on_the_final_frame() {
+        let mut state = make_test_state(0);
+        state
+            .live
+            .abandon(crate::core::worktree::info_field::FieldSet::DECORATIVE);
+        assert!(
+            footer_text(&state, false).contains("esc again"),
+            "precondition: the line shows mid-run"
+        );
+        assert_eq!(footer_text(&state, true), "");
+    }
+
+    /// The count is the footer's only progress signal, and `Esc` is exactly
+    /// when it would freeze: the rows it counts are the ones whose SIZE patch
+    /// is never coming. Masking the settled fields is what lets it fall.
+    #[test]
+    fn abandoned_fields_do_not_pin_the_inflight_count() {
+        use crate::core::worktree::info_field::FieldSet;
+        let mut state = make_test_state(0);
+        state.live.abandon(FieldSet::DECORATIVE);
+        // Everything the collector owed except the abandoned SIZE.
+        state.live.received_patches[0] = FieldSet::ALL & !FieldSet::SIZE;
+        assert_eq!(inflight_rows(&state), 0);
+        // ... and a genuinely outstanding essential cell still counts.
+        state.live.received_patches[0] = FieldSet::ALL & !FieldSet::SIZE & !FieldSet::CHANGES;
+        assert_eq!(inflight_rows(&state), 1);
+    }
+
+    /// The count can legitimately reach zero before the completion sentinel
+    /// fires. "waiting for 0 worktrees" is worse than silence; the way out
+    /// still has to be offered.
+    #[test]
+    fn footer_offers_the_exit_without_a_zero_count() {
+        use crate::core::worktree::info_field::FieldSet;
+        let mut state = make_test_state(0);
+        state.live.abandon(FieldSet::DECORATIVE);
+        state.live.received_patches[0] = FieldSet::ALL & !FieldSet::SIZE;
+        let text = footer_text(&state, false);
+        assert!(!text.contains("waiting for"), "text was: {text:?}");
+        assert!(text.contains("esc again to exit"), "text was: {text:?}");
     }
 
     #[test]
@@ -2278,7 +2394,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_footer(&state, frame, frame.area());
+                render_footer(&state, frame, frame.area(), false);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -2448,6 +2564,92 @@ mod tests {
             "TOTAL must not render as truncated \"15.0\" — got buffer:\n{full_buffer}"
         );
     }
+
+    /// Rows the abandoned walk never measured contribute nothing to the TOTAL,
+    /// and unlike Ctrl-C the run then ends normally — final frame, exit 0 — so
+    /// an unmarked short number reads as the answer. `≥` says it is a floor.
+    /// The unmarked case is asserted alongside it, so the marker cannot start
+    /// appearing on ordinary complete runs.
+    #[test]
+    fn abandoned_walk_marks_the_size_total_as_a_floor() {
+        use crate::core::worktree::info_field::FieldSet;
+
+        let total_for = |measured: usize, abandon: bool| -> String {
+            let wts: Vec<WorktreeInfo> = (0..3)
+                .map(|i| {
+                    let mut info = WorktreeInfo::empty(&format!("feat/branch{i}"));
+                    if i < measured {
+                        info.size_bytes = Some(5 * 1024 * 1024 * 1024); // 5 GiB
+                    }
+                    info
+                })
+                .collect();
+            let mut state = TuiState::new(
+                Vec::<OperationPhase>::new(),
+                wts,
+                PathBuf::from("/tmp/test"),
+                PathBuf::from("/tmp/test"),
+                Stat::Summary,
+                0,
+                Some(vec![Column::Name, Column::Path, Column::Size]),
+                true,
+                None,
+                None::<SortSpec>,
+                true,
+                false,
+                FieldSet::EMPTY,
+            );
+            if abandon {
+                state.live.abandon(FieldSet::DECORATIVE);
+            }
+            let backend = TestBackend::new(80, 8);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    render_table(&state, frame, frame.area(), false);
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..buffer.area.height)
+                .flat_map(|y| {
+                    (0..buffer.area.width)
+                        .map(move |x| buffer[(x, y)].symbol().to_string())
+                        .chain(std::iter::once("\n".to_string()))
+                })
+                .collect()
+        };
+
+        let abandoned = total_for(2, true);
+        assert!(
+            abandoned.contains("\u{2265}10.0G"),
+            "a partial abandoned total must read as a floor — got:\n{abandoned}"
+        );
+
+        // Every row measured: the sum is the sum, abandon or not.
+        let complete = total_for(3, true);
+        assert!(
+            complete.contains("15.0G") && !complete.contains('\u{2265}'),
+            "a complete total must not be marked — got:\n{complete}"
+        );
+
+        // And the marker is the abandon's, not "some row has no size": a run
+        // still streaming shows a climbing total, which is visibly partial.
+        let streaming = total_for(2, false);
+        assert!(
+            streaming.contains("10.0G") && !streaming.contains('\u{2265}'),
+            "an in-flight total must not be marked — got:\n{streaming}"
+        );
+
+        // Nothing measured: a zero sum formats as "<1K", and "≥<1K" is a
+        // double inequality that claims nothing. The cells read `—` here, and
+        // so does the total.
+        let nothing = total_for(0, true);
+        assert!(
+            nothing.contains(DASH) && !nothing.contains("<1K"),
+            "an unmeasured total must read as unknown, not as a floor under 1K — got:\n{nothing}"
+        );
+    }
+
     /// The annotation cell and the annotation column's width are computed
     /// from the same slot set, so a glyph can never render into space the
     /// layout did not reserve (or leave a ragged gap where it did).

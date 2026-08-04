@@ -388,9 +388,36 @@ impl LiveTable {
     /// nothing better to show: the render path checks this branch *after* the
     /// cell's value, so a row holding a cached figure settles that figure
     /// (`is_cell_stale_settled`) and never falls through to here.
+    ///
+    /// `FORGE_REF` is abandonable but never reaches the marker that way.
+    /// Abandoning it means "stop waiting for the network refresh" — the local
+    /// `branch.<name>.merge` read that fills the cell rides on the per-target
+    /// workers, which `Esc` does not touch, so the value is still coming and
+    /// an em-dash would be a lie the next patch immediately contradicts. A PR
+    /// cell with nothing to show stays blank, exactly as it does at the end of
+    /// an ordinary run.
     pub fn is_cell_unloaded(&self, row_idx: usize, field: FieldSet) -> bool {
-        (self.cancelled || self.abandoned.intersects(field))
-            && !self.received_patches[row_idx].contains(field)
+        if self.received_patches[row_idx].contains(field) {
+            return false;
+        }
+        self.cancelled || self.settled_fields().intersects(field)
+    }
+
+    /// Fields the run has genuinely stopped producing — abandoned, *and* with a
+    /// producer that `Esc` actually halts. That is `SIZE` and only `SIZE`: the
+    /// size coordinator is the single thread `Esc` stops. `FORGE_REF` earns its
+    /// place in `DECORATIVE` for its other two effects (breaking the forge
+    /// barrier, settling the stale PR cell) while the local
+    /// `branch.<name>.merge` read that fills the cell keeps arriving on the
+    /// per-target workers.
+    ///
+    /// Two callers need the distinction and would drift apart spelling it
+    /// themselves: the em-dash marker (which would otherwise lie about a value
+    /// still in flight) and the footer's inflight count (which would otherwise
+    /// freeze at its pre-`Esc` value, since the rows it counts never receive
+    /// the SIZE patch it is waiting for).
+    pub fn settled_fields(&self) -> FieldSet {
+        self.abandoned & !FieldSet::FORGE_REF
     }
 
     /// True when the cell for `field` on `row_idx` holds a persisted (stale)

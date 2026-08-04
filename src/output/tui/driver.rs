@@ -3,7 +3,7 @@ use super::render;
 use super::state::TuiState;
 use crate::core::worktree::sync_dag::DagEvent;
 use crate::output::deferred_warn::{self, LiveRegionGuard};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame, Terminal, TerminalOptions, Viewport,
     layout::{Constraint, Layout, Position},
@@ -207,8 +207,15 @@ impl<S: LiveScreen> TuiRenderer<S> {
             // is observed, flip the optional cancel signal so the producer
             // exits cooperatively, mark the screen cancelled, and emit a
             // final draw.
+            // Press only. Windows and the kitty protocol also report `Release`
+            // (and `Repeat` for a held key), which would hand `on_escape` two
+            // events for one keypress — the two-stage Esc would collapse into
+            // one and exit while the essential cells were still landing.
+            // Ctrl-C is idempotent and doesn't care, but the guard is cheaper
+            // to reason about applied to the whole arm.
             if event::poll(Duration::from_millis(0)).unwrap_or(false)
                 && let Ok(Event::Key(key)) = event::read()
+                && key.kind == KeyEventKind::Press
             {
                 let ctrl_c =
                     key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
@@ -253,22 +260,24 @@ impl TuiState {
         }
     }
 
-    /// One row when the verbose footer is on, or when `Esc` has abandoned
-    /// something and the footer is carrying the acknowledgement. Must agree
-    /// with `render_footer`'s own gate or the line is drawn into a zero-height
-    /// chunk and silently vanishes.
+    /// One row when there is footer text, none otherwise. Derived from
+    /// `render::footer_text` rather than re-deriving its conditions, which is
+    /// the only way the two cannot drift: a height of 0 draws the line into a
+    /// zero-height chunk where it silently vanishes, a height of 1 with no text
+    /// reserves a blank row.
     ///
     /// This can flip 0 → 1 mid-run, after `viewport_height` has already sized
-    /// the inline viewport. That is safe rather than lucky: the table reserves
-    /// two rows for "header + cursor parking", so the footer takes the parking
-    /// row and the cursor parks one lower — no data row is clipped, and
-    /// nothing has to be reserved up front for a footer that may never appear.
-    fn footer_height(&self) -> u16 {
-        if self.show_hook_sub_rows || self.live.has_abandoned() {
-            1
-        } else {
-            0
-        }
+    /// the inline viewport. That is safe because the table reserves two rows
+    /// for "header + cursor parking" and the footer takes the parking row —
+    /// no data row is clipped, and nothing has to be reserved up front for a
+    /// footer that may never appear. It is only safe because the flip is
+    /// temporary: `footer_text` drops the abandon line on the final frame, so
+    /// the height is back to its pre-`Esc` value by the time `render` parks the
+    /// cursor. Were it still 1 there, `content_bottom` would land one row past
+    /// the viewport the walk was sized for, and the shell prompt would be
+    /// clamped back onto the footer line.
+    fn footer_height(&self, final_frame: bool) -> u16 {
+        u16::from(!render::footer_text(self, final_frame).is_empty())
     }
 
     /// Size summary footer: 2 rows (blank separator + total) when the Size
@@ -368,12 +377,12 @@ impl LiveScreen for TuiState {
             .saturating_add(self.size_summary_rows());
         self.header_height()
             .saturating_add(table_height)
-            .saturating_add(self.footer_height())
+            .saturating_add(self.footer_height(false))
     }
 
     fn render(&self, frame: &mut Frame<'_>, final_frame: bool) {
         let header_height = self.header_height();
-        let footer_height = self.footer_height();
+        let footer_height = self.footer_height(final_frame);
         let area = frame.area();
         let chunks = Layout::vertical([
             Constraint::Length(header_height),
@@ -383,7 +392,7 @@ impl LiveScreen for TuiState {
         .split(area);
         render::render_header(self, frame, chunks[0]);
         render::render_table(self, frame, chunks[1], final_frame);
-        render::render_footer(self, frame, chunks[2]);
+        render::render_footer(self, frame, chunks[2], final_frame);
 
         if final_frame {
             // sort summary rows (when present) + table header (1 row)

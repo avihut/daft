@@ -124,6 +124,36 @@ pub fn walk_streaming_sized(
     cancel: Option<&AtomicBool>,
     jobs: usize,
     hard_links: HardLinks,
+    on_complete: impl FnMut(usize, Option<u64>),
+) {
+    match cancel {
+        Some(c) => walk_streaming_inner(roots, &[c], jobs, hard_links, on_complete),
+        None => walk_streaming_inner(roots, &[], jobs, hard_links, on_complete),
+    }
+}
+
+/// [`walk_streaming`], stopping as soon as *any* of `cancel` is set.
+///
+/// The live list is the one caller that needs more than one flag. It splits
+/// cancellation in two — `Esc` abandons the size walk alone, Ctrl-C flips the
+/// collector's shared worker flag — and the walk has to honour both. Handing
+/// it a single flag and trusting every total-stop path to remember to set the
+/// decorative one as well is the version of this that decays; it already did
+/// once, inside the PR that introduced the split (#826).
+pub fn walk_streaming_any(
+    roots: &[PathBuf],
+    cancel: &[&AtomicBool],
+    jobs: usize,
+    on_complete: impl FnMut(usize, Option<u64>),
+) {
+    walk_streaming_inner(roots, cancel, jobs, HardLinks::Deduplicate, on_complete);
+}
+
+fn walk_streaming_inner(
+    roots: &[PathBuf],
+    cancel: &[&AtomicBool],
+    jobs: usize,
+    hard_links: HardLinks,
     mut on_complete: impl FnMut(usize, Option<u64>),
 ) {
     if roots.is_empty() {
@@ -203,7 +233,7 @@ struct Shared {
     hard_links: HardLinks,
 }
 
-fn worker(shared: &Shared, cancel: Option<&AtomicBool>, tx: mpsc::Sender<(usize, Option<u64>)>) {
+fn worker(shared: &Shared, cancel: &[&AtomicBool], tx: mpsc::Sender<(usize, Option<u64>)>) {
     loop {
         // Claim the next directory, or exit when the queue is drained.
         let job = {
@@ -324,8 +354,8 @@ fn count_file(
     true
 }
 
-fn is_cancelled(cancel: Option<&AtomicBool>) -> bool {
-    cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+fn is_cancelled(cancel: &[&AtomicBool]) -> bool {
+    cancel.iter().any(|c| c.load(Ordering::Relaxed))
 }
 
 #[cfg(test)]
@@ -555,6 +585,49 @@ mod tests {
         let mut count = 0;
         walk_streaming(&[root], Some(&cancel), 4, |_, _| count += 1);
         assert_eq!(count, 0);
+    }
+
+    /// The live list hands the walk two flags and stops on either. Only the
+    /// second is the one `Esc` sets; the first is the collector's shared
+    /// worker flag, which Ctrl-C and the SIGINT handler write straight into
+    /// without going through `CollectorHandle::cancel`. A walk that watched
+    /// one flag would keep running for whichever path it missed — #826's
+    /// review found exactly that, with the total-stop half broken.
+    #[test]
+    fn either_flag_stops_the_streaming_walk() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (set_first, label) in [(true, "total"), (false, "decorative")] {
+            let root = tmp.path().join(label);
+            build_tree(&root);
+            let first = AtomicBool::new(set_first);
+            let second = AtomicBool::new(!set_first);
+            let mut count = 0;
+            walk_streaming_any(
+                std::slice::from_ref(&root),
+                &[&first, &second],
+                4,
+                |_, _| count += 1,
+            );
+            assert_eq!(count, 0, "{label} flag alone should stop the walk");
+        }
+    }
+
+    /// The complement: neither flag set means the walk runs to completion, so
+    /// the test above is measuring cancellation rather than a walk that never
+    /// started.
+    #[test]
+    fn no_flag_set_lets_the_streaming_walk_finish() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("live");
+        build_tree(&root);
+        let a = AtomicBool::new(false);
+        let b = AtomicBool::new(false);
+        let mut count = 0;
+        walk_streaming_any(std::slice::from_ref(&root), &[&a, &b], 4, |_, size| {
+            count += 1;
+            assert!(size.is_some());
+        });
+        assert_eq!(count, 1);
     }
 
     #[test]

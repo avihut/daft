@@ -109,6 +109,10 @@ as refreshing; a cell that never had one shows a dash. The run keeps going
 until the remaining cells land, so nothing you came for is dropped, and a
 footer names what it is still waiting on.
 
+Sizes that never landed contribute nothing to the Size column's TOTAL, so an
+abandoned walk renders it as `≥` a figure — a floor, not the sum — or as a
+dash when nothing was measured at all.
+
 Press `Esc` again to leave without waiting for those either. `Ctrl+C` still
 ends the run outright, exactly as before.
 
