@@ -26,7 +26,9 @@ they render dimmed with a `(removed)` note.
 
 The size column is opt-in (`--columns +size`, same as `daft list`) because it
 walks every repository; on a terminal the sizes stream in live with a total
-row while the rest of the table renders immediately. The recorded worktree
+row while the rest of the table renders immediately. Press `Esc` (or `Ctrl+C`)
+to stop waiting for the walk: repositories already measured keep their figure,
+the rest show a dash. The recorded worktree
 layout (`+layout`) and default branch (`+branch`) are likewise opt-in; the
 layout is the one recorded in daft's repo store at clone/adopt time (or via
 `daft layout set`), shown as `-` for repositories daft never laid out.

@@ -99,6 +99,12 @@ The size column is not shown by default. Add it with --columns +size to see the
 disk size of each worktree folder in human-readable format (e.g. 42K, 1.3M, 2.5G).
 A summary row at the bottom shows the total size across all worktrees.
 
+On a terminal, press Esc to stop waiting for the slow cells. The size walk and
+the pull-request refresh are given up on; any last-known value they were
+showing stays on screen, muted and no longer marked as refreshing, and the run
+keeps going until the remaining cells land. Press Esc again to exit without
+waiting for those. Ctrl+C still ends the run outright, as before.
+
 The pr column shows the pull/merge request each row relates to (#123 for a
 GitHub PR, !45 for a GitLab MR). It is on by default in repositories with a
 GitHub or GitLab remote and disappears silently — persisting across runs —

@@ -55,6 +55,8 @@ Use --columns to select which columns are shown and in what order.
 The size column is not shown by default — it walks every repository, so it
 is opt-in, same as the worktree commands. On a terminal the sizes stream in
 live while the table renders immediately, with a total row summing them.
+Press Esc (or Ctrl+C) to stop waiting: repositories already measured keep
+their figure, the rest show a dash.
 The recorded worktree layout (+layout) and default branch (+branch) are
 likewise opt-in; structured output includes both by default.
 

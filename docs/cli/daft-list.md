@@ -100,6 +100,22 @@ When `git config user.email` is set, the output is split into two sections:
 This makes it easy to identify your active work at a glance. The section
 divider is only shown when both sections are non-empty.
 
+### Leaving early
+
+Some cells are slower than the rest — the disk-size walk and the pull-request
+refresh. On a terminal, press `Esc` to stop waiting for them. Whatever
+last-known value they were showing stays on screen, muted and no longer marked
+as refreshing; a cell that never had one shows a dash. The run keeps going
+until the remaining cells land, so nothing you came for is dropped, and a
+footer names what it is still waiting on.
+
+Press `Esc` again to leave without waiting for those either. `Ctrl+C` still
+ends the run outright, exactly as before.
+
+Only `daft list` and `daft repo list` take `Esc` — commands that change your
+worktrees (`daft sync`, `daft prune`, `daft clone`) deliberately ignore it, so
+a stray keypress can never abandon a rebase or a push mid-flight.
+
 ### Listing other repositories
 
 Give a [cataloged repository](/graph/repo-catalog) as the positional argument
