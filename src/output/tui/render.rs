@@ -110,7 +110,10 @@ pub fn render_footer(state: &TuiState, frame: &mut Frame, area: Rect) {
     } else {
         String::new()
     };
-    if state.live.has_abandoned() && !state.live.cancelled {
+    // Only while there is still something to wait for. Once collection
+    // completes — normally, or via a cancel — the line would be offering an
+    // exit from a run that has already ended.
+    if state.live.has_abandoned() && !state.live.collection_complete {
         // Name what is still owed, so the wait reads as progress rather than a
         // hang, and name the way out — `Esc` is the key they just pressed, so
         // "again" is the whole instruction.
@@ -1881,6 +1884,72 @@ mod tests {
         );
     }
 
+    /// The Pr column's third shape. Its loading state is table-wide and
+    /// out-of-band (`forge_prs_loading` outlives the collectors), while its
+    /// FORGE_REF *patch* is a local `git config` read that has long since
+    /// landed. So on a cold forge cache an abandon leaves a cell that is
+    /// neither shimmering, nor stale, nor unloaded — it renders blank, which
+    /// is the honest reading: no PR association is known for this branch.
+    ///
+    /// Not reachable from the PTY suite: `gate_pr_column` drops the column
+    /// outright for a repo with no forge remote, which is every test fixture.
+    #[test]
+    fn abandoned_pr_column_on_a_cold_cache_renders_blank() {
+        use crate::core::worktree::info_field::FieldSet;
+
+        let mut state = make_test_state(0);
+        // Cold cache: the refresh is in flight and nothing was seeded.
+        state.live.cfg.forge_prs_loading = true;
+        assert!(state.live.is_cell_loading(0, FieldSet::FORGE_REF));
+        // The cheap local ref read already landed, as it does in a real run.
+        state.live.received_patches[0] |= FieldSet::FORGE_REF;
+        state.live.abandon(FieldSet::DECORATIVE);
+
+        let wt = &state.live.rows[0];
+        let ctx = ColumnContext {
+            project_root: &state.live.cfg.project_root,
+            cwd: &state.live.cfg.cwd,
+            now: chrono::Utc::now().timestamp(),
+            stat: Stat::Summary,
+            forge_prs: None,
+            colors: true,
+        };
+        let vals = format::compute_column_values(&wt.info, &ctx);
+
+        let backend = TestBackend::new(10, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let cell = render_cell(
+                    &Column::Pr,
+                    wt,
+                    &vals,
+                    0,
+                    Stat::Summary,
+                    10,
+                    Default::default(),
+                    |fs| state.live.is_cell_loading(0, fs),
+                    |fs| state.live.is_cell_unloaded(0, fs),
+                    |fs| state.live.is_cell_stale(0, fs),
+                    |fs| state.live.is_cell_stale_settled(fs),
+                    false,
+                );
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..10)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+
+        assert_eq!(row.trim(), "", "expected a blank Pr cell; got {row:?}");
+        assert!(
+            !row.contains('\u{25AC}'),
+            "an abandoned Pr cell must stop shimmering; got {row:?}"
+        );
+    }
+
     #[test]
     fn render_cell_size_stale_breathes_on_the_skeleton_ramp() {
         // A stale (persisted, not-yet-refreshed) Size cell renders its value —
@@ -2152,6 +2221,31 @@ mod tests {
 
     /// Once the run ends there is nothing left to wait for, and nothing an
     /// extra Esc could do — offering it would be a lie on the final frame.
+    /// Both endings count: the abandon usually resolves by the essential cells
+    /// landing, not by a cancel.
+    #[test]
+    fn render_footer_drops_the_abandon_line_once_collection_completes() {
+        let mut state = make_test_state(0);
+        state
+            .live
+            .abandon(crate::core::worktree::info_field::FieldSet::DECORATIVE);
+        state.live.collection_complete = true;
+
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_footer(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(!row.contains("waiting for"), "row was: {row:?}");
+        assert!(!row.contains("esc again"), "row was: {row:?}");
+    }
+
     #[test]
     fn render_footer_drops_the_abandon_line_once_cancelled() {
         let mut state = make_test_state(0);

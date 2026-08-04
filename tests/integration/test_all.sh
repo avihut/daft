@@ -29,6 +29,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_exec_verbose_toggle.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_run.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_env.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_list.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_list_esc.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_worktree_exec.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_warm.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_visitor_propagation.sh"
@@ -375,6 +376,7 @@ run_all_integration_tests() {
     run_run_tests
     run_env_tests
     run_list_tests
+    run_list_esc_tests
     run_worktree_exec_tests
     run_warm_tests
 
