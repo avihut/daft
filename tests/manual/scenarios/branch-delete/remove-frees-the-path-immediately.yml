@@ -5,6 +5,11 @@ description: >
   contract that must survive that is the name becoming free straight away — if
   the record drop only appeared to work, recreating the same branch fails.
 
+  Scope: the runner injects DAFT_TESTING=1, which makes the reap run inline, so
+  this proves the contract but not the deferral. The detached spawn itself is
+  covered by test_remove_defers_reclamation_to_a_detached_reaper in
+  tests/integration/test_branch_delete.sh, which runs with DAFT_TESTING off.
+
 repos:
   - name: test-repo
     use_fixture: standard-remote

@@ -82,6 +82,13 @@ worktrees that are still waiting, and `daft doctor --fix` reclaims them
 immediately. Removals also sweep leftovers on their way through, so the next
 `daft remove` or `daft prune` in that repo picks up anything stranded.
 
+`daft doctor` distinguishes two cases. A worktree still _waiting_ is one whose
+delete has not finished. A removal reported as _interrupted_ was cut short — by
+Ctrl-C, or the machine going down — after the directory moved but before git was
+told, so git may still expect a worktree that is no longer there. Nothing
+deletes those automatically, because they can hold ignored files that exist
+nowhere else. `daft doctor --fix` puts them back where git expects them.
+
 To make removal reclaim space before it returns — for a script that checks free
 space straight afterwards, say — set `DAFT_NO_TRASH_REAP=1`.
 

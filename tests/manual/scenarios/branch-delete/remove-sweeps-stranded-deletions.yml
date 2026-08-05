@@ -6,6 +6,12 @@ description: >
   the trash first. This seeds a stranded entry by hand — standing in for a
   reaper killed mid-flight — and asserts the next removal reclaims it.
 
+  The seeded entry carries no `.origin` sidecar, which is what makes it garbage:
+  its removal committed, and only the delete was left. An entry that *does* have
+  one is an interrupted removal and must survive every sweep — covered by
+  test_remove_sweep_spares_an_interrupted_removal in
+  tests/integration/test_branch_delete.sh.
+
 repos:
   - name: test-repo
     use_fixture: standard-remote
