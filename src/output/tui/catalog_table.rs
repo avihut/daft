@@ -532,6 +532,15 @@ impl LiveScreen for CatalogTable {
     fn on_tick(&mut self, _render_start_elapsed: std::time::Duration) {
         self.tick = self.tick.wrapping_add(1);
     }
+
+    /// Single-stage here, unlike the live list: the size walk is this screen's
+    /// *only* async work, so there are no essential cells left to wait for
+    /// once it is abandoned. `Esc` therefore ends the run outright, which
+    /// already renders unwalked cells as the "didn't load" marker and settles
+    /// any cached figure (see the `SizeCell` arms in `render`).
+    fn on_escape(&mut self) -> super::driver::EscOutcome {
+        super::driver::EscOutcome::ExitNow
+    }
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@ use super::render;
 use super::state::TuiState;
 use crate::core::worktree::sync_dag::DagEvent;
 use crate::output::deferred_warn::{self, LiveRegionGuard};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame, Terminal, TerminalOptions, Viewport,
     layout::{Constraint, Layout, Position},
@@ -56,6 +56,27 @@ pub trait LiveScreen {
     /// Advance animations. Called at the driver's tick rate with the elapsed
     /// time since the render loop started.
     fn on_tick(&mut self, render_start_elapsed: Duration);
+
+    /// What `Esc` means on this screen (#826). Defaults to [`EscOutcome::Ignored`],
+    /// so a screen that has not thought about it cannot acquire the binding by
+    /// accident — which is what keeps `Esc` away from `daft sync`'s mid-flight
+    /// rebases and pushes.
+    fn on_escape(&mut self) -> EscOutcome {
+        EscOutcome::Ignored
+    }
+}
+
+/// A screen's answer to `Esc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EscOutcome {
+    /// `Esc` does nothing here. The default.
+    Ignored,
+    /// The screen dropped its decorative work and wants the loop to continue
+    /// so the essential cells can still land. The driver flips the abandon
+    /// signal so the producer stops too.
+    Abandoned,
+    /// End the run now, on the same path as Ctrl-C.
+    ExitNow,
 }
 
 /// Drives the inline TUI render loop, consuming collector events and updating
@@ -70,6 +91,10 @@ pub struct TuiRenderer<S: LiveScreen> {
     /// Ctrl-C key event observed during the render loop, the renderer flips
     /// the signal and exits cleanly after one final draw.
     pub(crate) cancel_signal: Option<Arc<AtomicBool>>,
+    /// Optional decorative-cancel flag, flipped when the screen answers
+    /// [`EscOutcome::Abandoned`]. Distinct from `cancel_signal`: it stops the
+    /// producer's slow decoration (the size walk) and leaves the rest running.
+    pub(crate) abandon_signal: Option<Arc<AtomicBool>>,
 }
 
 impl<S: LiveScreen> TuiRenderer<S> {
@@ -79,6 +104,7 @@ impl<S: LiveScreen> TuiRenderer<S> {
             receiver,
             extra_rows: 0,
             cancel_signal: None,
+            abandon_signal: None,
         }
     }
 
@@ -94,6 +120,14 @@ impl<S: LiveScreen> TuiRenderer<S> {
     /// producer observes it between cluster calls and exits cooperatively.
     pub fn with_cancel_signal(mut self, cancel: Arc<AtomicBool>) -> Self {
         self.cancel_signal = Some(cancel);
+        self
+    }
+
+    /// Attach the producer's decorative-cancel flag. Flipped when the screen
+    /// answers [`EscOutcome::Abandoned`], so the slow decoration stops while
+    /// the essential work the run is still waiting on carries on.
+    pub fn with_abandon_signal(mut self, abandon: Arc<AtomicBool>) -> Self {
+        self.abandon_signal = Some(abandon);
         self
     }
 
@@ -173,16 +207,35 @@ impl<S: LiveScreen> TuiRenderer<S> {
             // is observed, flip the optional cancel signal so the producer
             // exits cooperatively, mark the screen cancelled, and emit a
             // final draw.
+            // Press only. Windows and the kitty protocol also report `Release`
+            // (and `Repeat` for a held key), which would hand `on_escape` two
+            // events for one keypress — the two-stage Esc would collapse into
+            // one and exit while the essential cells were still landing.
+            // Ctrl-C is idempotent and doesn't care, but the guard is cheaper
+            // to reason about applied to the whole arm.
             if event::poll(Duration::from_millis(0)).unwrap_or(false)
                 && let Ok(Event::Key(key)) = event::read()
-                && key.code == KeyCode::Char('c')
-                && key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.kind == KeyEventKind::Press
             {
-                if let Some(sig) = &self.cancel_signal {
+                let ctrl_c =
+                    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+                // Esc asks the screen what it means here; Ctrl-C never does.
+                let esc = match key.code {
+                    KeyCode::Esc => self.state.on_escape(),
+                    _ => EscOutcome::Ignored,
+                };
+                if esc == EscOutcome::Abandoned
+                    && let Some(sig) = &self.abandon_signal
+                {
                     sig.store(true, Ordering::Relaxed);
                 }
-                self.state.mark_cancelled();
-                final_draw_and_return!();
+                if ctrl_c || esc == EscOutcome::ExitNow {
+                    if let Some(sig) = &self.cancel_signal {
+                        sig.store(true, Ordering::Relaxed);
+                    }
+                    self.state.mark_cancelled();
+                    final_draw_and_return!();
+                }
             }
 
             // Tick spinner animation.
@@ -207,8 +260,24 @@ impl TuiState {
         }
     }
 
-    fn footer_height(&self) -> u16 {
-        if self.show_hook_sub_rows { 1 } else { 0 }
+    /// One row when there is footer text, none otherwise. Derived from
+    /// `render::footer_text` rather than re-deriving its conditions, which is
+    /// the only way the two cannot drift: a height of 0 draws the line into a
+    /// zero-height chunk where it silently vanishes, a height of 1 with no text
+    /// reserves a blank row.
+    ///
+    /// This can flip 0 → 1 mid-run, after `viewport_height` has already sized
+    /// the inline viewport. That is safe because the table reserves two rows
+    /// for "header + cursor parking" and the footer takes the parking row —
+    /// no data row is clipped, and nothing has to be reserved up front for a
+    /// footer that may never appear. It is only safe because the flip is
+    /// temporary: `footer_text` drops the abandon line on the final frame, so
+    /// the height is back to its pre-`Esc` value by the time `render` parks the
+    /// cursor. Were it still 1 there, `content_bottom` would land one row past
+    /// the viewport the walk was sized for, and the shell prompt would be
+    /// clamped back onto the footer line.
+    fn footer_height(&self, final_frame: bool) -> u16 {
+        u16::from(!render::footer_text(self, final_frame).is_empty())
     }
 
     /// Size summary footer: 2 rows (blank separator + total) when the Size
@@ -308,12 +377,12 @@ impl LiveScreen for TuiState {
             .saturating_add(self.size_summary_rows());
         self.header_height()
             .saturating_add(table_height)
-            .saturating_add(self.footer_height())
+            .saturating_add(self.footer_height(false))
     }
 
     fn render(&self, frame: &mut Frame<'_>, final_frame: bool) {
         let header_height = self.header_height();
-        let footer_height = self.footer_height();
+        let footer_height = self.footer_height(final_frame);
         let area = frame.area();
         let chunks = Layout::vertical([
             Constraint::Length(header_height),
@@ -323,7 +392,7 @@ impl LiveScreen for TuiState {
         .split(area);
         render::render_header(self, frame, chunks[0]);
         render::render_table(self, frame, chunks[1], final_frame);
-        render::render_footer(self, frame, chunks[2]);
+        render::render_footer(self, frame, chunks[2], final_frame);
 
         if final_frame {
             // sort summary rows (when present) + table header (1 row)
@@ -363,6 +432,23 @@ impl LiveScreen for TuiState {
     fn on_tick(&mut self, render_start_elapsed: Duration) {
         self.render_start_elapsed = render_start_elapsed;
         self.tick();
+    }
+
+    /// Two-stage: the first `Esc` gives up on the decorative cells and keeps
+    /// waiting for the essential ones; a second exits, because the essential
+    /// work can itself be the slow part (a `git status` on a fat worktree is
+    /// not interruptible mid-command) and the user needs a way out that isn't
+    /// Ctrl-C.
+    fn on_escape(&mut self) -> EscOutcome {
+        if !self.live.esc_abandons {
+            return EscOutcome::Ignored;
+        }
+        if self.live.has_abandoned() {
+            return EscOutcome::ExitNow;
+        }
+        self.live
+            .abandon(crate::core::worktree::info_field::FieldSet::DECORATIVE);
+        EscOutcome::Abandoned
     }
 }
 
@@ -500,6 +586,56 @@ mod tests {
         assert!(state.done);
         assert!(LiveScreen::is_complete(&state));
         assert!(LiveScreen::is_cancelled(&state));
+    }
+
+    /// Same reason as above — a crossterm `Event` can't easily be synthesized
+    /// here, so this exercises the trait method the Esc arm calls.
+    #[test]
+    fn escape_is_ignored_unless_the_screen_opted_in() {
+        // The default that keeps Esc away from sync/prune/clone: they build
+        // their `TuiState` internally and never set the flag.
+        let mut state = escape_test_state();
+        assert_eq!(LiveScreen::on_escape(&mut state), EscOutcome::Ignored);
+        // ...and it stays inert, however many times it is pressed.
+        assert_eq!(LiveScreen::on_escape(&mut state), EscOutcome::Ignored);
+        assert!(!state.live.has_abandoned());
+        assert!(!state.live.cancelled);
+    }
+
+    #[test]
+    fn escape_abandons_first_then_exits() {
+        let mut state = escape_test_state();
+        state.live.esc_abandons = true;
+
+        // First press: drop the decorations, keep the run alive so the
+        // essential cells can still land.
+        assert_eq!(LiveScreen::on_escape(&mut state), EscOutcome::Abandoned);
+        assert!(state.live.has_abandoned());
+        assert!(!LiveScreen::is_complete(&state));
+        assert!(!LiveScreen::is_cancelled(&state));
+
+        // Second press: the way out when the essential work is itself slow.
+        assert_eq!(LiveScreen::on_escape(&mut state), EscOutcome::ExitNow);
+    }
+
+    fn escape_test_state() -> TuiState {
+        let phases = Vec::<crate::core::worktree::sync_dag::OperationPhase>::new();
+        let infos = vec![crate::core::worktree::list::WorktreeInfo::empty("a")];
+        TuiState::new(
+            phases,
+            infos,
+            std::path::PathBuf::from("/tmp"),
+            std::path::PathBuf::from("/tmp"),
+            crate::core::worktree::list::Stat::Summary,
+            0,
+            None,
+            false,
+            None,
+            None,
+            true,
+            false,
+            crate::core::worktree::info_field::FieldSet::EMPTY,
+        )
     }
 
     #[test]

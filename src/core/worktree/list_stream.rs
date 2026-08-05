@@ -65,6 +65,17 @@ pub struct CollectorRequest {
 
 pub struct CollectorHandle {
     cancel: Arc<AtomicBool>,
+    /// Stops the size coordinator alone, leaving the per-target workers to
+    /// finish. Separate from `cancel` so the live list's `Esc` can drop the
+    /// slow decoration without dropping the cells the user is still owed
+    /// (#826).
+    ///
+    /// One-way implication, enforced by the walk rather than by its callers:
+    /// the size coordinator watches *both* flags, so `cancel` stops it whether
+    /// it was set through [`Self::cancel`] or written straight into the Arc
+    /// from [`Self::cancel_flag`] — which is what the renderer's Ctrl-C path
+    /// and the SIGINT handler both do.
+    cancel_decorative: Arc<AtomicBool>,
     handles: Vec<JoinHandle<()>>,
     /// Collector-only sentinel sender (kept alive by handle so the
     /// completion event fires only after all workers have observably
@@ -73,16 +84,35 @@ pub struct CollectorHandle {
 }
 
 impl CollectorHandle {
-    /// Request cooperative cancellation. Workers exit between cluster calls.
+    /// Request cooperative cancellation. Workers exit between cluster calls,
+    /// and the size coordinator stops with them — it watches this flag as well
+    /// as the decorative one.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
+    /// Request cancellation of the *decorative* work only — today the size
+    /// coordinator. Per-target workers run to completion, so
+    /// `WorktreeInfoCollectionDone` still fires and still means "every
+    /// essential cell has landed".
+    pub fn cancel_decorative(&self) {
+        self.cancel_decorative.store(true, Ordering::Relaxed);
+    }
+
     /// Returns a clone of the cancel flag so external code (e.g. the
     /// renderer's Ctrl-C handler) can flip it. The collector workers
-    /// observe the flag between cluster calls.
+    /// observe the flag between cluster calls, and the size coordinator
+    /// observes it alongside its own — writing this Arc directly is a total
+    /// stop, same as [`Self::cancel`].
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.cancel)
+    }
+
+    /// Returns a clone of the decorative-cancel flag, for callers that must
+    /// hold it past the point this handle moves (the live list hands the
+    /// handle to its join thread — clone this out first).
+    pub fn decorative_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel_decorative)
     }
 
     /// Wait for all workers to finish. Emits
@@ -116,6 +146,7 @@ impl CollectorHandle {
 /// silently joins) for the completion sentinel to fire.
 pub fn spawn(req: CollectorRequest, tx: mpsc::Sender<DagEvent>) -> CollectorHandle {
     let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_decorative = Arc::new(AtomicBool::new(false));
     let CollectorRequest {
         targets,
         fields,
@@ -158,14 +189,21 @@ pub fn spawn(req: CollectorRequest, tx: mpsc::Sender<DagEvent>) -> CollectorHand
     // routed by `branch_name`, exactly like the old inline SIZE cluster did.
     if !size_targets.is_empty() {
         let tx = tx.clone();
-        let cancel = Arc::clone(&cancel);
+        // Both flags, not one: `Esc` on the live list stops this walk through
+        // the decorative flag while the per-target workers above keep going,
+        // and any total stop — `cancel()`, the renderer's Ctrl-C signal, the
+        // SIGINT handler, all of which write the shared flag directly — has to
+        // stop it too. Watching only the decorative flag would leave a Ctrl-C'd
+        // walk running (#826).
+        let cancel_all = Arc::clone(&cancel);
+        let cancel_dec = Arc::clone(&cancel_decorative);
         let source = source.clone();
         handles.push(thread::spawn(move || {
             let (branch_names, paths): (Vec<String>, Vec<PathBuf>) =
                 size_targets.into_iter().unzip();
-            crate::core::size_walk::walk_streaming(
+            crate::core::size_walk::walk_streaming_any(
                 &paths,
-                Some(&cancel),
+                &[&cancel_all, &cancel_dec],
                 size_jobs,
                 |idx, size| {
                     let _ = tx.send(DagEvent::WorktreeInfoUpdated {
@@ -180,6 +218,7 @@ pub fn spawn(req: CollectorRequest, tx: mpsc::Sender<DagEvent>) -> CollectorHand
 
     CollectorHandle {
         cancel,
+        cancel_decorative,
         handles,
         sentinel: Some((tx, source)),
     }
@@ -434,6 +473,58 @@ mod tests {
         let events: Vec<DagEvent> = rx.iter().collect();
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], DagEvent::WorktreeInfoCollectionDone));
+    }
+
+    /// A handle over an empty request — enough to exercise the flag contract
+    /// without spawning any work.
+    fn flag_probe_handle() -> (CollectorHandle, mpsc::Receiver<DagEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let ctx = Arc::new(CollectorContext {
+            use_gitoxide: false,
+            base_branch: "master".into(),
+            remote_name: "origin".into(),
+            ownership_strategy: OwnershipStrategy::RecencyPlurality,
+            user_email: None,
+            git_common_dir: PathBuf::new(),
+        });
+        let handle = spawn(
+            CollectorRequest {
+                targets: vec![],
+                fields: FieldSet::ALL,
+                stat: Stat::Summary,
+                source: PatchSource::Collector,
+                ctx,
+                size_jobs: 2,
+            },
+            tx,
+        );
+        (handle, rx)
+    }
+
+    #[test]
+    fn cancel_decorative_leaves_the_worker_flag_clear() {
+        // The whole point of the split: the size coordinator stops, the
+        // per-target workers do not. Wiring the size coordinator back to the
+        // shared flag, or making this setter touch both, breaks `Esc`'s
+        // "wait for the essential cells" contract silently.
+        let (handle, _rx) = flag_probe_handle();
+        handle.cancel_decorative();
+        assert!(handle.decorative_flag().load(Ordering::Relaxed));
+        assert!(!handle.cancel_flag().load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn cancel_is_still_a_total_stop() {
+        // Every pre-split caller (Ctrl-C, renderer teardown) calls `cancel` and
+        // expects everything to stop, the size walk included. That the *walk*
+        // honours this flag is pinned in `size_walk::either_flag_stops_the_
+        // streaming_walk` — asserting it here, by checking that `cancel` also
+        // sets the decorative flag, would pass while the real Ctrl-C path
+        // (a direct write to `cancel_flag()`, which never goes through this
+        // method) stayed broken. It did, for one review cycle.
+        let (handle, _rx) = flag_probe_handle();
+        handle.cancel();
+        assert!(handle.cancel_flag().load(Ordering::Relaxed));
     }
 
     #[test]

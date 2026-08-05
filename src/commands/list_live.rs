@@ -326,6 +326,10 @@ pub fn run_live(args: Args) -> Result<()> {
         },
         tx,
     );
+    // Cloned out now: `collector_handle` moves into the join thread below, and
+    // both the renderer's Esc arm and the forge barrier need this flag after
+    // that. Same reason `barrier_cancel` is cloned from `cancel`.
+    let abandon_flag = collector_handle.decorative_flag();
 
     let mut state = TuiState::new(
         Vec::new(), // no phases
@@ -351,6 +355,10 @@ pub fn run_live(args: Args) -> Result<()> {
     state.live.cfg.forge_prs = forge_lookup;
     state.live.cfg.forge_prs_loading = forge_loading;
     state.live.cfg.forge_prs_stale = forge_stale;
+    // Opt in to Esc (#826). This is the surface the key was asked for: unlike
+    // sync/prune/clone, `daft list` mutates nothing and is routinely held open
+    // past its useful output by the size walk and the forge barrier.
+    state.live.esc_abandons = true;
 
     // Watch the detached refresh conclude while the table is live: poll the
     // store's health stamp (cheap reader-pool read, no network — the render
@@ -431,12 +439,17 @@ pub fn run_live(args: Args) -> Result<()> {
     // sends its event *before* the signal, so the shared channel orders the
     // verdict ahead of the sentinel.
     let barrier_cancel = std::sync::Arc::clone(&cancel);
+    // Esc abandons the PR column too, and this barrier is the only thing left
+    // that waits on it — without this the user waits out the deadline for a
+    // refresh whose result they just said they did not want.
+    let barrier_abandon = std::sync::Arc::clone(&abandon_flag);
     let join_thread = std::thread::spawn(move || {
         collector_handle.join_after(move || {
             let Some(done_rx) = forge_done_rx else { return };
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
             while std::time::Instant::now() < deadline
                 && !barrier_cancel.load(std::sync::atomic::Ordering::Relaxed)
+                && !barrier_abandon.load(std::sync::atomic::Ordering::Relaxed)
             {
                 match done_rx.recv_timeout(std::time::Duration::from_millis(100)) {
                     Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -452,7 +465,9 @@ pub fn run_live(args: Args) -> Result<()> {
     // to enable. RAII guard restores cooked mode on every exit path.
     let _raw_guard = crate::output::tui::enable_raw_mode_guard();
 
-    let renderer = TuiRenderer::new(state, rx).with_cancel_signal(cancel);
+    let renderer = TuiRenderer::new(state, rx)
+        .with_cancel_signal(cancel)
+        .with_abandon_signal(abandon_flag);
     let final_state = renderer.run()?;
 
     // Persist freshly-walked sizes so the next run seeds from them. Only rows
