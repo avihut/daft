@@ -132,6 +132,118 @@ pub fn check_reflink_support(ctx: &RepoContext) -> CheckResult {
     }
 }
 
+/// Worktrees renamed aside by a removal but not yet reclaimed (#200).
+///
+/// A removal hands the directory to a detached reaper and returns; if that
+/// reaper dies, the space stays occupied until the next removal in the repo
+/// sweeps it. That self-healing is what keeps deferred deletion honest, but it
+/// only fires when the user removes something again — so a repo they have
+/// stopped pruning can sit on the space indefinitely, silently. This check is
+/// the surface that makes it visible, and `--fix` reclaims it on demand.
+///
+/// Two states get reported, and they are not the same problem. A *stale* entry
+/// is one whose reap should have finished long ago — the space is simply still
+/// there. An *interrupted* one never had its removal committed: the tree was
+/// renamed aside but git was never told, so no reaper will ever touch it and
+/// git may still point at a path that no longer exists. That is worth saying at
+/// any age, so it is not gated on the threshold.
+pub fn check_pending_trash(ctx: &RepoContext) -> CheckResult {
+    /// Below this a pending entry is almost certainly a reap still running.
+    const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+    let pending = crate::core::worktree::trash::pending(&ctx.git_common_dir);
+    let reportable = reportable_pending(&pending, STALE_AFTER);
+
+    if reportable.is_empty() {
+        return CheckResult::pass("Pending deletions", "no worktrees awaiting reclamation");
+    }
+
+    let interrupted = reportable.iter().filter(|e| e.interrupted).count();
+    let labels: Vec<String> = reportable
+        .iter()
+        .map(|e| {
+            let name = e
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| e.path.display().to_string());
+            let state = if e.interrupted {
+                "removal interrupted".to_string()
+            } else {
+                match e.age {
+                    Some(age) => format!("waiting {}", humanize_age(age)),
+                    None => "waiting".to_string(),
+                }
+            };
+            format!("{name} — {state}")
+        })
+        .collect();
+
+    let headline = if interrupted == reportable.len() {
+        format!("{interrupted} interrupted removal(s) awaiting resolution")
+    } else if interrupted > 0 {
+        format!(
+            "{} removed worktree(s) still occupying disk space, {interrupted} interrupted",
+            reportable.len()
+        )
+    } else {
+        format!(
+            "{} removed worktree(s) still occupying disk space",
+            reportable.len()
+        )
+    };
+
+    let git_common_dir = ctx.git_common_dir.clone();
+    let dry_labels = labels.clone();
+    CheckResult::warning("Pending deletions", &headline)
+        .with_details(labels)
+        .with_suggestion("run with --fix to resolve them now")
+        .with_fix(Box::new(move || {
+            // `reclaim` takes the single-flight lock and reports what it could
+            // not do, so a fix that freed nothing cannot print as fixed — and
+            // it restores an interrupted removal rather than completing it,
+            // since git still expects that worktree to be there.
+            let git = GitCommand::new(true);
+            crate::core::worktree::trash::reclaim(&git, &git_common_dir)
+                .map_err(|e| format!("{e:#}"))
+        }))
+        .with_dry_run_fix(Box::new(move || {
+            dry_labels
+                .iter()
+                .map(|label| FixAction {
+                    description: format!("Resolve: {label}"),
+                    would_succeed: true,
+                    failure_reason: None,
+                })
+                .collect()
+        }))
+}
+
+/// Pending entries worth telling the user about: anything whose removal was
+/// interrupted, plus anything that has outlived several sweeps.
+///
+/// An entry of unknown age is treated as *not* stale: an unreadable timestamp
+/// is no evidence a reap failed, and guessing would turn a healthy repo into a
+/// standing warning. An interrupted entry is reported regardless — there its
+/// age says nothing, because no reaper is coming for it either way.
+fn reportable_pending(
+    pending: &[crate::core::worktree::trash::PendingEntry],
+    threshold: std::time::Duration,
+) -> Vec<&crate::core::worktree::trash::PendingEntry> {
+    pending
+        .iter()
+        .filter(|e| e.interrupted || e.age.is_some_and(|age| age > threshold))
+        .collect()
+}
+
+fn humanize_age(age: std::time::Duration) -> String {
+    let hours = age.as_secs() / 3600;
+    if hours < 24 {
+        return format!("{hours}h");
+    }
+    format!("{}d", hours / 24)
+}
+
 /// Check that the repository uses a daft-compatible worktree layout.
 pub fn check_worktree_layout(ctx: &RepoContext) -> CheckResult {
     let git = GitCommand::new(true);
@@ -464,7 +576,64 @@ pub fn dry_run_remote_head() -> Vec<FixAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::worktree::trash::PendingEntry;
     use crate::doctor::CheckStatus;
+    use std::time::Duration;
+
+    fn entry(name: &str, age: Option<Duration>) -> PendingEntry {
+        PendingEntry {
+            path: std::path::PathBuf::from(name),
+            age,
+            interrupted: false,
+        }
+    }
+
+    /// A reap in flight is the ordinary case; reporting it would make every
+    /// removal look like a problem for as long as the delete takes.
+    #[test]
+    fn a_young_pending_entry_is_not_reported() {
+        let pending = vec![entry("just-removed", Some(Duration::from_secs(5)))];
+        assert!(reportable_pending(&pending, Duration::from_secs(3600)).is_empty());
+    }
+
+    /// An entry outliving the threshold means sweeps are not reaching it.
+    #[test]
+    fn an_old_pending_entry_is_reported() {
+        let pending = vec![
+            entry("fresh", Some(Duration::from_secs(5))),
+            entry("stuck", Some(Duration::from_secs(90_000))),
+        ];
+        let stale = reportable_pending(&pending, Duration::from_secs(3600));
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].path, std::path::PathBuf::from("stuck"));
+    }
+
+    /// An unreadable timestamp is not evidence of failure — treating it as
+    /// stale would leave a healthy repo permanently warning.
+    #[test]
+    fn a_pending_entry_of_unknown_age_is_not_reported() {
+        let pending = vec![entry("unknown", None)];
+        assert!(reportable_pending(&pending, Duration::from_secs(3600)).is_empty());
+    }
+
+    /// An interrupted removal is never healthy, however young: no reaper will
+    /// ever take it, so waiting for a threshold only delays the report.
+    #[test]
+    fn an_interrupted_removal_is_reported_at_any_age() {
+        let pending = vec![PendingEntry {
+            path: std::path::PathBuf::from("cut-short"),
+            age: Some(Duration::from_secs(2)),
+            interrupted: true,
+        }];
+        let reportable = reportable_pending(&pending, Duration::from_secs(3600));
+        assert_eq!(reportable.len(), 1);
+    }
+
+    #[test]
+    fn age_reads_in_hours_then_days() {
+        assert_eq!(humanize_age(Duration::from_secs(3600)), "1h");
+        assert_eq!(humanize_age(Duration::from_secs(3600 * 25)), "1d");
+    }
 
     #[test]
     fn test_is_common_dir_bare_true() {

@@ -317,6 +317,14 @@ fn scan_dir(
             continue;
         };
         if meta.is_dir() {
+            // Worktrees awaiting deletion are not part of what the repo
+            // occupies — they are on their way out, and counting them reports
+            // space that is already spoken for. This matters because the
+            // figure is persisted (`commands::size_cache`), so a walk that
+            // races a pending reap would cache the pre-removal size (#200).
+            if crate::core::worktree::trash::is_trash_path(&entry.path()) {
+                continue;
+            }
             subdirs.push(entry.path());
         } else if count_file(&meta, seen, hard_links) {
             bytes += meta.len();
@@ -409,6 +417,28 @@ mod tests {
         write(&root.join("sub/c.txt"), b"nested content");
         write(&root.join("sub/deep/d.txt"), &vec![7u8; 1234]);
         fs::create_dir_all(root.join("sub/empty")).unwrap();
+    }
+
+    /// Worktrees renamed into `.daft/trash/` are on their way out (#200), so
+    /// they must not inflate the repo's reported size — the figure is cached,
+    /// so a walk that races a pending reap would persist the pre-removal size.
+    #[test]
+    fn pending_deletions_do_not_count_toward_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        write(&root.join("kept.bin"), &vec![0u8; 1000]);
+        write(
+            &root.join(".git/.daft/trash/doomed-worktree/huge.bin"),
+            &vec![0u8; 50_000],
+        );
+
+        let sizes = walk_all(std::slice::from_ref(&root), None, 4);
+
+        assert_eq!(
+            sizes[0],
+            Some(1000),
+            "a worktree awaiting deletion must not be counted"
+        );
     }
 
     #[test]

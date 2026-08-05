@@ -1,0 +1,48 @@
+name: Removal reclaims what a dead reaper left behind
+description: >
+  #200 hands the actual delete to a detached reaper, so a reaper that dies
+  leaves an occupied directory nobody is watching. The guarantee that keeps that
+  from being a silent leak is convergence: the next removal in the repo sweeps
+  the trash first. This seeds a stranded entry by hand — standing in for a
+  reaper killed mid-flight — and asserts the next removal reclaims it.
+
+  The seeded entry carries no `.origin` sidecar, which is what makes it garbage:
+  its removal committed, and only the delete was left. An entry that *does* have
+  one is an interrupted removal and must survive every sweep — covered by
+  test_remove_sweep_spares_an_interrupted_removal in
+  tests/integration/test_branch_delete.sh.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Strand a directory in the trash, as a killed reaper would
+    run: |
+      cd $WORK_DIR/test-repo
+      mkdir -p .git/.daft/trash/stranded-worktree/node_modules
+      echo "leaked" > .git/.daft/trash/stranded-worktree/node_modules/big.js
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/.git/.daft/trash/stranded-worktree/node_modules/big.js"
+
+  - name: Create and remove an unrelated branch
+    run: daft start feature/unrelated
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: The removal sweeps the stranded entry on its way through
+    run: daft remove -f feature/unrelated
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/.git/.daft/trash/stranded-worktree/node_modules/big.js"
+        - "$WORK_DIR/test-repo/feature/unrelated"

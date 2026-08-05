@@ -134,6 +134,9 @@ pub fn execute(
         git = git.with_cancel(std::sync::Arc::clone(cancel));
     }
     let git_dir = get_git_common_dir()?;
+    // Reclaim leftovers from a reaper that died (#200): a failed background
+    // delete must be delayed, never permanent. Cheap when the trash is empty.
+    crate::core::worktree::trash::sweep(&git_dir);
     let default_branch =
         get_default_branch_local(&git_dir, &params.remote_name, params.use_gitoxide).ok();
     let ctx = PruneContext {
@@ -920,14 +923,33 @@ fn remove_worktree(
 
     if wt_path.exists() {
         sink.on_step("Removing worktree...");
-        if let Err(e) = ctx.git.worktree_remove(wt_path, force) {
+        // Rename aside rather than walking the tree (#200). Declining is not a
+        // failure — it means the fast path did not apply, and the ordinary
+        // removal below runs unchanged, including git's refusal of a dirty
+        // worktree.
+        use crate::core::worktree::trash::Disposition;
+        let disposition =
+            crate::core::worktree::trash::dispose(ctx.git, &ctx.git_dir, wt_path, force);
+        if disposition == Disposition::Declined
+            && let Err(e) = ctx.git.worktree_remove(wt_path, force)
+        {
             sink.on_warning(&format!(
                 "Failed to remove worktree {}: {e}. Skipping deletion of branch {branch_name}.",
                 wt_path.display()
             ));
             return RemoveOutcome::Failed;
         }
-        sink.on_step(&format!("Removed worktree '{branch_name}'"));
+        // `prune` clears many worktrees at once, so the gap between "removed"
+        // and "the space is back" is the widest here of anywhere. Saying so
+        // costs a clause and stops `df` from contradicting us.
+        match disposition {
+            Disposition::Deferred => sink.on_step(&format!(
+                "Removed worktree '{branch_name}' (reclaiming space in background)"
+            )),
+            Disposition::Reclaimed | Disposition::Declined => {
+                sink.on_step(&format!("Removed worktree '{branch_name}'"));
+            }
+        }
     } else {
         sink.on_warning(&format!(
             "Worktree directory {} not found. Attempting to force remove record.",
