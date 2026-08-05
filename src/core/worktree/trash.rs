@@ -274,12 +274,16 @@ pub fn dispose(
 
     // Git has disowned the path. Dropping the sidecar is the commit point:
     // from here the entry is ordinary garbage and any reaper may take it.
+    //
+    // Failing to drop it is emphatically *not* a failed removal, so this must
+    // not decline — the worktree is gone and git has been told, and sending the
+    // caller down the ordinary path would have it delete an absent directory
+    // and report an error for work that succeeded. The only cost is that no
+    // reaper will take this particular entry: `daft doctor` reports it, and
+    // `reclaim` clears it, since git no longer names the origin the guard
+    // points at.
     if let Err(e) = std::fs::remove_file(&sidecar) {
-        // The tree is safe either way — it simply will not be reaped until
-        // `daft doctor --fix` resolves it, so say so rather than claiming
-        // background reclamation.
-        crate::log_debug!("could not commit the trash entry, leaving it for doctor: {e}");
-        return Disposition::Declined;
+        crate::log_debug!("trash entry left for doctor, its guard did not clear: {e}");
     }
 
     schedule_reap(&trash)
@@ -516,7 +520,18 @@ pub fn reclaim(git: &GitCommand, git_common_dir: &Path) -> anyhow::Result<()> {
             continue;
         }
         let sidecar = origin_sidecar(&path);
-        let origin = std::fs::read(&sidecar).ok().map(|b| path_from_bytes(&b));
+        let origin = match std::fs::read(&sidecar) {
+            Ok(bytes) => Some(path_from_bytes(&bytes)),
+            // No sidecar: the removal committed, so this is ordinary garbage.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            // A sidecar we cannot read is a guard we cannot evaluate. Report
+            // it and move on: refusing to act keeps the space occupied, where
+            // acting could delete a worktree git is still pointing at.
+            Err(e) => {
+                failures.push(format!("{}: unreadable guard: {e}", sidecar.display()));
+                continue;
+            }
+        };
         // An interrupted removal that git still points at belongs back where
         // git expects it — deleting it would destroy ignored files the
         // cancelled removal was supposed to leave alone.
