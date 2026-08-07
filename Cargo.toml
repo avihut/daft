@@ -167,7 +167,7 @@ nix = { version = "0.31", features = ["signal", "term", "fs", "poll"] }
 tempfile = "3.8"
 assert_cmd = "2.2"
 predicates = "3.0"
-serial_test = "3.0"
+serial_test = "4.0"
 # `in_memory` (InMemoryTerm) lets timeline tests assert the persisted line
 # sequence instead of just the state machine. Dev-only: feature unification
 # does not leak dev-dependency features into `cargo build`.
