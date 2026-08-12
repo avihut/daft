@@ -137,10 +137,10 @@ impl MovePlan {
         // here but need not be for future dispositions.
         let mut best: Option<(usize, PathBuf)> = None;
         for (from, to) in self.directory_moves() {
-            if let Ok(rest) = cwd.strip_prefix(from) {
+            if let Some(mapped) = rebase(cwd, from, to) {
                 let depth = from.components().count();
                 if best.as_ref().is_none_or(|(d, _)| depth > *d) {
-                    best = Some((depth, to.join(rest)));
+                    best = Some((depth, mapped));
                 }
             }
         }
@@ -309,10 +309,9 @@ fn classify(
             let old_path = canonical(&entry.path);
             let disposition = disposition_of(layout, old_root, &old_path, entry.branch.as_deref());
             let new_path = match disposition {
-                Disposition::CarriedWithRoot => old_path
-                    .strip_prefix(old_root)
-                    .map(|rest| new_root.join(rest))
-                    .unwrap_or_else(|_| old_path.clone()),
+                Disposition::CarriedWithRoot => {
+                    rebase(&old_path, old_root, new_root).unwrap_or_else(|| old_path.clone())
+                }
                 Disposition::Relocated => entry
                     .branch
                     .as_deref()
@@ -420,6 +419,22 @@ fn absolutize(path: &Path) -> Result<PathBuf> {
             .join(path)
     };
     Ok(normalize_path(&absolute))
+}
+
+/// Re-root `path` from `from` onto `to`, or `None` if it is not under `from`.
+///
+/// `Path::join("")` appends a separator, so the case that matters — a path that
+/// *is* `from`, which is every non-bare repo's main worktree — would come out
+/// as `/new/root/`. Two `Path`s compare equal across that, but the string does
+/// not: it is what lands in `DAFT_CD_FILE` and in the recorded worktree path,
+/// where nothing else spells a directory with a trailing slash.
+fn rebase(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    let rest = path.strip_prefix(from).ok()?;
+    Some(if rest.as_os_str().is_empty() {
+        to.to_path_buf()
+    } else {
+        to.join(rest)
+    })
 }
 
 /// Canonicalize as much of `path` as exists and keep the rest verbatim.
@@ -818,6 +833,37 @@ mod tests {
         assert_eq!(
             plan.map_cwd(&plan.old_root.join("src/deep")),
             Some(plan.new_root.join("src/deep"))
+        );
+    }
+
+    /// The cwd that matters most is the repo root itself, and its mapped
+    /// spelling is what lands in `DAFT_CD_FILE`. A naive `join("")` would
+    /// write `/new/root/` — equal as a `Path`, wrong as a string.
+    #[test]
+    fn the_mapped_root_carries_no_trailing_separator() {
+        let fx = fixture();
+        let dest = fx.projects.join("renamed");
+        let plan = build(request(&fx, &dest, &layout(SIBLING), &[])).unwrap();
+        let mapped = plan.map_cwd(&plan.old_root).expect("the root maps");
+        assert_eq!(mapped, plan.new_root);
+        assert!(
+            !mapped.to_string_lossy().ends_with('/'),
+            "mapped root must not gain a trailing separator: {}",
+            mapped.display()
+        );
+    }
+
+    /// Same artifact, same fix, on the path recorded for the main worktree.
+    #[test]
+    fn the_carried_main_worktree_path_carries_no_trailing_separator() {
+        let fx = fixture();
+        let worktrees = [entry(&fx.root, Some("master"))];
+        let dest = fx.projects.join("renamed");
+        let plan = build(request(&fx, &dest, &layout(SIBLING), &worktrees)).unwrap();
+        let recorded = plan.worktrees[0].new_path.to_string_lossy().to_string();
+        assert!(
+            !recorded.ends_with('/'),
+            "recorded worktree path must not gain a trailing separator: {recorded}"
         );
     }
 

@@ -540,6 +540,61 @@ test_daft_repo_wrapper_writes_cd_file() {
     return 0
 }
 
+# Regression test (#837): `daft repo move` relocates the directory the user is
+# standing in. Like `repo remove` it is a subcommand rather than a separate
+# binary, so it depends on the wrapper's `repo)` case to act on DAFT_CD_FILE —
+# and unlike remove, the correct landing spot is a specific new path, not any
+# surviving ancestor. Only this suite exercises the wrapper; the YAML scenarios
+# drive the binary directly and cannot catch a missing wrapper case.
+test_daft_repo_move_wrapper_follows_the_repo() {
+    log "Testing: daft repo move wrapper cds the shell to the repo's new location"
+
+    local remote_dir
+    remote_dir=$(create_test_remote "test-repo-wrapper-move" "main")
+
+    git-worktree-clone --layout contained "$remote_dir" >/dev/null 2>&1
+    local project_root="$PWD/test-repo-wrapper-move"
+    local main_worktree="$project_root/main"
+    if [[ ! -d "$main_worktree" ]]; then
+        log_error "setup: main worktree not created at $main_worktree"
+        return 1
+    fi
+
+    local dest_parent="$PWD/moved-repos"
+    mkdir -p "$dest_parent"
+    local new_root="$dest_parent/relocated"
+
+    # Stand inside the main worktree, move the whole repo, and report where
+    # the wrapper left us. Without the wrapper's `repo)` case the shell stays
+    # in the vanished path and `builtin pwd` cannot name a live directory.
+    local out
+    out=$(MAIN_WT="$main_worktree" NEW_ROOT="$new_root" bash -c '
+        eval "$(daft shell-init bash)"
+        builtin cd "$MAIN_WT" || exit 11
+        daft repo move test-repo-wrapper-move "$NEW_ROOT" >/dev/null 2>&1 || true
+        builtin pwd
+    ' 2>&1) || true
+
+    if [[ -z "$out" ]]; then
+        log_error "wrapper produced no pwd output"
+        return 1
+    fi
+    if [[ -d "$project_root" ]]; then
+        log_error "repo was not moved out of $project_root"
+        return 1
+    fi
+    # The cwd was the main worktree, so the wrapper must land in *its* new
+    # place — landing merely somewhere that exists would hide a wrong mapping.
+    local expected="$new_root/main"
+    if [[ "$out" != "$expected" && "$out" != "$(cd "$expected" 2>/dev/null && pwd -P)" ]]; then
+        log_error "wrapper landed at '$out', expected '$expected'"
+        return 1
+    fi
+
+    log_success "daft repo move wrapper followed the repo (now in: $out)"
+    return 0
+}
+
 # Regression for issue #519: the `-C <path>` global flag must work end-to-end
 # through the shell wrapper. Two failure modes the wrapper could introduce:
 #  1. Binary writes DAFT_CD_FILE relative to its post-`-C` cwd correctly, but
@@ -992,6 +1047,7 @@ main() {
     run_test "daft_wrapper_intercepts_subcommand" test_daft_wrapper_intercepts_subcommand
     run_test "wrapper_resolves_binary_live" test_wrapper_resolves_binary_live
     run_test "daft_repo_wrapper_writes_cd_file" test_daft_repo_wrapper_writes_cd_file
+    run_test "daft_repo_move_wrapper_follows_the_repo" test_daft_repo_move_wrapper_follows_the_repo
     run_test "c_flag_cd_redirect_through_wrapper" test_c_flag_cd_redirect_through_wrapper
     run_test "start_cross_repo_cd_through_wrapper" test_start_cross_repo_cd_through_wrapper
     run_test "remove_cross_repo_does_not_cd_through_wrapper" test_remove_cross_repo_does_not_cd_through_wrapper

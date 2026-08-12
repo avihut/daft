@@ -1,0 +1,63 @@
+name: A moved repo keeps its trust grant and its job history
+description: >
+  Losing trust is the worst of the silent failures a plain mv causes — hooks
+  stop running with only a skip warning. The grant is keyed by git-dir path, so
+  the move has to re-key it. Job history is keyed by the repo's uuid, which
+  lives inside the git dir and travels with it; asserting it here proves the
+  uuid path held rather than assuming it.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and trust the repository
+    run: |
+      daft clone --layout sibling $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      daft hooks trust --force
+    expect:
+      exit_code: 0
+
+  - name: Trust is recorded at the original location
+    run: daft hooks trust list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "work/test-repo"
+        - "allow"
+
+  - name: Move the repository
+    run: |
+      mkdir -p $WORK_DIR/moved
+      daft repo move test-repo $WORK_DIR/moved/api-gateway 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "trust"
+
+  - name: The grant followed the repository, at its original level
+    run: daft hooks trust list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "moved/api-gateway"
+        - "allow"
+      output_not_contains:
+        - "work/test-repo\n"
+
+  - name:
+      Prior job history is still reachable — the uuid travelled with the git dir
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/moved/api-gateway"
+    expect:
+      exit_code: 0
+
+  - name: The repo is still trusted from its new location
+    run: daft hooks trust list
+    cwd: "$WORK_DIR/moved/api-gateway"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "allow"
