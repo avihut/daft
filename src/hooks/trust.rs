@@ -93,6 +93,27 @@ fn default_granted_by() -> String {
     "user".to_string()
 }
 
+/// Which per-repo settings a [`TrustDatabase::rekey_repo`] actually carried.
+///
+/// Both are keyed by git-dir path and both are lost by a plain `mv`, but they
+/// are not interchangeable to the reader: "your trust grant survived" is a
+/// claim about hooks being allowed to run, and it must not be printed for a
+/// repo that only ever had a `--layout` override recorded.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Rekeyed {
+    /// The trust grant moved, verbatim.
+    pub trust: bool,
+    /// The per-repo layout override moved.
+    pub layout: bool,
+}
+
+impl Rekeyed {
+    /// Whether anything moved — the signal for "persist this registry".
+    pub fn any(self) -> bool {
+        self.trust || self.layout
+    }
+}
+
 impl TrustEntry {
     /// Create a new trust entry with the current timestamp.
     pub fn new(level: TrustLevel) -> Self {
@@ -626,31 +647,33 @@ impl TrustDatabase {
     /// provenance of the original grant has to survive the move.
     ///
     /// `old_key` comes from [`Self::repo_key`], captured before the move.
-    /// `new_git_dir` exists by now and is canonicalized here. Returns whether
-    /// anything moved.
-    pub fn rekey_repo(&mut self, old_key: &str, new_git_dir: &Path) -> bool {
+    /// `new_git_dir` exists by now and is canonicalized here. Reports the two
+    /// settings separately: they are keyed alike but mean different things to
+    /// the user, and a repo that only ever had `--layout` recorded must not be
+    /// told its trust grant survived.
+    pub fn rekey_repo(&mut self, old_key: &str, new_git_dir: &Path) -> Rekeyed {
         let new_key = Self::repo_key(new_git_dir);
         if new_key == old_key {
-            return false;
+            return Rekeyed::default();
         }
-        // Bind both before the `||` so neither arm short-circuits. Whatever
-        // sat under `new_key` is overwritten on purpose: it described whatever
-        // used to occupy that path, and this repo is what occupies it now.
-        let moved_trust = match self.repositories.remove(old_key) {
+        // Whatever sat under `new_key` is overwritten on purpose: it described
+        // whatever used to occupy that path, and this repo is what occupies it
+        // now.
+        let trust = match self.repositories.remove(old_key) {
             Some(entry) => {
                 self.repositories.insert(new_key.clone(), entry);
                 true
             }
             None => false,
         };
-        let moved_layout = match self.layouts.remove(old_key) {
+        let layout = match self.layouts.remove(old_key) {
             Some(layout) => {
                 self.layouts.insert(new_key, layout);
                 true
             }
             None => false,
         };
-        moved_trust || moved_layout
+        Rekeyed { trust, layout }
     }
 
     /// Add a pattern-based trust rule.
@@ -986,7 +1009,15 @@ mod tests {
         entry.granted_by = "hooks-trust-prompt".to_string();
         db.set_layout(old, "contained".to_string());
 
-        assert!(db.rekey_repo(&TrustDatabase::repo_key(old), new));
+        let rekeyed = db.rekey_repo(&TrustDatabase::repo_key(old), new);
+        assert_eq!(
+            rekeyed,
+            Rekeyed {
+                trust: true,
+                layout: true
+            },
+            "this repo had both, so both must be reported"
+        );
 
         let moved = db.get_trust_entry(new).expect("entry moved to the new key");
         assert_eq!(moved.level, TrustLevel::Allow);
@@ -1015,7 +1046,16 @@ mod tests {
         let new = Path::new("/new/api/.git");
         db.set_layout(old, "sibling".to_string());
 
-        assert!(db.rekey_repo(&TrustDatabase::repo_key(old), new));
+        let rekeyed = db.rekey_repo(&TrustDatabase::repo_key(old), new);
+        assert_eq!(
+            rekeyed,
+            Rekeyed {
+                trust: false,
+                layout: true
+            },
+            "a `--layout` override is not a trust grant: reporting `trust` here \
+             would tell the user their hooks still run when nothing said so"
+        );
         assert_eq!(db.get_layout(new), Some("sibling"));
         assert!(db.get_layout(old).is_none());
     }
@@ -1023,10 +1063,12 @@ mod tests {
     #[test]
     fn rekey_repo_reports_false_when_the_repo_had_no_settings() {
         let mut db = TrustDatabase::default();
-        assert!(!db.rekey_repo(
+        let rekeyed = db.rekey_repo(
             &TrustDatabase::repo_key(Path::new("/old/api/.git")),
-            Path::new("/new/api/.git")
-        ));
+            Path::new("/new/api/.git"),
+        );
+        assert_eq!(rekeyed, Rekeyed::default());
+        assert!(!rekeyed.any());
     }
 
     /// A move that lands where the settings already live (a rename that
@@ -1037,7 +1079,10 @@ mod tests {
         let git_dir = Path::new("/old/api/.git");
         db.set_trust_level(git_dir, TrustLevel::Allow);
 
-        assert!(!db.rekey_repo(&TrustDatabase::repo_key(git_dir), git_dir));
+        assert!(
+            !db.rekey_repo(&TrustDatabase::repo_key(git_dir), git_dir)
+                .any()
+        );
         assert_eq!(
             db.get_trust_level(git_dir),
             TrustLevel::Allow,
@@ -1055,7 +1100,7 @@ mod tests {
         db.set_trust_level(old, TrustLevel::Allow);
         db.set_trust_level(new, TrustLevel::Deny);
 
-        assert!(db.rekey_repo(&TrustDatabase::repo_key(old), new));
+        assert!(db.rekey_repo(&TrustDatabase::repo_key(old), new).trust);
         assert_eq!(db.get_trust_level(new), TrustLevel::Allow);
     }
 

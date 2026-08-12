@@ -33,11 +33,16 @@ its layout override, and has worktrees git can no longer resolve.
 Worktrees fall into three cases, decided before anything moves:
 
 - **Inside the repository directory** — they travel with it. Contained, nested
-  and bare layouts put every worktree here.
+  and bare layouts put every worktree here. Under `contained-classic` the
+  directory that moves is the wrapper, not the clone inside it, so its sibling
+  worktrees come along.
 - **Outside it, but exactly where the layout would place them** — they move
   too, to the path the layout template predicts under the new directory name.
   The default `sibling` layout puts every worktree here, so moving only the
-  repository directory would strand all of them.
+  repository directory would strand all of them. `centralized` puts them under
+  `<data dir>/worktrees/<repo>/`, which moves when the directory name changes;
+  daft creates that destination, since it is a path daft chose rather than one
+  you named.
 - **Anywhere else** — you chose that path deliberately (`git daft start --at`),
   or the worktree is detached and unpredictable, so it stays where it is. Its
   git linkage is still repaired, and the summary says it was left behind.

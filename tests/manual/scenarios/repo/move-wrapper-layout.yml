@@ -1,0 +1,71 @@
+name: Move a repo whose clone sits inside a wrapper directory
+description: >
+  contained-classic keeps a non-bare clone one level down, with every worktree
+  as its sibling inside a wrapper directory. Repo resolution reports the clone,
+  not the wrapper, so a move that took that at face value would pull the clone
+  out of its own wrapper and strand the siblings. The whole wrapper moves.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with the contained-classic layout and add a worktree
+    run: |
+      daft clone --layout contained-classic $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      daft start feature-x
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/feature-x"
+
+  - name: Move the wrapper into a new parent
+    run: |
+      mkdir -p $WORK_DIR/moved
+      daft repo move test-repo $WORK_DIR/moved/api-gateway 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/moved/api-gateway/main"
+        - "$WORK_DIR/moved/api-gateway/feature-x"
+      files_not_exist:
+        - "$WORK_DIR/test-repo"
+
+  - name: Both worktrees resolve their repo from inside the new wrapper
+    run: |
+      git -C $WORK_DIR/moved/api-gateway/main status --porcelain >/dev/null && echo "main=ok"
+      git -C $WORK_DIR/moved/api-gateway/feature-x status --porcelain >/dev/null && echo "feature=ok"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main=ok"
+        - "feature=ok"
+
+  - name: git reports no worktree as prunable
+    run: git -C $WORK_DIR/moved/api-gateway/main worktree list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "api-gateway/feature-x"
+      output_not_contains:
+        - "prunable"
+
+  - name: daft still sees both worktrees
+    run: daft list
+    cwd: "$WORK_DIR/moved/api-gateway/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
+        - "feature-x"
+
+  - name: The catalog followed the wrapper, and the name followed with it
+    run: daft repo list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "api-gateway"
+        - "moved/api-gateway"

@@ -289,6 +289,9 @@ fn report(output: &mut CliOutput, plan: &repo_move::MovePlan, outcome: &repo_mov
     if outcome.trust_rekeyed {
         output.detail("trust", "carried to the new location");
     }
+    if outcome.layout_rekeyed {
+        output.detail("layout override", "carried to the new location");
+    }
     match (&outcome.renamed_to, &plan.name) {
         (Some(name), NamePlan::FollowsDirectory(_)) => output.notice(&format!(
             "renamed the catalog entry to '{name}' to match the directory; pass --name to choose differently"

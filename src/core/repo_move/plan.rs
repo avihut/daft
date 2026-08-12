@@ -168,7 +168,7 @@ pub struct MoveRequest<'a> {
 
 /// Decide the whole move. Refuses rather than half-doing anything.
 pub fn build(req: MoveRequest<'_>) -> Result<MovePlan> {
-    let old_root = canonical(&req.target.project_root);
+    let old_root = effective_root(req.layout, &canonical(&req.target.project_root));
     let old_git_dir = canonical(&req.target.bare_git_dir);
     let new_root = resolve_destination(req.dest, &old_root)?;
 
@@ -182,13 +182,17 @@ pub fn build(req: MoveRequest<'_>) -> Result<MovePlan> {
     }
     refuse_across_filesystems(&old_root, &new_root)?;
 
-    // `project_root` is the git dir's parent by construction, so the git dir
-    // moves with the root and keeps its own name (`.git` for every layout daft
-    // creates, but read it rather than assume it).
-    let git_dir_name = old_git_dir
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("{} has no file name", old_git_dir.display()))?;
-    let new_git_dir = new_root.join(git_dir_name);
+    // Re-root the git dir rather than assuming it sits directly under the root
+    // as `.git`: under a wrapper layout it is one level deeper
+    // (`<wrapper>/<default-branch>/.git`), and it travels with the subtree
+    // either way.
+    let new_git_dir = rebase(&old_git_dir, &old_root, &new_root).ok_or_else(|| {
+        anyhow::anyhow!(
+            "the git directory {} is not inside {}",
+            old_git_dir.display(),
+            old_root.display()
+        )
+    })?;
 
     let worktrees = classify(req.layout, &old_root, &new_root, req.worktrees);
     let name = plan_name(
@@ -428,6 +432,23 @@ fn absolutize(path: &Path) -> Result<PathBuf> {
 /// as `/new/root/`. Two `Path`s compare equal across that, but the string does
 /// not: it is what lands in `DAFT_CD_FILE` and in the recorded worktree path,
 /// where nothing else spells a directory with a trailing slash.
+/// The directory that *is* the repository, as the layout sees it.
+///
+/// For a wrapped non-bare layout (`contained-classic`) the resolved project
+/// root is the clone **inside** the wrapper, while the wrapper is both what the
+/// user means by "the repository" and what the worktree template resolves
+/// against. Moving the clone alone would pull it out of its own wrapper and
+/// leave every sibling worktree behind. Same `parent()` idiom as
+/// `core::worktree::checkout` and `core::worktree::merge`.
+fn effective_root(layout: &Layout, project_root: &Path) -> PathBuf {
+    if layout.needs_wrapper()
+        && let Some(parent) = project_root.parent()
+    {
+        return parent.to_path_buf();
+    }
+    project_root.to_path_buf()
+}
+
 fn rebase(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
     let rest = path.strip_prefix(from).ok()?;
     Some(if rest.as_os_str().is_empty() {
@@ -480,6 +501,8 @@ mod tests {
 
     const SIBLING: &str = "{{ repo }}.{{ branch | sanitize }}";
     const CONTAINED: &str = "{{ repo_path }}/{{ branch }}";
+    /// `contained-classic`: non-bare clone inside a wrapper directory.
+    const CLASSIC: &str = "{{ repo_path }}/{{ branch | repo }}";
 
     fn layout(template: &str) -> Layout {
         Layout {
@@ -540,6 +563,88 @@ mod tests {
             worktrees,
             name_holder: &|_| None,
         }
+    }
+
+    // ── wrapper layouts ──────────────────────────────────────────────────
+
+    /// `contained-classic` puts the clone one level down, inside a wrapper the
+    /// worktrees are siblings in. `resolve_repo` hands back the *clone*, so a
+    /// planner that took it at face value would move the clone out of its own
+    /// wrapper and leave every sibling worktree behind — which is what this
+    /// did before `effective_root`.
+    #[test]
+    fn a_wrapper_layout_moves_the_wrapper_not_the_clone_inside_it() {
+        let tmp = TempDir::new().unwrap();
+        let projects = tmp.path().join("Projects");
+        let wrapper = projects.join("api");
+        let clone = wrapper.join("main");
+        std::fs::create_dir_all(clone.join(".git")).unwrap();
+        let feature = wrapper.join("feature-x");
+        std::fs::create_dir_all(&feature).unwrap();
+
+        let fx = Fixture {
+            root: wrapper.clone(),
+            projects: projects.clone(),
+            target: RepoTarget {
+                bare_git_dir: clone.join(".git"),
+                project_root: clone.clone(),
+            },
+            tmp,
+        };
+        let lay = layout(CLASSIC);
+        let worktrees = [
+            entry(&clone, Some("main")),
+            entry(&feature, Some("feature-x")),
+        ];
+        let dest = projects.join("gateway");
+        let plan = build(request(&fx, &dest, &lay, &worktrees)).unwrap();
+
+        assert_eq!(
+            plan.old_root,
+            canonical(&wrapper),
+            "the wrapper is what moves"
+        );
+        assert_eq!(
+            plan.new_git_dir,
+            plan.new_root.join("main").join(".git"),
+            "the git dir is a level down and must be re-rooted, not appended to the new root"
+        );
+        assert!(
+            plan.worktrees
+                .iter()
+                .all(|w| w.disposition == Disposition::CarriedWithRoot),
+            "every worktree lives inside the wrapper, so all ride along: {:?}",
+            plan.worktrees
+        );
+        // One rename — the wrapper — carries the whole constellation.
+        assert_eq!(plan.directory_moves().len(), 1);
+        assert_eq!(plan.repair_paths().len(), 2, "both still need repairing");
+    }
+
+    /// The name follows the *wrapper's* basename. Comparing against the clone's
+    /// (`main`) would never match the catalog name, so the name would never
+    /// follow for this layout.
+    #[test]
+    fn a_wrapper_layout_follows_the_wrapper_name() {
+        let tmp = TempDir::new().unwrap();
+        let projects = tmp.path().join("Projects");
+        let wrapper = projects.join("api");
+        let clone = wrapper.join("main");
+        std::fs::create_dir_all(clone.join(".git")).unwrap();
+
+        let fx = Fixture {
+            root: wrapper,
+            projects: projects.clone(),
+            target: RepoTarget {
+                bare_git_dir: clone.join(".git"),
+                project_root: clone,
+            },
+            tmp,
+        };
+        let lay = layout(CLASSIC);
+        let dest = projects.join("gateway");
+        let plan = build(request(&fx, &dest, &lay, &[])).unwrap();
+        assert_eq!(plan.name, NamePlan::FollowsDirectory("gateway".into()));
     }
 
     // ── mv semantics ─────────────────────────────────────────────────────

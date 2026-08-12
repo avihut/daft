@@ -12,7 +12,7 @@
 //! state than the one being corrected.
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::plan::{MovePlan, NamePlan};
 use crate::catalog::Catalog;
@@ -23,7 +23,10 @@ use crate::hooks::TrustDatabase;
 #[derive(Debug, Default)]
 pub struct MoveOutcome {
     pub repaired: usize,
+    /// The trust grant and the layout override are reported apart: they are
+    /// keyed alike, but only the first is a statement about hooks running.
     pub trust_rekeyed: bool,
+    pub layout_rekeyed: bool,
     pub renamed_to: Option<String>,
     /// Problems that did not stop the move but that the user has to know
     /// about. Rendered after the summary.
@@ -65,12 +68,31 @@ pub fn apply(plan: &MovePlan) -> Result<MoveOutcome> {
 fn move_directories(plan: &MovePlan) -> Result<()> {
     let moves = plan.directory_moves();
     let mut done: Vec<(&Path, &Path)> = Vec::with_capacity(moves.len());
+    let mut created: Vec<PathBuf> = Vec::new();
 
     for (from, to) in moves {
+        // Worktree destinations are computed by the layout, not typed by the
+        // user, so daft owns them and creates them — `centralized` re-roots
+        // every worktree under `<data>/worktrees/<repo-name>/`, a directory
+        // that does not exist yet when the move also renames the repo. The
+        // *root's* parent is deliberately not created: that one the user named,
+        // and preflight already refused it with `mv`'s "no such directory".
+        if to != plan.new_root
+            && let Some(parent) = to.parent()
+            && !parent.is_dir()
+        {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                rollback(&done, &created);
+                return Err(anyhow::Error::new(e)).with_context(|| {
+                    String::from("could not create ") + &parent.display().to_string()
+                });
+            }
+            created.push(parent.to_path_buf());
+        }
         match std::fs::rename(from, to) {
             Ok(()) => done.push((from, to)),
             Err(e) => {
-                rollback(&done);
+                rollback(&done, &created);
                 let hint = if e.kind() == std::io::ErrorKind::CrossesDevices {
                     "\n  a move across filesystems is a copy; copy it yourself, then run `"
                         .to_string()
@@ -98,7 +120,7 @@ fn move_directories(plan: &MovePlan) -> Result<()> {
 /// nothing left to try if the reverse rename also fails. It is reported rather
 /// than swallowed, because a partial rollback is exactly the state a user must
 /// be told about.
-fn rollback(done: &[(&Path, &Path)]) {
+fn rollback(done: &[(&Path, &Path)], created: &[PathBuf]) {
     for (from, to) in done.iter().rev() {
         if let Err(e) = std::fs::rename(to, from) {
             eprintln!(
@@ -107,6 +129,12 @@ fn rollback(done: &[(&Path, &Path)]) {
                 from.display()
             );
         }
+    }
+    // Drop the directories this move made, newest first. `remove_dir` refuses a
+    // non-empty directory, which is the check we want: anything still in there
+    // predates us or failed to roll back, and must not be deleted.
+    for dir in created.iter().rev() {
+        let _ = std::fs::remove_dir(dir);
     }
 }
 
@@ -161,13 +189,16 @@ fn rekey_trust(plan: &MovePlan, outcome: &mut MoveOutcome) {
     // for the latter would be a false reassurance about the one thing a plain
     // `mv` silently destroys. `update_if` rather than `update` so a repo that
     // never had a grant does not get a `repos.json` created for it.
-    let mut moved = false;
+    let mut moved = crate::hooks::Rekeyed::default();
     let result = TrustDatabase::update_if(|db| {
         moved = db.rekey_repo(&plan.old_trust_key, &plan.new_git_dir);
-        Ok(moved)
+        Ok(moved.any())
     });
     match result {
-        Ok(()) => outcome.trust_rekeyed = moved,
+        Ok(()) => {
+            outcome.trust_rekeyed = moved.trust;
+            outcome.layout_rekeyed = moved.layout;
+        }
         Err(e) => outcome.warn(
             String::from("could not move the trust grant to the new location: ")
                 + &e.to_string()
