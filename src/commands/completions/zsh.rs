@@ -1019,17 +1019,16 @@ _daft() {
                 return
                 ;;
             remove)
-                local prev_word="${words[$((CURRENT-1))]}"
-                if [[ "$prev_word" == "--repo" ]]; then
-                    local -a repos
-                    repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
-                    (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- "${repos[@]}"
-                    return
-                fi
                 if [[ "$curword" == -* ]]; then
-                    compadd -- --repo --keep-files -y --force --dry-run -v --verbose -h --help
+                    compadd -- --purge -y --force --dry-run -v --verbose -h --help
                     return
                 fi
+                # Catalog repo names first, then directories — the positional
+                # takes either (`repo remove api`, `repo remove ./old-repo`),
+                # same treatment as `repo info`.
+                local -a repos
+                repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
+                (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- "${repos[@]}"
                 _files -/
                 return
                 ;;

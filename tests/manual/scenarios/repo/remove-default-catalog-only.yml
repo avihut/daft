@@ -1,0 +1,180 @@
+name: Repo remove defaults to catalog-only
+description:
+  Without --purge, daft repo remove drops the catalog entry and touches nothing
+  on disk. The repo is addressed by the positional — by name from outside any
+  repo, or implicitly from inside — and a stale entry whose directory is already
+  gone is dropped the same ordinary way. The retired --repo and --keep-files
+  spellings are errors, not silent no-ops.
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  # The retired flags are gone outright — no back-compat no-op alias, so a
+  # user who typed the old spelling is told it moved rather than silently
+  # getting the default.
+  - name: --repo is rejected as an unknown argument
+    run: daft repo remove --repo test-repo-a 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "--repo"
+
+  - name: --keep-files is rejected as an unknown argument
+    run: daft repo remove --keep-files test-repo-a 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "--keep-files"
+
+  # The default asks nothing, so -y has no prompt to skip. Erroring keeps a
+  # script that meant "delete without asking" from silently becoming a
+  # catalog-only drop.
+  - name: -y without --purge is an error
+    run: daft repo remove test-repo-a -y 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "only applies to `--purge`"
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/main"
+
+  - name: dry-run announces the entry and changes nothing
+    run: daft repo remove --dry-run
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Would remove 'test-repo-a' from the catalog"
+
+  # Non-interactive without -y is fine: dropping a catalog entry is
+  # reversible, so the destructive-removal gate does not apply.
+  - name: the default removes the entry but not the files
+    run: daft repo remove
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removed 'test-repo-a' from the catalog"
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/main"
+
+  - name: the repository on disk is still a working clone
+    run:
+      git -C "$WORK_DIR/test-repo-a/main" rev-parse --git-common-dir >/dev/null
+      && echo STILL_A_REPO
+    expect:
+      exit_code: 0
+      output_contains:
+        - "STILL_A_REPO"
+
+  - name: the entry is tombstoned like any other removal
+    run: daft repo list --all
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo-a (removed)"
+        - "test-repo-b"
+
+  # Ambient registration is the restore story for kept files: any daft
+  # command run inside the repo re-registers it.
+  - name: running daft inside the kept repo resurrects the entry
+    run: daft list >/dev/null 2>&1 && daft repo list
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo-a"
+
+  # Go-shape addressing: the positional resolves a catalog name from outside
+  # any repo, and still deletes nothing.
+  - name: catalog-only removal by name from outside any repo
+    run: daft repo remove test-repo-b 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removed 'test-repo-b' from the catalog"
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/main"
+
+  - name: the named repo survived on disk
+    run: daft list >/dev/null 2>&1 && daft repo list
+    cwd: "$WORK_DIR/test-repo-b/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo-b"
+
+  # --purge is the opt-in that reaches the files, addressed the same way.
+  - name: full removal by catalog name needs --purge
+    run: daft repo remove --purge test-repo-b -y 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+
+  - name: the purged repo is gone from disk
+    run: test ! -d "$WORK_DIR/test-repo-b" && echo REPO_B_GONE
+    expect:
+      exit_code: 0
+      output_contains:
+        - "REPO_B_GONE"
+
+  - name: --purge refuses a stale entry and points at the plain form
+    run:
+      rm -rf "$WORK_DIR/test-repo-a" && daft repo remove --purge test-repo-a -y
+      2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no longer exists"
+        - "repo remove test-repo-a"
+
+  # The headline stale-entry case. Under the old surface this needed
+  # `--keep-files --repo`; now it is just the ordinary default path.
+  - name: the default drops a stale entry by name
+    run: daft repo remove test-repo-a
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removed stale entry 'test-repo-a' from the catalog"
+
+  - name: the stale entry is tombstoned
+    run: daft repo list --all
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo-a (removed)"
+
+  - name: a removed name is not addressable again
+    run: daft repo remove test-repo-b 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "was removed from the catalog"
+
+  - name: an unknown name fails with a catalog error
+    run: daft repo remove no-such-repo 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not found in the catalog"

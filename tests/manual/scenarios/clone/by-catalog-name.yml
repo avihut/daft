@@ -14,7 +14,7 @@ steps:
       exit_code: 0
 
   - name: Remove the repo
-    run: daft repo remove -y test-repo 2>&1
+    run: daft repo remove --purge -y test-repo 2>&1
     expect:
       exit_code: 0
       output_not_contains:

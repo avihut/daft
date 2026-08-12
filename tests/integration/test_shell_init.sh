@@ -501,16 +501,21 @@ test_daft_repo_wrapper_writes_cd_file() {
     fi
 
     # Source the wrapper, cd into the worktree about to be deleted, run
-    # `daft repo remove --force`, then verify the wrapper's `cd` happened
-    # by reading $PWD afterwards. If the wrapper didn't pass DAFT_CD_FILE,
-    # the binary's fallback kicks in and the shell stays in the (now-gone)
-    # worktree dir — so `pwd` returns the project_root or fails.
+    # `daft repo remove --purge --force`, then verify the wrapper's `cd`
+    # happened by reading $PWD afterwards. If the wrapper didn't pass
+    # DAFT_CD_FILE, the binary's fallback kicks in and the shell stays in the
+    # (now-gone) worktree dir — so `pwd` returns the project_root or fails.
+    #
+    # `--purge` is load-bearing since #836: the default removal only drops the
+    # catalog row, deletes nothing, and deliberately does NOT write
+    # DAFT_CD_FILE (the cwd is still valid). Only the destructive path has a
+    # cwd to rescue, so only it can exercise the wrapper.
     local out
     out=$(MAIN_WT="$main_worktree" PROJECT_ROOT="$project_root" bash -c '
         eval "$(daft shell-init bash)"
         builtin cd "$MAIN_WT" || exit 11
         # Suppress the binary chatter; we only care about post-cd state.
-        daft repo remove --force >/dev/null 2>&1 || true
+        daft repo remove --purge --force >/dev/null 2>&1 || true
         # Print the pwd the *wrapper* landed us in.
         builtin pwd
     ' 2>&1) || true

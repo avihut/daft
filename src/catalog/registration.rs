@@ -110,23 +110,9 @@ pub fn note_repo_removed(bare_git_dir: &Path, project_root: &Path) {
     let _ = tombstone_repo_at(bare_git_dir, project_root);
 }
 
-/// Explicit catalog-only removal (`repo remove --keep-files`): tombstone the
-/// entry for the repo at `bare_git_dir`, leaving the files alone. Unlike
-/// [`note_repo_removed`] this is the operation the user asked for, so
-/// failures propagate. Returns the cataloged name, or `None` when the repo
-/// has no identity and no row — nothing to remove.
-pub fn remove_from_catalog_only(
-    bare_git_dir: &Path,
-    project_root: &Path,
-) -> anyhow::Result<Option<String>> {
-    if !ambient_writes_allowed() {
-        return Ok(None);
-    }
-    tombstone_repo_at(bare_git_dir, project_root)
-}
-
-/// Tombstone one already-resolved catalog row (`repo remove --keep-files
-/// --repo <name>`). Explicit user request: failures propagate.
+/// Tombstone one already-resolved catalog row — the write behind
+/// `repo remove`'s default. Explicit user request, so failures propagate
+/// (unlike [`note_repo_removed`], which rides along with `--purge`).
 pub fn mark_row_removed(uuid: &str) -> anyhow::Result<()> {
     if !ambient_writes_allowed() {
         return Ok(());
@@ -135,8 +121,8 @@ pub fn mark_row_removed(uuid: &str) -> anyhow::Result<()> {
 }
 
 /// The live catalog row for the repo whose git dir is `bare_git_dir`, if
-/// any. Read-only; `repo remove` uses it to decide whether its confirmation
-/// prompt offers the keep-files (catalog-only) choice.
+/// any. Read-only, and swallows an outage — for callers that only want a
+/// hint. Anything gating a mutation wants [`try_live_catalog_row_for`].
 pub fn live_catalog_row_for(bare_git_dir: &Path) -> Option<CatalogRepoRow> {
     try_live_catalog_row_for(bare_git_dir).ok().flatten()
 }

@@ -204,26 +204,39 @@ daft prune
 
 ### Removing a repository
 
-To tear down a daft-managed repository entirely — git dir, every worktree, trust
-marker, and any `worktree-pre/post-remove` hooks — use `daft repo remove`:
+`daft repo remove` takes a repository out of daft's catalog. By default it
+touches nothing on disk — the entry is tombstoned, the files stay where they
+are, and the operation is reversible:
 
 ```bash
-# Remove the repo containing the current directory
+# Stop tracking the repo containing the current directory
 daft repo remove
 
-# Remove a repo by path (works from anywhere)
+# By catalog name, from anywhere
+daft repo remove old-project
+
+# Or by path — `./` insists on a directory when a catalog name would also match
 daft repo remove ~/code/old-project
-
-# Preview what would happen first
-daft repo remove --dry-run ~/code/old-project
-
-# Skip the confirmation prompt
-daft repo remove --force ~/code/old-project
 ```
 
-When run from inside the repo being deleted, daft writes a safe redirect path to
-`$DAFT_CD_FILE` so the shell wrapper `cd`s the user out of the now-deleted
-directory. See [`daft repo remove`](/cli/daft-repo-remove) for full reference.
+To tear the repository down entirely — git dir, every worktree, trust marker,
+and any `worktree-pre/post-remove` hooks — add `--purge`:
+
+```bash
+# Preview what would be deleted first
+daft repo remove --purge --dry-run ~/code/old-project
+
+# Delete it, with a confirmation prompt
+daft repo remove --purge ~/code/old-project
+
+# Skip the confirmation prompt
+daft repo remove --purge --force ~/code/old-project
+```
+
+When `--purge` runs from inside the repo being deleted, daft writes a safe
+redirect path to `$DAFT_CD_FILE` so the shell wrapper `cd`s the user out of the
+now-deleted directory. See [`daft repo remove`](/cli/daft-repo-remove) for full
+reference.
 
 ### Syncing everything
 

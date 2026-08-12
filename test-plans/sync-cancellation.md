@@ -53,8 +53,8 @@ shape) and create an unpushed commit so the hook actually fires.
       SIGKILL) — shared ctrlc/termination change
 - [ ] `daft list --live`: Ctrl+C still exits cleanly with cursor and cooked mode
       restored
-- [ ] An interactive daft prompt (e.g. `daft repo remove` confirmation) killed
-      with SIGTERM exits 130, not 0
+- [ ] An interactive daft prompt (e.g. the `daft repo remove --purge`
+      confirmation) killed with SIGTERM exits 130, not 0
 - [ ] `daft checkout-branch` autopush with a failing/slow pre-push hook:
       behavior fully unchanged — the push runs in daft's foreground group (no
       cancel flag, no isolation), so Ctrl+C kills daft and the push subtree

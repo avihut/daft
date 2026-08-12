@@ -53,6 +53,6 @@ fn print_help() {
     println!("  install   Install a starter daft.yml in the current worktree");
     println!("  link      Declare a relation from this repo to another");
     println!("  list      List repositories in the repo catalog");
-    println!("  remove    Remove a repository, including all worktrees");
+    println!("  remove    Remove a repository from the repo catalog");
     println!("  unlink    Remove a relation from this repo");
 }

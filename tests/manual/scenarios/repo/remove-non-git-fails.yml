@@ -13,7 +13,7 @@ steps:
         - "$WORK_DIR/not-a-repo"
 
   - name: Try to remove it (should fail)
-    run: daft repo remove --force "$WORK_DIR/not-a-repo" 2>&1
+    run: daft repo remove --purge --force "$WORK_DIR/not-a-repo" 2>&1
     expect:
       exit_code: 1
       output_contains:

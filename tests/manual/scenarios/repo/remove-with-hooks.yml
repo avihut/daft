@@ -74,7 +74,7 @@ steps:
         - "$WORK_DIR/test-repo/develop/daft.yml"
 
   - name: Remove the repo — pre-remove hook fires per worktree
-    run: daft repo remove --force "$WORK_DIR/test-repo" 2>&1
+    run: daft repo remove --purge --force "$WORK_DIR/test-repo" 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

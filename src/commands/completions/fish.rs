@@ -611,7 +611,7 @@ complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subco
 complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'install' -d 'Install a starter daft.yml in the current worktree'
 complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'link' -d 'Declare a relation from this repo to another'
 complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'list' -d 'List repositories in the repo catalog'
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'remove' -d 'Remove a repository, including all worktrees'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'remove' -d 'Remove a repository from the repo catalog'
 complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'unlink' -d 'Remove a relation from this repo'
 # repo add: path completion + flags
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -a "(__fish_complete_directories (commandline -ct))"
@@ -642,11 +642,11 @@ complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcomman
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -s q -l quiet -d 'Suppress progress reporting'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -s v -l verbose -d 'Show detailed progress'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -l git-exclude -d 'Add /daft.yml to .git/info/exclude without prompting'
-# repo remove: path completion + flags
-complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -F
-complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l repo -x -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)" -d 'Cataloged repository to remove'
-complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l keep-files -d 'Only remove the repo from the catalog; leave all files on disk'
-complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s y -l force -d 'Skip the confirmation prompt'
+# repo remove: catalog names + directory completion for the positional, then flags
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -f -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -a "(__fish_complete_directories (commandline -ct))"
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l purge -d 'Also delete the git dir and every worktree (destructive)'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s y -l force -d 'Skip the confirmation prompt (--purge only)'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l dry-run -d 'Print what would be removed without touching anything'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s v -l verbose -d 'Increase verbosity'
 # repo link: catalog-repo names then directory completion + flags

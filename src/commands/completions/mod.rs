@@ -1121,9 +1121,9 @@ mod tests {
         }
     }
 
-    /// `daft repo remove --repo <name>` / `--keep-files`: the repo-verb
-    /// sections of the umbrella completions are hardcoded per shell, so a
-    /// new flag must land in all three (fig has its own spec test).
+    /// `daft repo remove <repo>` / `--purge`: the repo-verb sections of the
+    /// umbrella completions are hardcoded per shell, so a new flag must land
+    /// in all three (fig has its own spec test).
     /// Every shell offers the same `daft config` verbs, and each completes
     /// keys from the registry rather than a hardcoded list.
     ///
@@ -1263,21 +1263,21 @@ mod tests {
     }
 
     #[test]
-    fn repo_remove_completes_repo_flag_and_keep_files_in_all_shells() {
+    fn repo_remove_completes_repo_positional_and_purge_in_all_shells() {
         let zsh = zsh::DAFT_ZSH_COMPLETIONS;
         assert!(
-            zsh.contains("compadd -- --repo --keep-files -y --force"),
-            "zsh repo-remove flag list must include --repo and --keep-files"
+            zsh.contains("compadd -- --purge -y --force"),
+            "zsh repo-remove flag list must include --purge"
         );
         let bash = bash::DAFT_BASH_COMPLETIONS;
         assert!(
-            bash.contains("--repo --keep-files -y --force --dry-run"),
-            "bash repo-remove flag list must include --repo and --keep-files"
+            bash.contains("--purge -y --force --dry-run"),
+            "bash repo-remove flag list must include --purge"
         );
-        // Both umbrellas complete the --repo VALUE with catalog names inside
-        // the repo section's remove arm (the same `daft __complete repo-name`
-        // helper the other repo-aware commands use). Bound the probe to that
-        // arm: the umbrella also has a top-level worktree `remove` verb.
+        // Both umbrellas complete the POSITIONAL with catalog names *and*
+        // directories (#836) — the `repo info` treatment. Bound the probe to
+        // the repo section's remove arm: the umbrella also has a top-level
+        // worktree `remove` verb.
         for (shell, script) in [("zsh", zsh), ("bash", bash)] {
             let repo_section = script
                 .split("# repo: complete subcommands")
@@ -1290,15 +1290,29 @@ mod tests {
             let arm = &remove_arm[..remove_arm.find(";;").unwrap_or(remove_arm.len())];
             assert!(
                 arm.contains("daft __complete repo-name"),
-                "{shell} repo-remove arm must complete --repo values with catalog names"
+                "{shell} repo-remove arm must complete the positional with catalog names"
             );
+            // The retired flags must not linger in the hardcoded lists — a
+            // menu that still offers them teaches a surface that now errors.
+            for retired in ["--repo", "--keep-files"] {
+                assert!(
+                    !arm.contains(retired),
+                    "{shell} repo-remove arm must not offer the retired {retired}"
+                );
+            }
         }
         let fish = fish::generate_daft_fish_completions();
         assert!(
-            fish.contains(
-                "__fish_seen_subcommand_from remove' -l repo -x -a \"(daft __complete repo-name"
-            ) && fish.contains("__fish_seen_subcommand_from remove' -l keep-files"),
-            "fish repo-remove must complete --repo values and offer --keep-files"
+            fish.contains("__fish_seen_subcommand_from remove' -f -a \"(daft __complete repo-name"),
+            "fish repo-remove must complete its positional with catalog names"
+        );
+        assert!(
+            fish.contains("__fish_seen_subcommand_from remove' -l purge"),
+            "fish repo-remove must offer --purge"
+        );
+        assert!(
+            !fish.contains("__fish_seen_subcommand_from remove' -l keep-files"),
+            "fish repo-remove must not offer the retired --keep-files"
         );
     }
 

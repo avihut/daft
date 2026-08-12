@@ -1,7 +1,7 @@
 name: Remove --dry-run prints plan but touches nothing
 description: >
-  daft repo remove --dry-run reports what would be removed (worktrees, git dir,
-  trust marker) and exits 0 without modifying the filesystem.
+  daft repo remove --purge --dry-run reports what would be removed (worktrees,
+  git dir, trust marker) and exits 0 without modifying the filesystem.
 
 repos:
   - name: test-repo
@@ -26,7 +26,7 @@ steps:
         - "$WORK_DIR/test-repo/develop"
 
   - name: Dry-run reports plan, leaves repo untouched
-    run: daft repo remove --dry-run "$WORK_DIR/test-repo" 2>&1
+    run: daft repo remove --purge --dry-run "$WORK_DIR/test-repo" 2>&1
     expect:
       exit_code: 0
       output_contains:

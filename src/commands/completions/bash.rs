@@ -797,17 +797,18 @@ _daft() {
                 return 0
                 ;;
             remove)
-                if [[ "$prev" == "--repo" ]]; then
-                    local -a repos
-                    mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
-                    COMPREPLY=( "${repos[@]}" )
-                    return 0
-                fi
                 if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "--repo --keep-files -y --force --dry-run -v --verbose -h --help" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "--purge -y --force --dry-run -v --verbose -h --help" -- "$cur") )
                     return 0
                 fi
-                COMPREPLY=( $(compgen -d -- "$cur") )
+                # Catalog repo names first, then directories — the positional
+                # takes either (`repo remove api`, `repo remove ./old-repo`),
+                # same treatment as `repo info`.
+                local -a repos dirs
+                mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+                mapfile -t dirs < <(compgen -d -- "$cur")
+                COMPREPLY=( "${repos[@]}" "${dirs[@]}" )
+                compopt -o filenames 2>/dev/null || true
                 return 0
                 ;;
             unlink)
