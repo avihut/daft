@@ -13,26 +13,28 @@ asked. The operation is reversible — daft re\-registers repos it runs inside,
 and removed entries are restorable by name with `git daft clone <name>`. A
 stale entry whose recorded directory is already gone is dropped the same way.
 .PP
-`\-\-purge` additionally deletes the git dir and every checked\-out worktree. For
-each worktree, the worktree\-pre\-remove and worktree\-post\-remove lifecycle
-hooks are run when the repository is daft\-managed and trusted, and the removal
-asks for confirmation unless `\-y` is given. `\-y` applies to `\-\-purge` only —
-the default removal asks nothing.
-.PP
 `<repo>` is a catalog name, a uuid, or a path: `.`, a subdirectory, or an
 absolute or relative directory. Catalog names win over paths, so `./api` is
-the spelling that insists on a directory; a bare name that is not cataloged is
-retried as a path. With no argument the repo containing the current directory
-is used.
+the spelling that insists on a directory. A bare name the catalog does not
+know is retried as a path, and must then name a repository root — only a
+spelled\-out path walks up to the repository a subdirectory belongs to. With no
+argument the repo containing the current directory is used.
 .PP
-Hook failures do not abort removal; failed hooks are summarized after the
-operation completes. The repo is removed regardless.
+`\-\-purge` additionally deletes the git dir and every checked\-out worktree, and
+everything below describes that mode alone:
 .PP
-worktree\-post\-remove fires AFTER the worktree directory has been deleted —
-$DAFT_WORKTREE_PATH points at a path that no longer exists. Hook scripts that
-need to inspect the worktree must do so in worktree\-pre\-remove.
-.PP
-Refuses to operate on paths that are not inside a Git repository.
+  * Confirmation is asked unless `\-y` is given. `\-y` applies to `\-\-purge` only
+    — the default removal asks nothing, because it destroys nothing.
+  * For each worktree, the worktree\-pre\-remove and worktree\-post\-remove
+    lifecycle hooks are run when the repository is daft\-managed and trusted.
+  * Hook failures do not abort the deletion; failed hooks are summarized after
+    the operation completes. The repo is removed regardless.
+  * worktree\-post\-remove fires AFTER the worktree directory has been deleted —
+    $DAFT_WORKTREE_PATH points at a path that no longer exists. Hook scripts
+    that need to inspect the worktree must do so in worktree\-pre\-remove.
+  * Paths that are not inside a Git repository are refused: there are no files
+    to delete. The default removal has no such requirement — it drops a
+    catalog entry whatever state the recorded directory is in.
 .SH OPTIONS
 .TP
 \fB\-\-purge\fR

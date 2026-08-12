@@ -1617,9 +1617,9 @@ mod resolution_tests {
         });
     }
 
-    /// A tombstoned row is *absence*, not an outage: `daft repo remove
-    /// --keep-files` leaves the worktrees exactly where they are, and warming
-    /// them must keep working the way it does for a repo daft never cataloged.
+    /// A tombstoned row is *absence*, not an outage: `daft repo remove`
+    /// leaves the worktrees exactly where they are, and warming them must keep
+    /// working the way it does for a repo daft never cataloged.
     #[test]
     #[serial]
     fn a_removed_catalog_row_falls_back_to_the_remote_head() {

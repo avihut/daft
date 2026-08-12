@@ -524,6 +524,18 @@ two-name `start` form falls back to local instead); wire completions via
 `src/commands/complete.rs`); fleet forms work from outside any repo and never
 prompt interactively.
 
+**Neither shape applies to `daft repo <verb>`.** Both shapes above are about
+_retargeting_ a verb whose object is something else — worktrees, branches, a
+command to run. The `daft repo` family's object simply _is_ the repo, so it
+takes a bare positional and no `--repo` at all: `daft repo info [<repo>]`,
+`daft repo remove [<repo>]`. Resolution there is catalog-first, filesystem
+second (`Catalog::resolve`, then git discovery), which is what keeps `.`, a
+subdirectory, and repos daft never cataloged working. A bare word that misses
+the catalog may be retried as a path, but only as a repository **root** — git
+discovery walks _up_, so letting a guess inherit that walk-up turns
+`repo remove --purge docs` into "delete the repo that contains `docs/`" (#836
+review). Spelled-out paths keep the walk-up; guesses do not.
+
 ## Adding a New Command
 
 1. Create `src/commands/<name>.rs` with clap `Args` struct (include `about`,

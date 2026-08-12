@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Run `daft repo remove` on every git repo under the dev sandbox"
+#MISE description="Run `daft repo remove --purge` on every git repo under the dev sandbox"
 set -euo pipefail
 
 usage() {

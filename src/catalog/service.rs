@@ -394,9 +394,9 @@ pub fn resolve_repo_arg(needle: &str) -> anyhow::Result<CatalogRepoRow> {
 }
 
 /// [`resolve_repo_arg`] minus the directory-exists requirement, for
-/// catalog-metadata operations where the files' presence is irrelevant —
-/// `repo remove --keep-files --repo <name>` must be able to drop an entry
-/// whose directory is already gone.
+/// catalog-metadata operations where the files' presence is irrelevant — the
+/// default `repo remove <name>` must be able to drop an entry whose directory
+/// is already gone.
 pub fn resolve_repo_arg_missing_ok(needle: &str) -> anyhow::Result<CatalogRepoRow> {
     resolve_repo_arg_impl(needle, false)
 }

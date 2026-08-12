@@ -20,26 +20,28 @@ asked. The operation is reversible — daft re-registers repos it runs inside,
 and removed entries are restorable by name with `git daft clone <name>`. A
 stale entry whose recorded directory is already gone is dropped the same way.
 
-`--purge` additionally deletes the git dir and every checked-out worktree. For
-each worktree, the worktree-pre-remove and worktree-post-remove lifecycle
-hooks are run when the repository is daft-managed and trusted, and the removal
-asks for confirmation unless `-y` is given. `-y` applies to `--purge` only —
-the default removal asks nothing.
-
 `<repo>` is a catalog name, a uuid, or a path: `.`, a subdirectory, or an
 absolute or relative directory. Catalog names win over paths, so `./api` is
-the spelling that insists on a directory; a bare name that is not cataloged is
-retried as a path. With no argument the repo containing the current directory
-is used.
+the spelling that insists on a directory. A bare name the catalog does not
+know is retried as a path, and must then name a repository root — only a
+spelled-out path walks up to the repository a subdirectory belongs to. With no
+argument the repo containing the current directory is used.
 
-Hook failures do not abort removal; failed hooks are summarized after the
-operation completes. The repo is removed regardless.
+`--purge` additionally deletes the git dir and every checked-out worktree, and
+everything below describes that mode alone:
 
-worktree-post-remove fires AFTER the worktree directory has been deleted —
-$DAFT_WORKTREE_PATH points at a path that no longer exists. Hook scripts that
-need to inspect the worktree must do so in worktree-pre-remove.
-
-Refuses to operate on paths that are not inside a Git repository.
+  * Confirmation is asked unless `-y` is given. `-y` applies to `--purge` only
+    — the default removal asks nothing, because it destroys nothing.
+  * For each worktree, the worktree-pre-remove and worktree-post-remove
+    lifecycle hooks are run when the repository is daft-managed and trusted.
+  * Hook failures do not abort the deletion; failed hooks are summarized after
+    the operation completes. The repo is removed regardless.
+  * worktree-post-remove fires AFTER the worktree directory has been deleted —
+    $DAFT_WORKTREE_PATH points at a path that no longer exists. Hook scripts
+    that need to inspect the worktree must do so in worktree-pre-remove.
+  * Paths that are not inside a Git repository are refused: there are no files
+    to delete. The default removal has no such requirement — it drops a
+    catalog entry whatever state the recorded directory is in.
 "#)]
 pub struct Args {
     #[arg(
@@ -121,29 +123,13 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     // helper reads local config when there is a repo and falls back to global
     // when there is not.
     let settings = crate::core::settings::DaftSettings::load_local_or_global()?;
-    let resolved = resolve_target(args.repo.as_deref(), settings.use_gitoxide)?;
+    let resolved = resolve_target(args.repo.as_deref(), args.purge, settings.use_gitoxide)?;
 
     if args.purge {
         purge(args, &resolved, &settings)
     } else {
         remove_from_catalog(args, &resolved)
     }
-}
-
-/// How `<repo>` was resolved. Only the route tells a caller whether the
-/// answer was *asked for* or *guessed*: a bare word that missed the catalog
-/// and landed on a same-named directory is a guess, and `--purge` says so
-/// before it deletes anything.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Route {
-    /// No argument — the repo containing the current directory.
-    Cwd,
-    /// Matched a catalog entry by name, uuid, or recorded path.
-    Catalog,
-    /// A path-shaped needle (`.`, `./x`, `/abs`), resolved on disk.
-    Path,
-    /// A bare word the catalog does not know, retried as a path (#836).
-    NameMissFallback,
 }
 
 /// What `<repo>` resolved to. Both halves are optional and the two modes want
@@ -153,24 +139,14 @@ enum Route {
 struct Resolved {
     row: Option<CatalogRepoRow>,
     on_disk: Option<RepoTarget>,
-    route: Route,
+    /// Set only when the answer was *guessed* rather than asked for: a bare
+    /// word that missed the catalog and landed on a same-named directory.
+    /// Every route that acts on it says so first. The other routes are
+    /// unambiguous — a path-shaped needle asked for a path, and a catalog hit
+    /// is what the user named.
+    fallback_note: Option<String>,
     /// The needle exactly as typed, for error and notice copy.
     needle: Option<String>,
-}
-
-impl Resolved {
-    /// The one-line note that makes the fallback route visible: daft was
-    /// handed a name it does not know and read it as a directory instead.
-    /// The other routes are unambiguous — a path-shaped needle asked for a
-    /// path, and a catalog hit is what the user named.
-    fn fallback_note(&self) -> Option<String> {
-        (self.route == Route::NameMissFallback).then(|| {
-            format!(
-                "('{}' is not in the catalog — resolved as a directory)",
-                self.needle.as_deref().unwrap_or_default()
-            )
-        })
-    }
 }
 
 /// Whether a needle asks to be read as a path. Mirrors the shape test in
@@ -222,7 +198,10 @@ fn catalog_row_for(target: &RepoTarget) -> Result<Option<CatalogRepoRow>> {
 /// cataloged (`remove-vanilla.yml`) working. A catalog hit always wins — the
 /// fallback fires only on a genuine miss, where the name has no competing
 /// meaning.
-fn resolve_target(needle: Option<&str>, use_gitoxide: bool) -> Result<Resolved> {
+///
+/// `purge` is not a formality: the two modes need different halves, and
+/// resolving the half a mode never reads only invents failures for it.
+fn resolve_target(needle: Option<&str>, purge: bool, use_gitoxide: bool) -> Result<Resolved> {
     use crate::core::worktree::remove_repo::resolve_repo;
 
     let Some(needle) = needle else {
@@ -231,29 +210,38 @@ fn resolve_target(needle: Option<&str>, use_gitoxide: bool) -> Result<Resolved> 
         return Ok(Resolved {
             row,
             on_disk: Some(target),
-            route: Route::Cwd,
+            fallback_note: None,
             needle: None,
         });
     };
 
     if let Some(row) = catalog_resolve(needle)? {
-        if row.removed_at.is_some() {
+        // A tombstone is a *catalog* fact, so only the catalog-only mode is
+        // finished by it. `--purge` is about files, which the tombstone never
+        // touched: after the default removal leaves a repo on disk, every
+        // spelling of it must still reach `--purge`, or the two-step flow the
+        // new default creates dead-ends with no way to delete the files.
+        if row.removed_at.is_some() && !purge {
             bail!(
                 "repository '{}' was removed from the catalog; restore it with `{}`",
                 row.name,
                 crate::daft_cmd(&format!("clone {}", row.name))
             );
         }
-        // The recorded directory may be gone — that is the stale-entry case,
-        // which the default removal handles and `--purge` reports.
-        let on_disk = match Path::new(&row.path).is_dir() {
+        // Only `--purge` needs the files, so only `--purge` pays for finding
+        // them. Resolving them for the default removal would let a recorded
+        // directory that exists but is no longer a git repo block a write that
+        // never touches disk — an entry that can be neither dropped nor
+        // repaired. The directory may also be gone outright: that is the
+        // stale-entry case, which the default handles and `--purge` reports.
+        let on_disk = match purge && Path::new(&row.path).is_dir() {
             true => Some(resolve_repo(Some(Path::new(&row.path)), use_gitoxide)?),
             false => None,
         };
         return Ok(Resolved {
             row: Some(row),
             on_disk,
-            route: Route::Catalog,
+            fallback_note: None,
             needle: Some(needle.to_string()),
         });
     }
@@ -273,15 +261,41 @@ fn resolve_target(needle: Option<&str>, use_gitoxide: bool) -> Result<Resolved> 
         }
         Err(fs_err) => return Err(fs_err),
     };
+
+    let fallback_note = match pathish {
+        true => None,
+        // The guess must not escalate. `resolve_repo` walks *up* from the
+        // named directory to whatever repository encloses it — right for a
+        // path the user spelled out (the documented "the repo or any
+        // directory inside it"), and wrong for a name daft guessed at: in a
+        // repo with an ordinary `docs/` subdirectory, `repo remove --purge -y
+        // docs` would delete the whole enclosing repository, announcing only
+        // that a guess happened. A bare word may therefore name a repository
+        // *root* and nothing else; anything deeper is refused and pointed at
+        // the explicit spelling that does mean "the repo containing this".
+        false => {
+            let named = std::fs::canonicalize(needle)
+                .with_context(|| format!("could not canonicalize {needle}"))?;
+            if named != target.project_root {
+                bail!(
+                    "'{needle}' is not in the catalog, and the directory of that name is \
+                     inside '{}' rather than a repository root\n  \
+                     tip: `{}` acts on the repository a path belongs to",
+                    target.project_root.display(),
+                    crate::daft_cmd(&format!("repo remove ./{needle}")),
+                );
+            }
+            Some(format!(
+                "('{needle}' is not in the catalog — resolved as a directory)"
+            ))
+        }
+    };
+
     let row = catalog_row_for(&target)?;
     Ok(Resolved {
         row,
         on_disk: Some(target),
-        route: if pathish {
-            Route::Path
-        } else {
-            Route::NameMissFallback
-        },
+        fallback_note,
         needle: Some(needle.to_string()),
     })
 }
@@ -295,24 +309,57 @@ fn resolve_target(needle: Option<&str>, use_gitoxide: bool) -> Result<Resolved> 
 /// user's working directory is still valid and relocating them would be
 /// user-hostile.
 fn remove_from_catalog(args: &Args, resolved: &Resolved) -> Result<()> {
+    // The route is a guess, so say so — on the reversible path too. The name
+    // reported below is the repo's own, which may not be the word that was
+    // typed.
+    if let Some(note) = &resolved.fallback_note {
+        eprintln!("{note}");
+    }
+
     let Some(row) = &resolved.row else {
         // A catalog-route resolution always carries a row, so we got here
-        // through discovery: a real repo on disk that daft never cataloged.
-        let root = resolved
+        // through discovery: a real repo on disk with no live catalog entry.
+        let target = resolved
             .on_disk
             .as_ref()
-            .map(|t| t.project_root.display().to_string())
-            .unwrap_or_default();
+            .expect("a resolution with no catalog row came from disk");
+        let root = target.project_root.display();
+
         // A dry run reports and succeeds — it was asked what *would* happen,
         // and "nothing" is a valid answer. Only the real removal fails.
         if args.dry_run {
-            println!("{root} is not in the catalog — nothing to remove");
+            if crate::catalog::catalog_removal_would_record(&target.bare_git_dir) {
+                println!("Would remove {root} from the catalog (files kept)");
+            } else {
+                println!("{root} is not in the catalog — nothing to remove");
+            }
             return Ok(());
         }
+
+        // A daft-managed repo the catalog has not seen yet — a fresh state
+        // dir, or a repo carried over from another machine — is registered
+        // and then tombstoned, the same two writes `--purge` performs through
+        // `note_repo_removed`. Without it, "stop tracking this" would be a
+        // hard error whose only suggested next step is deleting the repo.
+        if let Some(name) =
+            crate::catalog::remove_from_catalog_only(&target.bare_git_dir, &target.project_root)?
+        {
+            report_catalog_only_removal(&name, &target.project_root);
+            return Ok(());
+        }
+
+        // The tip must carry the target. Dropped, it re-aims at whatever repo
+        // the cwd sits in — so a user pasting it to delete the nested checkout
+        // they just named would destroy the repo they are standing in.
+        let target_arg = resolved
+            .needle
+            .as_deref()
+            .map(|n| format!(" {n}"))
+            .unwrap_or_default();
         bail!(
             "{root} is not in the catalog — nothing to remove\n  \
              tip: `{}` deletes the repository and its worktrees",
-            crate::daft_cmd("repo remove --purge"),
+            crate::daft_cmd(&format!("repo remove --purge{target_arg}")),
         );
     };
 
@@ -374,22 +421,28 @@ fn purge(
 
     let worktrees = enumerate_worktrees(target, use_gitoxide)?;
 
+    // Computed before the dry run returns: a preview of a guessed target that
+    // does not mention the guess is exactly the preview a cautious user runs
+    // to check the guess.
+    let fallback_note = resolved.fallback_note.as_deref();
+
     if args.dry_run {
+        if let Some(note) = fallback_note {
+            println!("{note}");
+        }
         print_plan(target, &worktrees);
         return Ok(());
     }
-
-    let fallback_note = resolved.fallback_note();
 
     if !args.force {
         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             bail!("Refusing to run without --force in non-interactive mode");
         }
-        if !confirm_prompt(target, worktrees.len(), fallback_note.as_deref())? {
+        if !confirm_prompt(target, worktrees.len(), fallback_note)? {
             println!("aborted");
             return Ok(());
         }
-    } else if let Some(note) = &fallback_note {
+    } else if let Some(note) = fallback_note {
         // `-y` skipped the prompt that would have carried this, and the route
         // is a guess. Say it on stderr rather than deleting silently.
         eprintln!("{note}");
@@ -1108,6 +1161,14 @@ mod tests {
         assert!(
             err.to_string().contains("--purge"),
             "the error must point at the flag that does delete files, got: {err}"
+        );
+        // The tip has to carry the target. Dropped, pasting it re-aims at
+        // whatever repo the cwd sits in — so a user clearing a nested checkout
+        // would destroy the repo they are standing in instead.
+        assert!(
+            err.to_string()
+                .contains(&format!("--purge {}", tmp.path().display())),
+            "the suggested command must name the repo that was addressed, got: {err}"
         );
         assert!(tmp.path().join(".git").exists(), "bare git dir must remain");
         assert!(wt.exists(), "worktree must remain");

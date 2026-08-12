@@ -39,9 +39,21 @@ under `--purge`, the confirmation says so before anything is deleted:
       ('old-repo' is not in the catalog — resolved as a directory)
       This will delete 2 worktrees and the repo. [y/N]
 
-With `-y` the same note goes to stderr. If the catalog cannot be read at all,
-the command fails rather than falling through to the filesystem — an outage
-never silently becomes "delete the directory of that name instead".
+With `-y` the same note goes to stderr, and `--dry-run` prints it above the
+plan.
+
+The guessed route may only name a repository **root**. A spelled-out path
+resolves through the repository it belongs to — `./docs` means "the repo that
+contains `docs/`" — but a bare `docs` that merely matches a subdirectory is
+refused rather than escalated to the enclosing repo:
+
+    'docs' is not in the catalog, and the directory of that name is inside
+    '~/src/api' rather than a repository root
+      tip: `daft repo remove ./docs` acts on the repository a path belongs to
+
+If the catalog cannot be read at all, the command fails rather than falling
+through to the filesystem — an outage never silently becomes "delete the
+directory of that name instead".
 
 ## Default: catalog only
 
@@ -50,8 +62,12 @@ never silently becomes "delete the directory of that name instead".
 - Reversible: registration is ambient, so the entry returns the next time daft
   runs inside the kept repo, and `daft clone <name>` restores removed entries
   by name.
-- Works when the recorded directory is already gone, dropping the stale entry —
-  the by-name counterpart of `daft doctor --fix`.
+- Works whatever state the recorded directory is in: already gone (dropping
+  the stale entry — the by-name counterpart of `daft doctor --fix`), or still
+  present but no longer a Git repository. Nothing on disk can block a write
+  that does not touch disk.
+- A daft-managed repo the catalog has never seen is registered and then
+  tombstoned, so it stays addressable by name afterwards.
 - Does **not** write `DAFT_CD_FILE`: nothing was deleted, so your working
   directory is still valid.
 
@@ -78,6 +94,9 @@ never silently becomes "delete the directory of that name instead".
   `DAFT_CD_FILE` so the shell wrapper `cd`s out of the deleted directory.
 - When the target is addressed by catalog name and the recorded directory is
   already gone, the error points at the plain (catalog-only) form.
+- A repo whose catalog entry was already tombstoned by the default removal is
+  still purgeable, by name or by path — the tombstone is a catalog fact and
+  never protected the files.
 
 ## Confirmation
 

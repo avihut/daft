@@ -216,7 +216,7 @@ daft repo remove
 daft repo remove old-project
 
 # Or by path — `./` insists on a directory when a catalog name would also match
-daft repo remove ~/code/old-project
+daft repo remove ./old-project
 ```
 
 To tear the repository down entirely — git dir, every worktree, trust marker,

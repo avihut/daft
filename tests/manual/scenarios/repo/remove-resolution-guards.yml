@@ -1,0 +1,120 @@
+name: Repo remove resolution guards
+description:
+  Regressions from the code review of issue 836. Splitting removal into a
+  reversible default and a destructive --purge created three ways for resolution
+  to strand a repo, all of them invisible to unit tests (catalog writes are
+  gated off there). Each step below fails on the pre-review code.
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+  - name: test-repo-c
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone all three repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_C
+    expect:
+      exit_code: 0
+
+  # A tombstone is a CATALOG fact, and --purge is about FILES. The default
+  # removal leaves both on disk, so every spelling of the repo must still
+  # reach --purge afterwards — otherwise the two-step flow the new default
+  # creates dead-ends with the files unreachable by any argument.
+  - name: default removal tombstones test-repo-a, keeping the files
+    run: daft repo remove test-repo-a
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/main"
+
+  - name: a tombstoned repo is still purgeable BY NAME
+    run: daft repo remove --purge test-repo-a -y 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo-a"
+
+  - name: default removal tombstones test-repo-b, keeping the files
+    run: daft repo remove test-repo-b
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/main"
+
+  # The path spelling matters on its own: `Catalog::resolve` matches removed
+  # rows by path too, so a tombstone refused this route as well.
+  - name: a tombstoned repo is still purgeable BY PATH
+    run: daft repo remove --purge ./test-repo-b -y 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo-b"
+
+  # The default removal never touches disk, so nothing about the state of the
+  # recorded directory should be able to block it. Resolving the files anyway
+  # made a repo whose git dir was destroyed out from under daft permanently
+  # uncatalogable: the entry could be neither dropped nor repaired.
+  - name: destroy test-repo-c's git dir, leaving the directory in place
+    run: rm -rf "$WORK_DIR/test-repo-c/.git" && echo GIT_DIR_GONE
+    expect:
+      exit_code: 0
+      output_contains:
+        - "GIT_DIR_GONE"
+      dirs_exist:
+        - "$WORK_DIR/test-repo-c"
+
+  - name: the entry is still droppable when the directory is no longer a repo
+    run: daft repo remove test-repo-c 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removed 'test-repo-c' from the catalog"
+
+  # A repo daft cloned but the catalog has never seen — a fresh state dir, or
+  # a repo carried over from another machine. `repo remove` does not lazily
+  # re-register (unlike go/list/fetch), so without register-then-tombstone
+  # "stop tracking this" is a hard error whose only tip is to delete the repo.
+  # Wiping the catalog reproduces that exactly; it runs last because every
+  # other row goes with it.
+  - name: wipe the catalog, keeping the repo on disk
+    run:
+      'git-worktree-clone --layout contained $REMOTE_TEST_REPO_A && rm -rf
+      "$DAFT_DATA_DIR/catalog" && echo CATALOG_WIPED'
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CATALOG_WIPED"
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/main"
+
+  - name: a daft-managed repo with no row is registered, then tombstoned
+    run: daft repo remove 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removed 'test-repo-a' from the catalog"
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/main"
+
+  # Retaining the tombstone is the whole point of registering first: the repo
+  # stays addressable by name after removal.
+  - name: the registered-then-removed entry is addressable as removed
+    run: daft repo list --all
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo-a (removed)"

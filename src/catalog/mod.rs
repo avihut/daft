@@ -32,8 +32,9 @@ pub mod service;
 pub mod worktrees;
 
 pub use registration::{
-    gather_facts, live_catalog_row_for, mark_row_removed, note_repo_removed, register_repo,
-    touch_current_repo, try_live_catalog_row_for,
+    catalog_removal_would_record, gather_facts, live_catalog_row_for, mark_row_removed,
+    note_repo_removed, register_repo, remove_from_catalog_only, touch_current_repo,
+    try_live_catalog_row_for,
 };
 pub use service::{
     Catalog, CatalogError, RegistrationFacts, RegistrationOutcome, effective_default_branch,

@@ -458,6 +458,20 @@ test_repo_remove_uncataloged_bare_name_falls_back_to_path() {
     ) >/dev/null 2>&1 || return 1
 
     cd "$container" || return 1
+
+    # The preview must announce the guess too — a dry run IS the cautious way
+    # to check a guess, so a plan that omits the note fails the one user who
+    # went looking for it.
+    out=$(daft repo remove --purge --dry-run "never-cataloged-repo" 2>&1) || return 1
+    if ! echo "$out" | grep -q "is not in the catalog — resolved as a directory"; then
+        log_error "--dry-run must announce the fallback route too; got: $out"
+        return 1
+    fi
+    if [[ ! -d "$project_root" ]]; then
+        log_error "a dry run must not delete anything: $project_root"
+        return 1
+    fi
+
     out=$(daft repo remove --purge --force "never-cataloged-repo" 2>&1) || return 1
 
     if ! echo "$out" | grep -q "is not in the catalog — resolved as a directory"; then
@@ -474,6 +488,66 @@ test_repo_remove_uncataloged_bare_name_falls_back_to_path() {
     fi
 
     log_success "daft repo remove falls back to a path for an uncataloged bare name"
+    return 0
+}
+
+# Test 8c: the bare-name fallback must not ESCALATE. `resolve_repo` walks up
+# from a path to the repository that encloses it — correct for a path the user
+# spelled out, catastrophic for a name daft merely guessed at: every repo has
+# ordinary subdirectories, so `daft repo remove --purge -y docs` would delete
+# the repo you are standing in. Test 8b cannot catch this (its cwd is outside
+# any repo, so there is nothing to escalate to). The guard is the whole reason
+# the guessed route is safe to offer at all — #836 review.
+test_repo_remove_bare_name_does_not_escalate_to_enclosing_repo() {
+    local container project_root out status
+    container=$(mktemp -d "${TMPDIR:-/tmp}/daft-no-escalate.XXXXXX")
+    trap 'rm -rf "$container"' RETURN
+
+    project_root="$container/enclosing-repo"
+    mkdir -p "$project_root/docs" || return 1
+    (
+        cd "$project_root"
+        git init -q
+        echo hi > docs/README.md
+        git add docs/README.md
+        git commit -q -m "init"
+    ) >/dev/null 2>&1 || return 1
+
+    # `docs` is a plain subdirectory, not a repo and not a catalog name.
+    cd "$project_root" || return 1
+    out=$(daft repo remove --purge --force "docs" 2>&1)
+    status=$?
+
+    if [[ $status -eq 0 ]]; then
+        log_error "a bare name naming a mere subdirectory must be refused; got: $out"
+        return 1
+    fi
+    if ! echo "$out" | grep -q "rather than a repository root"; then
+        log_error "refusal must explain the subdirectory/root distinction; got: $out"
+        return 1
+    fi
+    if [[ ! -d "$project_root/.git" ]]; then
+        log_error "DATA LOSS: enclosing repo deleted by a guessed bare name: $project_root"
+        return 1
+    fi
+    if [[ ! -d "$project_root/docs" ]]; then
+        log_error "a refused target must be left alone: $project_root/docs"
+        return 1
+    fi
+
+    # The spelled-out path keeps the documented walk-up: `./docs` DOES mean
+    # "the repo this path belongs to". Only the guess is refused.
+    cd "$project_root" || return 1
+    if ! daft repo remove --purge --force "./docs" >/dev/null 2>&1; then
+        log_error "an explicit path must still resolve through the enclosing repo"
+        return 1
+    fi
+    if [[ -d "$project_root/.git" ]]; then
+        log_error "explicit ./docs should have purged the enclosing repo"
+        return 1
+    fi
+
+    log_success "daft repo remove refuses to escalate a guessed bare name"
     return 0
 }
 
@@ -605,6 +679,7 @@ run_repo_remove_tests() {
     run_test "repo_remove_preserves_empty_parent_directory" "test_repo_remove_preserves_empty_parent_directory"
     run_test "repo_remove_relative_path_from_parent" "test_repo_remove_relative_path_from_parent"
     run_test "repo_remove_uncataloged_bare_name_falls_back_to_path" "test_repo_remove_uncataloged_bare_name_falls_back_to_path"
+    run_test "repo_remove_bare_name_does_not_escalate_to_enclosing_repo" "test_repo_remove_bare_name_does_not_escalate_to_enclosing_repo"
     run_test "repo_remove_no_arg_from_inside_project_root" "test_repo_remove_no_arg_from_inside_project_root"
     run_test "repo_remove_from_inside_worktree" "test_repo_remove_from_inside_worktree"
     run_test "repo_remove_bare_only_no_worktrees" "test_repo_remove_bare_only_no_worktrees"
