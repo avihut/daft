@@ -130,6 +130,42 @@ pub fn persist_worktree_sizes(
     let _ = persist_inner(repo_hash, &rows);
 }
 
+/// Drop every cached size for a repo — what `daft repo move` does once the
+/// repo has been relocated.
+///
+/// Invalidation rather than a path rewrite: every cached figure is keyed to a
+/// path that no longer exists, and a size cache is cheap to refill, so the
+/// honest move is to forget and re-walk. Best-effort like the rest of this
+/// module, and deliberately *not* store-creating — a repo that never cached a
+/// size has nothing to evict, and materializing a database to discover that
+/// would be backwards.
+pub fn evict_repo_sizes(repo_hash: &str) {
+    if let Err(e) = evict_inner(repo_hash) {
+        crate::log_debug!("could not evict cached sizes: {e}");
+    }
+}
+
+fn evict_inner(repo_hash: &str) -> anyhow::Result<()> {
+    // Path built by hand rather than via `paths::for_repo`, which creates the
+    // `jobs/<repo_hash>/` parent as a side effect. Nothing to evict must leave
+    // nothing behind. Same reasoning as `read_inner` above, including why the
+    // pool's read-write bootstrap is the WAL-safe way in.
+    let db_path = crate::daft_state_dir()?
+        .join(paths::JOBS_SUBDIR)
+        .join(repo_hash)
+        .join(paths::COORDINATOR_DB);
+    if !db_path.exists() {
+        return Ok(());
+    }
+    let pool = Pool::open(&db_path)?;
+    let mut conn = pool.writer()?;
+    with_write_txn(&mut conn, |tx| {
+        WorktreeSizesRepo::delete_for_repo(tx, repo_hash)?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
 fn persist_inner(repo_hash: &str, rows: &[WorktreeSizeRow]) -> anyhow::Result<()> {
     // `for_repo` creates `<state>/jobs/<repo_hash>/` if missing; `Pool::open`
     // creates + migrates `coordinator.db`.

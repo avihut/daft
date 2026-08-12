@@ -82,6 +82,23 @@ impl WorktreeSizesRepo {
         )?;
         Ok(n)
     }
+
+    /// Evict every cached size for a repo — what `daft repo move` does after
+    /// relocating one.
+    ///
+    /// Invalidation rather than a path rewrite, deliberately: a size cache
+    /// exists to be cheap, so a miss simply re-walks, and dropping the rows
+    /// cannot leave a wrong number pinned to a path that no longer exists.
+    /// The live counterpart, `worktree_identities`, is rewritten instead —
+    /// stale rows there are wrong output, not a cold cache. Returns rows
+    /// deleted.
+    pub fn delete_for_repo(conn: &Connection, repo_hash: &str) -> Result<usize> {
+        let n = conn.execute(
+            "DELETE FROM worktree_sizes WHERE repo_hash = ?1",
+            params![repo_hash],
+        )?;
+        Ok(n)
+    }
 }
 
 fn row_to_size(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorktreeSizeRow> {
@@ -210,6 +227,45 @@ mod tests {
             WorktreeSizesRepo::get(&conn, "repo", "feat/y")
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    /// `daft repo move` drops the whole repo's cache in one statement, and
+    /// stops at that repo's boundary.
+    #[test]
+    fn delete_for_repo_evicts_every_branch_of_one_repo() {
+        let (_tmp, conn) = fresh_db();
+        WorktreeSizesRepo::upsert(&conn, &sample("feat/x", 1)).unwrap();
+        WorktreeSizesRepo::upsert(&conn, &sample("feat/y", 2)).unwrap();
+        let mut other = sample("feat/x", 3);
+        other.repo_hash = "other-repo".into();
+        WorktreeSizesRepo::upsert(&conn, &other).unwrap();
+
+        assert_eq!(
+            WorktreeSizesRepo::delete_for_repo(&conn, "repo").unwrap(),
+            2
+        );
+        assert!(
+            WorktreeSizesRepo::list_for_repo(&conn, "repo")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            WorktreeSizesRepo::list_for_repo(&conn, "other-repo")
+                .unwrap()
+                .len(),
+            1,
+            "another repo's cache must survive"
+        );
+    }
+
+    /// A repo with nothing cached is not an error — most moves hit this.
+    #[test]
+    fn delete_for_repo_is_a_no_op_when_nothing_is_cached() {
+        let (_tmp, conn) = fresh_db();
+        assert_eq!(
+            WorktreeSizesRepo::delete_for_repo(&conn, "repo").unwrap(),
+            0
         );
     }
 }
