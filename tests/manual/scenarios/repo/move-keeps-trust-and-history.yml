@@ -35,7 +35,9 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "trust"
+        # The specific claim, not the bare word: this repo *was* trusted, so
+        # the grant is what has to be reported as carried.
+        - "trust: carried"
 
   - name: The grant followed the repository, at its original level
     run: daft hooks trust list

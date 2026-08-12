@@ -31,6 +31,15 @@ steps:
     cwd: "$WORK_DIR"
     expect:
       exit_code: 0
+      output_contains:
+        # `--layout sibling` recorded a per-repo override, and that is what
+        # moved. Both settings are keyed by git-dir path, so they re-key
+        # together — but they are reported apart on purpose.
+        - "layout override: carried"
+      output_not_contains:
+        # This repo was never trusted. Claiming otherwise would be a false
+        # reassurance about the one thing a plain `mv` silently destroys.
+        - "trust: carried"
       dirs_exist:
         - "$WORK_DIR/moved/api-gateway"
         - "$WORK_DIR/moved/api-gateway.feature-x"
