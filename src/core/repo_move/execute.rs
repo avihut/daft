@@ -155,15 +155,19 @@ fn repair_worktrees(plan: &MovePlan, outcome: &mut MoveOutcome) {
 /// Losing these is the worst of the silent failures a plain `mv` causes: hooks
 /// stop running with nothing but a skip warning to show for it.
 fn rekey_trust(plan: &MovePlan, outcome: &mut MoveOutcome) {
-    let result =
-        TrustDatabase::update_if(|db| Ok(db.rekey_repo(&plan.old_trust_key, &plan.new_git_dir)));
+    // The closure's own answer, not a re-read of the registry: an entry sitting
+    // at the destination key could be one this repo brought or one stranded
+    // there by whatever used to occupy that path, and reporting "trust carried"
+    // for the latter would be a false reassurance about the one thing a plain
+    // `mv` silently destroys. `update_if` rather than `update` so a repo that
+    // never had a grant does not get a `repos.json` created for it.
+    let mut moved = false;
+    let result = TrustDatabase::update_if(|db| {
+        moved = db.rekey_repo(&plan.old_trust_key, &plan.new_git_dir);
+        Ok(moved)
+    });
     match result {
-        Ok(()) => {
-            // `update_if` reports nothing back; re-read to say what happened.
-            outcome.trust_rekeyed = TrustDatabase::load()
-                .map(|db| db.get_trust_entry(&plan.new_git_dir).is_some())
-                .unwrap_or(false);
-        }
+        Ok(()) => outcome.trust_rekeyed = moved,
         Err(e) => outcome.warn(
             String::from("could not move the trust grant to the new location: ")
                 + &e.to_string()
