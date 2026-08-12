@@ -597,6 +597,62 @@ impl TrustDatabase {
         removed_trust || removed_layout
     }
 
+    /// The key both per-repo maps use: the canonicalized git-dir path.
+    ///
+    /// Names the convention every accessor above already follows. Exposed
+    /// because a caller that is about to *move* a repo has to capture its key
+    /// while the old directory still exists — `canonicalize` on a missing path
+    /// falls back to the literal spelling, which will not match a key stored
+    /// through a symlinked parent (`/tmp` → `/private/tmp` on macOS).
+    pub fn repo_key(git_dir: &Path) -> String {
+        git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf())
+            .to_string_lossy()
+            .to_string()
+    }
+
+    /// Move a repository's per-repo settings from one git dir to another —
+    /// what `daft repo move` does after relocating a repo on disk.
+    ///
+    /// Trust grants and layout overrides are both keyed by git-dir path, which
+    /// is why a plain `mv` silently untrusts a repo and loses its layout: the
+    /// settings stay behind at a path nothing will ever look up again. Hooks
+    /// then stop running with only a skip warning.
+    ///
+    /// The trust entry moves **verbatim**. [`Self::set_trust_level`] would mint
+    /// a fresh [`TrustEntry`] and discard `granted_at`, `granted_by`, and the
+    /// `fingerprint` — but relocating a repo is not re-granting trust, and the
+    /// provenance of the original grant has to survive the move.
+    ///
+    /// `old_key` comes from [`Self::repo_key`], captured before the move.
+    /// `new_git_dir` exists by now and is canonicalized here. Returns whether
+    /// anything moved.
+    pub fn rekey_repo(&mut self, old_key: &str, new_git_dir: &Path) -> bool {
+        let new_key = Self::repo_key(new_git_dir);
+        if new_key == old_key {
+            return false;
+        }
+        // Bind both before the `||` so neither arm short-circuits. Whatever
+        // sat under `new_key` is overwritten on purpose: it described whatever
+        // used to occupy that path, and this repo is what occupies it now.
+        let moved_trust = match self.repositories.remove(old_key) {
+            Some(entry) => {
+                self.repositories.insert(new_key.clone(), entry);
+                true
+            }
+            None => false,
+        };
+        let moved_layout = match self.layouts.remove(old_key) {
+            Some(layout) => {
+                self.layouts.insert(new_key, layout);
+                true
+            }
+            None => false,
+        };
+        moved_trust || moved_layout
+    }
+
     /// Add a pattern-based trust rule.
     pub fn add_pattern(&mut self, pattern: String, level: TrustLevel, comment: Option<String>) {
         self.patterns.push(TrustPattern {
@@ -908,6 +964,116 @@ mod tests {
         db.set_layout(git_dir, "sibling".to_string());
         assert!(db.reset_repo(git_dir), "with a layout entry → returns true");
         assert!(!db.reset_repo(git_dir), "after reset → returns false again");
+    }
+
+    /// #837: a repo move must carry the grant across intact. Re-granting via
+    /// `set_trust_level` would silently reset the provenance — the whole reason
+    /// `rekey_repo` moves the entry as a value.
+    #[test]
+    fn rekey_repo_moves_the_trust_entry_verbatim() {
+        let mut db = TrustDatabase::default();
+        let old = Path::new("/old/api/.git");
+        let new = Path::new("/new/api-gateway/.git");
+
+        db.set_trust_level_with_fingerprint(
+            old,
+            TrustLevel::Allow,
+            "git@github.com:acme/api.git".to_string(),
+        );
+        // Distinctive provenance, so a silent re-grant would be visible.
+        let entry = db.repositories.get_mut("/old/api/.git").unwrap();
+        entry.granted_at = 1_700_000_000;
+        entry.granted_by = "hooks-trust-prompt".to_string();
+        db.set_layout(old, "contained".to_string());
+
+        assert!(db.rekey_repo(&TrustDatabase::repo_key(old), new));
+
+        let moved = db.get_trust_entry(new).expect("entry moved to the new key");
+        assert_eq!(moved.level, TrustLevel::Allow);
+        assert_eq!(moved.granted_at, 1_700_000_000, "granted_at must survive");
+        assert_eq!(moved.granted_by, "hooks-trust-prompt");
+        assert_eq!(
+            moved.fingerprint.as_deref(),
+            Some("git@github.com:acme/api.git"),
+            "fingerprint must survive"
+        );
+        assert_eq!(db.get_layout(new), Some("contained"));
+
+        assert!(db.get_trust_entry(old).is_none(), "old key must be vacated");
+        assert!(db.get_layout(old).is_none());
+        assert_eq!(
+            db.get_trust_level(old),
+            TrustLevel::Deny,
+            "the vacated path falls back to the default"
+        );
+    }
+
+    #[test]
+    fn rekey_repo_moves_a_layout_override_with_no_trust_entry() {
+        let mut db = TrustDatabase::default();
+        let old = Path::new("/old/api/.git");
+        let new = Path::new("/new/api/.git");
+        db.set_layout(old, "sibling".to_string());
+
+        assert!(db.rekey_repo(&TrustDatabase::repo_key(old), new));
+        assert_eq!(db.get_layout(new), Some("sibling"));
+        assert!(db.get_layout(old).is_none());
+    }
+
+    #[test]
+    fn rekey_repo_reports_false_when_the_repo_had_no_settings() {
+        let mut db = TrustDatabase::default();
+        assert!(!db.rekey_repo(
+            &TrustDatabase::repo_key(Path::new("/old/api/.git")),
+            Path::new("/new/api/.git")
+        ));
+    }
+
+    /// A move that lands where the settings already live (a rename that
+    /// canonicalizes to the same path) must not remove them.
+    #[test]
+    fn rekey_repo_is_a_no_op_when_the_key_is_unchanged() {
+        let mut db = TrustDatabase::default();
+        let git_dir = Path::new("/old/api/.git");
+        db.set_trust_level(git_dir, TrustLevel::Allow);
+
+        assert!(!db.rekey_repo(&TrustDatabase::repo_key(git_dir), git_dir));
+        assert_eq!(
+            db.get_trust_level(git_dir),
+            TrustLevel::Allow,
+            "the entry must still be there"
+        );
+    }
+
+    /// Whatever the destination path used to hold belongs to a repo that is no
+    /// longer there; the arriving repo's settings win.
+    #[test]
+    fn rekey_repo_overwrites_settings_stranded_at_the_destination() {
+        let mut db = TrustDatabase::default();
+        let old = Path::new("/old/api/.git");
+        let new = Path::new("/new/api/.git");
+        db.set_trust_level(old, TrustLevel::Allow);
+        db.set_trust_level(new, TrustLevel::Deny);
+
+        assert!(db.rekey_repo(&TrustDatabase::repo_key(old), new));
+        assert_eq!(db.get_trust_level(new), TrustLevel::Allow);
+    }
+
+    /// The key is the *canonicalized* git dir, which is why a mover has to
+    /// capture it before the directory disappears.
+    #[test]
+    fn repo_key_canonicalizes_through_symlinked_parents() {
+        let temp_dir = tempdir().unwrap();
+        let real = temp_dir.path().join("real");
+        std::fs::create_dir_all(real.join(".git")).unwrap();
+        let link = temp_dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert_eq!(
+            TrustDatabase::repo_key(&link.join(".git")),
+            TrustDatabase::repo_key(&real.join(".git")),
+            "both spellings must resolve to one key"
+        );
     }
 
     #[test]
