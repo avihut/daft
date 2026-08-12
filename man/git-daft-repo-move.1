@@ -1,0 +1,55 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-daft-repo-move 1  "git-daft-repo-move 1.27.1" 
+.SH NAME
+git\-daft\-repo\-move \- Move a repository, keeping its worktrees, trust and catalog entry intact
+.SH SYNOPSIS
+\fBgit\-daft\-repo\-move\fR [\fB\-\-name\fR] [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPO\fR> <\fIDEST\fR> 
+.SH DESCRIPTION
+.PP
+Relocates a repository on disk and moves everything keyed to its old path
+along with it: git\*(Aqs worktree linkage, the trust grant, the layout override,
+the catalog entry, and recorded worktree paths.
+.PP
+<DEST> follows `mv` semantics — an existing directory means "move into it",
+anything else names the new repository directory outright. The parent has to
+exist already.
+.PP
+Worktrees the layout placed outside the repository directory move too. Under
+the default `sibling` layout that is all of them, so moving only the
+repository directory would strand every worktree it has. A worktree you placed
+somewhere yourself stays where you put it; its git linkage is still repaired.
+.PP
+\-\-name also updates the catalog name. Without it the name follows the
+directory when it was derived from the old one, and is left alone when you
+chose it yourself.
+.PP
+Refuses before touching anything if the destination is occupied, sits inside
+the repository, or lives on another filesystem.
+.SH OPTIONS
+.TP
+\fB\-\-name\fR \fI<NAME>\fR
+Catalog name for the repository after the move
+.TP
+\fB\-\-dry\-run\fR
+Print the full plan without touching anything
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress reporting
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show detailed progress
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+<\fIREPO\fR>
+Repository to move: a catalog name, uuid, or path
+.TP
+<\fIDEST\fR>
+Where to move it: a new path, or an existing directory to move into
+.SH VERSION
+v1.27.1

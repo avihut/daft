@@ -606,18 +606,31 @@ complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcomm
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -l reset -d 'Reset to built-in default'
 complete -c daft -n '__fish_seen_subcommand_from multi-remote; and not __fish_seen_subcommand_from enable disable status set-default move' -f -a 'enable disable status set-default move'
 # repo: subcommands
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'add' -d 'Register a repository in the repo catalog'
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'info' -d "Show a repository's catalog entry"
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'install' -d 'Install a starter daft.yml in the current worktree'
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'link' -d 'Declare a relation from this repo to another'
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'list' -d 'List repositories in the repo catalog'
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'remove' -d 'Remove a repository from the repo catalog'
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'unlink' -d 'Remove a relation from this repo'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list move remove rename unlink' -f -a 'add' -d 'Register a repository in the repo catalog'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list move remove rename unlink' -f -a 'info' -d "Show a repository's catalog entry"
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list move remove rename unlink' -f -a 'install' -d 'Install a starter daft.yml in the current worktree'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list move remove rename unlink' -f -a 'link' -d 'Declare a relation from this repo to another'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list move remove rename unlink' -f -a 'list' -d 'List repositories in the repo catalog'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list move remove rename unlink' -f -a 'move' -d 'Move a repository, keeping its worktrees and trust intact'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list move remove rename unlink' -f -a 'remove' -d 'Remove a repository from the repo catalog'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list move remove rename unlink' -f -a 'rename' -d "Rename a repository's catalog entry"
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list move remove rename unlink' -f -a 'unlink' -d 'Remove a relation from this repo'
 # repo add: path completion + flags
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -a "(__fish_complete_directories (commandline -ct))"
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -l name -r -d 'Catalog name for the repo'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -s q -l quiet -d 'Suppress progress reporting'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -s v -l verbose -d 'Show detailed progress'
+# repo move: repo name then destination directory + flags
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from move' -f -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from move' -a "(__fish_complete_directories (commandline -ct))"
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from move' -l name -r -d 'Catalog name after the move'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from move' -l dry-run -d 'Print the plan without touching anything'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from move' -s q -l quiet -d 'Suppress progress reporting'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from move' -s v -l verbose -d 'Show detailed progress'
+# repo rename: the repo to rename (the new name is not completable)
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from rename' -f -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from rename' -s q -l quiet -d 'Suppress progress reporting'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from rename' -s v -l verbose -d 'Show detailed progress'
 # repo info: catalog-repo names then directory completion + flags
 # (`repo info .`, a subdirectory, or any worktree resolves to its repo)
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -f -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
