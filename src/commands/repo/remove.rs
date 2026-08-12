@@ -281,7 +281,12 @@ fn resolve_target(needle: Option<&str>, purge: bool, use_gitoxide: bool) -> Resu
         false => {
             let named = std::fs::canonicalize(needle)
                 .with_context(|| format!("could not canonicalize {needle}"))?;
-            if named != target.project_root {
+            // Either spelling of "the repo itself" passes. A detached bare
+            // clone (`foo.git`) has its project root one level *up*, so
+            // matching only the root would refuse the very directory the user
+            // pointed at. Neither is reachable from a subdirectory, which is
+            // the case being refused.
+            if named != target.project_root && named != target.bare_git_dir {
                 bail!(
                     "'{needle}' is not in the catalog, and the directory of that name is \
                      inside '{}' rather than a repository root\n  \

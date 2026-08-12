@@ -535,6 +535,28 @@ test_repo_remove_bare_name_does_not_escalate_to_enclosing_repo() {
         return 1
     fi
 
+    # A detached bare clone keeps its project root one level UP, so the
+    # directory the user named IS the git dir, not the root. Matching only the
+    # root would refuse the very thing they pointed at, so both spellings of
+    # "the repo itself" pass — neither is reachable from a subdirectory.
+    (
+        cd "$container"
+        git clone --bare -q "$project_root" bare-clone.git
+    ) >/dev/null 2>&1 || return 1
+    cd "$container" || return 1
+    if ! daft repo remove --purge --force "bare-clone.git" >/dev/null 2>&1; then
+        log_error "a bare word naming a bare repo's own git dir must be accepted"
+        return 1
+    fi
+    if [[ -d "$container/bare-clone.git" ]]; then
+        log_error "bare repo not removed: $container/bare-clone.git"
+        return 1
+    fi
+    if [[ ! -d "$project_root/.git" ]]; then
+        log_error "DATA LOSS: purging the bare clone took the enclosing repo too"
+        return 1
+    fi
+
     # The spelled-out path keeps the documented walk-up: `./docs` DOES mean
     # "the repo this path belongs to". Only the guess is refused.
     cd "$project_root" || return 1
