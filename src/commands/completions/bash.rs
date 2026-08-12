@@ -470,6 +470,21 @@ complete -F _{func_name} {command_name}
 }
 
 pub(super) const DAFT_BASH_COMPLETIONS: &str = r#"# daft subcommand completions
+
+# Catalog repo names first, then directories. Every `daft repo` verb whose
+# positional is a repo takes both spellings (`repo info api`, `repo remove
+# ./old-repo`, `repo link ~/src/api`), so they share one implementation: the
+# mapfile/compgen pair has a bash-4 floor and empty-array quirks worth fixing
+# in one place rather than in each arm.
+__daft_complete_repo_or_dir() {
+    local cur="$1"
+    local -a repos dirs
+    mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+    mapfile -t dirs < <(compgen -d -- "$cur")
+    COMPREPLY=( "${repos[@]}" "${dirs[@]}" )
+    compopt -o filenames 2>/dev/null || true
+}
+
 _daft() {
     local cur prev words cword
     _init_completion || return
@@ -755,11 +770,7 @@ _daft() {
                 fi
                 # Catalog repo names first, then directories (`repo info .`,
                 # a subdirectory, or any worktree resolves to its repo).
-                local -a repos dirs
-                mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
-                mapfile -t dirs < <(compgen -d -- "$cur")
-                COMPREPLY=( "${repos[@]}" "${dirs[@]}" )
-                compopt -o filenames 2>/dev/null || true
+                __daft_complete_repo_or_dir "$cur"
                 return 0
                 ;;
             install)
@@ -776,11 +787,7 @@ _daft() {
                     COMPREPLY=( $(compgen -W "--name --kind -h --help" -- "$cur") )
                     return 0
                 fi
-                local -a repos dirs
-                mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
-                mapfile -t dirs < <(compgen -d -- "$cur")
-                COMPREPLY=( "${repos[@]}" "${dirs[@]}" )
-                compopt -o filenames 2>/dev/null || true
+                __daft_complete_repo_or_dir "$cur"
                 return 0
                 ;;
             list)
@@ -804,11 +811,7 @@ _daft() {
                 # Catalog repo names first, then directories — the positional
                 # takes either (`repo remove api`, `repo remove ./old-repo`),
                 # same treatment as `repo info`.
-                local -a repos dirs
-                mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
-                mapfile -t dirs < <(compgen -d -- "$cur")
-                COMPREPLY=( "${repos[@]}" "${dirs[@]}" )
-                compopt -o filenames 2>/dev/null || true
+                __daft_complete_repo_or_dir "$cur"
                 return 0
                 ;;
             unlink)

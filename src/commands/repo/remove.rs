@@ -149,35 +149,26 @@ struct Resolved {
     needle: Option<String>,
 }
 
-/// Whether a needle asks to be read as a path. Mirrors the shape test in
-/// [`Catalog::resolve`](crate::catalog::Catalog::resolve) so the two agree on
-/// what `./api` means. Used for error copy, not as a safety gate: a bare word
-/// that misses the catalog is still retried as a path (#836), it just reports
-/// the catalog's complaint rather than the filesystem's when that fails too.
-fn needle_looks_pathish(needle: &str) -> bool {
-    needle.contains(std::path::MAIN_SEPARATOR) || needle.starts_with('.')
-}
-
-/// Ask the catalog about `needle`.
+/// The catalog, opened once per invocation.
 ///
-/// `Ok(None)` means the catalog was asked and had nothing to say — no catalog
-/// file yet, or no match. `Err` means it could not be asked at all. That split
-/// is the point: this resolution *falls back to the filesystem* on a miss, so
-/// collapsing a store outage into a miss would turn "the catalog is
-/// unreachable" into "delete the directory of that name instead". Same
-/// fail-closed rule as [`crate::catalog::try_live_catalog_row_for`] and the
-/// repo-aware command grammar in CLAUDE.md.
-fn catalog_resolve(needle: &str) -> Result<Option<CatalogRepoRow>> {
-    let Some(catalog) = Catalog::open_ro().context("could not open the repo catalog")? else {
-        return Ok(None);
-    };
-    catalog
-        .resolve(needle)
-        .context("could not read the repo catalog")
+/// `Ok(None)` means there is no catalog yet — the one honest "no answer".
+/// `Err` means it could not be opened at all, and that split is the point:
+/// this resolution *falls back to the filesystem* on a miss, so collapsing a
+/// store outage into a miss would turn "the catalog is unreachable" into
+/// "delete the directory of that name instead". Same fail-closed rule as
+/// [`crate::catalog::try_live_catalog_row_for`] and the repo-aware command
+/// grammar in CLAUDE.md.
+///
+/// One handle for the whole resolution, not one per question: each open
+/// builds a pool and re-runs the schema check, and two opens can disagree if
+/// a concurrent daft writes between them — the row the first probe missed can
+/// exist by the time the second runs.
+fn open_catalog() -> Result<Option<Catalog>> {
+    Catalog::open_ro().context("could not open the repo catalog")
 }
 
 /// The catalog row for a repo we already found on disk, keyed by its git dir.
-/// Fail-closed for the same reason as [`catalog_resolve`].
+/// Fail-closed for the same reason as [`open_catalog`].
 ///
 /// This runs on every route, so `--purge` inherits the failure and refuses to
 /// delete anything while the catalog is unreadable. That is deliberate: an
@@ -185,8 +176,14 @@ fn catalog_resolve(needle: &str) -> Result<Option<CatalogRepoRow>> {
 /// same property that keeps the bare-word fallback safe. Do not "fix" this by
 /// swapping in [`crate::catalog::live_catalog_row_for`], which swallows the
 /// outage — that would silently turn a store failure into "not cataloged".
-fn catalog_row_for(target: &RepoTarget) -> Result<Option<CatalogRepoRow>> {
-    crate::catalog::try_live_catalog_row_for(&target.bare_git_dir)
+fn catalog_row_for(
+    catalog: Option<&Catalog>,
+    target: &RepoTarget,
+) -> Result<Option<CatalogRepoRow>> {
+    let Some(catalog) = catalog else {
+        return Ok(None);
+    };
+    crate::catalog::live_row_in(catalog, &target.bare_git_dir)
         .context("could not read the repo catalog")
 }
 
@@ -204,9 +201,11 @@ fn catalog_row_for(target: &RepoTarget) -> Result<Option<CatalogRepoRow>> {
 fn resolve_target(needle: Option<&str>, purge: bool, use_gitoxide: bool) -> Result<Resolved> {
     use crate::core::worktree::remove_repo::resolve_repo;
 
+    let catalog = open_catalog()?;
+
     let Some(needle) = needle else {
         let target = resolve_repo(None, use_gitoxide)?;
-        let row = catalog_row_for(&target)?;
+        let row = catalog_row_for(catalog.as_ref(), &target)?;
         return Ok(Resolved {
             row,
             on_disk: Some(target),
@@ -215,7 +214,13 @@ fn resolve_target(needle: Option<&str>, purge: bool, use_gitoxide: bool) -> Resu
         });
     };
 
-    if let Some(row) = catalog_resolve(needle)? {
+    let by_needle = match &catalog {
+        Some(catalog) => catalog
+            .resolve(needle)
+            .context("could not read the repo catalog")?,
+        None => None,
+    };
+    if let Some(row) = by_needle {
         // A tombstone is a *catalog* fact, so only the catalog-only mode is
         // finished by it. `--purge` is about files, which the tombstone never
         // touched: after the default removal leaves a repo on disk, every
@@ -246,7 +251,7 @@ fn resolve_target(needle: Option<&str>, purge: bool, use_gitoxide: bool) -> Resu
         });
     }
 
-    let pathish = needle_looks_pathish(needle);
+    let pathish = crate::catalog::needle_looks_pathish(needle);
     let target = match resolve_repo(Some(Path::new(needle)), use_gitoxide) {
         Ok(target) => target,
         // Error copy follows the needle's shape. A path-shaped needle asked
@@ -291,7 +296,7 @@ fn resolve_target(needle: Option<&str>, purge: bool, use_gitoxide: bool) -> Resu
         }
     };
 
-    let row = catalog_row_for(&target)?;
+    let row = catalog_row_for(catalog.as_ref(), &target)?;
     Ok(Resolved {
         row,
         on_disk: Some(target),
@@ -1244,8 +1249,15 @@ mod tests {
         assert!(!confirmed("yes\n"));
     }
 
+    /// Removal branches on needle shape twice — which error to report on a
+    /// total miss, and whether the guessed route's no-escalation rule applies
+    /// — so it must read `./api` exactly as `Catalog::resolve` does. Sharing
+    /// one predicate is what guarantees that; this pins the behavior the two
+    /// agree on.
     #[test]
     fn needle_shape_matches_the_catalog_precedence_rule() {
+        use crate::catalog::needle_looks_pathish;
+
         // Path-shaped: the spellings that insist on a directory.
         for pathish in [".", "..", "./api", "../api", "/abs/api", "a/b"] {
             assert!(needle_looks_pathish(pathish), "{pathish} must read as path");

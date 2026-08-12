@@ -32,11 +32,11 @@ pub mod service;
 pub mod worktrees;
 
 pub use registration::{
-    catalog_removal_would_record, gather_facts, live_catalog_row_for, mark_row_removed,
-    note_repo_removed, register_repo, remove_from_catalog_only, touch_current_repo,
-    try_live_catalog_row_for,
+    catalog_removal_would_record, gather_facts, live_catalog_row_for, live_row_in,
+    mark_row_removed, note_repo_removed, register_repo, remove_from_catalog_only,
+    touch_current_repo, try_live_catalog_row_for,
 };
 pub use service::{
     Catalog, CatalogError, RegistrationFacts, RegistrationOutcome, effective_default_branch,
-    resolve_repo_arg, resolve_repo_arg_missing_ok,
+    needle_looks_pathish, resolve_repo_arg, resolve_repo_arg_missing_ok,
 };

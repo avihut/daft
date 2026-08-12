@@ -195,6 +195,16 @@ pub fn try_live_catalog_row_for(
     let Some(catalog) = Catalog::open_ro()? else {
         return Ok(None);
     };
+    live_row_in(&catalog, bare_git_dir)
+}
+
+/// [`try_live_catalog_row_for`] against a handle the caller already holds, for
+/// resolutions that ask the catalog more than one question and should not pay
+/// for — or risk disagreeing across — a second open.
+pub fn live_row_in(
+    catalog: &Catalog,
+    bare_git_dir: &Path,
+) -> crate::catalog::service::Result<Option<CatalogRepoRow>> {
     let row = match read_daft_id(bare_git_dir) {
         Some(id) => catalog.get_by_uuid(&id)?,
         None => {
