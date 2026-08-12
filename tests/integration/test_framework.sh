@@ -9,7 +9,14 @@ set -eo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$TEST_DIR")")"
 RUST_BINARY_DIR="$PROJECT_ROOT/target/release"
-TEMP_BASE_DIR="/tmp/git-worktree-integration-tests"
+# One fixed directory per machine, not per run: the suite `rm -rf`s it on both
+# setup and teardown, so two runs sharing it delete each other's fixtures
+# mid-test and fail in ways that look like product bugs. That is not
+# hypothetical — sibling worktrees are daft's own workflow, and two of them
+# running the suite at once is the normal case, not an edge one. Override to
+# give a run its own base; CI and plain local runs keep the shared default so
+# a stale tree is still reclaimed rather than accumulating.
+TEMP_BASE_DIR="${DAFT_TEST_BASE_DIR:-/tmp/git-worktree-integration-tests}"
 REMOTE_REPO_DIR="$TEMP_BASE_DIR/remote-repos"
 WORK_DIR="$TEMP_BASE_DIR/work"
 
