@@ -210,7 +210,7 @@ pub fn build(req: MoveRequest<'_>) -> Result<MovePlan> {
     })?;
 
     let worktrees = classify(req.layout, &old_root, &new_root, req.worktrees);
-    refuse_bad_worktree_destinations(&old_root, &worktrees)?;
+    refuse_bad_worktree_destinations(&worktrees)?;
     let name = plan_name(
         req.explicit_name,
         req.current_name,
@@ -331,7 +331,7 @@ fn same_filesystem(_a: &Path, _b: &Path) -> Result<bool> {
 /// `daft_data_dir` rather than beside the repo — raises `EXDEV` only after the
 /// root has already moved, leaving rollback to undo work that need not have
 /// started.
-fn refuse_bad_worktree_destinations(old_root: &Path, worktrees: &[PlannedWorktree]) -> Result<()> {
+fn refuse_bad_worktree_destinations(worktrees: &[PlannedWorktree]) -> Result<()> {
     for wt in worktrees {
         if wt.disposition != Disposition::Relocated || wt.new_path == wt.old_path {
             continue;
@@ -345,19 +345,26 @@ fn refuse_bad_worktree_destinations(old_root: &Path, worktrees: &[PlannedWorktre
                 wt.branch.as_deref().unwrap_or("detached")
             );
         }
+        // Compare the worktree against *its own* destination, not against the
+        // repo root: the rename being checked is this worktree's. Under
+        // `centralized` the two differ, and using the root would refuse a move
+        // that is perfectly possible — worktrees already live under
+        // `daft_data_dir`, so a rename there stays on the data dir's
+        // filesystem even when the repo sits on another volume entirely.
+        //
         // Unlike the root's parent, a worktree's parent need not exist yet —
-        // the executor creates layout-owned parents. Compare against the
-        // nearest ancestor that does exist, which is the filesystem the new
-        // directory will be created on.
+        // the executor creates layout-owned parents — so anchor on the nearest
+        // ancestor that does exist, which is the filesystem the new directory
+        // will be created on.
         let Some(anchor) = nearest_existing_ancestor(&wt.new_path) else {
             continue;
         };
-        if !same_filesystem(old_root, &anchor)? {
+        if !same_filesystem(&wt.old_path, &anchor)? {
             bail!(
                 "{} and {} are on different filesystems\n  \
                  the {} worktree would move there, and a move across filesystems is a copy\n  \
-                 tip: point this layout's worktree root at the same filesystem as the repo",
-                old_root.display(),
+                 tip: point this layout's worktree root at the same filesystem as the worktrees",
+                wt.old_path.display(),
                 anchor.display(),
                 wt.branch.as_deref().unwrap_or("detached")
             );
