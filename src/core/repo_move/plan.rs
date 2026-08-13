@@ -877,6 +877,10 @@ mod tests {
 
     /// The destination is canonicalized as far as it exists, so a path spelled
     /// through a symlinked parent still reads as "inside the repo".
+    ///
+    /// Unix-only for the symlink primitive, not for the behaviour: see the note
+    /// on `repo_key_canonicalizes_through_symlinked_parents`.
+    #[cfg(unix)]
     #[test]
     fn a_destination_spelled_through_a_symlink_is_still_recognised() {
         let fx = fixture();

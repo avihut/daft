@@ -1187,6 +1187,11 @@ mod tests {
 
     /// The key is the *canonicalized* git dir, which is why a mover has to
     /// capture it before the directory disappears.
+    ///
+    /// Unix-only: `std::os::unix::fs::symlink` has no portable equivalent, and
+    /// creating a symlink on Windows needs a privilege CI runners lack. The
+    /// behaviour under test — canonicalization — is not platform-specific.
+    #[cfg(unix)]
     #[test]
     fn repo_key_canonicalizes_through_symlinked_parents() {
         let temp_dir = tempdir().unwrap();
