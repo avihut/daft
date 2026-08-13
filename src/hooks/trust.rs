@@ -105,12 +105,24 @@ pub struct Rekeyed {
     pub trust: bool,
     /// The per-repo layout override moved.
     pub layout: bool,
+    /// Settings left behind by a *previous* occupant of the destination key
+    /// were discarded. Never reported as carried — nothing of this repo's
+    /// moved — but it is still a write, so the registry has to be saved.
+    pub evicted: bool,
 }
 
 impl Rekeyed {
-    /// Whether anything moved — the signal for "persist this registry".
+    /// Whether anything this repo owned moved — what the report may claim.
     pub fn any(self) -> bool {
         self.trust || self.layout
+    }
+
+    /// Whether the registry changed at all, including a pure eviction. The
+    /// signal for "persist this registry"; [`Self::any`] is not, because
+    /// dropping an inherited grant is a change worth keeping even when this
+    /// repo brought nothing of its own.
+    pub fn changed(self) -> bool {
+        self.any() || self.evicted
     }
 }
 
@@ -656,9 +668,17 @@ impl TrustDatabase {
         if new_key == old_key {
             return Rekeyed::default();
         }
-        // Whatever sat under `new_key` is overwritten on purpose: it described
-        // whatever used to occupy that path, and this repo is what occupies it
-        // now.
+        // Clear the destination unconditionally, before deciding what moves
+        // into it. Anything keyed there described whatever used to occupy that
+        // path — a repo since deleted or moved away — and the repo arriving
+        // must not inherit it. Doing this only on the branch where something
+        // moved is the dangerous half-measure: a repo with *no* grant of its
+        // own would land on a stale `Allow` and silently become trusted, so
+        // hooks would run without anyone having granted them. `clone` guards
+        // the same reused-path case with `remove_trust`.
+        let evicted =
+            self.repositories.remove(&new_key).is_some() | self.layouts.remove(&new_key).is_some();
+
         let trust = match self.repositories.remove(old_key) {
             Some(entry) => {
                 self.repositories.insert(new_key.clone(), entry);
@@ -673,7 +693,11 @@ impl TrustDatabase {
             }
             None => false,
         };
-        Rekeyed { trust, layout }
+        Rekeyed {
+            trust,
+            layout,
+            evicted,
+        }
     }
 
     /// Add a pattern-based trust rule.
@@ -1014,9 +1038,11 @@ mod tests {
             rekeyed,
             Rekeyed {
                 trust: true,
-                layout: true
+                layout: true,
+                evicted: false
             },
-            "this repo had both, so both must be reported"
+            "this repo had both, so both must be reported; nothing was sitting \
+             at the destination to evict"
         );
 
         let moved = db.get_trust_entry(new).expect("entry moved to the new key");
@@ -1039,6 +1065,60 @@ mod tests {
         );
     }
 
+    /// The dangerous direction: an untrusted repo must not *gain* trust by
+    /// moving onto a path some earlier repo was trusted at. The grant left
+    /// behind describes a repository that is gone; inheriting it would run
+    /// hooks nobody granted, which is the one failure mode this whole module
+    /// exists to prevent.
+    #[test]
+    fn rekey_repo_evicts_a_stale_grant_left_at_the_destination() {
+        let mut db = TrustDatabase::default();
+        let old = Path::new("/old/api/.git");
+        let new = Path::new("/new/api/.git");
+
+        // A previous occupant of the destination was trusted; it is long gone.
+        db.set_trust_level_with_fingerprint(
+            new,
+            TrustLevel::Allow,
+            "git@github.com:acme/ghost.git".to_string(),
+        );
+        db.set_layout(new, "centralized".to_string());
+        // The repo doing the moving has no settings of its own at all.
+
+        let rekeyed = db.rekey_repo(&TrustDatabase::repo_key(old), new);
+        assert_eq!(
+            rekeyed,
+            Rekeyed {
+                trust: false,
+                layout: false,
+                evicted: true
+            },
+            "nothing of this repo's moved, so nothing may be reported as carried \
+             — but the eviction is a write and has to be persisted"
+        );
+        assert!(
+            rekeyed.changed(),
+            "a pure eviction must still persist: `any()` is false here, so \
+             gating the save on it would leave the stale grant on disk"
+        );
+
+        assert!(
+            db.get_trust_entry(new).is_none(),
+            "the arriving repo must not inherit the ghost's grant"
+        );
+        assert_eq!(
+            db.get_trust_level(new),
+            TrustLevel::Deny,
+            "with the grant gone the repo falls back to the default, i.e. it \
+             must be asked for"
+        );
+        assert_eq!(
+            db.get_layout(new),
+            None,
+            "the ghost's layout override must not steer this repo's worktrees"
+        );
+    }
+
     #[test]
     fn rekey_repo_moves_a_layout_override_with_no_trust_entry() {
         let mut db = TrustDatabase::default();
@@ -1051,7 +1131,8 @@ mod tests {
             rekeyed,
             Rekeyed {
                 trust: false,
-                layout: true
+                layout: true,
+                evicted: false
             },
             "a `--layout` override is not a trust grant: reporting `trust` here \
              would tell the user their hooks still run when nothing said so"
