@@ -55,6 +55,12 @@ pub fn apply(plan: &MovePlan) -> Result<MoveOutcome> {
     let mut outcome = MoveOutcome::default();
     repair_worktrees(plan, &mut outcome);
     rekey_trust(plan, &mut outcome);
+    // Ahead of the catalog, and not inside it: the recorded paths are this
+    // repo's own live data and need nothing from the catalog, so gating them on
+    // a catalog write would let one outage strand both. The remedy printed for
+    // a catalog failure (`daft repo add` from the new location) does not
+    // rewrite these rows, so a skip here would be permanent.
+    rewrite_recorded_paths(plan);
     update_catalog(plan, &mut outcome);
     Ok(outcome)
 }
@@ -192,7 +198,7 @@ fn rekey_trust(plan: &MovePlan, outcome: &mut MoveOutcome) {
     let mut moved = crate::hooks::Rekeyed::default();
     let result = TrustDatabase::update_if(|db| {
         moved = db.rekey_repo(&plan.old_trust_key, &plan.new_git_dir);
-        Ok(moved.any())
+        Ok(moved.changed())
     });
     match result {
         Ok(()) => {
@@ -274,7 +280,6 @@ fn update_catalog(plan: &MovePlan, outcome: &mut MoveOutcome) {
         );
     }
 
-    rewrite_recorded_paths(plan);
     evict_caches(&catalog, &facts.uuid);
 }
 

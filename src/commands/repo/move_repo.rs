@@ -122,9 +122,18 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     // silently taking a name another repo holds is the kind of wrong the
     // catalog exists to prevent.
     let catalog = Catalog::open_ro().context("could not open the repo catalog")?;
-    let holder = |name: &str| -> Option<String> {
-        let row = catalog.as_ref()?.resolve_live_name(name).ok().flatten()?;
-        (Some(&row.uuid) != own_uuid.as_ref()).then_some(row.path)
+    let holder = |name: &str| -> Result<Option<String>> {
+        let Some(catalog) = catalog.as_ref() else {
+            return Ok(None);
+        };
+        let row = catalog.resolve_live_name(name).with_context(|| {
+            String::from("could not check whether the name '") + name + "' is free"
+        })?;
+        // A repo never collides with itself: the name it already holds is
+        // free as far as this move is concerned.
+        Ok(row
+            .filter(|row| Some(&row.uuid) != own_uuid.as_ref())
+            .map(|row| row.path))
     };
 
     let plan = repo_move::build(repo_move::MoveRequest {
@@ -200,10 +209,15 @@ fn resolve_target(
         return Ok((target, Some(row)));
     }
 
-    // Not in the catalog. A path still resolves; a bare word does not — there
-    // is nothing to guess against, and guessing here would move a directory.
+    // Not in the catalog. A path still resolves — an uncataloged repo is
+    // movable, and the move registers the result — but only a needle *shaped*
+    // like a path. `needle_looks_pathish` is the single definition of that
+    // boundary, shared with `Catalog::resolve`, and deferring to it is what
+    // keeps `daft repo move api …` from moving whatever `./api` happens to be
+    // when the catalog has no `api`: a bare word addresses the catalog, and a
+    // miss there is a miss, not an invitation to move a directory.
     let as_path = Path::new(needle);
-    if as_path.is_dir() {
+    if crate::catalog::needle_looks_pathish(needle) && as_path.is_dir() {
         let target = resolve_repo(Some(as_path), use_gitoxide)?;
         return Ok((target, None));
     }
