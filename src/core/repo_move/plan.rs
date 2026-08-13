@@ -27,9 +27,18 @@ pub enum Disposition {
     /// layout puts every worktree here, which is why a move that ignored them
     /// would strand the repo's worktrees in the common case.
     Relocated,
-    /// Outside the root and not where the layout would place it: the user put
-    /// it there deliberately (`--at`), or it is detached and unpredictable. It
-    /// stays. Its git linkage is still repaired, so it keeps working.
+    /// Outside the root and not matched to a layout slot: the user put it there
+    /// deliberately (`--at`), or it has no branch to predict from. It stays,
+    /// and is reported as staying; its git linkage is still repaired, so it
+    /// keeps working from where it is.
+    ///
+    /// Branch-less does not mean *misplaced*. Daft's own anonymous sandboxes go
+    /// through this same template with their dirname in the branch slot, so
+    /// they do sit at a layout slot — but the dirname is only recoverable from
+    /// the identity store, not from the path (`sibling` spells it
+    /// `<repo>.<dirname>`), and the planner does not read that store. So they
+    /// are left behind rather than carried. Safe and visible, but narrower than
+    /// ideal: see #837's follow-up.
     LeftInPlace,
 }
 
@@ -161,14 +170,20 @@ pub struct MoveRequest<'a> {
     /// Live worktrees, enumerated before the move.
     pub worktrees: &'a [WorktreeEntry],
     /// Whether a live catalog entry already claims the name we would move to.
-    /// `None` when nothing claims it. Supplied by the caller so planning stays
-    /// free of catalog IO.
-    pub name_holder: &'a dyn Fn(&str) -> Option<String>,
+    /// `Ok(None)` when nothing claims it. Supplied by the caller so planning
+    /// stays free of catalog IO — but the probe's *failure* has to reach here
+    /// rather than being flattened into "free", which would let a transient
+    /// store error hand this repo a name another repo holds.
+    pub name_holder: &'a dyn Fn(&str) -> Result<Option<String>>,
 }
 
 /// Decide the whole move. Refuses rather than half-doing anything.
 pub fn build(req: MoveRequest<'_>) -> Result<MovePlan> {
-    let old_root = effective_root(req.layout, &canonical(&req.target.project_root));
+    let old_root = effective_root(
+        req.layout,
+        &canonical(&req.target.project_root),
+        req.worktrees,
+    );
     let old_git_dir = canonical(&req.target.bare_git_dir);
     let new_root = resolve_destination(req.dest, &old_root)?;
 
@@ -195,6 +210,7 @@ pub fn build(req: MoveRequest<'_>) -> Result<MovePlan> {
     })?;
 
     let worktrees = classify(req.layout, &old_root, &new_root, req.worktrees);
+    refuse_bad_worktree_destinations(&old_root, &worktrees)?;
     let name = plan_name(
         req.explicit_name,
         req.current_name,
@@ -239,6 +255,13 @@ fn resolve_destination(dest: &Path, old_root: &Path) -> Result<PathBuf> {
         dest
     };
 
+    // Re-check after the join, not only against `dest`: `daft repo move api
+    // ~/Projects` on a repo at `~/Projects/api` resolves the destination to the
+    // repo itself, and the "already exists" arm below would then tell the user
+    // to *remove* their own repository.
+    if target == old_root {
+        bail!("{} is already there", old_root.display());
+    }
     if target.exists() {
         bail!(
             "{} already exists\n  tip: remove it, or name a destination that does not exist yet",
@@ -295,6 +318,56 @@ fn same_filesystem(a: &Path, b: &Path) -> Result<bool> {
 #[cfg(not(unix))]
 fn same_filesystem(_a: &Path, _b: &Path) -> Result<bool> {
     Ok(true)
+}
+
+/// Apply the root's two destination refusals to every relocated worktree.
+///
+/// The root is not the only thing that gets renamed, so checking only its
+/// destination leaves the promise ("refuses before touching anything if the
+/// destination is occupied") true of one path out of N. Both failures are worse
+/// than a refusal: `fs::rename` silently *consumes* an existing empty directory
+/// rather than erroring, and a cross-device worktree destination — which
+/// `centralized` makes routine, since it re-roots worktrees under
+/// `daft_data_dir` rather than beside the repo — raises `EXDEV` only after the
+/// root has already moved, leaving rollback to undo work that need not have
+/// started.
+fn refuse_bad_worktree_destinations(old_root: &Path, worktrees: &[PlannedWorktree]) -> Result<()> {
+    for wt in worktrees {
+        if wt.disposition != Disposition::Relocated || wt.new_path == wt.old_path {
+            continue;
+        }
+        if wt.new_path.exists() {
+            bail!(
+                "{} already exists\n  \
+                 the {} worktree would move there\n  \
+                 tip: remove it, or move that worktree aside first",
+                wt.new_path.display(),
+                wt.branch.as_deref().unwrap_or("detached")
+            );
+        }
+        // Unlike the root's parent, a worktree's parent need not exist yet —
+        // the executor creates layout-owned parents. Compare against the
+        // nearest ancestor that does exist, which is the filesystem the new
+        // directory will be created on.
+        let Some(anchor) = nearest_existing_ancestor(&wt.new_path) else {
+            continue;
+        };
+        if !same_filesystem(old_root, &anchor)? {
+            bail!(
+                "{} and {} are on different filesystems\n  \
+                 the {} worktree would move there, and a move across filesystems is a copy\n  \
+                 tip: point this layout's worktree root at the same filesystem as the repo",
+                old_root.display(),
+                anchor.display(),
+                wt.branch.as_deref().unwrap_or("detached")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    path.ancestors().find(|p| p.is_dir()).map(Path::to_path_buf)
 }
 
 /// Decide each worktree's fate. See [`Disposition`] for what each case means.
@@ -368,7 +441,7 @@ fn plan_name(
     current: &str,
     old_root: &Path,
     new_root: &Path,
-    name_holder: &dyn Fn(&str) -> Option<String>,
+    name_holder: &dyn Fn(&str) -> Result<Option<String>>,
 ) -> Result<NamePlan> {
     if let Some(requested) = explicit {
         crate::catalog::normalize::validate_catalog_name(requested)
@@ -376,7 +449,7 @@ fn plan_name(
         if requested == current {
             return Ok(NamePlan::Keep);
         }
-        if let Some(holder) = name_holder(requested) {
+        if let Some(holder) = name_holder(requested)? {
             bail!(
                 "the name '{requested}' is already used by the repo at {holder}\n  \
                  tip: pick a different name, or rename that repo first with `{}` from inside it",
@@ -397,8 +470,9 @@ fn plan_name(
     }
     // A collision must not fail the move: by the time the name is applied the
     // directories have already moved, and refusing would leave the user with a
-    // relocated repo and an error.
-    match name_holder(&new_name) {
+    // relocated repo and an error. A probe *error* is different — it surfaces
+    // here, in planning, where refusing still costs nothing.
+    match name_holder(&new_name)? {
         Some(holder) => Ok(NamePlan::KeptNameTaken {
             wanted: new_name,
             holder,
@@ -425,6 +499,52 @@ fn absolutize(path: &Path) -> Result<PathBuf> {
     Ok(normalize_path(&absolute))
 }
 
+/// The directory that *is* the repository, as the layout sees it.
+///
+/// For a wrapped non-bare layout (`contained-classic`) the resolved project
+/// root is the clone **inside** the wrapper, while the wrapper is both what the
+/// user means by "the repository" and what the worktree template resolves
+/// against. Moving the clone alone would pull it out of its own wrapper and
+/// leave every sibling worktree behind.
+///
+/// The same `parent()` idiom appears in `core::worktree::{checkout, merge}` and
+/// `sandbox`, but there it only picks where a *new worktree* goes, so a wrong
+/// guess misplaces one directory. Here it picks what `fs::rename` moves, and
+/// the layout is not evidence about this repo: `resolve_layout` ranks
+/// `global_config.default_layout()` **above** filesystem detection, so a user
+/// whose global default is `contained-classic` reports that layout for every
+/// repo, wrapped or not. Taking `parent()` on faith would move `~/Projects` —
+/// every unrelated repo in it — when asked to move `~/Projects/api`.
+///
+/// So the hypothesis is tested rather than trusted, against the layout's own
+/// arithmetic: a wrapper is a directory whose children are the slots this
+/// template computes. One check covers both shapes, because the clone is itself
+/// an enumerated worktree — a fresh wrapper corroborates through its own clone
+/// sitting at `<wrapper>/<default-branch>`, a lived-in one through any sibling.
+/// Uncorroborated, the clone alone moves: narrower than the user may have meant,
+/// but it never touches a directory that is not this repo's.
+fn effective_root(layout: &Layout, project_root: &Path, worktrees: &[WorktreeEntry]) -> PathBuf {
+    let unwrapped = || project_root.to_path_buf();
+    if !layout.needs_wrapper() {
+        return unwrapped();
+    }
+    let Some(parent) = project_root.parent() else {
+        return unwrapped();
+    };
+    let corroborated = worktrees.iter().filter(|e| !e.is_bare).any(|entry| {
+        let Some(branch) = entry.branch.as_deref() else {
+            return false;
+        };
+        compute_target_worktree_path(layout, parent, branch)
+            .is_ok_and(|predicted| canonical(&predicted) == canonical(&entry.path))
+    });
+    if corroborated {
+        parent.to_path_buf()
+    } else {
+        unwrapped()
+    }
+}
+
 /// Re-root `path` from `from` onto `to`, or `None` if it is not under `from`.
 ///
 /// `Path::join("")` appends a separator, so the case that matters — a path that
@@ -432,23 +552,6 @@ fn absolutize(path: &Path) -> Result<PathBuf> {
 /// as `/new/root/`. Two `Path`s compare equal across that, but the string does
 /// not: it is what lands in `DAFT_CD_FILE` and in the recorded worktree path,
 /// where nothing else spells a directory with a trailing slash.
-/// The directory that *is* the repository, as the layout sees it.
-///
-/// For a wrapped non-bare layout (`contained-classic`) the resolved project
-/// root is the clone **inside** the wrapper, while the wrapper is both what the
-/// user means by "the repository" and what the worktree template resolves
-/// against. Moving the clone alone would pull it out of its own wrapper and
-/// leave every sibling worktree behind. Same `parent()` idiom as
-/// `core::worktree::checkout` and `core::worktree::merge`.
-fn effective_root(layout: &Layout, project_root: &Path) -> PathBuf {
-    if layout.needs_wrapper()
-        && let Some(parent) = project_root.parent()
-    {
-        return parent.to_path_buf();
-    }
-    project_root.to_path_buf()
-}
-
 fn rebase(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
     let rest = path.strip_prefix(from).ok()?;
     Some(if rest.as_os_str().is_empty() {
@@ -561,7 +664,7 @@ mod tests {
             current_name: "api",
             layout,
             worktrees,
-            name_holder: &|_| None,
+            name_holder: &|_| Ok(None),
         }
     }
 
@@ -621,6 +724,59 @@ mod tests {
         assert_eq!(plan.repair_paths().len(), 2, "both still need repairing");
     }
 
+    /// The other half of `effective_root`, and the dangerous one: the layout is
+    /// not evidence about *this* repo. `resolve_layout` ranks the global default
+    /// above filesystem detection, so a user whose global default is
+    /// `contained-classic` reports that layout for a plain clone that was never
+    /// wrapped. Taking `parent()` on faith there moves `~/Projects` — every
+    /// unrelated repo in it — when asked to move `~/Projects/api`.
+    #[test]
+    fn a_wrapper_layout_on_an_unwrapped_clone_moves_only_the_clone() {
+        let tmp = TempDir::new().unwrap();
+        let projects = tmp.path().join("Projects");
+        let clone = projects.join("api");
+        std::fs::create_dir_all(clone.join(".git")).unwrap();
+        // A neighbour that must survive untouched — this is the whole point.
+        let neighbour = projects.join("unrelated-repo");
+        std::fs::create_dir_all(neighbour.join(".git")).unwrap();
+        let work = tmp.path().join("Work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let fx = Fixture {
+            root: clone.clone(),
+            projects: projects.clone(),
+            target: RepoTarget {
+                bare_git_dir: clone.join(".git"),
+                project_root: clone.clone(),
+            },
+            tmp,
+        };
+        // The layout claims a wrapper; the filesystem does not corroborate it.
+        // The clone sits at `Projects/api` while this template would have put
+        // the `main` branch at `Projects/main`.
+        let lay = layout(CLASSIC);
+        let worktrees = [entry(&clone, Some("main"))];
+        let dest = work.join("api");
+        let plan = build(request(&fx, &dest, &lay, &worktrees)).unwrap();
+
+        assert_eq!(
+            plan.old_root,
+            canonical(&clone),
+            "uncorroborated, only the clone moves — never its parent"
+        );
+        assert_ne!(
+            plan.old_root,
+            canonical(&projects),
+            "moving Projects/ would take {} with it",
+            neighbour.display()
+        );
+        assert_eq!(
+            plan.directory_moves(),
+            vec![(canonical(&clone).as_path(), plan.new_root.as_path())],
+            "exactly one rename, and it is the repo's own directory"
+        );
+    }
+
     /// The name follows the *wrapper's* basename. Comparing against the clone's
     /// (`main`) would never match the catalog name, so the name would never
     /// follow for this layout.
@@ -629,21 +785,25 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let projects = tmp.path().join("Projects");
         let wrapper = projects.join("api");
-        let clone = wrapper.join("main");
-        std::fs::create_dir_all(clone.join(".git")).unwrap();
+        let clone_path = wrapper.join("main");
+        std::fs::create_dir_all(clone_path.join(".git")).unwrap();
 
         let fx = Fixture {
             root: wrapper,
             projects: projects.clone(),
             target: RepoTarget {
-                bare_git_dir: clone.join(".git"),
-                project_root: clone,
+                bare_git_dir: clone_path.join(".git"),
+                project_root: clone_path.clone(),
             },
             tmp,
         };
         let lay = layout(CLASSIC);
         let dest = projects.join("gateway");
-        let plan = build(request(&fx, &dest, &lay, &[])).unwrap();
+        // The clone itself, which `git worktree list` always reports: it is
+        // what corroborates the wrapper for a repo that has no other worktree
+        // yet, by sitting exactly where this template puts the `main` branch.
+        let worktrees = [entry(&clone_path, Some("main"))];
+        let plan = build(request(&fx, &dest, &lay, &worktrees)).unwrap();
         assert_eq!(plan.name, NamePlan::FollowsDirectory("gateway".into()));
     }
 
@@ -888,7 +1048,7 @@ mod tests {
         let fx = fixture();
         let dest = fx.projects.join("api-gateway");
         let lay = layout(SIBLING);
-        let holder = |name: &str| (name == "taken").then(|| "/elsewhere/other".to_string());
+        let holder = |name: &str| Ok((name == "taken").then(|| "/elsewhere/other".to_string()));
         let mut req = request(&fx, &dest, &lay, &[]);
         req.explicit_name = Some("taken");
         req.name_holder = &holder;
@@ -914,7 +1074,8 @@ mod tests {
         let fx = fixture();
         let dest = fx.projects.join("api-gateway");
         let lay = layout(SIBLING);
-        let holder = |name: &str| (name == "api-gateway").then(|| "/elsewhere/other".to_string());
+        let holder =
+            |name: &str| Ok((name == "api-gateway").then(|| "/elsewhere/other".to_string()));
         let mut req = request(&fx, &dest, &lay, &[]);
         req.name_holder = &holder;
         let plan = build(req).unwrap();
