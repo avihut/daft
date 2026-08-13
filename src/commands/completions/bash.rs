@@ -751,7 +751,7 @@ _daft() {
     # repo: complete subcommands and arguments
     if [[ $cword -ge 2 && "${words[1]}" == "repo" ]]; then
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=( $(compgen -W "add info install link list remove unlink" -- "$cur") )
+            COMPREPLY=( $(compgen -W "add info install link list move remove rename unlink" -- "$cur") )
             return 0
         fi
         case "${words[2]}" in
@@ -800,6 +800,40 @@ _daft() {
                 fi
                 if [[ "$cur" == -* ]]; then
                     COMPREPLY=( $(compgen -W "-a --all -w --worktrees --columns --format --template --no-headers -q --quiet -h --help" -- "$cur") )
+                fi
+                return 0
+                ;;
+            move)
+                if [[ "$prev" == "--name" ]]; then
+                    return 0
+                fi
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--name --dry-run -q --quiet -v --verbose -h --help" -- "$cur") )
+                    return 0
+                fi
+                # First positional is the repo (catalog names, then dirs for a
+                # repo daft has never operated in); the second is a directory.
+                if [[ $cword -eq 3 ]]; then
+                    local -a repos dirs
+                    mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+                    mapfile -t dirs < <(compgen -d -- "$cur")
+                    COMPREPLY=( "${repos[@]}" "${dirs[@]}" )
+                    compopt -o filenames 2>/dev/null || true
+                    return 0
+                fi
+                COMPREPLY=( $(compgen -d -- "$cur") )
+                compopt -o filenames 2>/dev/null || true
+                return 0
+                ;;
+            rename)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "-q --quiet -v --verbose -h --help" -- "$cur") )
+                    return 0
+                fi
+                # Only the first positional is completable: the second is a
+                # new name nothing knows yet.
+                if [[ $cword -eq 3 ]]; then
+                    mapfile -t COMPREPLY < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
                 fi
                 return 0
                 ;;

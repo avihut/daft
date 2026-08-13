@@ -1,0 +1,41 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-daft-repo-rename 1  "git-daft-repo-rename 1.27.1" 
+.SH NAME
+git\-daft\-repo\-rename \- Rename a repository\*(Aqs catalog entry
+.SH SYNOPSIS
+\fBgit\-daft\-repo\-rename\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPO\fR> <\fINEW_NAME\fR> 
+.SH DESCRIPTION
+.PP
+Changes the name a repository answers to in the repo catalog — the name taken
+by `git daft go <repo>`, `git daft list <repo>` and `\-\-repo <name>`.
+.PP
+Nothing on disk changes: the directory keeps its name and no worktree moves.
+To relocate the repository itself, use `git daft repo move`, which can rename
+the catalog entry in the same operation with \-\-name.
+.PP
+This is the same operation as `git daft repo add \-\-name <name>`.
+.PP
+Not to be confused with `git daft rename`, which renames a worktree and its
+branch — the same way `git daft repo remove` sits beside `git daft remove`.
+.SH OPTIONS
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress reporting
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show detailed progress
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+<\fIREPO\fR>
+Repository to rename: a catalog name, uuid, or path
+.TP
+<\fINEW_NAME\fR>
+The name it should answer to
+.SH VERSION
+v1.27.1

@@ -1,0 +1,65 @@
+name: Move honours --name and leaves hand-placed worktrees alone
+description: >
+  Two rules that pull in opposite directions. --name overrides the catalog name
+  outright, while without it the name only follows the directory when it was
+  derived from it. And a worktree the user placed somewhere themselves is not
+  part of the layout's constellation: it stays put, but its git linkage still
+  has to be repaired, because the git dir it points into did move.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone, then place one worktree by the layout and one by hand
+    run: |
+      daft clone --layout sibling $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      daft start feature-x
+      mkdir -p $WORK_DIR/elsewhere
+      git worktree add $WORK_DIR/elsewhere/manual -b manual
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo.feature-x"
+        - "$WORK_DIR/elsewhere/manual"
+
+  - name: Move with an explicit --name
+    run: |
+      mkdir -p $WORK_DIR/moved
+      daft repo move test-repo $WORK_DIR/moved/api-gateway --name backend 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/moved/api-gateway"
+        - "$WORK_DIR/moved/api-gateway.feature-x"
+        - "$WORK_DIR/elsewhere/manual"
+
+  - name: --name wins over the directory name
+    run: daft repo list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "backend"
+        - "moved/api-gateway"
+
+  - name: The hand-placed worktree stayed where the user put it, and still works
+    run: |
+      git -C $WORK_DIR/elsewhere/manual status --porcelain >/dev/null && echo "manual=ok"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "manual=ok"
+      files_not_exist:
+        - "$WORK_DIR/moved/api-gateway.manual"
+
+  - name: git agrees about where everything is
+    run: git -C $WORK_DIR/moved/api-gateway worktree list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "moved/api-gateway.feature-x"
+        - "elsewhere/manual"
+      output_not_contains:
+        - "prunable"

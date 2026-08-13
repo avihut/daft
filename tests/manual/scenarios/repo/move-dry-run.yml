@@ -1,0 +1,57 @@
+name: Move dry run prints the whole plan and changes nothing
+description: >
+  --dry-run must print every effect the move would have — the directory moves,
+  the worktrees to repair, the registry re-key, the catalog updates — and leave
+  the repository exactly where it was. The plan it prints is the same value the
+  executor consumes, so this also guards the two from drifting apart.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with the sibling layout and create a worktree
+    run: |
+      daft clone --layout sibling $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      daft start feature-x
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo.feature-x"
+
+  - name: Dry run prints the full plan
+    run: |
+      mkdir -p $WORK_DIR/moved
+      daft repo move test-repo $WORK_DIR/moved/api-gateway --dry-run 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Would move:"
+        - "repo"
+        - "moved/api-gateway"
+        - "worktree"
+        - "api-gateway.feature-x"
+        - "repair"
+        - "trust"
+        - "catalog"
+
+  - name: Nothing moved
+    run: "true"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo.feature-x"
+      files_not_exist:
+        - "$WORK_DIR/moved/api-gateway"
+
+  - name: The catalog still points at the original path
+    run: daft repo list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo"
+      output_not_contains:
+        - "moved/api-gateway"

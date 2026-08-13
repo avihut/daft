@@ -69,7 +69,7 @@ pub use environment::{
 pub(crate) use environment::{derived_injection, derived_injection_at};
 pub use executor::{HookAborted, HookExecutor, HookResult};
 pub use run_mode::HookMode;
-pub use trust::{TrustDatabase, TrustEntry, TrustLevel, get_remote_url_for_git_dir};
+pub use trust::{Rekeyed, TrustDatabase, TrustEntry, TrustLevel, get_remote_url_for_git_dir};
 
 use crate::settings::HookOutputConfig;
 use serde::{Deserialize, Serialize};

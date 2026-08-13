@@ -1,0 +1,61 @@
+name: Move from inside the repo writes DAFT_CD_FILE
+description: >
+  When the move runs from a cwd inside the tree being relocated, the user's
+  directory ceases to exist at its old path. Only the parent shell can cd, so
+  the binary has to write the mapped new location to $DAFT_CD_FILE. Asserts the
+  file is written and names the path the cwd landed at — not merely that
+  something was written.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with the sibling layout
+    run: daft clone --layout sibling $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+
+  - name: Move from inside the repo — must write the mapped destination
+    run: |
+      mkdir -p $WORK_DIR/moved
+      cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-move.XXXXXX")
+      DAFT_CD_FILE="$cd_file" daft repo move test-repo $WORK_DIR/moved/api-gateway 2>&1
+      rc=$?
+      echo "---"
+      cd_target_value=$(cat "$cd_file")
+      echo "cd_target=$cd_target_value"
+      # Suffix match: the binary canonicalizes, so on macOS it writes
+      # /private/tmp/... while $WORK_DIR is spelled /tmp/.... Also asserts the
+      # absence of a trailing separator, which `join("")` used to add.
+      if [[ "$cd_target_value" == */moved/api-gateway ]]; then
+        echo "cd_target_is_new_root=yes"
+      else
+        echo "cd_target_is_new_root=no"
+      fi
+      rm -f "$cd_file"
+      exit $rc
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "cd_target_is_new_root=yes"
+      output_not_contains:
+        - "cd_target_is_new_root=no"
+
+  - name: A move run from outside leaves the shell alone
+    run: |
+      cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-move.XXXXXX")
+      DAFT_CD_FILE="$cd_file" daft repo move api-gateway $WORK_DIR/elsewhere 2>&1
+      rc=$?
+      echo "---"
+      echo "cd_file_size=$(wc -c < "$cd_file" | tr -d ' ')"
+      rm -f "$cd_file"
+      exit $rc
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "cd_file_size=0"

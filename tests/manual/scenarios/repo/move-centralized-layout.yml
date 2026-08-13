@@ -1,0 +1,64 @@
+name: Move a repo whose worktrees live in the data directory
+description: >
+  centralized places worktrees under $DAFT_DATA_DIR/worktrees/<repo>/, keyed by
+  the repo's directory name — so renaming the directory during a move changes
+  their parent directory too, to one that does not exist yet. daft owns those
+  paths and creates them; the destination the *user* named is still refused when
+  its parent is missing, exactly like mv.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with the centralized layout and add a worktree
+    run: |
+      daft clone --layout centralized $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      daft start feature-x
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$DAFT_DATA_DIR/worktrees/test-repo/feature-x"
+
+  - name: Move and rename — the worktree parent must be created, not errored on
+    run: |
+      mkdir -p $WORK_DIR/moved
+      daft repo move test-repo $WORK_DIR/moved/api-gateway 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/moved/api-gateway"
+        - "$DAFT_DATA_DIR/worktrees/api-gateway/feature-x"
+      files_not_exist:
+        - "$WORK_DIR/test-repo"
+        - "$DAFT_DATA_DIR/worktrees/test-repo/feature-x"
+
+  - name: Both worktrees resolve their repo after the move
+    run: |
+      git -C $WORK_DIR/moved/api-gateway status --porcelain >/dev/null && echo "main=ok"
+      git -C $DAFT_DATA_DIR/worktrees/api-gateway/feature-x status --porcelain >/dev/null && echo "feature=ok"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main=ok"
+        - "feature=ok"
+
+  - name: git reports no worktree as prunable
+    run: git -C $WORK_DIR/moved/api-gateway worktree list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "worktrees/api-gateway/feature-x"
+      output_not_contains:
+        - "prunable"
+
+  - name: daft still sees the relocated worktree
+    run: daft list
+    cwd: "$WORK_DIR/moved/api-gateway"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature-x"

@@ -174,8 +174,16 @@ fn get_daft_categories() -> Vec<CommandCategory> {
                     command: repo::list::Args::command(),
                 },
                 CommandEntry {
+                    display_name: "repo move",
+                    command: repo::move_repo::Args::command(),
+                },
+                CommandEntry {
                     display_name: "repo remove",
                     command: repo::remove::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "repo rename",
+                    command: repo::rename::Args::command(),
                 },
                 CommandEntry {
                     display_name: "repo unlink",
@@ -375,8 +383,16 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
                     command: repo::list::Args::command(),
                 },
                 CommandEntry {
+                    display_name: "daft repo move",
+                    command: repo::move_repo::Args::command(),
+                },
+                CommandEntry {
                     display_name: "daft repo remove",
                     command: repo::remove::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft repo rename",
+                    command: repo::rename::Args::command(),
                 },
                 CommandEntry {
                     display_name: "daft repo unlink",

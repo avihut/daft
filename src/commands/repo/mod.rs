@@ -12,8 +12,10 @@ pub mod info;
 pub mod install;
 pub mod link;
 pub mod list;
+pub mod move_repo;
 pub mod relation_io;
 pub mod remove;
+pub mod rename;
 pub mod unlink;
 
 /// Dispatch entry from the top-level main.
@@ -26,7 +28,9 @@ pub fn run() -> Result<()> {
         "install" => install::run(),
         "link" => link::run(),
         "list" => list::run(),
+        "move" => move_repo::run(),
         "remove" => remove::run(),
+        "rename" => rename::run(),
         "unlink" => unlink::run(),
         "" | "--help" | "-h" => {
             print_help();
@@ -53,6 +57,8 @@ fn print_help() {
     println!("  install   Install a starter daft.yml in the current worktree");
     println!("  link      Declare a relation from this repo to another");
     println!("  list      List repositories in the repo catalog");
+    println!("  move      Move a repository, keeping its worktrees and trust intact");
     println!("  remove    Remove a repository from the repo catalog");
+    println!("  rename    Rename a repository's catalog entry");
     println!("  unlink    Remove a relation from this repo");
 }

@@ -848,11 +848,11 @@ mod tests {
         let zsh = zsh::DAFT_ZSH_COMPLETIONS;
         let bash = bash::DAFT_BASH_COMPLETIONS;
         assert!(
-            zsh.contains("compadd add info install link list remove unlink"),
+            zsh.contains("compadd add info install link list move remove rename unlink"),
             "zsh repo verb list must include link and unlink in order"
         );
         assert!(
-            bash.contains("add info install link list remove unlink"),
+            bash.contains("add info install link list move remove rename unlink"),
             "bash repo verb list must include link and unlink in order"
         );
 
@@ -895,6 +895,57 @@ mod tests {
             ),
             "fish repo-unlink must complete relation labels"
         );
+    }
+
+    /// `daft repo move`/`rename` (#837): both verbs must be offered, and both
+    /// must complete their leading positional with catalog names — that
+    /// positional is the repository in each case. `move` additionally offers
+    /// its flags; `rename`'s second positional is a name nothing knows yet, so
+    /// there is deliberately nothing to complete there.
+    #[test]
+    fn repo_move_rename_complete_in_all_shells() {
+        let zsh = zsh::DAFT_ZSH_COMPLETIONS;
+        let bash = bash::DAFT_BASH_COMPLETIONS;
+
+        for (shell, script) in [("zsh", zsh), ("bash", bash)] {
+            let repo_section = script
+                .split("# repo: complete subcommands")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{shell} umbrella must have a repo section"));
+            let arm = |verb: &str| {
+                let after = repo_section
+                    .split(&format!("{verb})"))
+                    .nth(1)
+                    .unwrap_or_else(|| panic!("{shell} repo section must have a {verb} arm"));
+                after[..after.find(";;").unwrap_or(after.len())].to_string()
+            };
+            assert!(
+                arm("move").contains("daft __complete repo-name"),
+                "{shell} repo-move arm must complete catalog names"
+            );
+            assert!(
+                arm("move").contains("--dry-run") && arm("move").contains("--name"),
+                "{shell} repo-move arm must offer --name and --dry-run"
+            );
+            assert!(
+                arm("rename").contains("daft __complete repo-name"),
+                "{shell} repo-rename arm must complete catalog names"
+            );
+        }
+
+        let fish = fish::generate_daft_fish_completions();
+        for verb in ["move", "rename"] {
+            assert!(
+                fish.contains(&format!(
+                    "__fish_seen_subcommand_from {verb}' -f -a \"(daft __complete repo-name"
+                )),
+                "fish repo-{verb} must complete catalog names"
+            );
+            assert!(
+                fish.contains(&format!("-f -a '{verb}' -d ")),
+                "fish must register the repo {verb} verb"
+            );
+        }
     }
 
     /// `daft repo info <target>` accepts a path (`.`, a subdirectory, a

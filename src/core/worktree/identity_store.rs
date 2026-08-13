@@ -173,6 +173,41 @@ impl IdentityStore {
         }
     }
 
+    /// Re-point the record for the worktree now sitting at `worktree_path`.
+    ///
+    /// `daft repo move` relocating a whole repository: the worktree is the same
+    /// worktree, so only its path changes. Call it *after* the directory move
+    /// and git's linkage repair — the private-gitdir id is read back off the
+    /// moved worktree, which matches the row by identity rather than by its old
+    /// path. Matching on the old path would be the fragile choice: a
+    /// layout-driven move need not preserve any prefix, and git and daft can
+    /// spell the same directory differently.
+    ///
+    /// Best-effort like the rest of this module. A failure costs `daft list` a
+    /// name until the next observation, not correctness. Returns whether a
+    /// record was updated — `false` also covers a worktree daft never recorded.
+    pub fn rewrite_path(&self, worktree_path: &Path) -> bool {
+        let Some(worktree_id) = worktree_id_for(worktree_path) else {
+            return false;
+        };
+        let new_path = worktree_path.display().to_string();
+        match self.write(|conn| {
+            WorktreeIdentitiesRepo::rewrite_path(
+                conn,
+                &self.repo_hash,
+                &worktree_id,
+                &new_path,
+                chrono::Utc::now(),
+            )
+        }) {
+            Ok(updated) => updated > 0,
+            Err(e) => {
+                crate::log_debug!("could not re-point worktree identity: {e}");
+                false
+            }
+        }
+    }
+
     /// Forget a removed worktree's record.
     ///
     /// `captured_id` is the private-gitdir id read via [`worktree_id_for`]

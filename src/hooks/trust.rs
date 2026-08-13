@@ -93,6 +93,39 @@ fn default_granted_by() -> String {
     "user".to_string()
 }
 
+/// Which per-repo settings a [`TrustDatabase::rekey_repo`] actually carried.
+///
+/// Both are keyed by git-dir path and both are lost by a plain `mv`, but they
+/// are not interchangeable to the reader: "your trust grant survived" is a
+/// claim about hooks being allowed to run, and it must not be printed for a
+/// repo that only ever had a `--layout` override recorded.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Rekeyed {
+    /// The trust grant moved, verbatim.
+    pub trust: bool,
+    /// The per-repo layout override moved.
+    pub layout: bool,
+    /// Settings left behind by a *previous* occupant of the destination key
+    /// were discarded. Never reported as carried — nothing of this repo's
+    /// moved — but it is still a write, so the registry has to be saved.
+    pub evicted: bool,
+}
+
+impl Rekeyed {
+    /// Whether anything this repo owned moved — what the report may claim.
+    pub fn any(self) -> bool {
+        self.trust || self.layout
+    }
+
+    /// Whether the registry changed at all, including a pure eviction. The
+    /// signal for "persist this registry"; [`Self::any`] is not, because
+    /// dropping an inherited grant is a change worth keeping even when this
+    /// repo brought nothing of its own.
+    pub fn changed(self) -> bool {
+        self.any() || self.evicted
+    }
+}
+
 impl TrustEntry {
     /// Create a new trust entry with the current timestamp.
     pub fn new(level: TrustLevel) -> Self {
@@ -597,6 +630,76 @@ impl TrustDatabase {
         removed_trust || removed_layout
     }
 
+    /// The key both per-repo maps use: the canonicalized git-dir path.
+    ///
+    /// Names the convention every accessor above already follows. Exposed
+    /// because a caller that is about to *move* a repo has to capture its key
+    /// while the old directory still exists — `canonicalize` on a missing path
+    /// falls back to the literal spelling, which will not match a key stored
+    /// through a symlinked parent (`/tmp` → `/private/tmp` on macOS).
+    pub fn repo_key(git_dir: &Path) -> String {
+        git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf())
+            .to_string_lossy()
+            .to_string()
+    }
+
+    /// Move a repository's per-repo settings from one git dir to another —
+    /// what `daft repo move` does after relocating a repo on disk.
+    ///
+    /// Trust grants and layout overrides are both keyed by git-dir path, which
+    /// is why a plain `mv` silently untrusts a repo and loses its layout: the
+    /// settings stay behind at a path nothing will ever look up again. Hooks
+    /// then stop running with only a skip warning.
+    ///
+    /// The trust entry moves **verbatim**. [`Self::set_trust_level`] would mint
+    /// a fresh [`TrustEntry`] and discard `granted_at`, `granted_by`, and the
+    /// `fingerprint` — but relocating a repo is not re-granting trust, and the
+    /// provenance of the original grant has to survive the move.
+    ///
+    /// `old_key` comes from [`Self::repo_key`], captured before the move.
+    /// `new_git_dir` exists by now and is canonicalized here. Reports the two
+    /// settings separately: they are keyed alike but mean different things to
+    /// the user, and a repo that only ever had `--layout` recorded must not be
+    /// told its trust grant survived.
+    pub fn rekey_repo(&mut self, old_key: &str, new_git_dir: &Path) -> Rekeyed {
+        let new_key = Self::repo_key(new_git_dir);
+        if new_key == old_key {
+            return Rekeyed::default();
+        }
+        // Clear the destination unconditionally, before deciding what moves
+        // into it. Anything keyed there described whatever used to occupy that
+        // path — a repo since deleted or moved away — and the repo arriving
+        // must not inherit it. Doing this only on the branch where something
+        // moved is the dangerous half-measure: a repo with *no* grant of its
+        // own would land on a stale `Allow` and silently become trusted, so
+        // hooks would run without anyone having granted them. `clone` guards
+        // the same reused-path case with `remove_trust`.
+        let evicted =
+            self.repositories.remove(&new_key).is_some() | self.layouts.remove(&new_key).is_some();
+
+        let trust = match self.repositories.remove(old_key) {
+            Some(entry) => {
+                self.repositories.insert(new_key.clone(), entry);
+                true
+            }
+            None => false,
+        };
+        let layout = match self.layouts.remove(old_key) {
+            Some(layout) => {
+                self.layouts.insert(new_key, layout);
+                true
+            }
+            None => false,
+        };
+        Rekeyed {
+            trust,
+            layout,
+            evicted,
+        }
+    }
+
     /// Add a pattern-based trust rule.
     pub fn add_pattern(&mut self, pattern: String, level: TrustLevel, comment: Option<String>) {
         self.patterns.push(TrustPattern {
@@ -908,6 +1011,200 @@ mod tests {
         db.set_layout(git_dir, "sibling".to_string());
         assert!(db.reset_repo(git_dir), "with a layout entry → returns true");
         assert!(!db.reset_repo(git_dir), "after reset → returns false again");
+    }
+
+    /// #837: a repo move must carry the grant across intact. Re-granting via
+    /// `set_trust_level` would silently reset the provenance — the whole reason
+    /// `rekey_repo` moves the entry as a value.
+    #[test]
+    fn rekey_repo_moves_the_trust_entry_verbatim() {
+        let mut db = TrustDatabase::default();
+        let old = Path::new("/old/api/.git");
+        let new = Path::new("/new/api-gateway/.git");
+
+        db.set_trust_level_with_fingerprint(
+            old,
+            TrustLevel::Allow,
+            "git@github.com:acme/api.git".to_string(),
+        );
+        // Distinctive provenance, so a silent re-grant would be visible.
+        let entry = db.repositories.get_mut("/old/api/.git").unwrap();
+        entry.granted_at = 1_700_000_000;
+        entry.granted_by = "hooks-trust-prompt".to_string();
+        db.set_layout(old, "contained".to_string());
+
+        let rekeyed = db.rekey_repo(&TrustDatabase::repo_key(old), new);
+        assert_eq!(
+            rekeyed,
+            Rekeyed {
+                trust: true,
+                layout: true,
+                evicted: false
+            },
+            "this repo had both, so both must be reported; nothing was sitting \
+             at the destination to evict"
+        );
+
+        let moved = db.get_trust_entry(new).expect("entry moved to the new key");
+        assert_eq!(moved.level, TrustLevel::Allow);
+        assert_eq!(moved.granted_at, 1_700_000_000, "granted_at must survive");
+        assert_eq!(moved.granted_by, "hooks-trust-prompt");
+        assert_eq!(
+            moved.fingerprint.as_deref(),
+            Some("git@github.com:acme/api.git"),
+            "fingerprint must survive"
+        );
+        assert_eq!(db.get_layout(new), Some("contained"));
+
+        assert!(db.get_trust_entry(old).is_none(), "old key must be vacated");
+        assert!(db.get_layout(old).is_none());
+        assert_eq!(
+            db.get_trust_level(old),
+            TrustLevel::Deny,
+            "the vacated path falls back to the default"
+        );
+    }
+
+    /// The dangerous direction: an untrusted repo must not *gain* trust by
+    /// moving onto a path some earlier repo was trusted at. The grant left
+    /// behind describes a repository that is gone; inheriting it would run
+    /// hooks nobody granted, which is the one failure mode this whole module
+    /// exists to prevent.
+    #[test]
+    fn rekey_repo_evicts_a_stale_grant_left_at_the_destination() {
+        let mut db = TrustDatabase::default();
+        let old = Path::new("/old/api/.git");
+        let new = Path::new("/new/api/.git");
+
+        // A previous occupant of the destination was trusted; it is long gone.
+        db.set_trust_level_with_fingerprint(
+            new,
+            TrustLevel::Allow,
+            "git@github.com:acme/ghost.git".to_string(),
+        );
+        db.set_layout(new, "centralized".to_string());
+        // The repo doing the moving has no settings of its own at all.
+
+        let rekeyed = db.rekey_repo(&TrustDatabase::repo_key(old), new);
+        assert_eq!(
+            rekeyed,
+            Rekeyed {
+                trust: false,
+                layout: false,
+                evicted: true
+            },
+            "nothing of this repo's moved, so nothing may be reported as carried \
+             — but the eviction is a write and has to be persisted"
+        );
+        assert!(
+            rekeyed.changed(),
+            "a pure eviction must still persist: `any()` is false here, so \
+             gating the save on it would leave the stale grant on disk"
+        );
+
+        assert!(
+            db.get_trust_entry(new).is_none(),
+            "the arriving repo must not inherit the ghost's grant"
+        );
+        assert_eq!(
+            db.get_trust_level(new),
+            TrustLevel::Deny,
+            "with the grant gone the repo falls back to the default, i.e. it \
+             must be asked for"
+        );
+        assert_eq!(
+            db.get_layout(new),
+            None,
+            "the ghost's layout override must not steer this repo's worktrees"
+        );
+    }
+
+    #[test]
+    fn rekey_repo_moves_a_layout_override_with_no_trust_entry() {
+        let mut db = TrustDatabase::default();
+        let old = Path::new("/old/api/.git");
+        let new = Path::new("/new/api/.git");
+        db.set_layout(old, "sibling".to_string());
+
+        let rekeyed = db.rekey_repo(&TrustDatabase::repo_key(old), new);
+        assert_eq!(
+            rekeyed,
+            Rekeyed {
+                trust: false,
+                layout: true,
+                evicted: false
+            },
+            "a `--layout` override is not a trust grant: reporting `trust` here \
+             would tell the user their hooks still run when nothing said so"
+        );
+        assert_eq!(db.get_layout(new), Some("sibling"));
+        assert!(db.get_layout(old).is_none());
+    }
+
+    #[test]
+    fn rekey_repo_reports_false_when_the_repo_had_no_settings() {
+        let mut db = TrustDatabase::default();
+        let rekeyed = db.rekey_repo(
+            &TrustDatabase::repo_key(Path::new("/old/api/.git")),
+            Path::new("/new/api/.git"),
+        );
+        assert_eq!(rekeyed, Rekeyed::default());
+        assert!(!rekeyed.any());
+    }
+
+    /// A move that lands where the settings already live (a rename that
+    /// canonicalizes to the same path) must not remove them.
+    #[test]
+    fn rekey_repo_is_a_no_op_when_the_key_is_unchanged() {
+        let mut db = TrustDatabase::default();
+        let git_dir = Path::new("/old/api/.git");
+        db.set_trust_level(git_dir, TrustLevel::Allow);
+
+        assert!(
+            !db.rekey_repo(&TrustDatabase::repo_key(git_dir), git_dir)
+                .any()
+        );
+        assert_eq!(
+            db.get_trust_level(git_dir),
+            TrustLevel::Allow,
+            "the entry must still be there"
+        );
+    }
+
+    /// Whatever the destination path used to hold belongs to a repo that is no
+    /// longer there; the arriving repo's settings win.
+    #[test]
+    fn rekey_repo_overwrites_settings_stranded_at_the_destination() {
+        let mut db = TrustDatabase::default();
+        let old = Path::new("/old/api/.git");
+        let new = Path::new("/new/api/.git");
+        db.set_trust_level(old, TrustLevel::Allow);
+        db.set_trust_level(new, TrustLevel::Deny);
+
+        assert!(db.rekey_repo(&TrustDatabase::repo_key(old), new).trust);
+        assert_eq!(db.get_trust_level(new), TrustLevel::Allow);
+    }
+
+    /// The key is the *canonicalized* git dir, which is why a mover has to
+    /// capture it before the directory disappears.
+    ///
+    /// Unix-only: `std::os::unix::fs::symlink` has no portable equivalent, and
+    /// creating a symlink on Windows needs a privilege CI runners lack. The
+    /// behaviour under test — canonicalization — is not platform-specific.
+    #[cfg(unix)]
+    #[test]
+    fn repo_key_canonicalizes_through_symlinked_parents() {
+        let temp_dir = tempdir().unwrap();
+        let real = temp_dir.path().join("real");
+        std::fs::create_dir_all(real.join(".git")).unwrap();
+        let link = temp_dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert_eq!(
+            TrustDatabase::repo_key(&link.join(".git")),
+            TrustDatabase::repo_key(&real.join(".git")),
+            "both spellings must resolve to one key"
+        );
     }
 
     #[test]

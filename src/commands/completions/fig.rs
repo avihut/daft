@@ -762,11 +762,84 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
         options: None,
     };
 
+    let move_repo = FigSubcommand {
+        name: "move".to_string(),
+        description: Some(
+            "Move a repository, keeping its worktrees, trust and catalog entry intact".to_string(),
+        ),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Multiple(vec![
+            FigArg {
+                name: "repo".to_string(),
+                description: Some("Repository to move: a catalog name, uuid, or path".to_string()),
+                generators: Some(repo_name_generator()),
+            },
+            FigArg {
+                name: "dest".to_string(),
+                description: Some(
+                    "Where to move it: a new path, or an existing directory to move into"
+                        .to_string(),
+                ),
+                generators: None,
+            },
+        ])),
+        options: Some(vec![
+            FigOption {
+                name: FigName::Single("--name".into()),
+                description: "Catalog name for the repository after the move".into(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
+            },
+            FigOption {
+                name: FigName::Single("--dry-run".into()),
+                description: "Print the full plan without touching anything".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--quiet".into(), "-q".into()]),
+                description: "Suppress progress reporting".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--verbose".into(), "-v".into()]),
+                description: "Show detailed progress".into(),
+                args: None,
+            },
+        ]),
+    };
+
+    let rename = FigSubcommand {
+        name: "rename".to_string(),
+        description: Some("Rename a repository's catalog entry".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Multiple(vec![
+            FigArg {
+                name: "repo".to_string(),
+                description: Some(
+                    "Repository to rename: a catalog name, uuid, or path".to_string(),
+                ),
+                generators: Some(repo_name_generator()),
+            },
+            FigArg {
+                name: "new_name".to_string(),
+                description: Some("The name it should answer to".to_string()),
+                generators: None,
+            },
+        ])),
+        options: None,
+    };
+
     FigSubcommand {
         name: "repo".to_string(),
         description: Some("Repository-level operations".to_string()),
         load_spec: None,
-        subcommands: Some(vec![add, info, install, link, list, remove, unlink]),
+        subcommands: Some(vec![
+            add, info, install, link, list, move_repo, remove, rename, unlink,
+        ]),
         args: None,
         options: None,
     }

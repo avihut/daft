@@ -946,7 +946,7 @@ _daft() {
     # repo: complete subcommands and arguments
     if (( CURRENT >= 3 )) && [[ "$words[2]" == "repo" ]]; then
         if (( CURRENT == 3 )); then
-            compadd add info install link list remove unlink
+            compadd add info install link list move remove rename unlink
             return
         fi
         case "$words[3]" in
@@ -1021,6 +1021,38 @@ _daft() {
                 fi
                 if [[ "$curword" == -* ]]; then
                     compadd -- -a --all -w --worktrees --columns --format --template --no-headers -q --quiet -h --help
+                fi
+                return
+                ;;
+            move)
+                local prev_word="${words[$((CURRENT-1))]}"
+                if [[ "$prev_word" == "--name" ]]; then
+                    return
+                fi
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --name --dry-run -q --quiet -v --verbose -h --help
+                    return
+                fi
+                # First positional is the repo, second is the destination dir.
+                if (( CURRENT == 4 )); then
+                    local -a repos
+                    repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
+                    (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- "${repos[@]}"
+                fi
+                _files -/
+                return
+                ;;
+            rename)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- -q --quiet -v --verbose -h --help
+                    return
+                fi
+                # Only the first positional is completable: the second is a
+                # new name nothing knows yet.
+                if (( CURRENT == 4 )); then
+                    local -a repos
+                    repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
+                    (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- "${repos[@]}"
                 fi
                 return
                 ;;

@@ -20,6 +20,7 @@ mod progress;
 pub mod remote;
 pub mod repo;
 pub mod repo_identity;
+pub mod repo_move;
 pub mod settings;
 pub mod settings_spec;
 pub mod shared;

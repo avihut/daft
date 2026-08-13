@@ -3,6 +3,7 @@
 use crate::store::error::Result;
 use crate::store::models::{WorktreeIdentityRow, WorktreeKind};
 use crate::store::repos::invocations::parse_rfc3339;
+use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub struct WorktreeIdentitiesRepo;
@@ -107,6 +108,34 @@ impl WorktreeIdentitiesRepo {
             .query_map(params![repo_hash], row_to_identity)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Point a record at a new directory: the same worktree, somewhere else.
+    ///
+    /// This is `daft repo move` relocating a whole repository. The
+    /// private-gitdir id survives a move, so the row keeps its key and only the
+    /// path changes — `branch` and `kind` are untouched, because relocating a
+    /// worktree does not redefine what it is for.
+    ///
+    /// Deliberately one row at a time rather than a SQL prefix rewrite: a repo
+    /// move can send worktrees to paths that share no prefix with the old ones
+    /// (most layouts place them outside the project root, and their directory
+    /// names embed the repo's), so the caller supplies each mapping. Returns
+    /// rows updated (0 or 1) — an unrecorded worktree is not an error.
+    pub fn rewrite_path(
+        conn: &Connection,
+        repo_hash: &str,
+        worktree_id: &str,
+        new_path: &str,
+        updated_at: DateTime<Utc>,
+    ) -> Result<usize> {
+        let n = conn.execute(
+            "UPDATE worktree_identities
+                SET worktree_path = ?3, updated_at = ?4
+              WHERE repo_hash = ?1 AND worktree_id = ?2",
+            params![repo_hash, worktree_id, new_path, updated_at.to_rfc3339()],
+        )?;
+        Ok(n)
     }
 
     /// Forget a worktree's identity, when the worktree itself is gone.
@@ -240,6 +269,79 @@ mod tests {
             WorktreeIdentitiesRepo::list_for_repo(&conn, "repo").unwrap(),
             vec![renamed],
             "the rename must replace the record, not add a second one"
+        );
+    }
+
+    /// A repo move relocates the worktree but does not redefine it: the path
+    /// changes, the intent (`branch`, `kind`) must not.
+    #[test]
+    fn rewrite_path_moves_the_row_without_touching_intent() {
+        let (_tmp, conn) = fresh_db();
+        let original = sandbox("wt-a", "scratch", WorktreeKind::Canonical);
+        WorktreeIdentitiesRepo::upsert(&conn, &original).unwrap();
+
+        let moved_at = Utc.with_ymd_and_hms(2026, 3, 3, 0, 0, 0).unwrap();
+        let n = WorktreeIdentitiesRepo::rewrite_path(
+            &conn,
+            "repo",
+            "wt-a",
+            "/elsewhere/api.x",
+            moved_at,
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+
+        let row = WorktreeIdentitiesRepo::get(&conn, "repo", "wt-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.worktree_path, "/elsewhere/api.x");
+        assert_eq!(row.updated_at, moved_at);
+        assert_eq!(row.branch, original.branch, "intent must survive the move");
+        assert_eq!(row.kind, original.kind, "kind must survive the move");
+        assert_eq!(row.source_spelling, original.source_spelling);
+        assert_eq!(row.pinned_commit, original.pinned_commit);
+    }
+
+    /// An unrecorded worktree is not an error — a repo can hold worktrees daft
+    /// never recorded, and moving it must not fail on them.
+    #[test]
+    fn rewrite_path_is_a_no_op_for_an_unrecorded_worktree() {
+        let (_tmp, conn) = fresh_db();
+        let n = WorktreeIdentitiesRepo::rewrite_path(
+            &conn,
+            "repo",
+            "nope",
+            "/elsewhere/api.x",
+            Utc.with_ymd_and_hms(2026, 3, 3, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    /// The rewrite is scoped to one repo: another repo reusing the same
+    /// private-gitdir id keeps its own path.
+    #[test]
+    fn rewrite_path_does_not_cross_repos() {
+        let (_tmp, conn) = fresh_db();
+        WorktreeIdentitiesRepo::upsert(&conn, &sample("wt-a", "feat/x")).unwrap();
+        let mut other = sample("wt-a", "feat/x");
+        other.repo_hash = "other-repo".into();
+        WorktreeIdentitiesRepo::upsert(&conn, &other).unwrap();
+
+        WorktreeIdentitiesRepo::rewrite_path(
+            &conn,
+            "repo",
+            "wt-a",
+            "/elsewhere/api.x",
+            Utc.with_ymd_and_hms(2026, 3, 3, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            WorktreeIdentitiesRepo::get(&conn, "other-repo", "wt-a")
+                .unwrap()
+                .map(|r| r.worktree_path),
+            Some(other.worktree_path)
         );
     }
 

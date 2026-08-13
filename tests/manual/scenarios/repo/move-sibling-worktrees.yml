@@ -1,0 +1,92 @@
+name: Move a repo whose worktrees live outside it
+description: >
+  Under the default sibling layout every worktree is a sibling of the repo
+  directory rather than a child of it, so a move that relocated only the repo
+  directory would strand all of them. Asserts each worktree individually —
+  relocated, functional, and visible to daft list — because a summary count can
+  be right while one worktree is broken.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with the sibling layout and create two worktrees
+    run: |
+      daft clone --layout sibling $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      daft start feature-x
+      daft start hotfix
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo.feature-x"
+        - "$WORK_DIR/test-repo.hotfix"
+
+  - name: Move the repo into a new parent, under a new directory name
+    run: |
+      mkdir -p $WORK_DIR/moved
+      daft repo move test-repo $WORK_DIR/moved/api-gateway 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        # `--layout sibling` recorded a per-repo override, and that is what
+        # moved. Both settings are keyed by git-dir path, so they re-key
+        # together — but they are reported apart on purpose.
+        - "layout override: carried"
+      output_not_contains:
+        # This repo was never trusted. Claiming otherwise would be a false
+        # reassurance about the one thing a plain `mv` silently destroys.
+        - "trust: carried"
+      dirs_exist:
+        - "$WORK_DIR/moved/api-gateway"
+        - "$WORK_DIR/moved/api-gateway.feature-x"
+        - "$WORK_DIR/moved/api-gateway.hotfix"
+      files_not_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo.feature-x"
+        - "$WORK_DIR/test-repo.hotfix"
+
+  - name: Every worktree resolves its repo — asserted one at a time
+    run: |
+      git -C $WORK_DIR/moved/api-gateway status --porcelain >/dev/null && echo "main=ok"
+      git -C $WORK_DIR/moved/api-gateway.feature-x status --porcelain >/dev/null && echo "feature=ok"
+      git -C $WORK_DIR/moved/api-gateway.hotfix status --porcelain >/dev/null && echo "hotfix=ok"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main=ok"
+        - "feature=ok"
+        - "hotfix=ok"
+
+  - name: git no longer reports any worktree as prunable
+    run: git -C $WORK_DIR/moved/api-gateway worktree list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "moved/api-gateway.feature-x"
+        - "moved/api-gateway.hotfix"
+      output_not_contains:
+        - "prunable"
+
+  - name: daft list shows every worktree at its new location
+    run: daft list
+    cwd: "$WORK_DIR/moved/api-gateway"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature-x"
+        - "hotfix"
+
+  - name:
+      The catalog points at the new path, and the name followed the directory
+    run: daft repo list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "api-gateway"
+        - "moved/api-gateway"
+      output_not_contains:
+        - "$WORK_DIR/test-repo "
