@@ -30,7 +30,7 @@ Relocates a repository on disk and moves everything keyed to its old path
 along with it: git's worktree linkage, the trust grant, the layout override,
 the catalog entry, and recorded worktree paths.
 
-<DEST> follows `mv` semantics — an existing directory means "move into it",
+`<DEST>` follows `mv` semantics — an existing directory means "move into it",
 anything else names the new repository directory outright. The parent has to
 exist already.
 
