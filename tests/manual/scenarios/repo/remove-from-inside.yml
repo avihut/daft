@@ -20,7 +20,7 @@ steps:
   - name: Remove from inside the main worktree — must write DAFT_CD_FILE
     run: |
       cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
-      DAFT_CD_FILE="$cd_file" daft repo remove --force 2>&1
+      DAFT_CD_FILE="$cd_file" daft repo remove --purge --force 2>&1
       rc=$?
       echo "---"
       echo "cd_file_size=$(wc -c < "$cd_file")"

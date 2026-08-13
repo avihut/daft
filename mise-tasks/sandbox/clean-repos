@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-#MISE description="Run `daft repo remove` on every git repo under the dev sandbox"
+#MISE description="Run `daft repo remove --purge` on every git repo under the dev sandbox"
 set -euo pipefail
 
 usage() {
     cat <<'EOF'
 Usage: mise run sandbox:clean-repos [--no-trust-hooks] [--force]
 
-Run `daft repo remove --force` on every git repo found under the per-worktree
+Run `daft repo remove --purge --force` on every git repo found under the per-worktree
 dev sandbox. Each invocation fires the repo's worktree-pre-remove and
 worktree-post-remove hooks (when trusted), then deletes the worktree(s) and
 bare git directory.
@@ -169,7 +169,7 @@ fi
 
 # --- Per-repo removal ----------------------------------------------------
 #
-# Iterate only over bare-parents. `daft repo remove <bare>` cascades
+# Iterate only over bare-parents. `daft repo remove --purge <bare>` cascades
 # through every worktree of that bare in a single call, so iterating over
 # the redundant worktree-pointer paths from the find above just produces
 # phantom "no such file" failures (the worktree dir is gone after the bare
@@ -177,7 +177,7 @@ fi
 fail_count=0
 for repo in "${bare_repos[@]}"; do
     echo "Removing $repo"
-    if ! daft repo remove --force "$repo"; then
+    if ! daft repo remove --purge --force "$repo"; then
         if $force; then
             echo "  (failed — continuing because --force)"
             ((fail_count++)) || true

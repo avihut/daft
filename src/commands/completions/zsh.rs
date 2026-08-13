@@ -654,6 +654,18 @@ compdef _{func_name} {command_name}
 }
 
 pub(super) const DAFT_ZSH_COMPLETIONS: &str = r#"# daft subcommand completions
+
+# Catalog repo names first, then directories. Every `daft repo` verb whose
+# positional is a repo takes both spellings (`repo info api`, `repo remove
+# ./old-repo`, `repo link ~/src/api`), so they share one implementation rather
+# than each arm carrying its own copy of the case-folding matcher.
+__daft_complete_repo_or_dir() {
+    local -a repos
+    repos=( ${(f)"$(daft __complete repo-name "$1" 2>/dev/null | cut -f1)"} )
+    (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- "${repos[@]}"
+    _files -/
+}
+
 _daft() {
     local curword="${words[$CURRENT]}"
 
@@ -953,10 +965,7 @@ _daft() {
                 fi
                 # Catalog repo names first, then directories (`repo info .`,
                 # a subdirectory, or any worktree resolves to its repo).
-                local -a repos
-                repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
-                (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- "${repos[@]}"
-                _files -/
+                __daft_complete_repo_or_dir "$curword"
                 return
                 ;;
             install)
@@ -974,10 +983,7 @@ _daft() {
                     compadd -- --name --kind -h --help
                     return
                 fi
-                local -a repos
-                repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
-                (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- "${repos[@]}"
-                _files -/
+                __daft_complete_repo_or_dir "$curword"
                 return
                 ;;
             list)
@@ -1019,18 +1025,14 @@ _daft() {
                 return
                 ;;
             remove)
-                local prev_word="${words[$((CURRENT-1))]}"
-                if [[ "$prev_word" == "--repo" ]]; then
-                    local -a repos
-                    repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
-                    (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- "${repos[@]}"
-                    return
-                fi
                 if [[ "$curword" == -* ]]; then
-                    compadd -- --repo --keep-files -y --force --dry-run -v --verbose -h --help
+                    compadd -- --purge -y --force --dry-run -v --verbose -h --help
                     return
                 fi
-                _files -/
+                # Catalog repo names first, then directories — the positional
+                # takes either (`repo remove api`, `repo remove ./old-repo`),
+                # same treatment as `repo info`.
+                __daft_complete_repo_or_dir "$curword"
                 return
                 ;;
             unlink)

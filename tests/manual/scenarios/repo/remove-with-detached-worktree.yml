@@ -29,7 +29,7 @@ steps:
         - "$WORK_DIR/test-repo/detached"
 
   - name: Remove the entire repo from outside it
-    run: daft repo remove --force "$WORK_DIR/test-repo" 2>&1
+    run: daft repo remove --purge --force "$WORK_DIR/test-repo" 2>&1
     cwd: "$WORK_DIR"
     expect:
       exit_code: 0

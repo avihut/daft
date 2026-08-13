@@ -1,7 +1,8 @@
 name: Repo catalog remove marks entries
 description:
   daft repo remove keeps the catalog entry as removed — hidden from the default
-  list, visible with --all, still resolvable by repo info
+  list, visible with --all, still resolvable by repo info. Addressed by catalog
+  name, and without --purge, so the files stay put.
 
 repos:
   - name: test-repo
@@ -13,10 +14,14 @@ steps:
     expect:
       exit_code: 0
 
-  - name: Remove the repo
-    run: daft repo remove -y test-repo 2>&1
+  # The default removal is catalog-only: no prompt to skip, so no -y, and
+  # nothing on disk is touched.
+  - name: Remove the repo from the catalog by name
+    run: daft repo remove test-repo 2>&1
     expect:
       exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
 
   - name: Default list hides removed entries
     run: daft repo list 2>&1

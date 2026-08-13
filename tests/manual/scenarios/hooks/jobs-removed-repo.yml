@@ -35,8 +35,11 @@ steps:
       output_contains:
         - "say-hi"
 
+  # --purge, not the catalog-only default: both tombstone the row, but only
+  # --purge also deletes the repo from disk, which is the harder case for log
+  # addressability and what this scenario has always exercised.
   - name: Remove the repo
-    run: daft repo remove -y test-repo 2>&1
+    run: daft repo remove --purge -y test-repo 2>&1
     expect:
       exit_code: 0
 

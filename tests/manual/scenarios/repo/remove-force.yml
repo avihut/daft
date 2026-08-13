@@ -19,7 +19,7 @@ steps:
         - "$WORK_DIR/test-repo/main"
 
   - name: Without --force in non-interactive mode, refuses to run
-    run: daft repo remove "$WORK_DIR/test-repo" </dev/null 2>&1
+    run: daft repo remove --purge "$WORK_DIR/test-repo" </dev/null 2>&1
     expect:
       exit_code: 1
       output_contains:
@@ -29,7 +29,7 @@ steps:
         - "$WORK_DIR/test-repo/main"
 
   - name: With --force, succeeds
-    run: daft repo remove --force "$WORK_DIR/test-repo" 2>&1
+    run: daft repo remove --purge --force "$WORK_DIR/test-repo" 2>&1
     expect:
       exit_code: 0
       files_not_exist:

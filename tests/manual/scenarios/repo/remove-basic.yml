@@ -1,7 +1,7 @@
 name: Remove repo basic
 description:
-  daft clone a fixture, add a worktree, then daft repo remove --force tears down
-  the git dir and every worktree.
+  daft clone a fixture, add a worktree, then daft repo remove --purge --force
+  tears down the git dir and every worktree.
 
 repos:
   - name: test-repo
@@ -26,7 +26,7 @@ steps:
         - "$WORK_DIR/test-repo/develop"
 
   - name: Remove the repo (force, from outside)
-    run: daft repo remove --force "$WORK_DIR/test-repo"
+    run: daft repo remove --purge --force "$WORK_DIR/test-repo"
     expect:
       exit_code: 0
       files_not_exist:

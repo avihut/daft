@@ -10,7 +10,7 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
-# Test 1: Clone a temp repo with two worktrees, run `daft repo remove --force`,
+# Test 1: Clone a temp repo with two worktrees, run `daft repo remove --purge --force`,
 # assert all dirs gone (and the empty parent project_root chain too).
 test_repo_remove_basic() {
     local remote_repo
@@ -30,7 +30,7 @@ test_repo_remove_basic() {
     # Move out of the project root so removal of empty parents can complete.
     cd ..
 
-    daft repo remove --force "$project_root" || return 1
+    daft repo remove --purge --force "$project_root" || return 1
 
     if [[ -d "$project_root" ]]; then
         log_error "daft repo remove should have removed $project_root"
@@ -118,7 +118,7 @@ HOOKEOF
     # inside a git repo for compute_repo_id() during hook log-record writes).
     (
         cd "main"
-        MARKER_FILE="$marker_file" daft repo remove --force "$project_root"
+        MARKER_FILE="$marker_file" daft repo remove --purge --force "$project_root"
     ) || return 1
 
     # Step 7: Assert all repo dirs are gone.
@@ -153,7 +153,7 @@ HOOKEOF
     return 0
 }
 
-# Test 3: Run `daft repo remove --dry-run`; assert nothing changed and stdout
+# Test 3: Run `daft repo remove --purge --dry-run`; assert nothing changed and stdout
 # mentions "Would remove".
 test_repo_remove_dry_run() {
     local remote_repo
@@ -166,7 +166,7 @@ test_repo_remove_dry_run() {
     project_root=$(pwd -P)
 
     local dry_output
-    dry_output=$(daft repo remove --dry-run "$project_root" 2>&1) || return 1
+    dry_output=$(daft repo remove --purge --dry-run "$project_root" 2>&1) || return 1
 
     if ! echo "$dry_output" | grep -q "Would remove"; then
         log_error "Dry-run output should mention 'Would remove'"
@@ -179,7 +179,7 @@ test_repo_remove_dry_run() {
     assert_directory_exists "$project_root/.git" || return 1
     assert_directory_exists "$project_root/main" || return 1
 
-    log_success "daft repo remove --dry-run reports plan without changes"
+    log_success "daft repo remove --purge --dry-run reports plan without changes"
     return 0
 }
 
@@ -192,7 +192,7 @@ test_repo_remove_non_git_path_fails() {
     trap 'rm -rf "$non_git_dir"' RETURN
 
     local err_output
-    err_output=$(daft repo remove --force "$non_git_dir" 2>&1)
+    err_output=$(daft repo remove --purge --force "$non_git_dir" 2>&1)
     local rc=$?
 
     if [[ $rc -eq 0 ]]; then
@@ -351,7 +351,7 @@ test_repo_remove_from_non_repo_cwd() {
         return 1
     fi
 
-    daft repo remove --force "$project_root" || return 1
+    daft repo remove --purge --force "$project_root" || return 1
 
     if [[ -d "$project_root" ]]; then
         log_error "daft repo remove should have removed $project_root"
@@ -390,7 +390,7 @@ test_repo_remove_preserves_empty_parent_directory() {
     fi
 
     cd "$container" || return 1
-    daft repo remove --force "$project_root" || return 1
+    daft repo remove --purge --force "$project_root" || return 1
 
     if [[ -d "$project_root" ]]; then
         log_error "project_root not removed: $project_root"
@@ -405,8 +405,13 @@ test_repo_remove_preserves_empty_parent_directory() {
     return 0
 }
 
-# Test 8: Run with relative path argument from inside the parent directory
+# Test 8: Run with a relative path argument from inside the parent directory
 # (matches the failure-reporting reproduction: `cd parent && daft repo remove repo`).
+#
+# Spelled `./name` since #836: a bare word is a catalog name first, and this
+# repo is cataloged under the same name as its directory — which would resolve
+# through the catalog and quietly stop testing the path route. The `./` prefix
+# is what pins it. The bare-word fallback has its own test below.
 test_repo_remove_relative_path_from_parent() {
     local remote_repo container
     remote_repo=$(create_test_remote "test-repo-remove-rel-from-parent" "main")
@@ -418,7 +423,7 @@ test_repo_remove_relative_path_from_parent() {
     assert_directory_exists "$project_root" || return 1
 
     cd "$container" || return 1
-    daft repo remove --force "test-repo-remove-rel-from-parent" || return 1
+    daft repo remove --purge --force "./test-repo-remove-rel-from-parent" || return 1
 
     if [[ -d "$project_root" ]]; then
         log_error "project_root not removed via relative path: $project_root"
@@ -430,6 +435,141 @@ test_repo_remove_relative_path_from_parent() {
     fi
 
     log_success "daft repo remove works with a relative path from the parent dir"
+    return 0
+}
+
+# Test 8b: A bare word the catalog does not know falls back to a relative path
+# (#836), and says so before deleting — the note is the whole mitigation for a
+# name that silently became a directory, so it must not rot.
+test_repo_remove_uncataloged_bare_name_falls_back_to_path() {
+    local container project_root out
+    container=$(mktemp -d "${TMPDIR:-/tmp}/daft-bare-fallback.XXXXXX")
+    trap 'rm -rf "$container"' RETURN
+
+    # A vanilla `git init` repo — never cloned through daft, so never cataloged.
+    project_root="$container/never-cataloged-repo"
+    mkdir -p "$project_root" || return 1
+    (
+        cd "$project_root"
+        git init -q
+        echo hi > README.md
+        git add README.md
+        git commit -q -m "init"
+    ) >/dev/null 2>&1 || return 1
+
+    cd "$container" || return 1
+
+    # The preview must announce the guess too — a dry run IS the cautious way
+    # to check a guess, so a plan that omits the note fails the one user who
+    # went looking for it.
+    out=$(daft repo remove --purge --dry-run "never-cataloged-repo" 2>&1) || return 1
+    if ! echo "$out" | grep -q "is not in the catalog — resolved as a directory"; then
+        log_error "--dry-run must announce the fallback route too; got: $out"
+        return 1
+    fi
+    if [[ ! -d "$project_root" ]]; then
+        log_error "a dry run must not delete anything: $project_root"
+        return 1
+    fi
+
+    out=$(daft repo remove --purge --force "never-cataloged-repo" 2>&1) || return 1
+
+    if ! echo "$out" | grep -q "is not in the catalog — resolved as a directory"; then
+        log_error "fallback route must announce itself; got: $out"
+        return 1
+    fi
+    if [[ -d "$project_root" ]]; then
+        log_error "repo not removed via bare-name fallback: $project_root"
+        return 1
+    fi
+    if [[ ! -d "$container" ]]; then
+        log_error "DATA LOSS via bare-name fallback: container removed: $container"
+        return 1
+    fi
+
+    log_success "daft repo remove falls back to a path for an uncataloged bare name"
+    return 0
+}
+
+# Test 8c: the bare-name fallback must not ESCALATE. `resolve_repo` walks up
+# from a path to the repository that encloses it — correct for a path the user
+# spelled out, catastrophic for a name daft merely guessed at: every repo has
+# ordinary subdirectories, so `daft repo remove --purge -y docs` would delete
+# the repo you are standing in. Test 8b cannot catch this (its cwd is outside
+# any repo, so there is nothing to escalate to). The guard is the whole reason
+# the guessed route is safe to offer at all — #836 review.
+test_repo_remove_bare_name_does_not_escalate_to_enclosing_repo() {
+    local container project_root out status
+    container=$(mktemp -d "${TMPDIR:-/tmp}/daft-no-escalate.XXXXXX")
+    trap 'rm -rf "$container"' RETURN
+
+    project_root="$container/enclosing-repo"
+    mkdir -p "$project_root/docs" || return 1
+    (
+        cd "$project_root"
+        git init -q
+        echo hi > docs/README.md
+        git add docs/README.md
+        git commit -q -m "init"
+    ) >/dev/null 2>&1 || return 1
+
+    # `docs` is a plain subdirectory, not a repo and not a catalog name.
+    cd "$project_root" || return 1
+    out=$(daft repo remove --purge --force "docs" 2>&1)
+    status=$?
+
+    if [[ $status -eq 0 ]]; then
+        log_error "a bare name naming a mere subdirectory must be refused; got: $out"
+        return 1
+    fi
+    if ! echo "$out" | grep -q "rather than a repository root"; then
+        log_error "refusal must explain the subdirectory/root distinction; got: $out"
+        return 1
+    fi
+    if [[ ! -d "$project_root/.git" ]]; then
+        log_error "DATA LOSS: enclosing repo deleted by a guessed bare name: $project_root"
+        return 1
+    fi
+    if [[ ! -d "$project_root/docs" ]]; then
+        log_error "a refused target must be left alone: $project_root/docs"
+        return 1
+    fi
+
+    # A detached bare clone keeps its project root one level UP, so the
+    # directory the user named IS the git dir, not the root. Matching only the
+    # root would refuse the very thing they pointed at, so both spellings of
+    # "the repo itself" pass — neither is reachable from a subdirectory.
+    (
+        cd "$container"
+        git clone --bare -q "$project_root" bare-clone.git
+    ) >/dev/null 2>&1 || return 1
+    cd "$container" || return 1
+    if ! daft repo remove --purge --force "bare-clone.git" >/dev/null 2>&1; then
+        log_error "a bare word naming a bare repo's own git dir must be accepted"
+        return 1
+    fi
+    if [[ -d "$container/bare-clone.git" ]]; then
+        log_error "bare repo not removed: $container/bare-clone.git"
+        return 1
+    fi
+    if [[ ! -d "$project_root/.git" ]]; then
+        log_error "DATA LOSS: purging the bare clone took the enclosing repo too"
+        return 1
+    fi
+
+    # The spelled-out path keeps the documented walk-up: `./docs` DOES mean
+    # "the repo this path belongs to". Only the guess is refused.
+    cd "$project_root" || return 1
+    if ! daft repo remove --purge --force "./docs" >/dev/null 2>&1; then
+        log_error "an explicit path must still resolve through the enclosing repo"
+        return 1
+    fi
+    if [[ -d "$project_root/.git" ]]; then
+        log_error "explicit ./docs should have purged the enclosing repo"
+        return 1
+    fi
+
+    log_success "daft repo remove refuses to escalate a guessed bare name"
     return 0
 }
 
@@ -447,7 +587,7 @@ test_repo_remove_no_arg_from_inside_project_root() {
     # CWD = project_root. After bare removal the cwd disappears, so we move
     # to a safe parent before checking — but daft must succeed regardless.
     cd "$project_root" || return 1
-    daft repo remove --force || return 1
+    daft repo remove --purge --force || return 1
 
     cd "$container" || return 1
     if [[ -d "$project_root" ]]; then
@@ -478,7 +618,7 @@ test_repo_remove_from_inside_worktree() {
     assert_directory_exists "$main_wt" || return 1
 
     cd "$main_wt" || return 1
-    daft repo remove --force || return 1
+    daft repo remove --purge --force || return 1
 
     cd "$container" || return 1
     if [[ -d "$project_root" ]]; then
@@ -520,7 +660,7 @@ test_repo_remove_bare_only_no_worktrees() {
 
     cd "$container" || return 1
     local out
-    out=$(daft repo remove --force "$project_root" 2>&1) || return 1
+    out=$(daft repo remove --purge --force "$project_root" 2>&1) || return 1
 
     # Must NOT show the TUI status header for an empty worktree list.
     if echo "$out" | grep -qE '^Status[[:space:]]+Branch'; then
@@ -560,6 +700,8 @@ run_repo_remove_tests() {
     run_test "repo_remove_from_non_repo_cwd" "test_repo_remove_from_non_repo_cwd"
     run_test "repo_remove_preserves_empty_parent_directory" "test_repo_remove_preserves_empty_parent_directory"
     run_test "repo_remove_relative_path_from_parent" "test_repo_remove_relative_path_from_parent"
+    run_test "repo_remove_uncataloged_bare_name_falls_back_to_path" "test_repo_remove_uncataloged_bare_name_falls_back_to_path"
+    run_test "repo_remove_bare_name_does_not_escalate_to_enclosing_repo" "test_repo_remove_bare_name_does_not_escalate_to_enclosing_repo"
     run_test "repo_remove_no_arg_from_inside_project_root" "test_repo_remove_no_arg_from_inside_project_root"
     run_test "repo_remove_from_inside_worktree" "test_repo_remove_from_inside_worktree"
     run_test "repo_remove_bare_only_no_worktrees" "test_repo_remove_bare_only_no_worktrees"

@@ -685,32 +685,25 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
 
     let remove = FigSubcommand {
         name: "remove".to_string(),
-        description: Some("Remove a repository, including all worktrees".to_string()),
+        description: Some("Remove a repository from the repo catalog".to_string()),
         load_spec: None,
         subcommands: None,
         args: Some(FigArgs::Single(FigArg {
-            name: "path".to_string(),
-            description: Some("Path to the repo or any directory inside it".to_string()),
+            name: "repo".to_string(),
+            description: Some(
+                "Catalog name, uuid, or a repo path — including . or a subdirectory".to_string(),
+            ),
             generators: None,
         })),
         options: Some(vec![
             FigOption {
-                name: FigName::Single("--repo".into()),
-                description: "Cataloged repository to remove (instead of a path)".into(),
-                args: Some(FigOptionArg {
-                    suggestions: None,
-                    template: None,
-                }),
-            },
-            FigOption {
-                name: FigName::Single("--keep-files".into()),
-                description: "Only remove the repo from the catalog; leave all files on disk"
-                    .into(),
+                name: FigName::Single("--purge".into()),
+                description: "Also delete the git dir and every worktree (destructive)".into(),
                 args: None,
             },
             FigOption {
                 name: FigName::Multiple(vec!["--force".into(), "-y".into()]),
-                description: "Skip the confirmation prompt".into(),
+                description: "Skip the confirmation prompt (--purge only)".into(),
                 args: None,
             },
             FigOption {
@@ -1883,11 +1876,21 @@ mod tests {
     }
 
     #[test]
-    fn fig_repo_remove_spec_offers_repo_and_keep_files() {
+    fn fig_repo_remove_spec_offers_purge_and_no_retired_flags() {
         let spec = serde_json::to_string(&build_fig_repo_subcommand()).unwrap();
         assert!(
-            spec.contains("--repo") && spec.contains("--keep-files"),
-            "repo remove spec must offer --repo and --keep-files"
+            spec.contains("--purge"),
+            "repo remove spec must offer --purge"
+        );
+        // #836 retired both outright — a spec that still advertises them
+        // teaches Fig users a surface that now errors.
+        assert!(
+            !spec.contains("--keep-files"),
+            "repo remove spec must not offer the retired --keep-files"
+        );
+        assert!(
+            !spec.contains("\"--repo\""),
+            "repo remove spec must not offer the retired --repo flag"
         );
     }
 

@@ -760,7 +760,8 @@ drive() { COMP_WORDS=("$@"); COMP_CWORD=$(($# - 1)); COMPREPLY=(); _daft 2>/dev/
 # An uppercase prefix surfaces the lowercase repo (the whole point)…
 drive daft repo info AP;            match="${COMPREPLY[*]}"
 # …and a genuine miss stays empty (no false positives from case-folding).
-drive daft repo remove --repo ZZQQ; miss="${COMPREPLY[*]}"
+# `repo remove` completes its POSITIONAL with catalog names since #836.
+drive daft repo remove ZZQQ; miss="${COMPREPLY[*]}"
 if [[ "$match" == *apiservice* && -z "$miss" ]]; then
     echo "PASS"
 else

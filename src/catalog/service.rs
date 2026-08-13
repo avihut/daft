@@ -223,7 +223,8 @@ impl Catalog {
     /// Resolve a user-supplied needle. Precedence: live name → uuid →
     /// canonical path / git-common-dir → removed name. Returns `None` when
     /// nothing matches (callers decide between silent fallthrough and
-    /// [`Catalog::not_found`]).
+    /// [`Catalog::not_found`]). Path shape is decided by
+    /// [`needle_looks_pathish`].
     pub fn resolve(&self, needle: &str) -> Result<Option<CatalogRepoRow>> {
         self.read(|conn| {
             if let Some(row) = CatalogReposRepo::find_live_by_name(conn, needle)? {
@@ -234,7 +235,7 @@ impl Catalog {
             {
                 return Ok(Some(row));
             }
-            if (needle.contains(std::path::MAIN_SEPARATOR) || needle.starts_with('.'))
+            if needle_looks_pathish(needle)
                 && let Ok(canonical) = Path::new(needle).canonicalize()
             {
                 let canonical = canonical.to_string_lossy();
@@ -265,8 +266,7 @@ impl Catalog {
         // A path-shaped miss: walk up to the enclosing repo's shared git dir.
         // Gate on the same path-ish shape `resolve` uses so bare names and URLs
         // never trigger filesystem discovery.
-        let looks_pathish = needle.contains(std::path::MAIN_SEPARATOR) || needle.starts_with('.');
-        if looks_pathish
+        if needle_looks_pathish(needle)
             && let Ok(canonical) = Path::new(needle).canonicalize()
             && let Some(git_common_dir) = crate::core::repo::git_common_dir_at(&canonical)
         {
@@ -386,6 +386,19 @@ impl Catalog {
     }
 }
 
+/// Whether a needle asks to be read as a path rather than a catalog name.
+///
+/// The single definition of that boundary. It decides which spelling wins
+/// when a name and a directory could both match (`./api` insists on the
+/// directory), so every caller must agree: a consumer that classified `api`
+/// as a name while this said path — or the reverse — would route the needle
+/// down one branch and explain it with the other's error. Widening it
+/// (Windows separators, a leading `~`, a URL scheme) is a change to daft's
+/// addressing grammar, and belongs here rather than in any one caller.
+pub fn needle_looks_pathish(needle: &str) -> bool {
+    needle.contains(std::path::MAIN_SEPARATOR) || needle.starts_with('.')
+}
+
 /// Resolve a `--repo <needle>` argument to a usable live catalog entry, or
 /// fail with an actionable message. The shared front door for fleet-style
 /// flags (`exec --repo`, `list --repo`, …).
@@ -394,9 +407,9 @@ pub fn resolve_repo_arg(needle: &str) -> anyhow::Result<CatalogRepoRow> {
 }
 
 /// [`resolve_repo_arg`] minus the directory-exists requirement, for
-/// catalog-metadata operations where the files' presence is irrelevant —
-/// `repo remove --keep-files --repo <name>` must be able to drop an entry
-/// whose directory is already gone.
+/// catalog-metadata operations where the files' presence is irrelevant — the
+/// default `repo remove <name>` must be able to drop an entry whose directory
+/// is already gone.
 pub fn resolve_repo_arg_missing_ok(needle: &str) -> anyhow::Result<CatalogRepoRow> {
     resolve_repo_arg_impl(needle, false)
 }

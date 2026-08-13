@@ -92,27 +92,38 @@ vanished, identity drift, duplicate names — and `--fix` reconciles them.
 
 ## Removed repos
 
-`daft repo remove` tombstones the catalog entry instead of forgetting it:
+`daft repo remove` tombstones the catalog entry instead of forgetting it. By
+default that is all it does — nothing is deleted, no hooks run, and no
+confirmation is asked:
 
 ```bash
-daft repo remove -y ./client       # repo gone; entry marked removed
-daft repo remove --repo client -y  # same, addressed by catalog name
-daft repo list --all               # …still visible here
-daft hooks jobs --repo client      # its hook-job history is still addressable
-daft clone client                  # restored from the recorded remote URL
+daft repo remove client        # entry marked removed; files untouched
+daft repo remove ./client      # same, addressed by path
+daft repo list --all           # …still visible here
+daft hooks jobs --repo client  # its hook-job history is still addressable
+daft clone client              # restored from the recorded remote URL
+```
+
+The repository is addressed by catalog name, uuid, or path — `.`, a
+subdirectory, or a directory. A bare name is read as a catalog name first, so
+`./client` is the spelling that insists on a directory.
+
+Because registration is ambient, a removed entry returns the next time daft runs
+inside the kept repo. The default is therefore for repos leaving daft's orbit,
+and for retiring a stale entry whose directory is already gone
+(`daft repo remove old-name`; `daft doctor --fix` does the same for every stale
+entry at once).
+
+To delete the repository itself — git dir, every worktree, trust marker, and the
+`worktree-pre/post-remove` hooks — pass `--purge`:
+
+```bash
+daft repo remove --purge client     # prompts, then deletes
+daft repo remove --purge client -y  # skips the prompt
 ```
 
 Re-cloning (by name or URL) at any path brings the repo back as a fresh live
 entry; the old identity remains as a removed record so its logs stay reachable.
-
-To drop the catalog entry while keeping the repository on disk, pass
-`--keep-files`: nothing is deleted, no hooks run, and no confirmation is asked.
-The interactive prompt offers the same choice as `k` whenever the repo being
-removed is cataloged. Because registration is ambient, the entry returns the
-next time daft runs inside the kept repo — `--keep-files` is for repos leaving
-daft's orbit, and for retiring a stale entry whose directory is already gone
-(`daft repo remove --keep-files --repo old-name`; `daft doctor --fix` does the
-same for every stale entry at once).
 
 ## Storage
 

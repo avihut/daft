@@ -687,6 +687,20 @@ fn print_post_install_message(target: &CompletionTarget) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The body of the umbrella's shared `__daft_complete_repo_or_dir`.
+    ///
+    /// Every `daft repo` verb whose positional is a repo delegates here, so
+    /// the arm-level guards below assert delegation and this asserts the
+    /// mechanism. Split, an arm calling a helper that stopped completing repo
+    /// names would still pass.
+    fn repo_or_dir_helper<'a>(script: &'a str, shell: &str) -> &'a str {
+        let after = script
+            .split("__daft_complete_repo_or_dir() {")
+            .nth(1)
+            .unwrap_or_else(|| panic!("{shell} umbrella must define the repo/dir helper"));
+        &after[..after.find("\n}").unwrap_or(after.len())]
+    }
+
     #[test]
     fn bash_daft_go_uses_nosort_and_fetch_on_miss() {
         let script =
@@ -857,7 +871,11 @@ mod tests {
                 after[..after.find(";;").unwrap_or(after.len())].to_string()
             };
             assert!(
-                arm("link").contains("daft __complete repo-name"),
+                repo_or_dir_helper(script, shell).contains("daft __complete repo-name"),
+                "{shell} repo/dir helper must complete catalog names"
+            );
+            assert!(
+                arm("link").contains("__daft_complete_repo_or_dir"),
                 "{shell} repo-link arm must complete catalog names"
             );
             assert!(
@@ -899,12 +917,17 @@ mod tests {
                 .unwrap_or_else(|| panic!("{shell} repo section must have an info arm"));
             let arm = &after[..after.find(";;").unwrap_or(after.len())];
             assert!(
-                arm.contains("daft __complete repo-name"),
+                arm.contains("__daft_complete_repo_or_dir"),
                 "{shell} repo-info arm must complete catalog names"
             );
+            let helper = repo_or_dir_helper(script, shell);
             assert!(
-                arm.contains(dir_probe),
-                "{shell} repo-info arm must fall back to directory completion ({dir_probe})"
+                helper.contains("daft __complete repo-name"),
+                "{shell} repo/dir helper must complete catalog names"
+            );
+            assert!(
+                helper.contains(dir_probe),
+                "{shell} repo/dir helper must fall back to directory completion ({dir_probe})"
             );
         }
         let fish = fish::generate_daft_fish_completions();
@@ -935,14 +958,16 @@ mod tests {
             .nth(1)
             .expect("bash umbrella must have a repo section");
 
-        // info/link append directories to the repo-name array: they must
-        // `mapfile` the dirs, never splice `"${repos[@]}" $(compgen -d ...)`.
+        // info/link/remove append directories to the repo-name array through
+        // the shared helper: it must `mapfile` the dirs, never splice
+        // `"${repos[@]}" $(compgen -d ...)`.
+        let helper = repo_or_dir_helper(bash, "bash");
         assert!(
-            repo.contains("mapfile -t dirs < <(compgen -d -- \"$cur\")"),
-            "repo info/link arms must fill directories via `mapfile -t dirs`"
+            helper.contains("mapfile -t dirs < <(compgen -d -- \"$cur\")"),
+            "the repo/dir helper must fill directories via `mapfile -t dirs`"
         );
         assert!(
-            !repo.contains("\"${repos[@]}\" $(compgen -d"),
+            !bash.contains("\"${repos[@]}\" $(compgen -d"),
             "repo arms must not splice unquoted `$(compgen -d ...)` alongside \
              repo names — it word-splits directories containing spaces"
         );
@@ -1121,9 +1146,9 @@ mod tests {
         }
     }
 
-    /// `daft repo remove --repo <name>` / `--keep-files`: the repo-verb
-    /// sections of the umbrella completions are hardcoded per shell, so a
-    /// new flag must land in all three (fig has its own spec test).
+    /// `daft repo remove <repo>` / `--purge`: the repo-verb sections of the
+    /// umbrella completions are hardcoded per shell, so a new flag must land
+    /// in all three (fig has its own spec test).
     /// Every shell offers the same `daft config` verbs, and each completes
     /// keys from the registry rather than a hardcoded list.
     ///
@@ -1263,22 +1288,36 @@ mod tests {
     }
 
     #[test]
-    fn repo_remove_completes_repo_flag_and_keep_files_in_all_shells() {
+    fn repo_remove_completes_repo_positional_and_purge_in_all_shells() {
         let zsh = zsh::DAFT_ZSH_COMPLETIONS;
         assert!(
-            zsh.contains("compadd -- --repo --keep-files -y --force"),
-            "zsh repo-remove flag list must include --repo and --keep-files"
+            zsh.contains("compadd -- --purge -y --force"),
+            "zsh repo-remove flag list must include --purge"
         );
         let bash = bash::DAFT_BASH_COMPLETIONS;
         assert!(
-            bash.contains("--repo --keep-files -y --force --dry-run"),
-            "bash repo-remove flag list must include --repo and --keep-files"
+            bash.contains("--purge -y --force --dry-run"),
+            "bash repo-remove flag list must include --purge"
         );
-        // Both umbrellas complete the --repo VALUE with catalog names inside
-        // the repo section's remove arm (the same `daft __complete repo-name`
-        // helper the other repo-aware commands use). Bound the probe to that
-        // arm: the umbrella also has a top-level worktree `remove` verb.
+        // Both umbrellas complete the POSITIONAL with catalog names *and*
+        // directories (#836) — the `repo info` treatment, reached through the
+        // shared `__daft_complete_repo_or_dir` helper. Bound the probe to the
+        // repo section's remove arm: the umbrella also has a top-level
+        // worktree `remove` verb.
         for (shell, script) in [("zsh", zsh), ("bash", bash)] {
+            // The helper is what makes the delegation below mean anything: an
+            // arm that calls a helper which stopped completing repo names
+            // would still pass a call-site-only assertion.
+            let helper = script
+                .split("__daft_complete_repo_or_dir() {")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{shell} umbrella must define the repo/dir helper"));
+            let helper_body = &helper[..helper.find("\n}").unwrap_or(helper.len())];
+            assert!(
+                helper_body.contains("daft __complete repo-name"),
+                "{shell} repo/dir helper must complete with catalog names"
+            );
+
             let repo_section = script
                 .split("# repo: complete subcommands")
                 .nth(1)
@@ -1289,16 +1328,30 @@ mod tests {
                 .unwrap_or_else(|| panic!("{shell} repo section must have a remove arm"));
             let arm = &remove_arm[..remove_arm.find(";;").unwrap_or(remove_arm.len())];
             assert!(
-                arm.contains("daft __complete repo-name"),
-                "{shell} repo-remove arm must complete --repo values with catalog names"
+                arm.contains("__daft_complete_repo_or_dir"),
+                "{shell} repo-remove arm must complete the positional with catalog names"
             );
+            // The retired flags must not linger in the hardcoded lists — a
+            // menu that still offers them teaches a surface that now errors.
+            for retired in ["--repo", "--keep-files"] {
+                assert!(
+                    !arm.contains(retired),
+                    "{shell} repo-remove arm must not offer the retired {retired}"
+                );
+            }
         }
         let fish = fish::generate_daft_fish_completions();
         assert!(
-            fish.contains(
-                "__fish_seen_subcommand_from remove' -l repo -x -a \"(daft __complete repo-name"
-            ) && fish.contains("__fish_seen_subcommand_from remove' -l keep-files"),
-            "fish repo-remove must complete --repo values and offer --keep-files"
+            fish.contains("__fish_seen_subcommand_from remove' -f -a \"(daft __complete repo-name"),
+            "fish repo-remove must complete its positional with catalog names"
+        );
+        assert!(
+            fish.contains("__fish_seen_subcommand_from remove' -l purge"),
+            "fish repo-remove must offer --purge"
+        );
+        assert!(
+            !fish.contains("__fish_seen_subcommand_from remove' -l keep-files"),
+            "fish repo-remove must not offer the retired --keep-files"
         );
     }
 

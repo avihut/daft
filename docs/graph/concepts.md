@@ -35,10 +35,11 @@ the repo. That asymmetry drives the lifecycle rules:
   name get suffixed (`api`, `api-2`) with a notice; rename with
   `daft repo add --name`.
 - **Removal is a tombstone, not a deletion.** `daft repo remove` marks the entry
-  removed and keeps it: the repo's hook-job logs stay addressable
-  (`daft hooks jobs --repo <name>`) and `daft clone <name>` restores the repo
-  from its recorded remote. Re-cloning at the same path creates a fresh identity
-  that takes over the live name; the old identity stays as a removed entry.
+  removed and keeps it, leaving the files alone unless you pass `--purge`: the
+  repo's hook-job logs stay addressable (`daft hooks jobs --repo <name>`) and
+  `daft clone <name>` restores the repo from its recorded remote. Re-cloning at
+  the same path creates a fresh identity that takes over the live name; the old
+  identity stays as a removed entry.
 
 ## The relations manifest: committed, URL-keyed edges
 

@@ -110,11 +110,15 @@ pub fn note_repo_removed(bare_git_dir: &Path, project_root: &Path) {
     let _ = tombstone_repo_at(bare_git_dir, project_root);
 }
 
-/// Explicit catalog-only removal (`repo remove --keep-files`): tombstone the
-/// entry for the repo at `bare_git_dir`, leaving the files alone. Unlike
-/// [`note_repo_removed`] this is the operation the user asked for, so
-/// failures propagate. Returns the cataloged name, or `None` when the repo
-/// has no identity and no row — nothing to remove.
+/// Catalog-only removal for a repo daft found on disk but has no live row
+/// for — `repo remove`'s default when the entry is missing rather than
+/// merely stale. Registration-then-tombstone is the point: a daft-managed
+/// repo the catalog never saw (a fresh state dir, a repo carried over from
+/// another machine) stays addressable afterwards (`daft hooks jobs --repo
+/// <name>`, `daft clone <name>`), which is why removed entries are retained
+/// at all. Unlike [`note_repo_removed`] this is the operation the user asked
+/// for, so failures propagate. Returns the cataloged name, or `None` when the
+/// repo has no identity and no row — nothing to remove.
 pub fn remove_from_catalog_only(
     bare_git_dir: &Path,
     project_root: &Path,
@@ -125,8 +129,36 @@ pub fn remove_from_catalog_only(
     tombstone_repo_at(bare_git_dir, project_root)
 }
 
-/// Tombstone one already-resolved catalog row (`repo remove --keep-files
-/// --repo <name>`). Explicit user request: failures propagate.
+/// Whether [`remove_from_catalog_only`] has anything to record here — the
+/// dry-run counterpart, deliberately sharing that function's two conditions
+/// (a daft identity to register, or an existing row to tombstone) so the
+/// preview cannot drift from the act. Read-only, and ignores the ambient-write
+/// gate: a preview is not a write.
+pub fn catalog_removal_would_record(bare_git_dir: &Path) -> bool {
+    if read_daft_id(bare_git_dir).is_some() {
+        return true;
+    }
+    let canonical = bare_git_dir
+        .canonicalize()
+        .unwrap_or_else(|_| bare_git_dir.to_path_buf());
+    Catalog::open_ro()
+        .ok()
+        .flatten()
+        .and_then(|catalog| catalog.resolve(&canonical.to_string_lossy()).ok().flatten())
+        .is_some()
+}
+
+/// The repo's daft identity, if it carries one.
+fn read_daft_id(bare_git_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(bare_git_dir.join("daft-id"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| uuid::Uuid::parse_str(s).is_ok())
+}
+
+/// Tombstone one already-resolved catalog row — the write behind
+/// `repo remove`'s default. Explicit user request, so failures propagate
+/// (unlike [`note_repo_removed`], which rides along with `--purge`).
 pub fn mark_row_removed(uuid: &str) -> anyhow::Result<()> {
     if !ambient_writes_allowed() {
         return Ok(());
@@ -135,8 +167,8 @@ pub fn mark_row_removed(uuid: &str) -> anyhow::Result<()> {
 }
 
 /// The live catalog row for the repo whose git dir is `bare_git_dir`, if
-/// any. Read-only; `repo remove` uses it to decide whether its confirmation
-/// prompt offers the keep-files (catalog-only) choice.
+/// any. Read-only, and swallows an outage — for callers that only want a
+/// hint. Anything gating a mutation wants [`try_live_catalog_row_for`].
 pub fn live_catalog_row_for(bare_git_dir: &Path) -> Option<CatalogRepoRow> {
     try_live_catalog_row_for(bare_git_dir).ok().flatten()
 }
@@ -163,11 +195,17 @@ pub fn try_live_catalog_row_for(
     let Some(catalog) = Catalog::open_ro()? else {
         return Ok(None);
     };
-    let daft_id = std::fs::read_to_string(bare_git_dir.join("daft-id"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| uuid::Uuid::parse_str(s).is_ok());
-    let row = match daft_id {
+    live_row_in(&catalog, bare_git_dir)
+}
+
+/// [`try_live_catalog_row_for`] against a handle the caller already holds, for
+/// resolutions that ask the catalog more than one question and should not pay
+/// for — or risk disagreeing across — a second open.
+pub fn live_row_in(
+    catalog: &Catalog,
+    bare_git_dir: &Path,
+) -> crate::catalog::service::Result<Option<CatalogRepoRow>> {
+    let row = match read_daft_id(bare_git_dir) {
         Some(id) => catalog.get_by_uuid(&id)?,
         None => {
             let canonical = bare_git_dir
@@ -180,12 +218,7 @@ pub fn try_live_catalog_row_for(
 }
 
 fn tombstone_repo_at(bare_git_dir: &Path, project_root: &Path) -> anyhow::Result<Option<String>> {
-    let daft_id = std::fs::read_to_string(bare_git_dir.join("daft-id"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| uuid::Uuid::parse_str(s).is_ok());
-
-    if daft_id.is_some() {
+    if read_daft_id(bare_git_dir).is_some() {
         // Repo has an identity: make sure the catalog knows its final facts
         // (registers it if daft never cataloged it) before the tombstone. One
         // writer handle covers both writes — a single logical removal

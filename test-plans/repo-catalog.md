@@ -66,6 +66,8 @@ branch: daft-357/feat/repo-catalog
 
 ## Removal & restore
 
-- [ ] `daft repo remove` marks the entry removed (`repo list --all`)
+- [ ] `daft repo remove <name>` marks the entry removed (`repo list --all`) and
+      leaves every file on disk
+- [ ] `daft repo remove --purge <name>` also deletes the repository
 - [ ] `daft hooks jobs --repo <name>` still lists the removed repo's history
 - [ ] `daft clone <name>` restores the repo from its recorded remote
