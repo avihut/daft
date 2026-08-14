@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.2](https://github.com/avihut/daft/compare/v1.27.1...v1.27.2) - 2026-08-14
+
+
+### Features
+
+- **repo**: Add `daft repo move` and `daft repo rename` (#844)
+- **repo**: Repo remove stops deleting files by default (#842)
 ## [1.27.1](https://github.com/avihut/daft/compare/v1.27.0...v1.27.1) - 2026-08-05
 
 
