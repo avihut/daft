@@ -25,6 +25,9 @@ rust = "1.95"
 lefthook = "2.1.6"
 cocogitto = "7.0.0"
 bun = "1.3.13"
+# node: the docs UI test runner (Playwright, docs:test:ui) is a Node
+# program — bunx respects its shebang. Pinned, so it bypasses the age gate.
+node = "24.18.0"
 bat = "0.26.1"
 # neovim: the vfox:mise-plugins/vfox-neovim backend does not record a
 # concrete version in mise.lock — it stays "stable". Leave the tag-based
