@@ -28,7 +28,31 @@ export default defineConfig({
     hostname: "https://daft.avihu.dev",
   },
   head: [
-    ["link", { rel: "icon", type: "image/png", href: "/favicon.png" }],
+    // PNG first, SVG last: SVG-capable browsers take the later `sizes: "any"`
+    // entry (the floating dodo); Safari and legacy fall back to the PNG tile.
+    [
+      "link",
+      { rel: "icon", type: "image/png", href: "/favicon.png", sizes: "48x48" },
+    ],
+    [
+      "link",
+      {
+        rel: "icon",
+        type: "image/svg+xml",
+        href: "/brand/daft-donut-favicon.svg",
+        sizes: "any",
+      },
+    ],
+    [
+      "link",
+      {
+        rel: "preload",
+        href: "/fonts/dm-sans-latin-wght-normal.woff2",
+        as: "font",
+        type: "font/woff2",
+        crossorigin: "",
+      },
+    ],
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:site_name", content: "daft" }],
     ["meta", { property: "og:locale", content: "en_US" }],
@@ -70,6 +94,12 @@ export default defineConfig({
     );
   },
   markdown: {
+    // Terminal-flavored code blocks keep a near-black ground in both color
+    // modes, so styled code sits comfortably next to real terminal captures.
+    theme: {
+      light: "github-dark",
+      dark: "github-dark",
+    },
     config: (md) => {
       // Escape angle-bracket placeholders like <branch>, <name>, etc.
       // that appear in CLI docs, preventing Vue from parsing them as HTML elements.
@@ -211,6 +241,11 @@ export default defineConfig({
     },
   },
   themeConfig: {
+    logo: {
+      light: "/brand/daft-donut.svg",
+      dark: "/brand/daft-donut-white.svg",
+      alt: "Donut, the daft dodo",
+    },
     search: {
       provider: "local",
     },
