@@ -1,0 +1,1080 @@
+{
+  "clone": {
+    "duration": 5.762,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      }
+    ],
+    "termCount": 3,
+    "commands": [
+      "daft clone git@github.com:acme/web.git"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 1,
+      "port": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port"
+    ],
+    "camCount": 1
+  },
+  "start": {
+    "duration": 11.218,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      }
+    ],
+    "termCount": 7,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 2,
+      "port": 2,
+      "boot": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port"
+    ],
+    "camCount": 2
+  },
+  "start-repo": {
+    "duration": 16.292,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 15.492,
+        "cue": 11.491999999999999,
+        "title": "Start in orders"
+      }
+    ],
+    "termCount": 10,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft start orders checkout"
+    ],
+    "actCounts": {
+      "repo": 2,
+      "wt": 4,
+      "port": 4,
+      "boot": 2,
+      "relate": 1,
+      "arc": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "11.892 repo",
+      "11.892 wt",
+      "11.892 port",
+      "11.892 relate",
+      "12.442 wt",
+      "12.442 boot",
+      "12.442 arc",
+      "13.442 port"
+    ],
+    "camCount": 3
+  },
+  "list": {
+    "duration": 25.956000000000007,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 16.090000000000003,
+        "cue": 11.54,
+        "title": "Start cart-total"
+      },
+      {
+        "at": 16.090000000000003,
+        "end": 19.740000000000006,
+        "cue": 16.090000000000003,
+        "title": "Agent joins cart-total"
+      },
+      {
+        "at": 19.740000000000006,
+        "end": 25.156000000000006,
+        "cue": 20.406000000000006,
+        "title": "List"
+      }
+    ],
+    "termCount": 16,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft start bugfix/cart-total",
+      "daft list"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 3,
+      "port": 3,
+      "boot": 2,
+      "agent": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "12.490 wt",
+      "12.490 boot",
+      "14.040 port",
+      "16.640 agent"
+    ],
+    "camCount": 5
+  },
+  "agent-joins": {
+    "duration": 14.868,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 14.068,
+        "cue": 10.418,
+        "title": "Agent joins checkout"
+      }
+    ],
+    "termCount": 8,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 2,
+      "port": 2,
+      "boot": 1,
+      "agent": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "10.968 agent"
+    ],
+    "camCount": 3
+  },
+  "agent-leaves": {
+    "duration": 18.518,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 14.068,
+        "cue": 10.418,
+        "title": "Agent joins checkout"
+      },
+      {
+        "at": 14.068,
+        "end": 17.718,
+        "cue": 14.068,
+        "title": "Agent leaves checkout"
+      }
+    ],
+    "termCount": 9,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 2,
+      "port": 2,
+      "boot": 1,
+      "agent": 1,
+      "agent-leave": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "10.968 agent",
+      "14.618 agent-leave"
+    ],
+    "camCount": 4
+  },
+  "exec": {
+    "duration": 15.686000000000002,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 14.886000000000001,
+        "cue": 11.636,
+        "title": "Exec"
+      }
+    ],
+    "termCount": 9,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft exec --related -- pnpm test"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 2,
+      "port": 2,
+      "boot": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port"
+    ],
+    "camCount": 3
+  },
+  "go": {
+    "duration": 15.302000000000001,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 14.502,
+        "cue": 11.251999999999999,
+        "title": "Go to checkout"
+      }
+    ],
+    "termCount": 9,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft go checkout"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 2,
+      "port": 2,
+      "boot": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port"
+    ],
+    "camCount": 3
+  },
+  "merge": {
+    "duration": 16.724,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 15.924000000000001,
+        "cue": 11.324,
+        "title": "Merge checkout"
+      }
+    ],
+    "termCount": 10,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft merge checkout"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 2,
+      "port": 2,
+      "boot": 1,
+      "merged": 1,
+      "remove": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "12.274 merged",
+      "13.424 remove"
+    ],
+    "camCount": 3
+  },
+  "carry": {
+    "duration": 21.446000000000005,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 16.090000000000003,
+        "cue": 11.54,
+        "title": "Start cart-total"
+      },
+      {
+        "at": 16.090000000000003,
+        "end": 20.646000000000004,
+        "cue": 16.996000000000002,
+        "title": "Carry to checkout"
+      }
+    ],
+    "termCount": 13,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft start bugfix/cart-total",
+      "daft carry checkout"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 3,
+      "port": 3,
+      "boot": 2,
+      "carry": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "12.490 wt",
+      "12.490 boot",
+      "14.040 port",
+      "17.396 carry"
+    ],
+    "camCount": 4
+  },
+  "rename": {
+    "duration": 16.134,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 15.334,
+        "cue": 11.684,
+        "title": "Rename to login"
+      }
+    ],
+    "termCount": 9,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft rename checkout feature/login"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 2,
+      "port": 2,
+      "boot": 1,
+      "rename": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "12.084 rename"
+    ],
+    "camCount": 3
+  },
+  "update": {
+    "duration": 15.582,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 14.782,
+        "cue": 11.132,
+        "title": "Update"
+      }
+    ],
+    "termCount": 9,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft update"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 2,
+      "port": 2,
+      "boot": 1,
+      "sync": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "11.532 sync"
+    ],
+    "camCount": 3
+  },
+  "prune": {
+    "duration": 23.14,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 14.55,
+        "cue": 11.299999999999999,
+        "title": "Push checkout"
+      },
+      {
+        "at": 14.55,
+        "end": 17.5,
+        "cue": 14.55,
+        "title": "Forge merges checkout"
+      },
+      {
+        "at": 17.5,
+        "end": 22.34,
+        "cue": 18.19,
+        "title": "Prune"
+      }
+    ],
+    "termCount": 12,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft push checkout",
+      "daft prune"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 2,
+      "port": 2,
+      "boot": 1,
+      "merged": 1,
+      "remove": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "15.100 merged",
+      "19.640 remove"
+    ],
+    "camCount": 5
+  },
+  "push": {
+    "duration": 15.350000000000001,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 14.55,
+        "cue": 11.299999999999999,
+        "title": "Push checkout"
+      }
+    ],
+    "termCount": 9,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft push checkout"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 2,
+      "port": 2,
+      "boot": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port"
+    ],
+    "camCount": 3
+  },
+  "forge-merges": {
+    "duration": 27.756000000000004,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 15.492,
+        "cue": 11.491999999999999,
+        "title": "Start in orders"
+      },
+      {
+        "at": 15.492,
+        "end": 19.624000000000002,
+        "cue": 16.374000000000002,
+        "title": "Push checkout"
+      },
+      {
+        "at": 19.624000000000002,
+        "end": 23.756000000000004,
+        "cue": 20.506000000000004,
+        "title": "Push checkout"
+      },
+      {
+        "at": 23.756000000000004,
+        "end": 26.956000000000003,
+        "cue": 23.756000000000004,
+        "title": "Forge merges checkout"
+      }
+    ],
+    "termCount": 15,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft start orders checkout",
+      "daft push checkout",
+      "daft push checkout"
+    ],
+    "actCounts": {
+      "repo": 2,
+      "wt": 4,
+      "port": 4,
+      "boot": 2,
+      "relate": 1,
+      "arc": 1,
+      "merged": 2
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "11.892 repo",
+      "11.892 wt",
+      "11.892 port",
+      "11.892 relate",
+      "12.442 wt",
+      "12.442 boot",
+      "12.442 arc",
+      "13.442 port",
+      "24.306 merged",
+      "24.556 merged"
+    ],
+    "camCount": 6
+  },
+  "remove": {
+    "duration": 15.830000000000002,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.634,
+        "cue": 6.084,
+        "title": "Start faster-cart"
+      },
+      {
+        "at": 10.634,
+        "end": 15.030000000000001,
+        "cue": 11.780000000000001,
+        "title": "Remove faster-cart"
+      }
+    ],
+    "termCount": 9,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start spike/faster-cart",
+      "daft remove spike/faster-cart"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 2,
+      "port": 2,
+      "boot": 1,
+      "remove": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "7.034 wt",
+      "7.034 boot",
+      "8.584 port",
+      "12.180 remove"
+    ],
+    "camCount": 3
+  },
+  "repo-add": {
+    "duration": 10.190000000000001,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 9.39,
+        "cue": 5.9399999999999995,
+        "title": "Add orders"
+      }
+    ],
+    "termCount": 5,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft repo add ~/orders"
+    ],
+    "actCounts": {
+      "repo": 2,
+      "wt": 2,
+      "port": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.340 repo",
+      "6.340 wt"
+    ],
+    "camCount": 2
+  },
+  "repo-link": {
+    "duration": 14.600000000000001,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 9.395999999999999,
+        "cue": 6.396,
+        "title": "Clone orders"
+      },
+      {
+        "at": 9.395999999999999,
+        "end": 13.8,
+        "cue": 10.35,
+        "title": "Link web ↔ orders"
+      }
+    ],
+    "termCount": 8,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft clone git@github.com:acme/orders.git",
+      "daft repo link orders"
+    ],
+    "actCounts": {
+      "repo": 2,
+      "wt": 2,
+      "port": 2,
+      "relate": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.796 repo",
+      "6.796 wt",
+      "7.346 port",
+      "10.750 relate"
+    ],
+    "camCount": 3
+  },
+  "repo-unlink": {
+    "duration": 19.252000000000002,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 9.395999999999999,
+        "cue": 6.396,
+        "title": "Clone orders"
+      },
+      {
+        "at": 9.395999999999999,
+        "end": 13.8,
+        "cue": 10.35,
+        "title": "Link web ↔ orders"
+      },
+      {
+        "at": 13.8,
+        "end": 18.452,
+        "cue": 14.802000000000001,
+        "title": "Unlink web ↔ orders"
+      }
+    ],
+    "termCount": 10,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft clone git@github.com:acme/orders.git",
+      "daft repo link orders",
+      "daft repo unlink orders"
+    ],
+    "actCounts": {
+      "repo": 2,
+      "wt": 2,
+      "port": 2,
+      "relate": 1,
+      "unrelate": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.796 repo",
+      "6.796 wt",
+      "7.346 port",
+      "10.750 relate",
+      "15.202 unrelate"
+    ],
+    "camCount": 4
+  },
+  "repo-remove": {
+    "duration": 24.726000000000006,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 9.395999999999999,
+        "cue": 6.396,
+        "title": "Clone orders"
+      },
+      {
+        "at": 9.395999999999999,
+        "end": 13.8,
+        "cue": 10.35,
+        "title": "Link web ↔ orders"
+      },
+      {
+        "at": 13.8,
+        "end": 18.874000000000002,
+        "cue": 14.874,
+        "title": "Start in orders"
+      },
+      {
+        "at": 18.874000000000002,
+        "end": 23.926000000000005,
+        "cue": 19.876,
+        "title": "Remove orders"
+      }
+    ],
+    "termCount": 13,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft clone git@github.com:acme/orders.git",
+      "daft repo link orders",
+      "daft start orders checkout",
+      "daft repo remove orders"
+    ],
+    "actCounts": {
+      "repo": 2,
+      "wt": 3,
+      "port": 3,
+      "relate": 1,
+      "boot": 1,
+      "repo-remove": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.796 repo",
+      "6.796 wt",
+      "7.346 port",
+      "10.750 relate",
+      "15.824 wt",
+      "15.824 boot",
+      "16.824 port",
+      "20.276 repo-remove"
+    ],
+    "camCount": 5
+  },
+  "sync": {
+    "duration": 33.622,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 15.492,
+        "cue": 11.491999999999999,
+        "title": "Start in orders"
+      },
+      {
+        "at": 15.492,
+        "end": 19.624000000000002,
+        "cue": 16.374000000000002,
+        "title": "Push checkout"
+      },
+      {
+        "at": 19.624000000000002,
+        "end": 23.756000000000004,
+        "cue": 20.506000000000004,
+        "title": "Push checkout"
+      },
+      {
+        "at": 23.756000000000004,
+        "end": 26.956000000000003,
+        "cue": 23.756000000000004,
+        "title": "Forge merges checkout"
+      },
+      {
+        "at": 26.956000000000003,
+        "end": 32.822,
+        "cue": 27.622000000000003,
+        "title": "Sync"
+      }
+    ],
+    "termCount": 18,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft start orders checkout",
+      "daft push checkout",
+      "daft push checkout",
+      "daft sync"
+    ],
+    "actCounts": {
+      "repo": 2,
+      "wt": 4,
+      "port": 4,
+      "boot": 2,
+      "relate": 1,
+      "arc": 1,
+      "merged": 2,
+      "sync": 2,
+      "remove": 2
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "11.892 repo",
+      "11.892 wt",
+      "11.892 port",
+      "11.892 relate",
+      "12.442 wt",
+      "12.442 boot",
+      "12.442 arc",
+      "13.442 port",
+      "24.306 merged",
+      "24.556 merged",
+      "28.022 sync",
+      "28.022 sync",
+      "29.622 remove",
+      "29.922 remove"
+    ],
+    "camCount": 7
+  }
+}

@@ -1,0 +1,113 @@
+{
+  "duration": 45.389999999999986,
+  "steps": [
+    {
+      "at": 0.6,
+      "end": 4.962,
+      "cue": 1.9620000000000002,
+      "title": "Clone web"
+    },
+    {
+      "at": 4.962,
+      "end": 10.418,
+      "cue": 5.867999999999999,
+      "title": "Start checkout"
+    },
+    {
+      "at": 10.418,
+      "end": 14.068,
+      "cue": 10.418,
+      "title": "Agent joins checkout"
+    },
+    {
+      "at": 14.068,
+      "end": 17.718,
+      "cue": 14.068,
+      "title": "Agent leaves checkout"
+    },
+    {
+      "at": 17.718,
+      "end": 22.792,
+      "cue": 18.792,
+      "title": "Start in orders"
+    },
+    {
+      "at": 22.792,
+      "end": 27.26,
+      "cue": 24.01,
+      "title": "Exec"
+    },
+    {
+      "at": 27.26,
+      "end": 31.392000000000003,
+      "cue": 28.142000000000003,
+      "title": "Push checkout"
+    },
+    {
+      "at": 31.392000000000003,
+      "end": 35.524,
+      "cue": 32.274,
+      "title": "Push checkout"
+    },
+    {
+      "at": 35.524,
+      "end": 38.724,
+      "cue": 35.524,
+      "title": "Forge merges checkout"
+    },
+    {
+      "at": 38.724,
+      "end": 44.58999999999999,
+      "cue": 39.38999999999999,
+      "title": "Sync"
+    }
+  ],
+  "termCount": 22,
+  "commands": [
+    "daft clone git@github.com:acme/web.git",
+    "daft start checkout",
+    "daft start orders checkout",
+    "daft exec --related -- pnpm test",
+    "daft push checkout",
+    "daft push checkout",
+    "daft sync"
+  ],
+  "actCounts": {
+    "repo": 2,
+    "wt": 4,
+    "port": 4,
+    "boot": 2,
+    "agent": 1,
+    "agent-leave": 1,
+    "relate": 1,
+    "arc": 1,
+    "merged": 2,
+    "sync": 2,
+    "remove": 2
+  },
+  "eventTimeline": [
+    "2.362 repo",
+    "2.362 wt",
+    "2.912 port",
+    "6.818 wt",
+    "6.818 boot",
+    "8.368 port",
+    "10.968 agent",
+    "14.618 agent-leave",
+    "19.192 repo",
+    "19.192 wt",
+    "19.192 port",
+    "19.192 relate",
+    "19.742 wt",
+    "19.742 boot",
+    "19.742 arc",
+    "20.742 port",
+    "36.074 merged",
+    "36.324 merged",
+    "39.790 sync",
+    "39.790 sync",
+    "41.390 remove",
+    "41.690 remove"
+  ],
+  "camCount": 10
+}

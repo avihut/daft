@@ -4,7 +4,9 @@
     "includes": [
       ".vitepress/config.ts",
       ".vitepress/theme/**/*.{ts,js,json,css}",
-      ".vitepress/data/**/*.{ts,js}"
+      ".vitepress/data/**/*.{ts,js}",
+      "playwright.config.ts",
+      "tests/**/*.{ts,js}"
     ]
   },
   "assist": {
