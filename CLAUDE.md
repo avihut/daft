@@ -353,6 +353,36 @@ Canonical examples to study before adding a new feature:
 `coordinator/adapters/sqlite_store.rs` (port impl + env scrub at the persistence
 boundary), `coordinator/ports/store.rs` (trait surface).
 
+**Evidence bridging (git state vs. daft's record)**: Before writing a condition
+that authorizes a destructive step — deleting a branch, removing a worktree,
+purging a repo — name the fact it depends on and check that git records it
+durably. Often it does not: "was this branch ever published?" has no durable
+home in git (upstream config exists only if someone passed `-u`; the
+remote-tracking ref is a cache destroyed by the very `fetch --prune` that would
+prove the point; its reflog dies with the ref). Bridge the gap — daft knows the
+answer at the moment it acts, so record it then.
+
+- **Per-ref facts go in git config's `branch.<name>.*` namespace.** Git
+  maintains the lifecycle: `git branch -m` renames the section and `-d`/`-D`
+  removes it, and daft's own rename/delete paths go through both
+  (`src/git/branch.rs`). No migration, no orphan rows, survives a wiped state
+  dir, travels with the repo rather than the machine.
+- **Cross-repo or queryable facts go in `src/store/`** — see "Adding a New
+  DB-backed Feature".
+- **No record means unknown, and unknown takes the safe branch.** That is what
+  makes a bridge shippable incrementally: pre-existing branches, hand-made
+  branches, and people working outside daft degrade to "kept", never to
+  "deleted". A record may authorize a destructive step only when it attests to
+  an action daft performed and confirmed — never to an inference — so such
+  records have exactly one writer, at the seam that performs the action, and are
+  written on confirmed success only.
+- **Never infer the fact from correlated state.** If two cases that must be
+  treated differently are locally indistinguishable, no predicate separates them
+  — the fact has to be written down.
+
+ARCHITECTURE.md "Bridge git's evidence gaps with daft's own records" owns the
+why.
+
 **YAML test runner port (`xtask/src/manual_test/`)**: One port —
 `CommandExecutor` in `executor.rs`, daft adapter in `daft_executor.rs` — between
 the runner core (`runner.rs`, `sandbox.rs`, `executor.rs`) and daft-specific
