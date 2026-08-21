@@ -6,6 +6,11 @@ import { defineConfig, devices } from "@playwright/test";
  * which only the dev server serves — never point this at a built site.
  * Run via `mise run docs:test:ui` (cwd must be docs/, the task ensures it).
  */
+/** The dev-server port. DOCS_PORT runs the suite beside another docs server
+ * (a sibling worktree's) instead of silently reusing it — the config reuses
+ * whatever already answers at the URL. */
+const port = Number(process.env.DOCS_PORT ?? 5173);
+
 export default defineConfig({
   testDir: "./tests/ui",
   fullyParallel: true,
@@ -14,7 +19,7 @@ export default defineConfig({
   timeout: 45_000,
   expect: { timeout: 7_000 },
   use: {
-    baseURL: "http://localhost:5173",
+    baseURL: `http://localhost:${port}`,
     trace: "retain-on-failure",
   },
   projects: [
@@ -27,8 +32,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "bunx vitepress dev",
-    url: "http://localhost:5173/",
+    command: `bunx vitepress dev --port ${port} --strictPort`,
+    url: `http://localhost:${port}/`,
     reuseExistingServer: true,
     timeout: 90_000,
   },

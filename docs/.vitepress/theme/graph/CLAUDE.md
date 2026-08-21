@@ -64,6 +64,20 @@ is `shellInputLabel` in `pack.ts`. The document format v1 keeps its daft-shaped
 seed schema on purpose; a generic seed schema is a document-version bump owned
 by dumbshow.
 
+Working against dumbshow source:
+`DUMBSHOW_SRC=<path to a dumbshow checkout> mise run docs:site` serves
+`@avihut/dumbshow` from that checkout's `src/` instead of the installed dist (an
+env-gated alias in `.vitepress/config.ts`; the UI helpers' `DUMBSHOW_FS` follows
+it), so machinery edits hot-reload on `/composer`, and
+`DUMBSHOW_SRC=… mise run docs:test:ui` runs the whole suite against them — that
+suite is dumbshow's regression net until the `editor.*` specs copy over.
+`DOCS_PORT=<port>` runs a second dev server or suite beside a sibling worktree's
+(Playwright reuses whatever already answers at its URL, so a link is never
+tested against another worktree's server). The link is a dev and test affordance
+only: builds, the goldens (`bun test` resolves the installed package), and CI
+always use the pinned version — a dumbshow change lands by publishing, then
+`bun add --exact` here.
+
 ## Vocabulary
 
 - **Repo** — ink disc, its name in halo-colored mono inside. The disc grows to

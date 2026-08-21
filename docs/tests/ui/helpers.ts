@@ -12,13 +12,20 @@ import { expect, type Locator, type Page } from "@playwright/test";
 /** Absolute /@fs URL of the graph layer, for in-page module imports. */
 export const GRAPH_FS = `/@fs${path.resolve(process.cwd(), ".vitepress/theme/graph")}`;
 
-/** Absolute /@fs URL of the built dumbshow package module — the machinery
- * (engine, offline renderer, media exports) lives there since the
- * extraction, and in-page imports can't resolve the bare specifier. */
-export const DUMBSHOW_FS = `/@fs${path.resolve(
-  process.cwd(),
-  "node_modules/@avihut/dumbshow/dist/dumbshow.js",
-)}`;
+/** Absolute /@fs URL of the dumbshow machinery module (engine, offline
+ * renderer, media exports) for in-page imports — bare specifiers don't
+ * resolve in page.evaluate. Default: the installed package's built dist.
+ * Under DUMBSHOW_SRC (the source link, see .vitepress/config.ts) it is the
+ * linked checkout's source entry, so specs import the same module the page
+ * runs. */
+export const DUMBSHOW_FS = `/@fs${
+  process.env.DUMBSHOW_SRC
+    ? path.resolve(process.env.DUMBSHOW_SRC, "src/index.ts")
+    : path.resolve(
+        process.cwd(),
+        "node_modules/@avihut/dumbshow/dist/dumbshow.js",
+      )
+}`;
 
 export async function openComposer(page: Page): Promise<void> {
   await page.goto("/composer");

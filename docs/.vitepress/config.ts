@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { searchForWorkspaceRoot } from "vite";
 import { defineConfig } from "vitepress";
 
 const cargoToml = readFileSync(
@@ -9,11 +10,52 @@ const cargoToml = readFileSync(
 const version = cargoToml.match(/^version\s*=\s*"(.+?)"/m)?.[1] ?? "unknown";
 const GITHUB_REPO = "https://github.com/avihut/daft";
 
+/**
+ * DUMBSHOW_SRC=<path to a dumbshow checkout> links the docs to the package's
+ * source for local development: `@avihut/dumbshow` resolves to that
+ * checkout's `src/index.ts`, so machinery edits hot-reload here and the UI
+ * suite exercises them (theme/graph/CLAUDE.md, "Working against dumbshow
+ * source"). Unset — the default, and always in CI — the docs use the pinned
+ * package from node_modules.
+ */
+const dumbshowSrc = process.env.DUMBSHOW_SRC
+  ? resolve(process.env.DUMBSHOW_SRC)
+  : null;
+const docsRoot = resolve(import.meta.dirname, "..");
+
 export default defineConfig({
   vite: {
     resolve: {
       preserveSymlinks: true,
+      ...(dumbshowSrc
+        ? {
+            // The style alias targets the package's own stylesheet; the
+            // editor imports it too, so it is one module, injected once.
+            alias: [
+              {
+                find: /^@avihut\/dumbshow\/style\.css$/,
+                replacement: resolve(dumbshowSrc, "src/composer/composer.css"),
+              },
+              {
+                find: /^@avihut\/dumbshow$/,
+                replacement: resolve(dumbshowSrc, "src/index.ts"),
+              },
+            ],
+            // One Vue: the linked source must resolve `vue` to ours, never
+            // to the checkout's own node_modules copy.
+            dedupe: ["vue"],
+          }
+        : {}),
     },
+    ...(dumbshowSrc
+      ? {
+          // The dev server only serves files under the workspace root;
+          // the linked checkout lives outside it.
+          server: {
+            fs: { allow: [searchForWorkspaceRoot(docsRoot), dumbshowSrc] },
+          },
+        }
+      : {}),
   },
   title: "daft",
   description: "Git Extensions Toolkit",
