@@ -635,17 +635,35 @@ fn check_has_upstream(git: &GitCommand) -> Result<()> {
 /// directory, which says nothing about a worktree a DAG worker was handed. A
 /// git failure counts as "no upstream" so the caller skips — for an update,
 /// skipping is the harmless direction.
+///
+/// Asks the same question its sequential twin asks — is `branch.<n>.remote`
+/// set — and deliberately not whether `@{upstream}` *resolves*. Resolution
+/// additionally fails once the remote-tracking ref is pruned, which is exactly
+/// the gone-but-unmerged shape prune keeps: that branch has tracking, and
+/// reporting it as untracked would both state something false and skip an
+/// update the sequential path performs.
 fn has_upstream_at(path: &Path) -> bool {
+    let Some(branch) = branch_at(path) else {
+        return false;
+    };
     crate::utils::git_command_at(path)
-        .args([
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
-        ])
+        .args(["config", "--get", &format!("branch.{branch}.remote")])
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+/// The branch checked out at `path`, or `None` when detached or unreadable.
+fn branch_at(path: &Path) -> Option<String> {
+    let output = crate::utils::git_command_at(path)
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!branch.is_empty()).then_some(branch)
 }
 
 /// Check if a git pull error is a fast-forward-only failure (diverged branches).
@@ -715,6 +733,18 @@ mod tests {
         assert!(
             !has_upstream_at(&clone),
             "a branch started locally has nothing to pull from"
+        );
+
+        // The gone-but-unmerged shape prune deliberately keeps: tracking is
+        // still configured, the remote-tracking ref is not. `@{upstream}` stops
+        // resolving at this point, so a resolution-based probe would report the
+        // branch untracked — false, and it would skip an update the sequential
+        // path performs.
+        git(&clone, &["checkout", "-q", "main"]);
+        git(&clone, &["update-ref", "-d", "refs/remotes/origin/main"]);
+        assert!(
+            has_upstream_at(&clone),
+            "a pruned tracking ref does not un-configure the upstream"
         );
     }
 
