@@ -1,15 +1,18 @@
 //! Core logic for the `git-worktree-prune` command.
 //!
-//! Removes worktrees and branches for deleted remote branches.
+//! Removes worktrees and branches whose remote branch was deleted — where
+//! "deleted" means git or daft can evidence that the branch was on the remote
+//! and no longer is. A branch nothing attests to is left alone.
 
+use crate::core::worktree::provenance;
 use crate::core::{HookRunner, ProgressSink};
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType, RemovalReason};
-use crate::remote::{get_default_branch_local, remote_branch_exists};
+use crate::remote::get_default_branch_local;
 use crate::settings::PruneCdTarget;
 use crate::{get_git_common_dir, get_project_root};
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Input parameters for the prune operation.
@@ -181,7 +184,6 @@ pub fn execute(
         &git,
         &worktree_map,
         &ctx.remote_name,
-        params.use_gitoxide,
         ctx.default_branch.as_deref(),
         sink,
     )?;
@@ -495,12 +497,39 @@ pub fn handle_deferred_prune(
 
 // ── Branch identification ──────────────────────────────────────────────────
 
-/// Identify local branches whose upstream has been deleted.
+/// Identify local branches whose remote branch has been deleted.
+///
+/// Two arms, and nothing else is a candidate:
+///
+/// 1. **Git's own evidence** — `git branch -vv` reports `: gone]`, which needs
+///    a configured upstream whose remote-tracking ref is missing. Only a branch
+///    that was published (or explicitly tracked) ever gets one.
+/// 2. **Daft's own record** — daft pushed the branch to this remote
+///    ([`provenance`]) and the remote no longer has it.
+///
+/// A branch with neither is *unknown*, and unknown is not a prune candidate.
+/// That is the #858 fix: this used to flag any branch that had a worktree and
+/// was absent from the remote, which is the state of every branch `daft start`
+/// just created — and a zero-commit branch is trivially "merged", so the
+/// gone-but-unmerged guard downstream waved it through. Absence is not
+/// evidence: git destroys the remote-tracking ref *and* its reflog when the
+/// branch disappears upstream, so a fresh branch and a deleted one look
+/// identical from here. See ARCHITECTURE.md "Bridge git's evidence gaps with
+/// daft's own records".
+///
+/// **Freshness:** arm 2 answers "is it still on the remote" from
+/// `refs/remotes/<remote>/*`, so it is really "as of the most recent
+/// `fetch --prune`". Callers that must be current fetch first — `execute`
+/// below, and the two TUI orchestrators via `run_fetch_phase`. The one caller
+/// that deliberately runs *before* the fetch (`commands::prune`'s pre-fetch
+/// seeding, which populates the table from what is already known) accepts a
+/// stale subset by design. The payoff of reading refs instead of asking the
+/// remote is that identification is entirely local — no per-branch `ls-remote`,
+/// nothing to cancel, no network.
 pub fn identify_gone_branches(
     git: &GitCommand,
     worktree_map: &HashMap<String, (PathBuf, bool)>,
     remote_name: &str,
-    use_gitoxide: bool,
     default_branch: Option<&str>,
     sink: &mut dyn ProgressSink,
 ) -> Result<Vec<String>> {
@@ -538,8 +567,12 @@ pub fn identify_gone_branches(
         }
     }
 
-    // Method 2: Check for branches with worktrees that don't exist on remote
-    sink.on_step("Checking for branches with worktrees that don't exist on remote...");
+    // Method 2: branches daft published to this remote that the remote no
+    // longer has. The record is what separates them from branches that were
+    // never there — see this function's docs.
+    sink.on_step("Checking daft-published branches for a deleted remote branch...");
+    let provenance = provenance::Provenance::load(git)?;
+    let remaining = remote_branches_after_fetch(git, remote_name)?;
     let ref_output = git.for_each_ref("%(refname:short)", "refs/heads")?;
 
     for line in ref_output.lines() {
@@ -548,18 +581,66 @@ pub fn identify_gone_branches(
             continue;
         }
 
-        if worktree_map.contains_key(branch_name)
-            && !remote_branch_exists(remote_name, branch_name, use_gitoxide)?
-            && !gone_branches.contains(&branch_name.to_string())
+        if !worktree_map.contains_key(branch_name)
+            || gone_branches.contains(&branch_name.to_string())
         {
+            continue;
+        }
+
+        if !provenance.published_on(branch_name, remote_name) {
+            // Not a candidate, and say which kind of not-a-candidate: a branch
+            // daft created and never published is the normal state, not a
+            // warning, so this stays at debug level (#858).
+            if !remaining.contains(branch_name) {
+                sink.on_debug(&format!(
+                    "Not pruning '{branch_name}': {}",
+                    unpublished_reason(&provenance, branch_name)
+                ));
+            }
+            continue;
+        }
+
+        if !remaining.contains(branch_name) {
             gone_branches.push(branch_name.to_string());
             sink.on_debug(&format!(
-                "Found branch with worktree not on remote: {branch_name}"
+                "Found published branch whose remote branch is gone: {branch_name}"
             ));
         }
     }
 
     Ok(gone_branches)
+}
+
+/// Branch names the remote still has, per this run's freshly pruned
+/// remote-tracking refs.
+///
+/// Local by design: `git fetch --prune` has just reconciled these against the
+/// wire, so asking `ls-remote` again would be a second round trip per branch
+/// for an answer already on disk. (`refs/remotes/<remote>/HEAD` shortens to a
+/// bare `<remote>` on the CLI backend and `<remote>/HEAD` on gitoxide; neither
+/// survives the prefix strip as a real branch name.)
+fn remote_branches_after_fetch(git: &GitCommand, remote_name: &str) -> Result<HashSet<String>> {
+    let refs = git.for_each_ref("%(refname:short)", &format!("refs/remotes/{remote_name}"))?;
+    Ok(parse_remote_branches(&refs, remote_name))
+}
+
+/// Strip `<remote>/` off each shortened ref, dropping the remote's HEAD.
+fn parse_remote_branches(refs: &str, remote_name: &str) -> HashSet<String> {
+    let prefix = format!("{remote_name}/");
+    refs.lines()
+        .filter_map(|line| line.trim().strip_prefix(&prefix))
+        .filter(|name| *name != "HEAD")
+        .map(str::to_string)
+        .collect()
+}
+
+/// Why a branch missing from the remote is nevertheless out of prune's scope.
+fn unpublished_reason(provenance: &provenance::Provenance, branch: &str) -> String {
+    if provenance.is_local_only(branch) {
+        format!("created by `daft start` and never published — `daft remove {branch}` to discard")
+    } else {
+        "no record of it ever being published to this remote".to_string()
+    }
 }
 
 // ── Per-branch processing ──────────────────────────────────────────────────
@@ -1261,6 +1342,41 @@ fn cleanup_empty_parent_dirs(
 // not the filesystem path — lives in
 // `coordinator::process::filter_matching_jobs` and is covered by tests
 // in that module (`filter_matching_jobs_combines_predicates_and`).
+
+#[cfg(test)]
+mod remote_branch_tests {
+    use super::parse_remote_branches;
+
+    #[test]
+    fn strips_the_remote_prefix_and_drops_head() {
+        // The CLI backend shortens `refs/remotes/origin/HEAD` to a bare
+        // `origin`; gitoxide shortens it to `origin/HEAD`. Neither may survive
+        // as a branch name, or a branch would be matched against the remote's
+        // symbolic HEAD instead of itself.
+        let refs = "origin\norigin/HEAD\norigin/master\norigin/feat/x\n";
+
+        let branches = parse_remote_branches(refs, "origin");
+
+        assert!(branches.contains("master"));
+        assert!(
+            branches.contains("feat/x"),
+            "slashes must survive the strip"
+        );
+        assert!(!branches.contains("HEAD"));
+        assert!(!branches.contains("origin"));
+        assert_eq!(branches.len(), 2);
+    }
+
+    #[test]
+    fn another_remotes_refs_do_not_leak_in() {
+        let refs = "upstream/master\norigin/master\n";
+
+        let branches = parse_remote_branches(refs, "origin");
+
+        assert_eq!(branches.len(), 1);
+        assert!(branches.contains("master"));
+    }
+}
 
 #[cfg(test)]
 mod cancel_wait_tests {

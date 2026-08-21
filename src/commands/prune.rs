@@ -363,7 +363,6 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                 &git,
                 &worktree_map,
                 &settings.remote,
-                settings.use_gitoxide,
                 Some(base_branch.as_str()),
                 &mut sink,
             )
@@ -489,7 +488,6 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                 &git,
                 &shared_worktree_map,
                 &orch_settings.remote,
-                orch_settings.use_gitoxide,
                 Some(orch_base_branch.as_str()),
                 &mut sink,
             )

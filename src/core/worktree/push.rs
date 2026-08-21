@@ -9,6 +9,7 @@ use crate::core::ProgressSink;
 use crate::core::settings::PushVerify;
 use crate::core::worktree::fetch;
 use crate::core::worktree::ports::{PushRef, StageRunner};
+use crate::core::worktree::provenance;
 use crate::executor::presenter::JobPresenter;
 use crate::git::push_porcelain::parse_push_report;
 use crate::git::{GitCommand, PushIo, PushOptions, PushStream};
@@ -527,6 +528,37 @@ impl PushOutcome {
 /// `hook_present` short-circuits the existence probe when the caller
 /// already resolved it (e.g. once per repo for sync's many worktrees).
 pub fn push_with_hooks(
+    git: &GitCommand,
+    action: PushAction<'_>,
+    cwd: &Path,
+    verify: bool,
+    stage: &dyn StageRunner,
+    presenter: Option<&Arc<dyn JobPresenter>>,
+    hook_present: Option<bool>,
+) -> Result<PushOutcome> {
+    let outcome = push_with_hooks_inner(git, action, cwd, verify, stage, presenter, hook_present)?;
+
+    // The one place daft records "this branch reached that remote" (#858).
+    //
+    // Every daft push routes through here, so recording it here means no call
+    // site has to remember to — and prune, which deletes worktrees on the
+    // strength of this record, has a single code path to audit. Two conditions
+    // are load-bearing: git must have confirmed the push (`success`), and a
+    // delete push is excluded, since it attests the branch is *gone* from the
+    // remote, which is the opposite claim.
+    //
+    // Best-effort: the stamp buys a branch the right to be reclaimed later, so
+    // failing to write it costs a future prune, never safety. A push that
+    // worked must not be reported as failed because a config write did not.
+    if outcome.success() && !action.is_delete() {
+        let _ = provenance::mark_published(git, cwd, action.remote(), action.branch());
+    }
+
+    Ok(outcome)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_with_hooks_inner(
     git: &GitCommand,
     action: PushAction<'_>,
     cwd: &Path,
