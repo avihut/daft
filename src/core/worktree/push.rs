@@ -557,7 +557,6 @@ pub fn push_with_hooks(
     Ok(outcome)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn push_with_hooks_inner(
     git: &GitCommand,
     action: PushAction<'_>,
