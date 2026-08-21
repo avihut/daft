@@ -22,9 +22,9 @@ there. Being absent from the remote is not enough on its own, since that is
 equally true of a branch that was just created and never pushed. A branch
 daft cannot place is left alone, whatever its commits and whatever \-\-force
 says; discard those with `daft remove` instead. One consequence worth
-knowing: a branch published outside daft without upstream tracking (git push
-<remote> <branch>, no \-u) leaves no such attestation, so prune will not
-reclaim it automatically.
+knowing: publishing a branch outside daft without upstream tracking
+(`git push <remote> <branch>`, no \-u) leaves no such attestation, so prune
+will not reclaim it automatically.
 .PP
 A deleted remote branch does not by itself prove the work was merged, so each
 gone branch is verified against the default branch (regular or squash merge)
