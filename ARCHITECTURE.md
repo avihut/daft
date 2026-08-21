@@ -124,9 +124,10 @@ The shape is always the same:
    takes the non-destructive branch — so a missing stamp, an older branch, or a
    wiped config makes daft more conservative, never less. A record may
    _authorize_ a destructive step only when it attests to something daft itself
-   did and confirmed; never to an inference. Those records get one writer, at
-   the seam that performs the action, on confirmed success only, so the audit is
-   a single code path.
+   did and confirmed; never to an inference. Those records get one writer
+   function, called at every seam that performs the action — a second path that
+   acts without recording is how the record starts lying — and only on success
+   the underlying tool itself reported, never on a bare exit status.
 
 The failure this prevents is inferring a missing fact from state that merely
 correlates with it. The tell is that two cases which must be treated differently

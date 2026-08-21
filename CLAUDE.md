@@ -374,8 +374,11 @@ answer at the moment it acts, so record it then.
   branches, and people working outside daft degrade to "kept", never to
   "deleted". A record may authorize a destructive step only when it attests to
   an action daft performed and confirmed — never to an inference — so such
-  records have exactly one writer, at the seam that performs the action, and are
-  written on confirmed success only.
+  records are written through a single function, called only at the seams that
+  perform the action, and only on success the underlying tool confirmed. Where a
+  second code path performs the same action (a batched push beside a single
+  one), it stamps too — a seam that acts without recording is how the record
+  silently starts lying.
 - **Never infer the fact from correlated state.** If two cases that must be
   treated differently are locally indistinguishable, no predicate separates them
   — the fact has to be written down.

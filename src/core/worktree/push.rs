@@ -538,11 +538,13 @@ pub fn push_with_hooks(
 ) -> Result<PushOutcome> {
     let outcome = push_with_hooks_inner(git, action, cwd, verify, stage, presenter, hook_present)?;
 
-    // The one place daft records "this branch reached that remote" (#858).
+    // Where daft records "this branch reached that remote" (#858) for every
+    // single-branch push.
     //
-    // Every daft push routes through here, so recording it here means no call
-    // site has to remember to — and prune, which deletes worktrees on the
-    // strength of this record, has a single code path to audit. Two conditions
+    // Recording it here means no such call site has to remember to. The
+    // batched strategy (`push_batched`) does not route through this function
+    // and records at its own seam; those two are the whole audit surface for
+    // the record prune deletes worktrees on the strength of. Two conditions
     // are load-bearing: git must have confirmed the push (`success`), and a
     // delete push is excluded, since it attests the branch is *gone* from the
     // remote, which is the opposite claim.
@@ -902,6 +904,38 @@ fn attribute_batch(
         .collect()
 }
 
+/// The branches git's own push report says are on the remote, and so may be
+/// recorded as published (#858).
+///
+/// Pure over the captured stdout, like [`attribute_batch`], and deliberately
+/// stricter than it: the report is git's confirmation, whereas
+/// `attribute_batch`'s "no ref lines but the exit status said success" arm is
+/// an inference. A record that authorizes deleting a worktree may rest only on
+/// the former (ARCHITECTURE.md, "Bridge git's evidence gaps with daft's own
+/// records"). `Deleted` is excluded for the reason the single path excludes
+/// delete pushes: it attests the branch is *gone* from the remote.
+fn confirmed_landed<'a>(branches: &'a [String], stdout: &str) -> Vec<&'a str> {
+    use crate::git::push_porcelain::{RefStatusFlag, parse_push_report};
+
+    let report = parse_push_report(stdout);
+    branches
+        .iter()
+        .filter(|branch| {
+            report.refs.iter().any(|line| {
+                ref_line_is_branch(line, branch)
+                    && matches!(
+                        line.flag,
+                        RefStatusFlag::FastForward
+                            | RefStatusFlag::Forced
+                            | RefStatusFlag::New
+                            | RefStatusFlag::UpToDate
+                    )
+            })
+        })
+        .map(String::as_str)
+        .collect()
+}
+
 /// Push `branches` in one `git push` so the pre-push hook fires once with
 /// every ref on stdin (#678). Callers pre-filter to pushable candidates
 /// (upstream present, no rebase conflict); a supervised teardown
@@ -964,14 +998,24 @@ pub fn push_batched(
         }
     };
     match io {
-        Ok(io) => attribute_batch(
-            branches,
-            io.success,
-            &io.stdout,
-            &io.stderr,
-            hook_present,
-            !params.no_verify,
-        ),
+        Ok(io) => {
+            let results = attribute_batch(
+                branches,
+                io.success,
+                &io.stdout,
+                &io.stderr,
+                hook_present,
+                !params.no_verify,
+            );
+            // #858: this strategy bypasses push_with_hooks, so record the push
+            // here too. Without it a branch published this way stays reclaimable
+            // only while its upstream config survives — the dependency the
+            // record exists to remove.
+            for branch in confirmed_landed(branches, &io.stdout) {
+                let _ = provenance::mark_published(git, cwd, &params.remote_name, branch);
+            }
+            results
+        }
         Err(e) => {
             let needs_terminal = error_needs_terminal(&e);
             let timed_out = error_timed_out(&e);
@@ -1285,6 +1329,29 @@ mod tests {
     fn batch_attribution_trusts_exit_status_without_ref_lines() {
         let results = attribute_batch(&batch_branches(&["a"]), true, "", "", false, true);
         assert!(results[0].success);
+    }
+
+    #[test]
+    fn only_refs_git_confirmed_are_recorded_as_published() {
+        let stdout = concat!(
+            "To /remote.git\n",
+            " \trefs/heads/a:refs/heads/a\t1111111..2222222\n",
+            "=\trefs/heads/b:refs/heads/b\t[up to date]\n",
+            "!\trefs/heads/c:refs/heads/c\t[rejected] (non-fast-forward)\n",
+            "Done\n"
+        );
+        let branches = batch_branches(&["a", "b", "c", "d"]);
+
+        assert_eq!(confirmed_landed(&branches, stdout), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn a_bare_exit_status_records_nothing() {
+        // attribute_batch trusts the exit status here (see the test above);
+        // the record must not, or it would attest to an inference.
+        let branches = batch_branches(&["a"]);
+
+        assert!(confirmed_landed(&branches, "").is_empty());
     }
 
     // ── Pure collapse() classification ──────────────────────────────────

@@ -18,10 +18,11 @@
 //! | `branch.<n>.daftPublished` | the push seam| `"<remote> <rfc3339>"` — daft pushed it    |
 //!
 //! `daftPublished` is the only record that can *authorize* a deletion, so it
-//! has exactly one writer ([`mark_published`]), is written only after a push
-//! git confirmed, and carries the remote it attests to — a stamp for `origin`
-//! must not authorize pruning against a different `daft.remote`. `daftOrigin`
-//! can only withhold or annotate.
+//! is written through one function ([`mark_published`]), called only at daft's
+//! push seams (the single-branch path and the batched one), only for a push
+//! git itself reported, and carrying the remote it attests to — a stamp for
+//! `origin` must not authorize pruning against a different `daft.remote`.
+//! `daftOrigin` can only withhold or annotate.
 //!
 //! Git maintains the lifecycle for free: `git branch -m` renames the whole
 //! `branch.<name>` section and `git branch -d`/`-D` removes it, and daft's own
@@ -60,10 +61,10 @@ pub fn mark_local(git: &GitCommand, cwd: &Path, branch: &str) -> Result<()> {
 
 /// Record that daft pushed `branch` to `remote`, just now.
 ///
-/// The single writer of the one record that can authorize a deletion. Call it
-/// only where git has confirmed the push succeeded, and never for a delete
-/// push — a `git push --delete` proves the branch is *gone* from the remote,
-/// which is the opposite attestation.
+/// The only writer of the one record that can authorize a deletion. Call it
+/// where git has confirmed the push succeeded — its own report, not a bare
+/// exit status — and never for a delete push, which proves the branch is
+/// *gone* from the remote: the opposite attestation.
 pub fn mark_published(git: &GitCommand, cwd: &Path, remote: &str, branch: &str) -> Result<()> {
     let stamp = format!("{remote} {}", chrono::Utc::now().to_rfc3339());
     git.config_set_at(&format!("branch.{branch}.{PUBLISHED_KEY}"), &stamp, cwd)
