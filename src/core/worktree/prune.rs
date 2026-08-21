@@ -637,7 +637,13 @@ fn parse_remote_branches(refs: &str, remote_name: &str) -> HashSet<String> {
 /// Why a branch missing from the remote is nevertheless out of prune's scope.
 fn unpublished_reason(provenance: &provenance::Provenance, branch: &str) -> String {
     if provenance.is_local_only(branch) {
-        format!("created by `daft start` and never published — `daft remove {branch}` to discard")
+        // Runtime output renders the executable the way the user invoked it,
+        // so this reads `git daft remove` under `git worktree-prune`.
+        format!(
+            "created by `{}` and never published — `{}` to discard",
+            crate::daft_cmd("start"),
+            crate::daft_cmd(&format!("remove {branch}"))
+        )
     } else {
         "no record of it ever being published to this remote".to_string()
     }
