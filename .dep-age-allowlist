@@ -36,3 +36,12 @@ cargo:plist@1.10.0
 # the same security exception Dependabot PRs get automatically.
 # Safe to remove after 2026-07-13.
 cargo:crossbeam-epoch@0.9.20
+
+# why: RUSTSEC-2026-0258 (h2 accepts and queues empty DATA frames without
+# limit — unbounded memory / panic, DoS class) turns the cargo-deny advisories
+# gate red; h2 reaches us transitively through gix -> gix-transport -> reqwest
+# -> hyper. 0.4.16 (2026-08-17) is the designated fix and 0.4.18 (2026-08-20)
+# is what `cargo update -p h2` resolves to — both inside the 7-day window.
+# Same security exception Dependabot PRs get automatically.
+# Safe to remove after 2026-08-28.
+cargo:h2@0.4.18
