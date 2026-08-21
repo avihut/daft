@@ -10,7 +10,7 @@ import {
   setArgs,
   setChapterTitle,
   setSilent,
-} from "@avihut/dumbshow";
+} from "@dumbshow/core";
 import { CATALOG } from "../../.vitepress/theme/graph/catalog";
 import { GALLERY } from "../../.vitepress/theme/graph/gallery";
 import { type Compiled, DAFT_PACK } from "../../.vitepress/theme/graph/pack";

@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import {
-  AttributesForm,
   type ComposerDoc,
   type EditorSelection,
   freezePlacements,
   type ItemSelection,
   type VerbArgs,
   type VocabLang,
-} from "@avihut/dumbshow";
+} from "@dumbshow/core";
+import { AttributesForm } from "@dumbshow/vue";
 import type { Compiled } from "../pack";
 import {
   removeSeedRepo,

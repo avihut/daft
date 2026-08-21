@@ -14,17 +14,14 @@ export const GRAPH_FS = `/@fs${path.resolve(process.cwd(), ".vitepress/theme/gra
 
 /** Absolute /@fs URL of the dumbshow machinery module (engine, offline
  * renderer, media exports) for in-page imports — bare specifiers don't
- * resolve in page.evaluate. Default: the installed package's built dist.
+ * resolve in page.evaluate. Default: the installed @dumbshow/core dist.
  * Under DUMBSHOW_SRC (the source link, see .vitepress/config.ts) it is the
  * linked checkout's source entry, so specs import the same module the page
  * runs. */
 export const DUMBSHOW_FS = `/@fs${
   process.env.DUMBSHOW_SRC
-    ? path.resolve(process.env.DUMBSHOW_SRC, "src/index.ts")
-    : path.resolve(
-        process.cwd(),
-        "node_modules/@avihut/dumbshow/dist/dumbshow.js",
-      )
+    ? path.resolve(process.env.DUMBSHOW_SRC, "packages/core/src/index.ts")
+    : path.resolve(process.cwd(), "node_modules/@dumbshow/core/dist/index.js")
 }`;
 
 export async function openComposer(page: Page): Promise<void> {

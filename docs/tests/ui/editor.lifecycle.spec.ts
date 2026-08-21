@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { DOC_VERSION, parseDoc, serializeDoc } from "@avihut/dumbshow";
+import { DOC_VERSION, parseDoc, serializeDoc } from "@dumbshow/core";
 import { expect, test } from "@playwright/test";
 import {
   expectParked,

@@ -12,15 +12,16 @@ committed compiled digests under `__goldens__/` (regenerate deliberately via
 `UPDATE_GOLDENS=1`). A change to composer behavior updates the scenario here AND
 its spec in the same commit.
 
-**Extraction note.** The editor machinery lives in `@avihut/dumbshow`; this
-suite runs against `/composer` as integrated and is the extraction's parity net.
-`editor.*` files (groups A–D, E1–E3 + E5, F, I–K) pin generic editor mechanics —
-they are candidates to copy into dumbshow's own harness (under its boxes
-reference pack) and stay here as integration coverage until then. `pack.*` files
-(E4 rename semantics, G views, H shell, L hero/goldens, M relations) pin
-daft-language behavior and never move. Group L's module-level goldens import the
-machinery from the package and the pack from source — byte-identical compiled
-output across that seam is the extraction tripwire.
+**Extraction note.** The editor machinery lives in `@dumbshow/core` and
+`@dumbshow/vue`; this suite runs against `/composer` as integrated and is the
+extraction's parity net. `editor.*` files (groups A–D, E1–E3 + E5, F, I–K) pin
+generic editor mechanics — they are candidates to copy into dumbshow's own
+harness (under its boxes reference pack) and stay here as integration coverage
+until then. `pack.*` files (E4 rename semantics, G views, H shell, L
+hero/goldens, M relations) pin daft-language behavior and never move. Group L's
+module-level goldens import the machinery from the package and the pack from
+source — byte-identical compiled output across that seam is the extraction
+tripwire.
 
 ## Harness notes (read first — these are the traps)
 
@@ -42,11 +43,10 @@ output across that seam is the extraction tripwire.
   bounding rect.
 - **Module-level asserts** import through the dev server: pack modules via
   `/@fs/<abs>/graph/...` (`GRAPH_FS` in helpers.ts), machinery via the built
-  package dist (`DUMBSHOW_FS` →
-  `node_modules/@avihut/dumbshow/dist/dumbshow.js`) — bare specifiers don't
-  resolve in-page. The dev player handle is `window.__daftPlayer`, passed by
-  every daft `createPlayer` site as `devHandle` (last-writer-wins across
-  rebuilds — grab it fresh after every edit).
+  package dist (`DUMBSHOW_FS` → `node_modules/@dumbshow/core/dist/index.js`) —
+  bare specifiers don't resolve in-page. The dev player handle is
+  `window.__daftPlayer`, passed by every daft `createPlayer` site as `devHandle`
+  (last-writer-wins across rebuilds — grab it fresh after every edit).
 - **Timing.** DOM settles ~150–300ms after an edit (Vue flush + player rebuild +
   settle). Never assert immediately after dispatch.
 - **Text content is whitespace-condensed** (Vue): a skipped row reads

@@ -25,7 +25,7 @@ import type {
   VerbArgs as LangVerbArgs,
   OpSpecOf,
   StepDef as StepDefOf,
-} from "@avihut/dumbshow";
+} from "@dumbshow/core";
 import type { Act } from "./render";
 
 /** The engine's shapes bound to daft acts — the module-local spellings of

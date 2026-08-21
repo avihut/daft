@@ -24,12 +24,12 @@ import {
   makeView,
   type SceneCursor as SceneCursorOf,
   type SceneEvent,
-} from "@avihut/dumbshow";
+} from "@dumbshow/core";
 
 // The generic scaffolding lives in the dumbshow package; the camera and view
 // math stay reachable from here so every daft-side consumer has one import
 // spot (the UI-test helpers import them through this module via /@fs).
-export { camRectAt, makeView, type View } from "@avihut/dumbshow";
+export { camRectAt, makeView, type View } from "@dumbshow/core";
 
 /* --------------------------------- acts ---------------------------------- */
 

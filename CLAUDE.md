@@ -704,10 +704,10 @@ adding or changing user-facing features.
 - `docs/about/` — meta (why-daft, glossary, FAQ, troubleshooting, comparison,
   contributing, changelog)
 - `docs/composer.md` — the full-window diagram composer (unlisted): the
-  `@avihut/dumbshow` editor loaded with daft's language pack. The editor's
-  document model and hard rules are normative in the dumbshow repo's CLAUDE.md;
-  the pack side (element semantics, inspector, embed template) in
-  `docs/.vitepress/theme/graph/CLAUDE.md` ("The composer" + the daft-sandbox
+  `@dumbshow/vue` editor (over `@dumbshow/core`) loaded with daft's language
+  pack. The editor's document model and hard rules are normative in the dumbshow
+  repo's CLAUDE.md; the pack side (element semantics, inspector, embed template)
+  in `docs/.vitepress/theme/graph/CLAUDE.md` ("The composer" + the daft-sandbox
   north star)
 - Every page needs `title` and `description` YAML frontmatter
 - No emoji in docs

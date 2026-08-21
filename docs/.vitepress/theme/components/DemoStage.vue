@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
-import { createPlayer, observeVisibility } from "@avihut/dumbshow";
+import { createPlayer, observeVisibility } from "@dumbshow/core";
 import { HERO_SCRIPT } from "../graph/hero-script";
 import type { Player } from "../graph/pack";
 import RepoDiagram from "../graph/RepoDiagram.vue";

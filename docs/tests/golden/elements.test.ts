@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { derive, emptyDoc } from "@avihut/dumbshow";
+import { derive, emptyDoc } from "@dumbshow/core";
 import { dropElement } from "../../.vitepress/theme/graph/composer/elements";
 import { DAFT_PACK } from "../../.vitepress/theme/graph/pack";
 import { addSeedRepo, addSeedWt } from "../../.vitepress/theme/graph/seed";

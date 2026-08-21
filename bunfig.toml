@@ -6,6 +6,6 @@
 # block it.
 # https://bun.com/docs/runtime/bunfig#install-minimumreleaseage
 minimumReleaseAge = 604800
-# why: our own package (github.com/avihut/dumbshow) — releases are consumed
+# why: our own packages (github.com/avihut/dumbshow) — releases are consumed
 # here the day they ship, and the docs pin exact versions.
-minimumReleaseAgeExcludes = ["@avihut/dumbshow"]
+minimumReleaseAgeExcludes = ["@dumbshow/core", "@dumbshow/vue"]

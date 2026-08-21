@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { derive, emptyDoc } from "@avihut/dumbshow";
+import { derive, emptyDoc } from "@dumbshow/core";
 import { DAFT_PACK } from "../../.vitepress/theme/graph/pack";
 import { parseCommand } from "../../.vitepress/theme/graph/shell";
 import type { World } from "../../.vitepress/theme/graph/verbs";

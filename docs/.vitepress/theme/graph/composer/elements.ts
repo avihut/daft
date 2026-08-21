@@ -16,7 +16,7 @@ import {
   freezePlacements,
   setRepoPlacement,
   setWtPlacement,
-} from "@avihut/dumbshow";
+} from "@dumbshow/core";
 import type { Act, Hit } from "../render";
 import {
   addSeedRepo,

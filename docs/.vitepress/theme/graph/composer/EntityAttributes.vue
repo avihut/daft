@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { ComposerDoc } from "@avihut/dumbshow";
+import type { ComposerDoc } from "@dumbshow/core";
 import type { World } from "../verbs";
 import { type EntitySelection, isSeedRel } from "./elements";
 

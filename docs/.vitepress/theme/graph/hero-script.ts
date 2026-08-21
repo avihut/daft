@@ -5,7 +5,7 @@
  * camera starts inside `web` and widens only when the story forces it.
  */
 
-import type { CamRect } from "@avihut/dumbshow";
+import type { CamRect } from "@dumbshow/core";
 import type { StepDef } from "./pack";
 
 const WEB = { x: 0, y: 0 };

@@ -24,7 +24,7 @@ import type {
   SceneEvent as SceneEventOf,
   Seed,
   StepDef as StepDefOf,
-} from "@avihut/dumbshow";
+} from "@dumbshow/core";
 import {
   canvasDrop,
   dragRing,

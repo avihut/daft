@@ -5,7 +5,7 @@ import {
   createPlayer,
   type DiagramView,
   observeVisibility,
-} from "@avihut/dumbshow";
+} from "@dumbshow/core";
 import { DAFT_PACK, type Player, type StepDef } from "./pack";
 
 const props = withDefaults(

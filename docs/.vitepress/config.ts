@@ -11,10 +11,11 @@ const version = cargoToml.match(/^version\s*=\s*"(.+?)"/m)?.[1] ?? "unknown";
 const GITHUB_REPO = "https://github.com/avihut/daft";
 
 /**
- * DUMBSHOW_SRC=<path to a dumbshow checkout> links the docs to the package's
- * source for local development: `@avihut/dumbshow` resolves to that
- * checkout's `src/index.ts`, so machinery edits hot-reload here and the UI
- * suite exercises them (theme/graph/CLAUDE.md, "Working against dumbshow
+ * DUMBSHOW_SRC=<path to a dumbshow checkout> links the docs to the packages'
+ * sources for local development: `@dumbshow/core` and `@dumbshow/vue` resolve
+ * to that checkout's `packages/<name>/src` (its workspace-aliases.ts is the
+ * reference map), so machinery edits hot-reload here and the UI suite
+ * exercises them (theme/graph/CLAUDE.md, "Working against dumbshow
  * source"). Unset — the default, and always in CI — the docs use the pinned
  * package from node_modules.
  */
@@ -29,16 +30,23 @@ export default defineConfig({
       preserveSymlinks: true,
       ...(dumbshowSrc
         ? {
-            // The style alias targets the package's own stylesheet; the
-            // editor imports it too, so it is one module, injected once.
+            // The style alias comes first so the bare-name pattern cannot
+            // swallow it; both packages resolve to their source entries.
             alias: [
               {
-                find: /^@avihut\/dumbshow\/style\.css$/,
-                replacement: resolve(dumbshowSrc, "src/composer/composer.css"),
+                find: /^@dumbshow\/core\/style\.css$/,
+                replacement: resolve(
+                  dumbshowSrc,
+                  "packages/core/src/editor/editor.css",
+                ),
               },
               {
-                find: /^@avihut\/dumbshow$/,
-                replacement: resolve(dumbshowSrc, "src/index.ts"),
+                find: /^@dumbshow\/core$/,
+                replacement: resolve(dumbshowSrc, "packages/core/src/index.ts"),
+              },
+              {
+                find: /^@dumbshow\/vue$/,
+                replacement: resolve(dumbshowSrc, "packages/vue/src/index.ts"),
               },
             ],
             // One Vue: the linked source must resolve `vue` to ours, never

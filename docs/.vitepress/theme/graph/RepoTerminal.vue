@@ -7,7 +7,7 @@ import {
   type TermLine,
   transcriptAt,
   visibleLines,
-} from "@avihut/dumbshow";
+} from "@dumbshow/core";
 import type { Player, StepDef } from "./pack";
 
 const props = withDefaults(

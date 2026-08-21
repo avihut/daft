@@ -25,7 +25,7 @@ import type {
   StepDef as StepDefOf,
   VerbArgs,
   WtPlacement,
-} from "@avihut/dumbshow";
+} from "@dumbshow/core";
 import { type Act, applyAct, createScene } from "./render";
 import {
   addRepo,

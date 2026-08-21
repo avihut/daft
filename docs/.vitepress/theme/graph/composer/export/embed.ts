@@ -6,7 +6,7 @@
  * because a still is just the same script never played.
  */
 
-import type { StepDef as StepDefOf } from "@avihut/dumbshow";
+import type { StepDef as StepDefOf } from "@dumbshow/core";
 import type { Act } from "../../render";
 
 type StepDef = StepDefOf<Act>;

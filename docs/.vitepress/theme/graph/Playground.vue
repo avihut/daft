@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import { createPlayer } from "@avihut/dumbshow";
+import { createPlayer } from "@dumbshow/core";
 import { CATALOG } from "./catalog";
 import { GALLERY } from "./gallery";
 import type { Player, StepDef } from "./pack";

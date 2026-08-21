@@ -7,13 +7,15 @@ animated. If a page needs to show repo/worktree structure, use this language
 (via `RepoDiagram.vue`), not an ad-hoc SVG or a screenshot.
 
 The generic machinery — the language contract, engine, render core, transcript,
-the editor and its document model, and the media exports — is the **dumbshow**
-package (`@avihut/dumbshow`, github.com/avihut/dumbshow); this directory is
-daft's **language pack**. Files: `pack.ts` (`DAFT_PACK` — daft assembled against
-the package's `DiagramLanguage` contract, plus the daft-typed aliases consumers
-import), `render.ts` (the daft act vocabulary, scene state, palette, canvas
-draw, and hit priority; it also re-exports the package's camera/view math so
-every daft-side consumer has one import spot), `seed.ts` (the pack side of a
+the editor and its document model, and the media exports — is **dumbshow**
+(github.com/avihut/dumbshow), published as `@dumbshow/core` (everything
+framework-free: contract, engine, render core, transcript, document model,
+exports, the editor stylesheet) and `@dumbshow/vue` (the editor); this directory
+is daft's **language pack**. Files: `pack.ts` (`DAFT_PACK` — daft assembled
+against the package's `DiagramLanguage` contract, plus the daft-typed aliases
+consumers import), `render.ts` (the daft act vocabulary, scene state, palette,
+canvas draw, and hit priority; it also re-exports the package's camera/view math
+so every daft-side consumer has one import spot), `seed.ts` (the pack side of a
 document's opening state — seed schema semantics, seed mutations, entity
 renames), `RepoDiagram.vue` and `RepoTerminal.vue` (the two viewers), `verbs.ts`
 (the verb layer: daft commands → canonical beats over a world model),
@@ -23,42 +25,45 @@ renames), `RepoDiagram.vue` and `RepoTerminal.vue` (the two viewers), `verbs.ts`
 element semantics, inspector views and panes, the docs embed template; see "The
 composer" below). Styles live in `../home.css` under the `.dg-`/`.dl-` prefixes
 (playground styles in the page component; editor styles ship with the package
-and are imported by `docs/composer.md` as `@avihut/dumbshow/style.css`). Change
+and are imported by `docs/composer.md` as `@dumbshow/core/style.css`). Change
 this file and the renderer together — the grammar here is normative, not
 descriptive.
 
 ## The language-pack seam
 
-The machinery lives in `@avihut/dumbshow`; meaning flows into it only as the
-injected `DAFT_PACK` plus pack components passed as props — the composer page
-(`docs/composer.md`) is where daft meets the editor, handing in the pack and the
-pack's `InspectorPane`. dumbshow never names a daft concept; its CLAUDE.md (in
-the dumbshow repo) owns the editor's hard rules — document model, derive-only,
-pure mutations, rebuild-never-remount, never-autoplay, exports-never-lie — and
-the theming token contract. When daft needs a new hook in the pack contract, the
-change lands in dumbshow first (with its boxes reference pack implementing the
-hook — that's the honesty check), then the pack here adopts it.
+The machinery lives in `@dumbshow/core` (the editor in `@dumbshow/vue`); meaning
+flows into it only as the injected `DAFT_PACK` plus pack components passed as
+props — the composer page (`docs/composer.md`) is where daft meets the editor,
+handing in the pack and the pack's `InspectorPane`. dumbshow never names a daft
+concept; its CLAUDE.md (in the dumbshow repo) owns the editor's hard rules —
+document model, derive-only, pure mutations, rebuild-never-remount,
+never-autoplay, exports-never-lie — and the theming token contract. When daft
+needs a new hook in the pack contract, the change lands in dumbshow first (with
+its boxes reference pack implementing the hook — that's the honesty check), then
+the pack here adopts it.
 
-Dependency law on this side: pack files import the package root — the machinery
-and the editor's published document API (`ComposerDoc`, the mutations) — the way
-plugins consume a host SDK. Deep imports into the package are forbidden;
-everything arrives through `@avihut/dumbshow` or `@avihut/dumbshow/style.css`.
-The one sanctioned exception is the UI-test harness's `DUMBSHOW_FS` constant
-(tests/ui/helpers.ts), a dev-server `/@fs` URL at the built dist for in-page
-imports. Greppable check — run from `docs/`, it must print only that helpers.ts
-definition:
+Dependency law on this side: pack files import the package roots —
+`@dumbshow/core` for the machinery and the editor's published document API
+(`ComposerDoc`, the mutations, the selection types), `@dumbshow/vue` only where
+a Vue component is mounted (the composer page, the inspector's `AttributesForm`)
+— the way plugins consume a host SDK. Deep imports into either package are
+forbidden; everything arrives through `@dumbshow/core`,
+`@dumbshow/core/style.css`, or `@dumbshow/vue`. The one sanctioned exception is
+the UI-test harness's `DUMBSHOW_FS` constant (tests/ui/helpers.ts), a dev-server
+`/@fs` URL at the built dist for in-page imports. Greppable check — run from
+`docs/`, it must print only that helpers.ts definition:
 
 ```sh
-rg -P '@avihut/dumbshow/(?!style\.css)' --glob '!**/node_modules/**' .
+rg -P '@dumbshow/(core|vue)/(?!style\.css)' --glob '!**/node_modules/**' .
 ```
 
 Host wiring the machinery no longer hardcodes, and where it lives now: the
 dev-only `__daftPlayer` window handle is passed at every `createPlayer` site
 (`devHandle: import.meta.env.DEV ? "__daftPlayer" : undefined` — the package
 cannot dev-gate itself; `import.meta.env.DEV` inlines to false in library
-builds); the composer page passes the docs back link, the vitepress `isDark` ref
-(bound as a property access — a destructured top-level ref template-unwraps into
-a boolean and breaks the theme toggle), and `file-tag="daft"` (draft key
+builds); the composer page passes the docs back link, the vitepress dark-mode
+ref as `v-model:is-dark` (bound to the ref's `.value`, so the toolbar's toggle
+writes the theme through `update:isDark`), and `file-tag="daft"` (draft key
 `daft-composer-draft-v1`, `.daft.json` downloads); the shell input's aria copy
 is `shellInputLabel` in `pack.ts`. The document format v1 keeps its daft-shaped
 seed schema on purpose; a generic seed schema is a document-version bump owned
@@ -66,21 +71,21 @@ by dumbshow.
 
 Working against dumbshow source:
 `DUMBSHOW_SRC=<path to a dumbshow checkout> mise run docs:site` serves
-`@avihut/dumbshow` from that checkout's `src/` instead of the installed dist (an
-env-gated alias in `.vitepress/config.ts`; the UI helpers' `DUMBSHOW_FS` follows
-it), so machinery edits hot-reload on `/composer`, and
-`DUMBSHOW_SRC=… mise run docs:test:ui` runs the whole suite against them — that
-suite is dumbshow's regression net until the `editor.*` specs copy over.
-`DOCS_PORT=<port>` runs a second dev server or suite beside a sibling worktree's
-(Playwright reuses whatever already answers at its URL, so a link is never
-tested against another worktree's server). The link is a dev and test affordance
-only: builds, the goldens (`bun test` resolves the installed package), and CI
-always use the pinned version — a dumbshow change lands by publishing, then
-`bun add --exact` here. After a bump, `docs:site:setup` (which every docs task
-depends on) drops Vite's dependency pre-bundle when `bun.lock` changed —
-VitePress's Vite 5.4 keys that cache on `bun.lockb` only, so without it the dev
-server and the UI suite would keep running the previous package while the build
-used the new one.
+`@dumbshow/core` and `@dumbshow/vue` from that checkout's `packages/*/src`
+instead of the installed dists (an env-gated alias in `.vitepress/config.ts`;
+the UI helpers' `DUMBSHOW_FS` follows it), so machinery edits hot-reload on
+`/composer`, and `DUMBSHOW_SRC=… mise run docs:test:ui` runs the whole suite
+against them — that suite is dumbshow's regression net until the `editor.*`
+specs copy over. `DOCS_PORT=<port>` runs a second dev server or suite beside a
+sibling worktree's (Playwright reuses whatever already answers at its URL, so a
+link is never tested against another worktree's server). The link is a dev and
+test affordance only: builds, the goldens (`bun test` resolves the installed
+package), and CI always use the pinned version — a dumbshow change lands by
+publishing, then `bun add --exact` here. After a bump, `docs:site:setup` (which
+every docs task depends on) drops Vite's dependency pre-bundle when `bun.lock`
+changed — VitePress's Vite 5.4 keys that cache on `bun.lockb` only, so without
+it the dev server and the UI suite would keep running the previous package while
+the build used the new one.
 
 ## Vocabulary
 

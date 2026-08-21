@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { compile } from "@avihut/dumbshow";
+import { compile } from "@dumbshow/core";
 import { createSceneCursor } from "../../.vitepress/theme/graph/render";
 import {
   buildScenario,
