@@ -4,7 +4,9 @@ description: >
   branch's remote deletion must not destroy local work. Prune must verify merge
   status (ancestor or squash) and skip gone-but-unmerged branches with a
   warning; --force overrides. Regression for prune assuming "remote gone =>
-  merged" and force-deleting the local branch (issue #628).
+  merged" and force-deleting the local branch (issue #628). The push sets
+  upstream deliberately: since #858 a branch nothing attests to is not a prune
+  candidate at all, and this scenario is about the merge check, not about scope.
 
 repos:
   - name: test-repo
@@ -32,7 +34,7 @@ steps:
       printf 'unmerged work\n' > unmerged.txt
       git add unmerged.txt
       git commit -m "unmerged work"
-      git push origin feat/x
+      git push -u origin feat/x
     expect:
       exit_code: 0
 

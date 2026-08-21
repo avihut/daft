@@ -35,7 +35,7 @@ steps:
       printf 'two\n' > part-two.txt
       git add part-two.txt
       git commit -m "feat: part two"
-      git push origin feat/x
+      git push -u origin feat/x
     expect:
       exit_code: 0
 
