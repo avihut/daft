@@ -76,7 +76,11 @@ suite is dumbshow's regression net until the `editor.*` specs copy over.
 tested against another worktree's server). The link is a dev and test affordance
 only: builds, the goldens (`bun test` resolves the installed package), and CI
 always use the pinned version — a dumbshow change lands by publishing, then
-`bun add --exact` here.
+`bun add --exact` here. After a bump, `docs:site:setup` (which every docs task
+depends on) drops Vite's dependency pre-bundle when `bun.lock` changed —
+VitePress's Vite 5.4 keys that cache on `bun.lockb` only, so without it the dev
+server and the UI suite would keep running the previous package while the build
+used the new one.
 
 ## Vocabulary
 

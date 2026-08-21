@@ -9,6 +9,6 @@
     "vitepress": "^1.6.4"
   },
   "dependencies": {
-    "@avihut/dumbshow": "0.1.0"
+    "@avihut/dumbshow": "0.2.0"
   }
 }

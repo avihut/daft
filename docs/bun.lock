@@ -5,7 +5,7 @@
     "": {
       "name": "daft-docs",
       "dependencies": {
-        "@avihut/dumbshow": "0.1.0",
+        "@avihut/dumbshow": "0.2.0",
       },
       "devDependencies": {
         "@biomejs/biome": "^2.5.8",
@@ -52,7 +52,7 @@
 
     "@algolia/requester-node-http": ["@algolia/requester-node-http@5.48.1", "", { "dependencies": { "@algolia/client-common": "5.48.1" } }, "sha512-xcaCqbhupVWhuBP1nwbk1XNvwrGljozutEiLx06mvqDf3o8cHyEgQSHS4fKJM+UAggaWVnnFW+Nne5aQ8SUJXg=="],
 
-    "@avihut/dumbshow": ["@avihut/dumbshow@0.1.0", "", { "dependencies": { "gifenc": "1.0.3" }, "peerDependencies": { "vue": "^3.5.0" } }, "sha512-fq69Avuz8sDnoRbQGjzA2MYM1/XTI5NCOejyv1rH9fRkbsh3ujfsGZdQYQDa/Q5rh+KJCRod5/06vFNH2lxHug=="],
+    "@avihut/dumbshow": ["@avihut/dumbshow@0.2.0", "", { "dependencies": { "gifenc": "1.0.3" }, "peerDependencies": { "vue": "^3.5.0" } }, "sha512-gj2oBfWsneEJcqEdXT8QzUJHq+kRlJWsQI+GHgz6I3F+iTyhBrLNQlps1z0cBzkW3dH2yL3ybZL04ZCeElZ7Tg=="],
 
     "@babel/helper-string-parser": ["@babel/helper-string-parser@7.27.1", "", {}, "sha512-qMlSxKbpRlAridDExk92nSobyDdpPijUq2DW6oDnUqd0iOGxmQjyqhMIihI9+zv4LPyZdRje2cavWPbCbWm3eA=="],
 

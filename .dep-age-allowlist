@@ -51,3 +51,4 @@ cargo:h2@0.4.18
 # minimumReleaseAgeExcludes entry in bunfig.toml / docs/bunfig.toml). One line
 # per pinned version: every bump re-adds the new version here the day it is cut.
 npm:@avihut/dumbshow@0.1.0
+npm:@avihut/dumbshow@0.2.0
