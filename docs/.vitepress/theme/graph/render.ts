@@ -370,9 +370,39 @@ export type Hit =
       sx: number;
       sy: number;
       r: number;
+    }
+  | {
+      /** A live relation, as the screen segment a → b. */
+      kind: "rel";
+      a: string;
+      b: string;
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
     };
 
-/** Topmost hit at a screen point: worktrees win over their repo discs. */
+/** Distance from a point to a segment. */
+function segmentDistance(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  const u =
+    len2 === 0
+      ? 0
+      : Math.min(Math.max(((px - x1) * dx + (py - y1) * dy) / len2, 0), 1);
+  return Math.hypot(px - (x1 + u * dx), py - (y1 + u * dy));
+}
+
+/** Topmost hit at a screen point: worktrees win over their repo discs,
+ * discs over relation lines (within 6px of the segment). */
 export function pick(hits: Hit[], sx: number, sy: number): Hit | null {
   for (const h of hits) {
     if (h.kind === "wt" && Math.hypot(sx - h.sx, sy - h.sy) <= h.r + 5)
@@ -380,6 +410,13 @@ export function pick(hits: Hit[], sx: number, sy: number): Hit | null {
   }
   for (const h of hits) {
     if (h.kind === "repo" && Math.hypot(sx - h.sx, sy - h.sy) <= h.r) return h;
+  }
+  for (const h of hits) {
+    if (
+      h.kind === "rel" &&
+      segmentDistance(sx, sy, h.x1, h.y1, h.x2, h.y2) <= 6
+    )
+      return h;
   }
   return null;
 }
@@ -513,6 +550,16 @@ export function drawScene(
     if (dp >= 1) continue;
     const pa = repoScreenPos(a);
     const pb = repoScreenPos(b);
+    if (opts.hits && rel.removed === undefined)
+      opts.hits.push({
+        kind: "rel",
+        a: rel.a,
+        b: rel.b,
+        x1: pa[0],
+        y1: pa[1],
+        x2: pb[0],
+        y2: pb[1],
+      });
     const e2 = ease(dp);
     const ex = pa[0] + (pb[0] - pa[0]) * (1 - e2);
     const ey = pa[1] + (pb[1] - pa[1]) * (1 - e2);

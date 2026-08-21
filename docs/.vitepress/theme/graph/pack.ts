@@ -27,9 +27,12 @@ import type {
 } from "@avihut/dumbshow";
 import {
   canvasDrop,
+  dragRing,
   ELEMENTS,
   type EntitySelection,
   entityLabel,
+  hoverRing,
+  isDraggable,
   selectionFromHit,
   selectionRing,
 } from "./composer/elements";
@@ -39,6 +42,7 @@ import {
   applyAct,
   createScene,
   drawScene,
+  type Hit,
   pick,
   readPalette,
   type Scene,
@@ -80,9 +84,12 @@ export const DAFT_PACK: DiagramLanguage<World, Act, Scene, StepDef> = {
   },
   entities: {
     elements: ELEMENTS,
-    label: (hit) => entityLabel(hit as Parameters<typeof entityLabel>[0]),
-    select: (hit) => selectionFromHit(hit as Parameters<typeof entityLabel>[0]),
+    label: (hit) => entityLabel(hit as Hit),
+    select: (hit) => selectionFromHit(hit as Hit),
     selectionOverlay: (sel) => selectionRing(sel as EntitySelection),
+    hoverOverlay: (sel) => hoverRing(sel as EntitySelection),
+    dragOverlay: (sel) => dragRing(sel as EntitySelection),
+    draggable: (hit) => isDraggable(hit as Hit),
     canvasDrop: (drop) => canvasDrop(drop as Parameters<typeof canvasDrop>[0]),
   },
   parseCommand: (line, world) => parseCommand(line, world, world.cwd ?? "~"),

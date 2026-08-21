@@ -17,10 +17,10 @@ suite runs against `/composer` as integrated and is the extraction's parity net.
 `editor.*` files (groups A–D, E1–E3 + E5, F, I–K) pin generic editor mechanics —
 they are candidates to copy into dumbshow's own harness (under its boxes
 reference pack) and stay here as integration coverage until then. `pack.*` files
-(E4 rename semantics, G views, H shell, L hero/goldens) pin daft-language
-behavior and never move. Group L's module-level goldens import the machinery
-from the package and the pack from source — byte-identical compiled output
-across that seam is the extraction tripwire.
+(E4 rename semantics, G views, H shell, L hero/goldens, M relations) pin
+daft-language behavior and never move. Group L's module-level goldens import the
+machinery from the package and the pack from source — byte-identical compiled
+output across that seam is the extraction tripwire.
 
 ## Harness notes (read first — these are the traps)
 
@@ -149,13 +149,26 @@ across that seam is the extraction tripwire.
 - **CMP-E5 Seed toggles.** Seed worktrees expose port/agent/merged and delete;
   verb-born entities show read-only state and point at their step.
 
-## F · Canvas selection
+## F · Canvas selection and the pointer
 
 - **CMP-F1 Pick + ring.** Clicking a disc/node selects the entity, shows the
   entity form, and paints the gold overlay ring (canvas hash changes); clicking
   empty space clears both.
 - **CMP-F2 Ring tracks.** The ring follows its entity across seeks and survives
   rebuilds; it vanishes gracefully when the entity does.
+- **CMP-F3 Hover affordance.** The pointer over a disc, node, or relation line
+  sets `data-hover` on `.dx-canvas-wrap` (cursor: pointer) and paints the pack's
+  hover marker (frame hash changes); over empty canvas neither — flag, cursor,
+  and marker all go.
+- **CMP-F4 Live drag.** Dragging a node previews the drop on every move: the
+  scene — and the dev player's compiled script, since the live player IS the
+  preview — shows the moved geometry mid-flight with the camera held, the wrap
+  carries `data-dragging` (cursor: grabbing), and no DOM ghost appears. Release
+  commits exactly the previewed document; the playhead stays on its step (park
+  on the seed with a second step present, drag, still step 0).
+- **CMP-F5 Escape cancels.** Escape mid-drag restores the base document (the dev
+  player reports the original geometry, the drag flag clears); a release
+  afterwards drops nothing.
 
 ## G · State views (World | daft | Files)
 
@@ -253,3 +266,13 @@ across that seam is the extraction tripwire.
   are byte-identical; attached-canvas renders match the live viewer exactly (the
   grayscale-vs-LCD text AA nuance is the only sanctioned difference, and only
   for detached canvases).
+
+## M · Relations as entities (daft pack)
+
+- **CMP-M1 Relations hover, select, refuse to move, unrelate.** A live relation
+  line is a hit (within 6px of the segment, under discs): hovering points and
+  paints; a tap selects it — the Attributes card reads "relation a ↔ b" and the
+  selection marker lies gold along the line; a drag on it only selects
+  (relations follow their repos; both discs stay put); the World/daft relation
+  rows select it too; Unrelate (seed relations only) removes it — the rows and
+  the card go.

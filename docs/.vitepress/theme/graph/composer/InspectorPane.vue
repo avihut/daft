@@ -15,6 +15,7 @@ import {
   removeSeedWt,
   renameEntity,
   scenePlacements,
+  setSeedRel,
   updateSeedWt,
 } from "../seed";
 import type { World } from "../verbs";
@@ -84,7 +85,17 @@ function doRenameEntity(
   next = renameEntity(next, kind, from, to);
   emit("edit", next, null);
   const cur = entitySelection.value;
-  if (cur) {
+  if (cur?.kind === "rel") {
+    if (kind === "repo" && (cur.a === from || cur.b === from))
+      emit("select", {
+        type: "entity",
+        sel: {
+          kind: "rel",
+          a: cur.a === from ? to : cur.a,
+          b: cur.b === from ? to : cur.b,
+        },
+      });
+  } else if (cur) {
     if (kind === "repo" && cur.repo === from)
       emit("select", { type: "entity", sel: { ...cur, repo: to } });
     else if (kind === "branch" && cur.wt === from)
@@ -111,11 +122,22 @@ function doRemoveSeedWt(repo: string, branch: string): void {
   emit("select", null);
 }
 
+function doRemoveSeedRel(a: string, b: string): void {
+  emit("edit", setSeedRel(props.doc, a, b, false), null);
+  emit("select", null);
+}
+
 function isSelected(kind: "repo" | "wt", repo: string, wt?: string): boolean {
   const s = entitySelection.value;
+  if (!s || s.kind === "rel") return false;
+  return s.kind === kind && s.repo === repo && (kind === "repo" || s.wt === wt);
+}
+
+function relSelected(a: string, b: string): boolean {
+  const s = entitySelection.value;
   return (
-    s !== null && s.kind === kind && s.repo === repo &&
-    (kind === "repo" || s.wt === wt)
+    s?.kind === "rel" &&
+    ((s.a === a && s.b === b) || (s.a === b && s.b === a))
   );
 }
 
@@ -190,13 +212,16 @@ function pathSelected(path: string): boolean {
           <span v-if="row.port" class="dx-port">{{ row.port }}</span>
         </button>
       </div>
-      <div
+      <button
         v-for="([a, b], i) in viewWorld.rels"
         :key="`rel-${i}`"
         class="dx-rel-line"
+        :class="{ sel: relSelected(a, b) }"
+        type="button"
+        @click="emit('selectEntity', { kind: 'rel', a, b })"
       >
         <span class="dx-rel-dash" />{{ a }} ↔ {{ b }}
-      </div>
+      </button>
     </div>
 
     <div v-else-if="tab === 'daft'" class="dx-view">
@@ -216,13 +241,16 @@ function pathSelected(path: string): boolean {
       </button>
       <template v-if="viewWorld.rels.length">
         <h3 class="dx-view-h">Relations</h3>
-        <div
+        <button
           v-for="([a, b], i) in viewWorld.rels"
           :key="`drel-${i}`"
           class="dx-rel-line"
+          :class="{ sel: relSelected(a, b) }"
+          type="button"
+          @click="emit('selectEntity', { kind: 'rel', a, b })"
         >
           <span class="dx-rel-dash" />{{ a }} ↔ {{ b }}
-        </div>
+        </button>
       </template>
       <p class="dx-attrs-note">
         What daft knows at the playhead — its repo registry and relations.
@@ -263,6 +291,7 @@ function pathSelected(path: string): boolean {
       @update-seed-wt="doUpdateSeedWt"
       @remove-seed-repo="doRemoveSeedRepo"
       @remove-seed-wt="doRemoveSeedWt"
+      @remove-seed-rel="doRemoveSeedRel"
     />
     <AttributesForm
       v-else

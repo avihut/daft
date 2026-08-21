@@ -214,6 +214,29 @@ export function stageCanvas(page: Page): Locator {
   return page.locator(".dx-canvas-wrap canvas");
 }
 
+/** The stage wrap — carries the pointer-state attributes
+ * (`data-hover`, `data-dragging`) the cursor rules key off. */
+export function canvasWrap(page: Page): Locator {
+  return page.locator(".dx-canvas-wrap");
+}
+
+/** The computed CSS cursor of an element — what the pointer shows over it. */
+export function cursorOf(target: Locator): Promise<string> {
+  return target.evaluate((el) => getComputedStyle(el).cursor);
+}
+
+/** Park the dev player settled on a step — a module-level seek, so specs
+ * can put the playhead somewhere other than where the last edit landed. */
+export async function settleStep(page: Page, step: number): Promise<void> {
+  await page.evaluate((i) => {
+    const w = window as unknown as {
+      __daftPlayer?: { settle(i: number): void };
+    };
+    w.__daftPlayer?.settle(i);
+  }, step);
+  await settled(page);
+}
+
 /**
  * World → client coordinates through the live camera — positions are
  * computed, never scanned (repo discs slip through probe grids). Uses the

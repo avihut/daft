@@ -37,52 +37,132 @@ export const ELEMENTS: ElementSpec[] = [
   { id: "relation", label: "relation", icon: "rel" },
 ];
 
-/** The entity a drag ghost names — worktrees by branch, repos by name. */
+/** The entity a hit names — worktrees by branch, repos by name, relations
+ * as the pair they join. */
 export function entityLabel(hit: Hit): string {
+  if (hit.kind === "rel") return `${hit.a} ↔ ${hit.b}`;
   return hit.kind === "wt" ? hit.wt : hit.repo;
 }
 
 /** The selection value a picked hit means — what the editor carries. */
 export function selectionFromHit(hit: Hit): EntitySelection {
+  if (hit.kind === "rel") return { kind: "rel", a: hit.a, b: hit.b };
   return hit.kind === "repo"
     ? { kind: "repo", repo: hit.repo }
     : { kind: "wt", repo: hit.repo, wt: hit.wt };
 }
 
-/**
- * The selection ring: painted over every frame from that frame's hits, in
- * daft's gold. Matching a selection to its hit is language logic — only
- * the pack knows a worktree from its repo.
- */
-export function selectionRing(
-  sel: EntitySelection,
-): (ctx: CanvasRenderingContext2D, hits: Hit[]) => void {
-  const gold =
+/** Relations never move by drag — they follow their repos; a press on one
+ * selects it however far it travels. */
+export function isDraggable(hit: Hit): boolean {
+  return hit.kind !== "rel";
+}
+
+export type EntitySelection =
+  | { kind: "repo"; repo: string; wt?: undefined }
+  | { kind: "wt"; repo: string; wt: string }
+  | { kind: "rel"; a: string; b: string };
+
+/** Does the seed (not the timeline) own this relation? */
+export function isSeedRel(doc: ComposerDoc, a: string, b: string): boolean {
+  return doc.seed.rels.some(
+    ([x, y]) => (x === a && y === b) || (x === b && y === a),
+  );
+}
+
+/** The daft gold, read live from the theme (falls back to the brand hex). */
+function goldToken(): string {
+  return (
     getComputedStyle(document.documentElement)
       .getPropertyValue("--daft-gold")
-      .trim() || "#d99a21";
+      .trim() || "#d99a21"
+  );
+}
+
+/** The frame hit a selection refers to, when the entity is on screen. */
+function hitFor(sel: EntitySelection, hits: Hit[]): Hit | undefined {
+  return hits.find((x) => {
+    if (sel.kind === "rel")
+      return (
+        x.kind === "rel" &&
+        ((x.a === sel.a && x.b === sel.b) || (x.a === sel.b && x.b === sel.a))
+      );
+    if (sel.kind === "repo") return x.kind === "repo" && x.repo === sel.repo;
+    return x.kind === "wt" && x.repo === sel.repo && x.wt === sel.wt;
+  });
+}
+
+type Marker = (ctx: CanvasRenderingContext2D, hits: Hit[]) => void;
+
+/**
+ * The pointer markers, in daft's gold — painted over every frame from that
+ * frame's hits, so they track their entity through seeks, rebuilds, and the
+ * live drag preview. Matching a selection to its hit is language logic:
+ * only the pack knows a worktree from its repo, or which segment a relation
+ * is. Nodes get rings around the disc; relations get the same weights laid
+ * along the line.
+ */
+function marker(
+  sel: EntitySelection,
+  style: {
+    width: number;
+    alpha: number;
+    pad: number;
+    glow?: boolean;
+    fill?: number;
+  },
+): Marker {
+  const gold = goldToken();
   return (octx, hits) => {
-    const h = hits.find((x) =>
-      sel.kind === "repo"
-        ? x.kind === "repo" && x.repo === sel.repo
-        : x.kind === "wt" && x.repo === sel.repo && x.wt === sel.wt,
-    );
+    const h = hitFor(sel, hits);
     if (!h) return;
+    octx.save();
     octx.strokeStyle = gold;
-    octx.lineWidth = 2;
-    octx.globalAlpha = 0.9;
-    octx.beginPath();
-    octx.arc(h.sx, h.sy, h.r + 5, 0, Math.PI * 2);
-    octx.stroke();
-    octx.globalAlpha = 1;
+    octx.lineWidth = style.width;
+    octx.globalAlpha = style.alpha;
+    if (style.glow) {
+      octx.shadowColor = gold;
+      octx.shadowBlur = 14;
+    }
+    if (h.kind === "rel") {
+      octx.lineCap = "round";
+      octx.beginPath();
+      octx.moveTo(h.x1, h.y1);
+      octx.lineTo(h.x2, h.y2);
+      octx.stroke();
+    } else {
+      if (style.fill) {
+        octx.fillStyle = gold;
+        octx.globalAlpha = style.fill;
+        octx.beginPath();
+        octx.arc(h.sx, h.sy, h.r + style.pad, 0, Math.PI * 2);
+        octx.fill();
+        octx.globalAlpha = style.alpha;
+      }
+      octx.beginPath();
+      octx.arc(h.sx, h.sy, h.r + style.pad, 0, Math.PI * 2);
+      octx.stroke();
+    }
+    octx.restore();
   };
 }
 
-export type EntitySelection = {
-  kind: "repo" | "wt";
-  repo: string;
-  wt?: string;
-};
+/** The selection ring: crisp gold. */
+export function selectionRing(sel: EntitySelection): Marker {
+  return marker(sel, { width: 2, alpha: 0.9, pad: 5 });
+}
+
+/** The hover marker: a faint halo — the pointer can take this. */
+export function hoverRing(sel: EntitySelection): Marker {
+  return marker(sel, { width: 1.5, alpha: 0.45, pad: 5, fill: 0.08 });
+}
+
+/** The drag marker: the lifted ring, glowing — this is moving with you.
+ * Relations never lift. */
+export function dragRing(sel: EntitySelection): Marker | null {
+  if (sel.kind === "rel") return null;
+  return marker(sel, { width: 2.5, alpha: 1, pad: 6, glow: true });
+}
 
 export type ElementDrop =
   | {
@@ -203,6 +283,8 @@ export function canvasDrop(drop: {
     return { doc: dropped.doc, select: dropped.select };
   }
   const hit = source.hit;
+  // Relations are not draggable (isDraggable); the funnel stays total.
+  if (hit.kind === "rel") return null;
   if (hit.kind === "repo") {
     if (over?.kind === "repo" && over.repo !== hit.repo) {
       const next = setSeedRel(doc, hit.repo, over.repo, true);

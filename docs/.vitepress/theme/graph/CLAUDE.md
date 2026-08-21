@@ -262,7 +262,15 @@ CLAUDE.md before touching editor behavior. What is daft's, here in `composer/`:
 
 - **`elements.ts`** — entity semantics: the draggable element catalog, what a
   canvas drop MEANS (seed mutations vs timeline ops), entity labels and
-  selection, the selection-ring overlay.
+  selection, which hits drag (relations only select), and the three pointer
+  markers the editor composes over every frame — selection ring (crisp gold),
+  hover halo (faint gold, a hint of fill), drag ring (lifted, glowing). All
+  identity-based: a marker finds its entity in the frame's hits, so it rides
+  through seeks, rebuilds, and the live drag preview.
+- **Relations are entities.** `render.ts` registers every live relation as a
+  segment hit (`kind: "rel"`, picked under discs within 6px of the line);
+  selecting one shows the relation card — seed relations unrelate from the
+  Attributes pane, timeline-born ones point at `repo link` / `repo unlink`.
 - **`views.ts` + `InspectorPane.vue` + `EntityAttributes.vue`** — the right-hand
   inspector: the World | daft | Files tab rows and the entity/op attribute
   forms, built over the package's generic `AttributesForm`.
@@ -280,7 +288,10 @@ CLAUDE.md before touching editor behavior. What is daft's, here in `composer/`:
   worktree first freezes every sibling's current slot, and renames do the same —
   otherwise an insert or rename silently rotates or teleports neighbors.
   Dragging a repo onto another repo relates them; worktrees never change repos
-  by drag (that meaning belongs to `carry`).
+  by drag (that meaning belongs to `carry`). A node drag previews live through
+  the very mutation the drop commits (the editor's law — see dumbshow's
+  CLAUDE.md), and canvas edits land settled on the playhead's step, never the
+  end.
 
 The composer's behavior catalog lives in `composer/test-scenarios.md` —
 stable-ID scenarios (Setup/Steps/Expect) run by the Playwright suite in

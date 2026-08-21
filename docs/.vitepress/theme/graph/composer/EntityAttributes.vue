@@ -2,15 +2,16 @@
 import { computed } from "vue";
 import type { ComposerDoc } from "@avihut/dumbshow";
 import type { World } from "../verbs";
-import type { EntitySelection } from "./elements";
+import { type EntitySelection, isSeedRel } from "./elements";
 
 /**
  * The Attributes form for daft entities — the pack side of the attributes
  * slot. A selected repo or worktree shows identity plus its seed fields
  * when the seed owns it; renames are entity renames, the document-wide
- * rewrite that makes every past command tell the new name. Timeline items
- * render through the generic AttributesForm instead — the inspector pane
- * decides which shows.
+ * rewrite that makes every past command tell the new name. A selected
+ * relation shows the pair it joins and, when the seed owns it, the control
+ * that unrelates them. Timeline items render through the generic
+ * AttributesForm instead — the inspector pane decides which shows.
  */
 
 const props = defineProps<{
@@ -29,11 +30,24 @@ const emit = defineEmits<{
   ];
   removeSeedRepo: [name: string];
   removeSeedWt: [repo: string, branch: string];
+  removeSeedRel: [a: string, b: string];
 }>();
 
 /** The selected entity, resolved against seed and final world. */
 const entity = computed(() => {
   const s = props.selection;
+  if (s.kind === "rel") {
+    return {
+      kind: "rel" as const,
+      name: `${s.a} ↔ ${s.b}`,
+      a: s.a,
+      b: s.b,
+      seed: isSeedRel(props.doc, s.a, s.b),
+      live: props.world.rels.some(
+        ([x, y]) => (x === s.a && y === s.b) || (x === s.b && y === s.a),
+      ),
+    };
+  }
   const seedRepo = props.doc.seed.repos.find((r) => r.name === s.repo);
   if (s.kind === "repo") {
     return {
@@ -58,6 +72,7 @@ const entity = computed(() => {
 
 function commitEntityName(event: Event): void {
   const e = entity.value;
+  if (e.kind === "rel") return;
   const to = (event.target as HTMLInputElement).value.trim();
   if (!to || to === e.name) return;
   emit("renameEntity", e.kind === "repo" ? "repo" : "branch", e.name, to);
@@ -84,7 +99,33 @@ function toggleSeed(flagName: "agent" | "merged"): void {
   <section class="dx-attrs" aria-label="Attributes">
     <h3>Attributes</h3>
 
-    <div class="dx-insp-head">
+    <template v-if="entity.kind === 'rel'">
+      <div class="dx-insp-head">
+        <span class="dx-tag">relation</span>
+        <b>{{ entity.name }}</b>
+        <span v-if="entity.seed" class="dx-mini">
+          <button
+            type="button"
+            aria-label="Unrelate"
+            @click="emit('removeSeedRel', entity.a, entity.b)"
+          >
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+              <path d="M3.5 5h9M6.5 5V3.5h3V5m-5 0 .6 7.5h5.8L11.5 5" />
+            </svg>
+          </button>
+        </span>
+      </div>
+      <p v-if="entity.seed" class="dx-attrs-note">
+        Seeded: these repos start out related. Unrelate takes the line out of
+        the opening scene.
+      </p>
+      <p v-else class="dx-attrs-note">
+        Born from the timeline — daft repo link made it. Select that step to
+        change it, or cut the line with daft repo unlink.
+      </p>
+    </template>
+
+    <div v-if="entity.kind !== 'rel'" class="dx-insp-head">
       <span class="dx-tag">{{
         entity.kind === "repo" ? "repo" : "worktree"
       }}</span>
@@ -108,7 +149,7 @@ function toggleSeed(flagName: "agent" | "merged"): void {
       </span>
     </div>
 
-    <div class="dx-field">
+    <div v-if="entity.kind !== 'rel'" class="dx-field">
       <label for="dx-f-ename">{{
         entity.kind === "repo" ? "Name" : "Branch"
       }}</label>
@@ -121,7 +162,7 @@ function toggleSeed(flagName: "agent" | "merged"): void {
         @keydown.enter="($event.target as HTMLInputElement).blur()"
       />
     </div>
-    <p class="dx-attrs-note" style="margin: -3px 0 9px">
+    <p v-if="entity.kind !== 'rel'" class="dx-attrs-note" style="margin: -3px 0 9px">
       Renaming rewrites every reference — seed, arguments, past commands.
     </p>
 
@@ -177,7 +218,7 @@ function toggleSeed(flagName: "agent" | "merged"): void {
       </p>
     </template>
 
-    <p v-else-if="!entity.seed" class="dx-attrs-note">
+    <p v-else-if="entity.kind === 'repo' && !entity.seed" class="dx-attrs-note">
       Born from the timeline — select its creating step to edit arguments.
     </p>
   </section>
