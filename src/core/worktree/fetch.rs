@@ -350,6 +350,30 @@ pub fn update_single_worktree(
         };
     }
 
+    // A branch with no upstream has nothing to pull, and `git pull` without
+    // tracking information is a hard error — which would fail the whole sync
+    // run for the sin of having a freshly started worktree in it. The
+    // sequential sibling has always skipped this case (`process_worktree` ->
+    // `process_same_branch` -> `check_has_upstream`); this path never had to,
+    // because until #858 a branch with no upstream was also a branch prune
+    // deleted on sight. Now it survives, so the concurrent path meets it too.
+    //
+    // Asked at `target_path` rather than through the process working
+    // directory: the DAG runs these on threads of one process, so the
+    // question has to name the worktree it is about.
+    if !has_upstream_at(target_path) {
+        progress.on_warning(&format!(
+            "Skipping '{worktree_name}': no tracking branch configured"
+        ));
+        return WorktreeFetchResult {
+            worktree_name: worktree_name.to_string(),
+            success: true,
+            message: "Skipped: no tracking branch".to_string(),
+            skipped: true,
+            ..Default::default()
+        };
+    }
+
     // Run git pull with explicit working directory (thread-safe)
     let pull_args_refs: Vec<&str> = pull_args.iter().map(|s| s.as_str()).collect();
 
@@ -605,6 +629,25 @@ fn check_has_upstream(git: &GitCommand) -> Result<()> {
     Ok(())
 }
 
+/// Whether the branch checked out at `path` has an upstream configured.
+///
+/// Path-scoped on purpose: [`check_has_upstream`] reads the *process* working
+/// directory, which says nothing about a worktree a DAG worker was handed. A
+/// git failure counts as "no upstream" so the caller skips — for an update,
+/// skipping is the harmless direction.
+fn has_upstream_at(path: &Path) -> bool {
+    crate::utils::git_command_at(path)
+        .args([
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 /// Check if a git pull error is a fast-forward-only failure (diverged branches).
 fn is_ff_only_failure(error_msg: &str) -> bool {
     error_msg.contains("Not possible to fast-forward")
@@ -613,6 +656,67 @@ fn is_ff_only_failure(error_msg: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A freshly started branch has no upstream, and until #858 prune deleted
+    /// it before any update path could meet one. Now it survives, and the
+    /// concurrent update path has to recognise it — `git pull` with no
+    /// tracking information is a hard error that would fail the whole run.
+    #[test]
+    fn upstream_presence_is_answered_per_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = dir.path().join("remote.git");
+        let clone = dir.path().join("clone");
+
+        let git = |cwd: &std::path::Path, args: &[&str]| {
+            crate::utils::git_command_at(cwd)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .output()
+                .unwrap()
+        };
+
+        git(
+            dir.path(),
+            &["init", "-q", "--bare", "-b", "main", "remote.git"],
+        );
+        let seed = dir.path().join("seed");
+        std::fs::create_dir(&seed).unwrap();
+        git(&seed, &["init", "-q", "-b", "main"]);
+        std::fs::write(seed.join("README.md"), "hi\n").unwrap();
+        git(&seed, &["add", "."]);
+        git(&seed, &["commit", "-qm", "init"]);
+        git(
+            &seed,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&seed, &["push", "-q", "origin", "main"]);
+        git(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+
+        assert!(
+            has_upstream_at(&clone),
+            "a cloned default branch tracks its remote"
+        );
+
+        git(
+            &clone,
+            &["checkout", "-q", "-b", "feat/fresh", "--no-track"],
+        );
+        assert!(
+            !has_upstream_at(&clone),
+            "a branch started locally has nothing to pull from"
+        );
+    }
 
     #[test]
     fn test_parse_refspec_same_branch() {

@@ -573,6 +573,12 @@ test_prune_plus_marker_branch() {
     # in git branch -vv because it is checked out in a linked worktree
     git-worktree-checkout -b feature/plus-test || return 1
 
+    # Publish it so deleting the remote copy actually puts it in prune's
+    # scope. Since #858 a branch nothing attests to is never a candidate, and
+    # this test is about parsing the '+' marker (#97), not about scope — the
+    # YAML twin (scenarios/prune/plus-marker.yml) pushes for the same reason.
+    (cd "feature/plus-test" && git push -u origin feature/plus-test) >/dev/null 2>&1 || return 1
+
     # Verify the branch shows with '+' marker in git branch -vv
     local branch_vv
     branch_vv=$(cd main && git branch -vv)
