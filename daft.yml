@@ -248,3 +248,4 @@ tasks:
 
 relations:
   - url: git@github.com:avihut/web-turf
+  - url: git@github.com:avihut/dumbshow.git
