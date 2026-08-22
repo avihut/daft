@@ -1,0 +1,58 @@
+name: Round-trip a non-default main working tree through contained and back
+description: >
+  #859 in both directions. Going out, the feature branch's working tree becomes
+  a registered linked worktree of a bare repo. Coming back, it is the only
+  worktree there is, so it takes the repository root even though the default
+  branch is still `main`.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with plain git and switch to a local-only branch
+    run: |
+      git clone -q $REMOTE_TEST_REPO test-repo
+      git -C $WORK_DIR/test-repo switch -q -c task/local-docker
+    expect:
+      exit_code: 0
+
+  - name: Transform to contained
+    run: daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/task/local-docker"
+
+  - name: Transform back to sibling
+    run: daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo/task/local-docker"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "'task/local-docker' becomes the main working tree"
+        - "default branch 'main' has no worktree"
+        - "Transformed"
+
+  - name: The feature branch is back at the repository root
+    run: git -C $WORK_DIR/test-repo config --get core.bare
+    expect:
+      exit_code: 0
+      output_contains:
+        - "false"
+      files_exist:
+        - "$WORK_DIR/test-repo/README.md"
+        - "$WORK_DIR/test-repo/.git/index"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/task/local-docker/README.md"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: task/local-docker
+
+  - name: The restored root is clean and no empty nest directory survives
+    run: |
+      test ! -d $WORK_DIR/test-repo/task
+      test -z "$(git -C $WORK_DIR/test-repo status --porcelain | grep -v '.gitignore')"
+    expect:
+      exit_code: 0

@@ -1,0 +1,45 @@
+name: Transform a non-default main working tree to contained-classic
+description: >
+  #859 for the wrapped layout: `.git` follows the *pivot's* branch, so it lands
+  inside the main working tree's own directory rather than under `main/`.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with plain git and switch to a local-only branch
+    run: |
+      git clone -q $REMOTE_TEST_REPO test-repo
+      git -C $WORK_DIR/test-repo switch -q -c task/local-docker
+    expect:
+      exit_code: 0
+
+  - name: Transform to contained-classic
+    run: daft layout transform contained-classic 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main working tree is on 'task/local-docker'"
+        - "Transformed"
+
+  - name: The clone stays non-bare with .git inside the pivot's directory
+    run: git -C $WORK_DIR/test-repo/task/local-docker config --get core.bare
+    expect:
+      exit_code: 0
+      output_contains:
+        - "false"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/task/local-docker/.git"
+      files_exist:
+        - "$WORK_DIR/test-repo/task/local-docker/README.md"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main/.git"
+
+  - name: The relocated clone is clean
+    run:
+      test -z "$(git -C $WORK_DIR/test-repo/task/local-docker status --porcelain
+      | grep -v '.gitignore')"
+    expect:
+      exit_code: 0

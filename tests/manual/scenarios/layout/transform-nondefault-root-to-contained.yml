@@ -1,0 +1,56 @@
+name: Transform a non-default main working tree to contained
+description: >
+  A plain clone adopted mid-task has its main working tree on a feature branch
+  and no worktree for the default branch at all (#859). The main working tree —
+  not whatever is named `main` — is what gets nested, and the transform says so.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with plain git and switch to a local-only branch
+    run: |
+      git clone -q $REMOTE_TEST_REPO test-repo
+      git -C $WORK_DIR/test-repo switch -q -c task/local-docker
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/.git"
+
+  - name: Transform to contained
+    run: daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main working tree is on 'task/local-docker'"
+        - "Transformed"
+
+  - name: The main working tree landed at its template path, main has none
+    run: git -C $WORK_DIR/test-repo/task/local-docker status --porcelain
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/task/local-docker/README.md"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main/README.md"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/task/local-docker"
+          branch: task/local-docker
+
+  - name: The relocated worktree is clean
+    run:
+      test -z "$(git -C $WORK_DIR/test-repo/task/local-docker status --porcelain
+      | grep -v '.gitignore')"
+    expect:
+      exit_code: 0
+
+  - name: The repository is bare and keeps no working-tree index
+    run: git -C $WORK_DIR/test-repo config --get core.bare
+    expect:
+      exit_code: 0
+      output_contains:
+        - "true"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/.git/index"

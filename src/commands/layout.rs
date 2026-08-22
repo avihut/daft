@@ -618,30 +618,31 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         && cw.branch != default_branch
         && cw.current_path != cw.target_path
     {
-        let default_has_worktree = source
-            .worktrees
-            .iter()
-            .any(|wt| wt.branch == default_branch);
-        let lead = if default_has_worktree {
+        // A bare source has no main working tree yet, so its pivot *becomes*
+        // one; a non-bare source's pivot already is one and merely relocates.
+        let moving = if source.is_bare {
             format!(
-                "The main working tree is on '{}', not the default branch '{}'",
-                cw.branch, default_branch
-            )
-        } else {
-            format!(
-                "Default branch '{}' has no worktree; the main working tree is on '{}'",
-                default_branch, cw.branch
-            )
-        };
-        let tail = if cw.target_path == source.project_root {
-            format!(
-                " — it becomes the repository root at {}.",
+                "'{}' becomes the main working tree at {}",
+                cw.branch,
                 cw.target_path.display()
             )
         } else {
-            format!(" — it moves to {}.", cw.target_path.display())
+            format!(
+                "The main working tree is on '{}' and moves to {}",
+                cw.branch,
+                cw.target_path.display()
+            )
         };
-        output.notice(&format!("{lead}{tail}"));
+        let default_state = if source
+            .worktrees
+            .iter()
+            .any(|wt| wt.branch == default_branch)
+        {
+            format!("the default branch '{default_branch}' keeps its own linked worktree")
+        } else {
+            format!("the default branch '{default_branch}' has no worktree")
+        };
+        output.notice(&format!("{moving}; {default_state}"));
     }
 
     // Check for dirty worktrees (unless --force).
@@ -869,9 +870,16 @@ fn revert_layout_gitignore(
     output: &mut dyn Output,
 ) {
     // Only relevant for non-bare source layouts that place worktrees inside
-    // the project root (nested is the main case). `root_dir` is where the main
-    // working tree ended up, which is not `source.project_root` whenever the
-    // transform nested it.
+    // the project root (nested is the main case). A bare source has no working
+    // tree to have auto-ignored anything, and the pattern derived below would
+    // name an ordinary branch directory — which is a line the user may well
+    // have written themselves.
+    if source.is_bare {
+        return;
+    }
+
+    // `root_dir` is where the main working tree ended up, which is not
+    // `source.project_root` whenever the transform nested it.
     let gitignore_path = root_dir.join(".gitignore");
     if !gitignore_path.exists() {
         return;

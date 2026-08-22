@@ -84,6 +84,10 @@ Manage layouts with `daft layout show` / `list` / `transform <layout>` /
 `daft.yml` `layout:` field, then the global default, then the built-in default
 (sibling); custom template layouts live in `~/.config/daft/config.toml`.
 
+`daft layout transform` moves the branch checked out in the main working tree,
+whatever it is — not the default branch. If the default branch has no worktree
+it keeps having none; daft reports that rather than creating one.
+
 `daft.yml` can pin the team-recommended layout alongside hooks:
 
 ```yaml

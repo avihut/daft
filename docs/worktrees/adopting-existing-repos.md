@@ -37,6 +37,11 @@ my-project/
 layout, run `daft layout transform <layout>` afterward, or clone fresh with
 `daft clone --layout <layout>`. See [Layouts](/worktrees/layouts). :::
 
+Both `daft adopt` and `daft layout transform` follow the branch that is actually
+checked out in the repository you point them at — not the default branch. Adopt
+a clone in the middle of a feature and the worktree you get is that feature's;
+if the default branch has no worktree, it stays that way.
+
 ## Running It
 
 ```bash

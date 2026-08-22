@@ -1,0 +1,59 @@
+name: A bare pivot is relocated before it becomes the main working tree
+description: >
+  Bare -> wrapped non-bare where the promoted worktree also changes path:
+  contained-flat's `task-local-docker` has to become contained-classic's
+  `task/local-docker`. It is still an ordinary linked worktree at that point, so
+  git can move it — but only while its registration is intact, which is why the
+  move is planned ahead of the unregister (#859).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone contained-flat and add a slashed feature worktree
+    run: |
+      git-worktree-clone --layout contained-flat $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      git-worktree-checkout -b task/local-docker
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/task-local-docker"
+
+  - name: Drop the default branch's worktree with plain git
+    run: git -C $WORK_DIR/test-repo worktree remove $WORK_DIR/test-repo/main
+    expect:
+      exit_code: 0
+
+  - name: Transform to contained-classic
+    run: daft layout transform contained-classic 2>&1
+    cwd: "$WORK_DIR/test-repo/task-local-docker"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "default branch 'main' has no worktree"
+        - "Transformed"
+
+  - name: The worktree moved and became a regular clone
+    run: git -C $WORK_DIR/test-repo/task/local-docker config --get core.bare
+    expect:
+      exit_code: 0
+      output_contains:
+        - "false"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/task/local-docker/.git"
+      files_exist:
+        - "$WORK_DIR/test-repo/task/local-docker/README.md"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/task-local-docker/README.md"
+
+  - name: The relocated clone is clean and on its own branch
+    run:
+      test -z "$(git -C $WORK_DIR/test-repo/task/local-docker status --porcelain
+      | grep -v '.gitignore')"
+    expect:
+      exit_code: 0
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/task/local-docker"
+          branch: task/local-docker

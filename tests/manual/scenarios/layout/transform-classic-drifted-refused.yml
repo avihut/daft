@@ -1,0 +1,52 @@
+name: A contained-classic clone that switched branches is refused, not crashed
+description: >
+  The clone directory is named after the branch it was created on. Switch
+  branches inside it and the target layout wants the main working tree at a
+  different subdirectory — which git will not move. Refuse at plan time with a
+  two-step remedy instead of failing halfway through (#859).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with contained-classic and switch the clone's branch
+    run: |
+      git-worktree-clone --layout contained-classic $REMOTE_TEST_REPO
+      git -C $WORK_DIR/test-repo/main switch -q -c task/local-docker
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main/.git"
+
+  - name: Transform to contained is refused
+    run: daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "cannot move a main working tree"
+        - "transform sibling"
+
+  - name: The clone is untouched
+    run: git -C $WORK_DIR/test-repo/main config --get core.bare
+    expect:
+      exit_code: 0
+      output_contains:
+        - "false"
+      files_exist:
+        - "$WORK_DIR/test-repo/main/README.md"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/main"
+          branch: task/local-docker
+
+  - name: The suggested two-step route works
+    run: |
+      daft layout transform sibling 2>&1
+      daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/task/local-docker"
+          branch: task/local-docker
