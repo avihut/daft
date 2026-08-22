@@ -135,3 +135,32 @@
 .vp-doc .custom-block.danger .custom-block-title {
   color: var(--daft-rust-text);
 }
+
+/**
+ * The dumbshow editor chrome (/composer) resolves its colors and fonts
+ * through `--dx-*` tokens and ships neutral defaults for all of them behind
+ * `:where(html)` (specificity zero). Mapping them here, at `:root`, dresses
+ * the editor in daft's palette. Every value is a theme-following variable,
+ * so one block serves light and dark — an overridden token is the host's in
+ * both themes, which is also why `--dx-on-accent` (the ink on an
+ * accent-filled surface) is a literal: Donut ink on Dodo Beak Gold, the same
+ * pairing the brand buttons use (7.6:1). Teal, purple, and the selection
+ * tint keep dumbshow's defaults — its teal is the brand's Tropical Teal, and
+ * `--dx-sel` derives from the accent.
+ */
+:root {
+  --dx-bg: var(--vp-c-bg);
+  --dx-bg-soft: var(--vp-c-bg-soft);
+  --dx-divider: var(--vp-c-divider);
+  --dx-text-1: var(--vp-c-text-1);
+  --dx-text-2: var(--vp-c-text-2);
+  --dx-text-3: var(--vp-c-text-3);
+  --dx-font: var(--vp-font-family-base);
+  --dx-font-mono: var(--vp-font-family-mono);
+  --dx-accent: var(--daft-gold);
+  --dx-accent-text: var(--daft-gold-text);
+  --dx-on-accent: #111111;
+  --dx-warn: var(--daft-rust);
+  --dx-warn-text: var(--daft-rust-text);
+  --dx-teal-text: var(--daft-link);
+}
