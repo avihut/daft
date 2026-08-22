@@ -382,12 +382,58 @@ impl GitCommand {
         let output = crate::utils::git_command_at(&cwd)
             .args([
                 "config",
+                // Repo-local, symmetric with the repo-local write in
+                // `config_set_at`. Without this the read also sees global and
+                // system config, so a stray `branch.<name>.daftpublished` in
+                // ~/.gitconfig would answer as an attestation daft never wrote
+                // for this repository — and this record authorizes deletions.
+                "--local",
                 "--get-regexp",
                 // Lowercase to match what git reports: the keys are written
                 // camelCase and stored that way, but git canonicalises
                 // variable names to lowercase on the way out, so the parser
                 // downstream must read `daftorigin` / `daftpublished`.
                 r"^branch\..*\.daft(origin|published)$",
+            ])
+            .output()
+            .context("Failed to execute git config --get-regexp command")?;
+
+        if !output.status.success() && output.status.code() != Some(1) {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git config --get-regexp failed: {}", stderr);
+        }
+
+        String::from_utf8(output.stdout).context("Failed to parse git config output")
+    }
+
+    /// Every branch's tracking configuration, raw `key value` lines
+    /// (`branch.<name>.remote <remote>`, `branch.<name>.merge <ref>`).
+    ///
+    /// This is the authoritative answer to "what does this branch track".
+    /// Prune used to read it off `git branch -vv`, which cannot be parsed
+    /// safely: git renders `[%(upstream:short)]` and `%(subject)` with no
+    /// delimiter between them, so a branch with *no* upstream whose commit
+    /// subject happens to start `[origin/<its own name>]` is byte-identical to
+    /// a branch that really tracks it. Config has no such ambiguity, and being
+    /// a plain subprocess read it also answers identically under both git
+    /// backends — `for_each_ref`'s gitoxide implementation substitutes only a
+    /// few specifiers literally, so `%(upstream:short)` would come back
+    /// unexpanded there.
+    ///
+    /// Repo-local for the same reason as [`Self::branch_provenance_entries`]:
+    /// the answer feeds a decision about *this* repository's branches. No
+    /// matches is not an error (exit code 1 → empty output).
+    pub fn branch_tracking_entries(&self) -> Result<String> {
+        // git_command_at (not a raw `git`) scrubs any inherited GIT_DIR so the
+        // read targets the cwd's repo — daft runs inside git hooks, where the
+        // hook-calling repo would otherwise answer.
+        let cwd = std::env::current_dir().context("Failed to resolve current directory")?;
+        let output = crate::utils::git_command_at(&cwd)
+            .args([
+                "config",
+                "--local",
+                "--get-regexp",
+                r"^branch\..*\.(remote|merge)$",
             ])
             .output()
             .context("Failed to execute git config --get-regexp command")?;
