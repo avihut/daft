@@ -353,10 +353,9 @@ pub fn update_single_worktree(
     // A branch with no upstream has nothing to pull, and `git pull` without
     // tracking information is a hard error — which would fail the whole sync
     // run for the sin of having a freshly started worktree in it. The
-    // sequential sibling has always skipped this case (`process_worktree` ->
-    // `process_same_branch` -> `check_has_upstream`); this path never had to,
-    // because until #858 a branch with no upstream was also a branch prune
-    // deleted on sight. Now it survives, so the concurrent path meets it too.
+    // Until #858 a branch with no upstream was also a branch prune deleted on
+    // sight, so neither update path had to handle one. Now it survives, and
+    // both paths meet it.
     //
     // Asked at `target_path` rather than through the process working
     // directory: the DAG runs these on threads of one process, so the
@@ -469,7 +468,7 @@ pub fn process_worktree(
     }
 
     if refspec.is_same_branch() {
-        process_same_branch(git, worktree_name, pull_args, params, progress)
+        process_same_branch(git, target_path, worktree_name, pull_args, params, progress)
     } else {
         process_cross_branch(
             git,
@@ -485,13 +484,21 @@ pub fn process_worktree(
 /// Same-branch mode: uses `git pull` with configured arguments.
 fn process_same_branch(
     git: &GitCommand,
+    target_path: &Path,
     worktree_name: &str,
     pull_args: &[String],
     params: &FetchParams,
     progress: &mut dyn ProgressSink,
 ) -> WorktreeFetchResult {
-    // Check if branch has an upstream
-    if check_has_upstream(git).is_err() {
+    // Named at `target_path`, not asked of the process working directory. The
+    // predecessor resolved the branch through a gitoxide handle discovered once
+    // per process, so from the second worktree onward it answered for the
+    // first: an untracked worktree enumerated first made every later worktree
+    // look untracked and silently skipped the whole run (exit 0, nothing
+    // updated), and a tracked one first sent an untracked worktree into
+    // `git pull` to die on "no tracking information". Prune used to hide both
+    // by deleting untracked worktrees on sight (#858).
+    if !has_upstream_at(target_path) {
         progress.on_warning(&format!(
             "Skipping '{worktree_name}': no tracking branch configured"
         ));
@@ -619,29 +626,21 @@ fn process_cross_branch(
     }
 }
 
-/// Check if the current branch has an upstream tracking branch.
-fn check_has_upstream(git: &GitCommand) -> Result<()> {
-    let branch = git.symbolic_ref_short_head()?;
-    let remote_key = format!("branch.{}.remote", branch);
-    if git.config_get(&remote_key)?.is_none() {
-        anyhow::bail!("No upstream configured for branch '{}'", branch);
-    }
-    Ok(())
-}
-
 /// Whether the branch checked out at `path` has an upstream configured.
 ///
-/// Path-scoped on purpose: [`check_has_upstream`] reads the *process* working
-/// directory, which says nothing about a worktree a DAG worker was handed. A
-/// git failure counts as "no upstream" so the caller skips — for an update,
-/// skipping is the harmless direction.
+/// The single upstream check for both update paths, sequential and concurrent.
+/// Path-scoped on purpose: neither the process working directory nor a cached
+/// repository handle says anything about the worktree currently being
+/// processed — the DAG runs these on threads of one process, and the
+/// sequential loop walks many worktrees in one process too. A git failure
+/// counts as "no upstream" so the caller skips; for an update, skipping is the
+/// harmless direction.
 ///
-/// Asks the same question its sequential twin asks — is `branch.<n>.remote`
-/// set — and deliberately not whether `@{upstream}` *resolves*. Resolution
-/// additionally fails once the remote-tracking ref is pruned, which is exactly
-/// the gone-but-unmerged shape prune keeps: that branch has tracking, and
-/// reporting it as untracked would both state something false and skip an
-/// update the sequential path performs.
+/// Asks whether `branch.<n>.remote` is set, and deliberately not whether
+/// `@{upstream}` *resolves*. Resolution additionally fails once the
+/// remote-tracking ref is pruned, which is exactly the gone-but-unmerged shape
+/// prune keeps: that branch has tracking, and reporting it as untracked would
+/// both state something false and skip an update that should happen.
 fn has_upstream_at(path: &Path) -> bool {
     let Some(branch) = branch_at(path) else {
         return false;

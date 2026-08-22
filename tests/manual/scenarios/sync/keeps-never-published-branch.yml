@@ -3,6 +3,9 @@ description: >
   Sync's first phase is prune, which is how issue #858 was actually hit - the
   next `daft sync` after a `daft start` undid the start. The sibling of the
   prune regression: a branch nothing attests to must survive a full sync run.
+  The main worktree carries real drift and is asserted to close it, because
+  "sync left feat/fresh alone" is also true of a sync that silently did nothing
+  - and an untracked worktree in the list used to cause exactly that.
 
 repos:
   - name: test-repo
@@ -24,7 +27,20 @@ steps:
       dirs_exist:
         - "$WORK_DIR/test-repo/feat/fresh"
 
-  - name: Sync leaves it alone
+  - name: Advance the default branch on the remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp"
+      echo "sync must actually run" >> README.md
+      git add README.md
+      git commit -qm "Advance main for sync test"
+      git push -q origin HEAD 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Sync leaves the unpublished branch alone
     run: daft sync 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
@@ -36,3 +52,15 @@ steps:
       branch_exists:
         - repo: "$WORK_DIR/test-repo/main"
           branch: "feat/fresh"
+
+  - name: And still updated the worktree that had something to pull
+    run: |
+      test -z "$(git rev-list HEAD..origin/$(git symbolic-ref --short HEAD))" \
+        && echo "main is level with its remote"
+      grep -q "sync must actually run" README.md && echo "the new commit is here"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main is level with its remote"
+        - "the new commit is here"
