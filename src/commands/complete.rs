@@ -254,6 +254,14 @@ fn complete(
         ("skip-hooks-value", 1) => complete_skip_hooks(word),
 
         // layout transform / layout default / clone --layout: complete layout names
+        // layout transform --pivot: the worktrees that could take the
+        // repository root — only checked-out branches qualify, a branch with no
+        // worktree has no directory to promote.
+        ("layout-pivot", _) => Ok(format_entries_as_strings(&complete_rich_branches(
+            word,
+            &CONFIG_PIVOT,
+        )?)),
+
         ("layout-transform", 1) | ("layout-default", 1) | ("layout-value", 1) => {
             complete_layouts(word)
         }
@@ -2491,6 +2499,17 @@ const CONFIG_EXEC: RichCompletionConfig = RichCompletionConfig {
 /// directory to copy into or out of. The current worktree is included: it is
 /// the default target and a valid `--from` when the target is a sibling.
 const CONFIG_WARM: RichCompletionConfig = RichCompletionConfig {
+    include_worktrees: true,
+    include_local: false,
+    include_remote: false,
+    exclude_current: false,
+};
+
+/// `daft layout transform --pivot <branch>`: the worktree that takes the
+/// repository root of a bare repository. Only checked-out branches qualify —
+/// a branch with no worktree has no directory to promote. The current one is
+/// a perfectly good pivot, so it stays in.
+const CONFIG_PIVOT: RichCompletionConfig = RichCompletionConfig {
     include_worktrees: true,
     include_local: false,
     include_remote: false,

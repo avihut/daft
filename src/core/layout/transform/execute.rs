@@ -1704,6 +1704,28 @@ mod tests {
         assert_eq!(status(&repo), " M README.md\n");
     }
 
+    /// Mid-rebase HEAD is detached, but `rebase-merge/head-name` still names
+    /// the branch: the source state must carry it, so a paused rebase reads
+    /// as exactly that and not also as a nameless detached tree.
+    #[test]
+    #[serial]
+    fn source_state_recovers_the_branch_of_a_main_worktree_mid_rebase() {
+        let (_base, repo) = scratch_repo("feature/x");
+        git_ok(&repo, &["switch", "-q", "--detach", "HEAD"]);
+        let rebase = repo.join(".git/rebase-merge");
+        fs::create_dir_all(&rebase).unwrap();
+        fs::write(rebase.join("head-name"), "refs/heads/feature/x\n").unwrap();
+        let _cwd = CwdGuard::enter(&repo);
+        let git = GitCommand::new(false);
+        let source = read_source_state(&git, "main").unwrap();
+        assert_eq!(source.worktrees[0].branch.as_deref(), Some("feature/x"));
+        assert!(source.worktrees[0].is_root);
+        assert_eq!(
+            super::super::state::root_situation(&BuiltinLayout::Contained.to_layout(), &source),
+            super::super::state::RootSituation::Settled
+        );
+    }
+
     // ── Individual ops ────────────────────────────────────────────────────
 
     /// Unregistering a worktree of a *non-bare* repository would move its

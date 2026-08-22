@@ -214,7 +214,16 @@ pub fn read_source_state(
         .to_path_buf();
 
     let porcelain = git.worktree_list_porcelain()?;
-    let worktrees = parse_porcelain_to_entries(&porcelain, is_bare);
+    let mut worktrees = parse_porcelain_to_entries(&porcelain, is_bare);
+
+    // Mid-rebase git detaches HEAD to replay commits, so the porcelain reports
+    // the main working tree as branchless even though `rebase-merge/head-name`
+    // still names its branch for the whole operation (#736). Recover it: the
+    // transform refuses the paused rebase anyway, and it should say so rather
+    // than also ask what to call a tree that has a perfectly good name.
+    for wt in worktrees.iter_mut().filter(|wt| wt.branch.is_none()) {
+        wt.branch = crate::git::op_state::recovered_branch(&wt.path);
+    }
 
     Ok(LayoutState {
         git_dir,

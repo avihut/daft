@@ -15,7 +15,7 @@ use super::state::{ClassifiedWorktree, LayoutState, WorktreeDisposition};
 use crate::core::copy_paths::format_bytes;
 use crate::core::worktree::list::ChangedFiles;
 use crate::git::op_state::OpKind;
-use crate::output::format::display_path;
+use crate::output::format::tilde_path;
 
 // ── Tree summaries ───────────────────────────────────────────────────────
 
@@ -55,10 +55,10 @@ fn short_oid(oid: &str) -> &str {
 
 /// A path as the plan line shows it: relative to the project root with a
 /// trailing `/` when inside it, the `~`/cwd-relative form otherwise.
-fn place(path: &Path, project_root: &Path, cwd: Option<&Path>) -> String {
+fn place(path: &Path, project_root: &Path) -> String {
     match path.strip_prefix(project_root) {
         Ok(rel) if !rel.as_os_str().is_empty() => format!("{}/", rel.display()),
-        _ => display_path(&path.to_string_lossy(), cwd),
+        _ => tilde_path(&path.to_string_lossy()),
     }
 }
 
@@ -73,10 +73,11 @@ pub fn plan_line(
     plan: &TransformPlan,
     layout_name: &str,
     copy_bytes: Option<u64>,
-    cwd: Option<&Path>,
 ) -> String {
     if plan.ops.len() == 1 {
-        return format!("Already in the '{layout_name}' layout; nothing to move.");
+        return format!(
+            "Nothing to move — the '{layout_name}' layout leaves every worktree where it is."
+        );
     }
 
     let root = classified
@@ -94,7 +95,7 @@ pub fn plan_line(
     let mut segments: Vec<String> = Vec::new();
 
     if let (Some(cw), true) = (root, root_moves) {
-        let dest = place(&cw.target_path, &source.project_root, cwd);
+        let dest = place(&cw.target_path, &source.project_root);
         let head = source
             .worktrees
             .iter()
@@ -106,7 +107,7 @@ pub fn plan_line(
             segments.push(format!(
                 "'{}' becomes the main working tree at {}",
                 cw.label(),
-                display_path(&cw.target_path.to_string_lossy(), cwd)
+                tilde_path(&cw.target_path.to_string_lossy())
             ));
         } else {
             match &cw.branch {
@@ -216,7 +217,8 @@ pub fn render_blockers(
         if n == 1 { "" } else { "s" }
     );
     let retry = crate::daft_cmd(&format!("layout transform {layout_name}"));
-    let show = |p: &Path| display_path(&p.to_string_lossy(), cwd);
+    let _ = cwd;
+    let show = |p: &Path| tilde_path(&p.to_string_lossy());
 
     for b in blockers {
         out.push('\n');
@@ -231,11 +233,17 @@ pub fn render_blockers(
                 progress,
                 marker,
             } => {
-                let where_ = b
-                    .git_dir
-                    .as_deref()
-                    .map(|g| format!("{}/{marker}", show(g)))
-                    .unwrap_or_else(|| format!(".git/{marker}"));
+                // The marker relative to the worktree when its git dir is inside
+                // it (`.git/rebase-merge`), the full path otherwise (a linked
+                // worktree's registration).
+                let where_ = match (b.git_dir.as_deref(), b.worktree_path.as_deref()) {
+                    (Some(g), Some(w)) if g.starts_with(w) => g
+                        .strip_prefix(w)
+                        .map(|rel| format!("{}/{marker}", rel.display()))
+                        .unwrap_or_else(|_| format!("{}/{marker}", show(g))),
+                    (Some(g), _) => format!("{}/{marker}", show(g)),
+                    (None, _) => format!(".git/{marker}"),
+                };
                 let progress = match progress {
                     Some(p) if p.total > 0 && p.done > 0 => {
                         format!(", {} of {} applied", p.done, p.total)
@@ -475,7 +483,7 @@ mod tests {
             vec![("/repo", counts(5, 0, 1, 0))],
         );
         assert_eq!(
-            plan_line(&source, &cw, &plan, "contained", None, None),
+            plan_line(&source, &cw, &plan, "contained", None),
             "main working tree on 'task/local-docker' → task/local-docker/ · 5 modified, 1 untracked carried along · 'master': no worktree"
         );
     }
@@ -499,7 +507,7 @@ mod tests {
             ],
             vec![("/repo/develop", counts(0, 0, 0, 0))],
         );
-        let line = plan_line(&source, &cw, &plan, "sibling", None, None);
+        let line = plan_line(&source, &cw, &plan, "sibling", None);
         assert!(
             line.starts_with("'develop' becomes the main working tree at "),
             "{line}"
@@ -532,13 +540,13 @@ mod tests {
             vec![("/repo.a", counts(1, 0, 0, 0))],
         );
         assert_eq!(
-            plan_line(&source, &cw, &plan, "nested", None, None),
+            plan_line(&source, &cw, &plan, "nested", None),
             "1 worktree relocated · 1 carries uncommitted work"
         );
         let noop = plan_with(vec![TransformOp::ValidateIntegrity], vec![]);
         assert_eq!(
-            plan_line(&source, &cw, &noop, "sibling", None, None),
-            "Already in the 'sibling' layout; nothing to move."
+            plan_line(&source, &cw, &noop, "sibling", None),
+            "Nothing to move — the 'sibling' layout leaves every worktree where it is."
         );
     }
 
@@ -564,7 +572,7 @@ mod tests {
             vec![],
         );
         assert_eq!(
-            plan_line(&source, &cw, &plan, "contained", Some(4_617_089_843), None),
+            plan_line(&source, &cw, &plan, "contained", Some(4_617_089_843)),
             "main working tree (detached at 779c1ab) → sandbox/ · copied across volumes, 4.3 GB · 'main': no worktree"
         );
     }
@@ -609,7 +617,7 @@ mod tests {
         );
         assert!(
             text.contains(
-                "/proj/api has a rebase in progress — /proj/api/.git/rebase-merge, 3 of 7 applied."
+                "/proj/api has a rebase in progress — .git/rebase-merge, 3 of 7 applied."
             ),
             "{text}"
         );

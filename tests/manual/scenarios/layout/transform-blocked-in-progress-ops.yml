@@ -1,0 +1,102 @@
+name:
+  A paused rebase or merge in the worktree that changes role is refused with
+  settle instructions
+description: >
+  #875: a transform carries any *tree* state, but not an operation git is in the
+  middle of. A real conflicted rebase (whatever backend git picks) and a merge
+  in progress in the main working tree are each refused before anything moves —
+  naming the condition and where it is, both settle commands, and the retry line
+  — and `--dry-run` answers the same way. Aborting the operation makes the retry
+  succeed, dirt and all.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Plain clone with two branches that conflict on README.md
+    run: |
+      set -euo pipefail
+      git clone -q $REMOTE_TEST_REPO test-repo
+      cd $WORK_DIR/test-repo
+      git switch -q -c task/local-docker
+      echo "task line" >> README.md
+      git commit -qam "task change"
+      echo scratch > NOTES.md
+    expect:
+      exit_code: 0
+
+  - name: Start a rebase onto develop, which conflicts and pauses
+    run: |
+      cd $WORK_DIR/test-repo
+      git rebase -q origin/develop >/dev/null 2>&1 || true
+      git status --porcelain | grep -q '^UU README.md'
+    expect:
+      exit_code: 0
+
+  - name: The transform is refused with both settle commands
+    run: NO_COLOR=1 daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "1 condition to settle first"
+        - "$WORK_DIR/test-repo has a rebase in progress"
+        - "rebase --continue"
+        - "rebase --abort"
+        - "then: daft layout transform contained"
+
+  - name: --dry-run answers the same way
+    run: NO_COLOR=1 daft layout transform contained --dry-run 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "has a rebase in progress"
+        - "Transform plan"
+
+  - name: Nothing moved
+    run: git -C $WORK_DIR/test-repo config --get core.bare
+    expect:
+      exit_code: 0
+      output_contains:
+        - "false"
+      files_exist:
+        - "$WORK_DIR/test-repo/.git/index"
+        - "$WORK_DIR/test-repo/README.md"
+        - "$WORK_DIR/test-repo/NOTES.md"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/task/local-docker"
+
+  - name: Abort the rebase, then a merge in progress is refused the same way
+    run: |
+      set -euo pipefail
+      cd $WORK_DIR/test-repo
+      git rebase --abort
+      GD=$(git rev-parse --absolute-git-dir)
+      git rev-parse origin/develop > "$GD/MERGE_HEAD"
+      NO_COLOR=1 daft layout transform contained 2>&1 || true
+    expect:
+      exit_code: 0
+      output_contains:
+        - "has a merge in progress"
+        - ".git/MERGE_HEAD"
+        - "merge --continue"
+        - "merge --abort"
+
+  - name: Clearing the merge state lets the transform run, carrying the dirt
+    run: |
+      set -euo pipefail
+      cd $WORK_DIR/test-repo
+      rm "$(git rev-parse --absolute-git-dir)/MERGE_HEAD"
+      git status --porcelain > $BASE_DIR/status-before.txt
+      NO_COLOR=1 daft layout transform contained 2>&1
+      git -C $WORK_DIR/test-repo/task/local-docker status --porcelain > $BASE_DIR/status-after.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/status-after.txt
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Transformed"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/task/local-docker"
+          branch: task/local-docker

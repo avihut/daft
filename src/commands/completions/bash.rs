@@ -721,9 +721,22 @@ _daft() {
                 return 0
                 ;;
             transform|default)
+                if [[ "${words[2]}" == "transform" ]]; then
+                    case "$prev" in
+                        --pivot)
+                            local pivots
+                            pivots=$(daft __complete layout-pivot "$cur" 2>/dev/null | cut -f1)
+                            COMPREPLY=( $(compgen -W "$pivots" -- "$cur") )
+                            return 0
+                            ;;
+                        --as|--include)
+                            return 0
+                            ;;
+                    esac
+                fi
                 if [[ "$cur" == -* ]]; then
                     if [[ "${words[2]}" == "transform" ]]; then
-                        COMPREPLY=( $(compgen -W "--force -f --dry-run --include --include-all -h --help" -- "$cur") )
+                        COMPREPLY=( $(compgen -W "--dry-run --as --pivot --include --include-all -y --yes -q --quiet -v --verbose -h --help" -- "$cur") )
                     else
                         COMPREPLY=( $(compgen -W "--reset -h --help" -- "$cur") )
                     fi

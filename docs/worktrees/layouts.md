@@ -217,18 +217,65 @@ The default branch only names things. It decides where `.git` lives for
 a working tree. If it has no worktree, it keeps having none — daft says so and
 moves on rather than creating one behind your back.
 
-Two cases are refused up front, before anything moves:
+### Any tree state is carried
+
+A transform moves a working tree exactly as it is. Modified files, staged hunks,
+untracked files, ignored build output, intent-to-add and unresolved conflict
+entries all travel with the worktree: the per-worktree git state (`HEAD`, the
+index, the reflog, `ORIG_HEAD`, …) is relocated between the main working tree's
+`.git/` and a linked worktree's registration, never rebuilt. `git status` reads
+the same before and after, nothing is stashed, and there is no `--force`. Before
+executing, daft prints one line saying what moves and what it carries:
+
+```
+main working tree on 'task/local-docker' → task/local-docker/ · 5 modified, 1 untracked carried along · 'master': no worktree
+```
+
+### What is refused, and how to settle it
+
+The only things a transform will not carry are states git itself is in the
+middle of, and a few moves git refuses outright. Every blocker is reported in
+one pass — not the first one, then the next on the retry — each with where it
+is, why it blocks, and the exact commands that settle it, in both directions:
+
+- A paused **rebase**, **am**, **merge**, **cherry-pick**, **revert** or
+  **bisect** in the working tree that changes role (the main working tree
+  becoming a linked worktree, or the reverse): `git rebase --continue` /
+  `git rebase --abort`, `git merge --continue` / `git merge --abort`, and so on.
+  Linked worktrees that merely move carry these along.
+- An `index.lock` in that working tree — another git process is using it.
+- Checked-out submodules in a worktree that moves or changes role (their `.git`
+  pointers are relative to a git dir the move invalidates; git's own
+  `worktree move` refuses them too): `git submodule deinit --all`, transform,
+  then `git submodule update --init`.
+- A worktree locked with `git worktree lock` that has to move:
+  `git worktree unlock <path>`.
+
+`daft layout transform <layout> --dry-run` runs the same check and prints the
+blockers with the plan, so "can this repo transform?" is answerable without
+attempting it (it exits non-zero when it cannot).
+
+### Decisions daft asks about
+
+Two questions have no safe default, so daft asks — or takes the answer from a
+flag when there is no terminal to ask on:
 
 - A bare repository going non-bare where the default branch has no worktree and
-  more than one worktree could take the root. Run `daft go <default-branch>` and
-  retry.
-- A `contained-classic` clone whose directory no longer matches its branch (you
-  switched branches inside it) going to a layout that wants it somewhere else.
-  Git cannot move a main working tree; transform to `sibling` first, then to the
-  layout you want.
+  more than one worktree could take the root: pick one with `--pivot <branch>`
+  (interactively, a picker).
+- A main working tree with a detached HEAD going to a layout that nests it under
+  the project root: name its directory with `--as <dir>` (interactively, a
+  prompt pre-filled with a name derived from the commit; `-y` accepts that
+  default).
 
-::: tip If any worktrees have uncommitted changes, the transform will warn you.
-Use `--force` to proceed anyway. :::
+`-y` / `--yes` auto-accepts the prompts that are yes/no or have a default — the
+`--as` name, and the confirmation when a worktree has to be _copied_ to a
+destination on another volume (a `centralized` data dir on another disk). It
+never picks a pivot.
+
+A `contained-classic` clone whose directory no longer matches its branch (you
+switched branches inside it) is renamed as a unit — its `.git` lives inside it —
+and the linked worktrees' pointers are repaired.
 
 ## Custom Layouts
 

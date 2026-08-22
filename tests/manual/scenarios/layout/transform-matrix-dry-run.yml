@@ -17,12 +17,13 @@ steps:
     expect:
       exit_code: 0
 
-  - name: Dry-run transform to sibling
-    run: daft layout transform sibling --dry-run 2>&1
+  - name: Dry-run transform to sibling prints the plan line and the plan
+    run: NO_COLOR=1 daft layout transform sibling --dry-run 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
+        - "'main' becomes the main working tree at"
         - "Transform plan"
 
   - name: Verify original paths unchanged

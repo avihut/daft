@@ -1947,8 +1947,9 @@ fn resolve_checkout_layout(
     if layout.needs_bare() && !is_bare {
         output.warning(&format!(
             "Layout '{}' works best with a bare repository. \
-             Consider running `daft layout transform` to convert.",
-            layout.name
+             Consider running `{}` to convert.",
+            layout.name,
+            crate::daft_cmd("layout transform")
         ));
     }
 
@@ -2088,8 +2089,8 @@ fn maybe_consolidate(chosen_layout: &Layout, output: &mut dyn Output) -> Result<
 
     if consolidate {
         output.info(&format!(
-            "Run `daft layout transform {}` to consolidate.",
-            chosen_layout.name,
+            "Run `{}` to consolidate.",
+            crate::daft_cmd(&format!("layout transform {}", chosen_layout.name)),
         ));
     }
 

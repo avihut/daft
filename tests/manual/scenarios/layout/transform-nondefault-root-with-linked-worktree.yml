@@ -30,7 +30,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "main working tree is on 'task/local-docker'"
+        - "main working tree on 'task/local-docker'"
         - "Transformed"
 
   - name: Both worktrees land under the project root

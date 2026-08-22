@@ -594,6 +594,9 @@ complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcomm
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -f -a "(daft __complete layout-transform '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l force -s f -d 'Force transform even with uncommitted changes'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l dry-run -d 'Show plan without executing'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l as -r -d 'Directory name for a detached main working tree'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l pivot -r -x -a "(daft __complete layout-pivot '' 2>/dev/null | cut -f1)" -d 'Worktree that becomes the main working tree'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -s y -l yes -d 'Auto-accept interactive prompts'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l include -r -d 'Also relocate non-conforming worktree'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l include-all -d 'Relocate all non-conforming worktrees'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -f -a "(daft __complete layout-default '' 2>/dev/null)"

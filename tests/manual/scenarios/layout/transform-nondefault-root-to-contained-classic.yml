@@ -21,7 +21,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "main working tree is on 'task/local-docker'"
+        - "main working tree on 'task/local-docker'"
         - "Transformed"
 
   - name: The clone stays non-bare with .git inside the pivot's directory

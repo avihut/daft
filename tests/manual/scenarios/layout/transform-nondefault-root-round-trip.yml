@@ -32,7 +32,7 @@ steps:
       exit_code: 0
       output_contains:
         - "'task/local-docker' becomes the main working tree"
-        - "default branch 'main' has no worktree"
+        - "'main': no worktree"
         - "Transformed"
 
   - name: The feature branch is back at the repository root

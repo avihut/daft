@@ -916,9 +916,22 @@ _daft() {
                 return
                 ;;
             transform|default)
+                if [[ "$words[3]" == "transform" ]]; then
+                    case "$words[CURRENT-1]" in
+                        --pivot)
+                            local -a pivots
+                            pivots=("${(@f)$(daft __complete layout-pivot "$curword" 2>/dev/null | sed 's/\t/:/')}")
+                            _describe 'worktree' pivots
+                            return
+                            ;;
+                        --as|--include)
+                            return
+                            ;;
+                    esac
+                fi
                 if [[ "$curword" == -* ]]; then
                     if [[ "$words[3]" == "transform" ]]; then
-                        compadd -- --force -f --dry-run --include --include-all -h --help
+                        compadd -- --dry-run --as --pivot --include --include-all -y --yes -q --quiet -v --verbose -h --help
                     else
                         compadd -- --reset -h --help
                     fi
