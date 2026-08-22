@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.5](https://github.com/avihut/daft/compare/v1.27.4...v1.27.5) - 2026-08-22
+
+
+### Bug Fixes
+
+- Layout transform carries any tree state (#879)
 ## [1.27.4](https://github.com/avihut/daft/compare/v1.27.3...v1.27.4) - 2026-08-22
 
 
