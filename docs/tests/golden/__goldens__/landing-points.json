@@ -1,0 +1,268 @@
+{
+  "directory": {
+    "duration": 20.974000000000007,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 16.090000000000003,
+        "cue": 11.54,
+        "title": "Start cart-total"
+      },
+      {
+        "at": 16.090000000000003,
+        "end": 20.174000000000007,
+        "cue": 16.924000000000003,
+        "title": "Go to checkout"
+      }
+    ],
+    "termCount": 13,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft start bugfix/cart-total",
+      "daft go checkout"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 3,
+      "port": 3,
+      "boot": 2
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "12.490 wt",
+      "12.490 boot",
+      "14.040 port"
+    ],
+    "camCount": 4
+  },
+  "span": {
+    "duration": 20.76,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 15.492,
+        "cue": 11.491999999999999,
+        "title": "Start in orders"
+      },
+      {
+        "at": 15.492,
+        "end": 19.96,
+        "cue": 16.71,
+        "title": "Exec"
+      }
+    ],
+    "termCount": 12,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft start orders checkout",
+      "daft exec --related -- pnpm test"
+    ],
+    "actCounts": {
+      "repo": 2,
+      "wt": 4,
+      "port": 4,
+      "boot": 2,
+      "relate": 1,
+      "arc": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "11.892 repo",
+      "11.892 wt",
+      "11.892 port",
+      "11.892 relate",
+      "12.442 wt",
+      "12.442 boot",
+      "12.442 arc",
+      "13.442 port"
+    ],
+    "camCount": 4
+  },
+  "agents": {
+    "duration": 29.60600000000001,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 16.090000000000003,
+        "cue": 11.54,
+        "title": "Start cart-total"
+      },
+      {
+        "at": 16.090000000000003,
+        "end": 19.740000000000006,
+        "cue": 16.090000000000003,
+        "title": "Agent joins checkout"
+      },
+      {
+        "at": 19.740000000000006,
+        "end": 23.390000000000008,
+        "cue": 19.740000000000006,
+        "title": "Agent joins cart-total"
+      },
+      {
+        "at": 23.390000000000008,
+        "end": 28.806000000000008,
+        "cue": 24.056000000000008,
+        "title": "List"
+      }
+    ],
+    "termCount": 17,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft start bugfix/cart-total",
+      "daft list"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 3,
+      "port": 3,
+      "boot": 2,
+      "agent": 2
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "12.490 wt",
+      "12.490 boot",
+      "14.040 port",
+      "16.640 agent",
+      "20.290 agent"
+    ],
+    "camCount": 6
+  },
+  "ship": {
+    "duration": 35.260000000000005,
+    "steps": [
+      {
+        "at": 0.6,
+        "end": 4.962,
+        "cue": 1.9620000000000002,
+        "title": "Clone web"
+      },
+      {
+        "at": 4.962,
+        "end": 10.418,
+        "cue": 5.867999999999999,
+        "title": "Start checkout"
+      },
+      {
+        "at": 10.418,
+        "end": 16.090000000000003,
+        "cue": 11.54,
+        "title": "Start cart-total"
+      },
+      {
+        "at": 16.090000000000003,
+        "end": 21.596000000000007,
+        "cue": 16.996000000000002,
+        "title": "Merge checkout"
+      },
+      {
+        "at": 21.596000000000007,
+        "end": 25.94400000000001,
+        "cue": 22.694000000000006,
+        "title": "Push cart-total"
+      },
+      {
+        "at": 25.94400000000001,
+        "end": 28.89400000000001,
+        "cue": 25.94400000000001,
+        "title": "Forge merges cart-total"
+      },
+      {
+        "at": 28.89400000000001,
+        "end": 34.46000000000001,
+        "cue": 29.56000000000001,
+        "title": "Sync"
+      }
+    ],
+    "termCount": 20,
+    "commands": [
+      "daft clone git@github.com:acme/web.git",
+      "daft start checkout",
+      "daft start bugfix/cart-total",
+      "daft merge checkout",
+      "daft push bugfix/cart-total",
+      "daft sync"
+    ],
+    "actCounts": {
+      "repo": 1,
+      "wt": 3,
+      "port": 3,
+      "boot": 2,
+      "merged": 2,
+      "remove": 2,
+      "sync": 1
+    },
+    "eventTimeline": [
+      "2.362 repo",
+      "2.362 wt",
+      "2.912 port",
+      "6.818 wt",
+      "6.818 boot",
+      "8.368 port",
+      "12.490 wt",
+      "12.490 boot",
+      "14.040 port",
+      "17.946 merged",
+      "19.096 remove",
+      "26.494 merged",
+      "29.960 sync",
+      "31.560 remove"
+    ],
+    "camCount": 7
+  }
+}

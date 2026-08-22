@@ -16,6 +16,10 @@ import { GALLERY } from "../../.vitepress/theme/graph/gallery";
 import { type Compiled, DAFT_PACK } from "../../.vitepress/theme/graph/pack";
 import { renameEntity } from "../../.vitepress/theme/graph/seed";
 import { buildScenario } from "../../.vitepress/theme/graph/verbs";
+import {
+  LANDING_POINTS,
+  pointScript,
+} from "../../.vitepress/theme/landing/points";
 
 /**
  * Committed compiled-output goldens — the extraction tripwire. Compile and
@@ -70,6 +74,17 @@ test("catalog demos compile to their recorded digests", () => {
   for (const entry of CATALOG)
     all[entry.id] = digest(compile(buildScenario(entry.demo).steps));
   checkGolden("catalog-demos", all);
+});
+
+test("landing point scenes compile to their recorded digests", () => {
+  // The five points demonstrate from the verb registry; their digests are
+  // the tripwire that a registry change silently rewrote the landing.
+  const all: Record<string, unknown> = {};
+  for (const point of LANDING_POINTS) {
+    const script = pointScript(point);
+    if (script) all[point.id] = digest(compile(script));
+  }
+  checkGolden("landing-points", all);
 });
 
 test("a mutated composer document derives to its recorded shape", () => {
