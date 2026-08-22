@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::state::{ClassifiedWorktree, LayoutState, WorktreeDisposition};
 
@@ -86,7 +86,7 @@ pub struct TransformPlan {
 
 /// Compare two paths for equivalence, handling macOS `/tmp` -> `/private/tmp`
 /// symlinks and other canonicalization differences.
-fn paths_equivalent(a: &Path, b: &Path) -> bool {
+pub fn paths_equivalent(a: &Path, b: &Path) -> bool {
     if a == b {
         return true;
     }
@@ -370,21 +370,18 @@ pub fn build_plan(
     //    to be re-pointed at its branch before the index is rebuilt — otherwise
     //    the index is built against whatever the bare repo's HEAD names.
     if bare_changed && !target.is_bare {
-        let (path, branch) = match root_cw {
-            Some(cw) => (cw.target_path.clone(), cw.branch.clone()),
-            None => (
-                // The index init path is the working tree, not the .git
-                // directory. For wrapped non-bare: the clone subdir (parent of
-                // .git). For regular non-bare: the project root.
-                target
-                    .git_dir
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| target.project_root.clone()),
-                target.default_branch.clone(),
-            ),
-        };
-        ops.push(TransformOp::InitWorktreeIndex { path, branch });
+        // `select_pivot` either names a pivot or refuses the transform for every
+        // bare -> non-bare case, and `classify_worktrees` always marks the
+        // target's root entry, so this is `Some` by construction. There is
+        // deliberately no default-branch fallback: building the index for the
+        // default branch rather than the pivot is the #859 bug itself.
+        let cw = root_cw.context(
+            "internal error: a bare -> non-bare plan reached index init without a root worktree",
+        )?;
+        ops.push(TransformOp::InitWorktreeIndex {
+            path: cw.target_path.clone(),
+            branch: cw.branch.clone(),
+        });
     }
 
     // f. RegisterWorktree (if going bare, register the pivot). The op rebuilds

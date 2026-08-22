@@ -224,7 +224,7 @@ fn execute_op(
             to,
         } => exec_move_worktree(from, to, &ctx.project_root, git),
 
-        TransformOp::MoveGitDir { from, to } => exec_move_git_dir(from, to),
+        TransformOp::MoveGitDir { from, to } => exec_move_git_dir(from, to, &ctx.project_root),
 
         TransformOp::SetBare(bare) => exec_set_bare(*bare, git),
 
@@ -232,9 +232,7 @@ fn execute_op(
             exec_register_worktree(branch, path, progress)
         }
 
-        TransformOp::UnregisterWorktree { branch, path } => {
-            exec_unregister_worktree(branch, path, progress)
-        }
+        TransformOp::UnregisterWorktree { branch, path } => exec_unregister_worktree(branch, path),
 
         TransformOp::CollapseIntoRoot {
             worktree_path,
@@ -336,7 +334,7 @@ fn ensure_parent_dirs(to: &Path) -> Result<Vec<PathBuf>> {
     Ok(missing)
 }
 
-fn exec_move_git_dir(from: &Path, to: &Path) -> Result<()> {
+fn exec_move_git_dir(from: &Path, to: &Path, project_root: &Path) -> Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = to.parent() {
         fs::create_dir_all(parent).with_context(|| {
@@ -370,6 +368,17 @@ fn exec_move_git_dir(from: &Path, to: &Path) -> Result<()> {
         crate::utils::change_directory(parent)?;
     }
 
+    // Reap the directory `.git` just vacated. `CollapseIntoRoot` cannot do it:
+    // when the collapsing worktree is a *main* working tree its `.git` is a
+    // real directory, so the `remove_dir` there always fails and the emptied
+    // clone directory survives — and the next `NestFromRoot` sweeps that stray
+    // into the new worktree (`repo/main` -> `repo/<branch>/main`). Pruning here
+    // is a no-op for every other case: the directory is only removed when it is
+    // empty and strictly inside the project root.
+    if let Some(vacated) = from.parent() {
+        prune_empty_dirs_within(vacated, project_root);
+    }
+
     Ok(())
 }
 
@@ -400,19 +409,23 @@ fn exec_register_worktree(
     init_worktree_index(path, branch, progress)
 }
 
-fn exec_unregister_worktree(
-    branch: &str,
-    path: &Path,
-    progress: &mut dyn ProgressSink,
-) -> Result<()> {
+fn exec_unregister_worktree(branch: &str, path: &Path) -> Result<()> {
     let git_dir = crate::core::repo::get_git_common_dir()?;
 
+    // Fail closed rather than warn-and-continue. The pivot is registered by
+    // construction on this path, so a miss means the repository is not in the
+    // state the plan was built from — and continuing would arm the LIFO
+    // inverse (`RegisterWorktree`) for an unregister that never happened,
+    // which on rollback would overwrite a restored main working tree's real
+    // `.git` directory with a linked-worktree pointer file. A failing op never
+    // pushes its reverse, so bailing here keeps the rollback stack honest.
     let Some(registration) = find_worktree_registration(&git_dir, path) else {
-        progress.on_warning(&format!(
-            "No worktree registration found for '{branch}' at {} — nothing to unregister.",
+        anyhow::bail!(
+            "No worktree registration found for '{branch}' at {}. \
+             The repository layout changed since the plan was built — \
+             re-run `daft layout transform` to rebuild it.",
             path.display()
-        ));
-        return Ok(());
+        );
     };
 
     fs::remove_dir_all(&registration).with_context(|| {
@@ -599,27 +612,38 @@ fn exec_nest_from_root(root_path: &Path, subdir_path: &Path) -> Result<()> {
 /// left is the bare repo's, which names the default branch — resetting against
 /// that rebuilds the index from the wrong tree and fails `ValidateIntegrity`.
 /// `legacy.rs::initialize_index` has always done both.
-fn init_worktree_index(path: &Path, branch: &str, progress: &mut dyn ProgressSink) -> Result<()> {
-    let head_result = Command::new("git")
+fn init_worktree_index(path: &Path, branch: &str, _progress: &mut dyn ProgressSink) -> Result<()> {
+    // Both commands *write* (HEAD, then the index), so an inherited `GIT_DIR`
+    // would retarget them at the enclosing repository — hence `git_command_at`
+    // rather than `current_dir`, per the Test Hygiene rule in CLAUDE.md.
+    let head_result = crate::utils::git_command_at(path)
         .args(["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")])
-        .current_dir(path)
         .output()
         .context("Failed to set HEAD")?;
 
+    // A failure here is not cosmetic: HEAD decides which tree the index below
+    // is built from. Warning and continuing leaves every tracked file looking
+    // deleted and defers the real cause to a confusing `ValidateIntegrity`
+    // failure at the very last step.
     if !head_result.status.success() {
-        let stderr = String::from_utf8_lossy(&head_result.stderr);
-        progress.on_warning(&format!("git symbolic-ref warning: {}", stderr.trim()));
+        anyhow::bail!(
+            "Failed to point HEAD at '{branch}' in {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&head_result.stderr).trim()
+        );
     }
 
-    let reset_result = Command::new("git")
+    let reset_result = crate::utils::git_command_at(path)
         .args(["reset", "--mixed", "HEAD"])
-        .current_dir(path)
         .output()
         .context("Failed to initialize worktree index")?;
 
     if !reset_result.status.success() {
-        let stderr = String::from_utf8_lossy(&reset_result.stderr);
-        progress.on_warning(&format!("git reset warning: {}", stderr.trim()));
+        anyhow::bail!(
+            "Failed to build the index for '{branch}' in {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&reset_result.stderr).trim()
+        );
     }
 
     Ok(())
@@ -1264,7 +1288,7 @@ mod tests {
         );
 
         let _cwd = CwdGuard::enter(&repo);
-        exec_unregister_worktree("task/x", &wt, &mut NullBridge).unwrap();
+        exec_unregister_worktree("task/x", &wt).unwrap();
 
         assert!(
             registrations(&repo.join(".git")).is_empty(),

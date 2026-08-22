@@ -40,13 +40,35 @@ steps:
         - dir: "$WORK_DIR/test-repo/main"
           branch: task/local-docker
 
-  - name: The suggested two-step route works
-    run: |
-      daft layout transform sibling 2>&1
-      daft layout transform contained 2>&1
+  - name: Remedy step one — transform to sibling
+    run: daft layout transform sibling 2>&1
     cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: task/local-docker
+      # The clone directory the collapse emptied must not survive. It cannot be
+      # removed during the collapse itself — a main working tree's `.git` is a
+      # real directory, so the `remove_dir` there always fails — so `MoveGitDir`
+      # reaps it once `.git` has moved out. Git does not track empty
+      # directories, so no status- or content-based assertion can see this; it
+      # has to be checked on the filesystem.
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Remedy step two — transform to contained
+    # Run from the project root: step one collapsed the clone into it, so the
+    # old `test-repo/main` cwd is gone (the shell wrapper cd-redirects a real
+    # user; a raw binary invocation has to say where it stands).
+    run: daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
     expect:
       exit_code: 0
       is_git_worktree:
         - dir: "$WORK_DIR/test-repo/task/local-docker"
           branch: task/local-docker
+      # Had step one left the emptied clone dir behind, this nest would have
+      # swept it into the new worktree as `task/local-docker/main`.
+      files_not_exist:
+        - "$WORK_DIR/test-repo/task/local-docker/main"

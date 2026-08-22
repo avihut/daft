@@ -21,7 +21,7 @@ pub use execute::{ExecuteResult, ExecutionContext, describe_op, execute_plan};
 
 pub use print::print_plan;
 
-pub use plan::{TransformOp, TransformPlan, build_plan, classify_worktrees};
+pub use plan::{TransformOp, TransformPlan, build_plan, classify_worktrees, paths_equivalent};
 
 pub use state::{
     ClassifiedWorktree, LayoutState, WorktreeDisposition, WorktreeEntry, compute_target_git_dir,

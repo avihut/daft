@@ -690,7 +690,7 @@ pub(crate) fn register_worktree(
 
     // Create .git file pointing to worktrees subdirectory
     let worktrees_root = git_dir.join("worktrees");
-    let worktree_name = registration_name(&worktrees_root, worktree_path, current_branch);
+    let worktree_name = registration_name(&worktrees_root, worktree_path, current_branch)?;
     let worktrees_dir = worktrees_root.join(&worktree_name);
     fs::create_dir_all(&worktrees_dir).context("Failed to create worktrees directory")?;
 
@@ -722,7 +722,7 @@ pub(crate) fn register_worktree(
 /// a numeric suffix on collision. Deriving the name from the branch instead
 /// (`task/x` -> `task-x`) can land on an unrelated worktree whose directory
 /// happens to carry that name and silently overwrite its `gitdir`/`HEAD`.
-fn registration_name(worktrees_root: &Path, worktree_path: &Path, branch: &str) -> String {
+fn registration_name(worktrees_root: &Path, worktree_path: &Path, branch: &str) -> Result<String> {
     let base = worktree_path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -730,15 +730,23 @@ fn registration_name(worktrees_root: &Path, worktree_path: &Path, branch: &str) 
         .unwrap_or_else(|| branch.replace('/', "-"));
 
     if !worktrees_root.join(&base).exists() {
-        return base;
+        return Ok(base);
     }
     for n in 1..1000 {
         let candidate = format!("{base}{n}");
         if !worktrees_root.join(&candidate).exists() {
-            return candidate;
+            return Ok(candidate);
         }
     }
-    base
+    // Falling back to `base` here would hand back a name that is taken, and the
+    // caller would overwrite that registration's `gitdir`/`HEAD` — the exact
+    // silent clobber this function exists to prevent.
+    anyhow::bail!(
+        "Could not find a free worktree registration name for {} under {} \
+         (tried '{base}' and '{base}1'..'{base}999').",
+        worktree_path.display(),
+        worktrees_root.display()
+    )
 }
 
 /// Determine which branch/worktree to keep during non-bare conversion.
