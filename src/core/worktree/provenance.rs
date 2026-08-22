@@ -20,7 +20,8 @@
 //! `daftPublished` is the only record that can *authorize* a deletion, so it
 //! is written through one function ([`mark_published`]), called at daft's push
 //! seams (the single-branch path and the batched one) for a push git itself
-//! reported, and by prune's backfill for a tracking ref it observed present.
+//! reported, and by prune's backfill for a branch whose *config* says it
+//! tracks `<remote>/<same name>` and whose remote-tracking ref is present.
 //! It carries the remote it attests to — a stamp for `origin` must not
 //! authorize pruning against a different `daft.remote`. `daftOrigin` can only
 //! withhold or annotate.
