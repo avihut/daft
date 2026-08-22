@@ -22,6 +22,13 @@ Removes local branches whose corresponding remote tracking branches have been
 deleted, along with any associated worktrees. This is useful for cleaning up
 after branches have been merged and deleted on the remote.
 
+A branch is only in scope when something attests that it was on the remote:
+git's own upstream tracking, or a publication daft recorded. Being absent from
+the remote is not enough on its own, since that is equally true of a branch
+that was just created and never pushed. A branch nothing attests to is left
+alone, whatever `--force` says; discard those with
+[`daft remove`](./daft-remove.md).
+
 ## Options
 
 | Option | Description | Default |

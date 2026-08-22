@@ -2,7 +2,9 @@ name: sync --push batched strategy pushes all branches with one hook run
 description:
   "daft.sync.pushHookStrategy=batched collapses N per-branch pushes into one git
   push: the pre-push hook fires exactly once with every ref, and each branch
-  still lands on the remote."
+  still lands on the remote. This path bypasses push_with_hooks, so it also has
+  to record what it published (#858) - a seam that pushes without recording
+  leaves the branch reclaimable only while its upstream config survives."
 
 repos:
   - name: batched-push-repo
@@ -78,3 +80,15 @@ steps:
       output_contains:
         - "feature-ahead: 0"
         - "develop-ahead: 0"
+
+  - name: The batched push recorded provenance for both branches
+    run: |
+      set -e
+      test "$(git config branch.feature/test-feature.daftPublished | cut -d' ' -f1)" = origin
+      test "$(git config branch.develop.daftPublished | cut -d' ' -f1)" = origin
+      echo "both recorded"
+    cwd: "$WORK_DIR/batched-push-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "both recorded"

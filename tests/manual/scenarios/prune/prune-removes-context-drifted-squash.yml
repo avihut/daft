@@ -47,7 +47,7 @@ steps:
       printf 'new file\n' > added.txt
       git add added.txt
       git commit -m "feat: add a file"
-      git push origin feat/drifted
+      git push -u origin feat/drifted
     expect:
       exit_code: 0
 

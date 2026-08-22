@@ -22,6 +22,20 @@ list of remote tracking branches. It then identifies local branches that were
 tracking now-deleted remote branches, removes their worktrees (if any exist),
 and finally deletes the local branches.
 
+A branch is only in scope when something attests that it was on the remote:
+git's own upstream tracking reports it gone, or daft recorded seeing it
+there. Daft records every push it performs, and each prune run also records
+any branch it finds tracking a remote branch of the same name while that
+branch is still present - so branches published outside daft are covered
+too, from the first prune run that sees them. Being absent from the remote
+is not enough on its own, since that is equally true of a branch that was
+just created and never pushed. A branch daft cannot place is left alone,
+whatever its commits and whatever --force says; discard those with
+`daft remove` instead. One consequence worth knowing: publishing a branch
+outside daft without upstream tracking (`git push <remote> <branch>`, no -u)
+leaves nothing for prune to observe, so it will not be reclaimed
+automatically.
+
 A deleted remote branch does not by itself prove the work was merged, so each
 gone branch is verified against the default branch (regular or squash merge)
 before anything is deleted; gone-but-unmerged branches are kept with a

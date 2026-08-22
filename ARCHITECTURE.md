@@ -100,6 +100,54 @@ subsystem, format output. Ceremony would drown the value.
 When a command's body grows enough to have its own domain logic, lift that into
 the subsystem it belongs to, not into a parallel structure inside `commands/`.
 
+### Bridge git's evidence gaps with daft's own records
+
+Git records the current state of a repository, not the history of intent that
+produced it. When an operation's safety depends on a fact git does not durably
+hold, daft captures that fact at the moment it acts — and every path that lacks
+the record resolves to the safe answer. (Reflogs are not a substitute: they die
+with the ref they describe, are off by default for invocations without a work
+tree, and expire.)
+
+The shape is always the same:
+
+1. **Name the question, not the predicate.** Write down the fact the operation
+   needs — "was this branch ever published to this remote?" — before writing the
+   condition you would like to test. If the only available answer is current
+   state standing in for history, that is an evidence gap.
+2. **Record it where it is known.** Daft performs the action — creating the
+   branch, pushing it, moving the repo — so it holds the answer at that instant
+   and nowhere else. Per-ref facts go in git config's `branch.<name>.*`
+   namespace, whose lifecycle git maintains for free; facts that span repos or
+   need querying go in `src/store/`.
+3. **Degrade safely without it.** A missing record means _unknown_, and unknown
+   takes the non-destructive branch — so a missing stamp, an older branch, or a
+   wiped config makes daft more conservative, never less. A record may
+   _authorize_ a destructive step only when it attests to something daft itself
+   did and confirmed, or state daft read directly from the tool; never to an
+   inference. Those records get one writer function, called at every seam that
+   performs the action or makes the observation — a second path that acts
+   without recording is how the record starts lying — and only on success the
+   underlying tool itself reported, never on a bare exit status. Recording
+   observations as well as actions is what keeps the record honest in a repo
+   daft does not exclusively own: someone else's `git push -u` is a fact daft
+   can see, and a record that described only daft's own work would quietly treat
+   their branches as unknown forever.
+
+The failure this prevents is inferring a missing fact from state that merely
+correlates with it. The tell is that two cases which must be treated differently
+become locally indistinguishable: in #858 a branch `daft start` had just created
+and a branch that was published and then deleted upstream had the same (absent)
+upstream config, the same zero commits of their own, and the same tip OID. No
+predicate over local state separates them, because the distinguishing fact was
+never written down.
+
+**Corollary: bridging must not make the un-bridged path more permissive.**
+Daft-side evidence buys precision where it exists; where it does not, the
+operation becomes less aggressive, not more. Repos adopted before a bridge
+shipped, and users who work outside daft, must not pay for someone else's better
+data.
+
 ### Other principles that earn their keep
 
 - **SQLite is the only structured-data store.** See CLAUDE.md "Database &
@@ -259,3 +307,8 @@ Shaping decisions and where to find their full context:
 - **No pre-1.0 back-compat for on-disk formats** — auto-wipe with stderr banner.
   Why: daft is effectively pre-release; back-compat would lock in immature
   decisions and double the surface area of every storage change.
+- **Daft records what git does not** — issue #858. Why: prune's safety turns on
+  "was this branch ever published?", which git keeps nowhere durable, so every
+  candidate fix was a proxy — and the two proxies had opposite failure modes
+  (keeping a branch that could have been reclaimed vs. deleting a fresh
+  worktree). See "Bridge git's evidence gaps with daft's own records".

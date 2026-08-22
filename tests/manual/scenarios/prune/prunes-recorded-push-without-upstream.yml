@@ -1,0 +1,72 @@
+name: Prune reclaims a branch daft published even without upstream tracking
+description: >
+  The second half of issue #858. Prune keeps a branch nothing attests to, but
+  daft's own record is an attestation in its own right: `daft push` writes
+  `branch.<name>.daftPublished`, so the branch stays reclaimable even when git's
+  upstream config is gone and `: gone]` can never fire. Unsetting the upstream
+  is what isolates that path - with tracking intact the first arm would answer,
+  and this scenario would not prove anything about the record.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Start a branch
+    run: git-worktree-checkout -b feat/recorded
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feat/recorded"
+
+  - name: Publish it with daft, which records the push
+    run: daft push feat/recorded 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: The record names the remote it attests to
+    run: git config branch.feat/recorded.daftPublished
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "origin"
+
+  - name: Drop the upstream config so only the record can answer
+    run: |
+      git branch --unset-upstream feat/recorded 2>/dev/null || true
+      git config branch.feat/recorded.remote || echo "no-upstream"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "no-upstream"
+
+  - name: Delete the branch on the remote
+    run: git -C $WORK_DIR/test-repo/main push origin --delete feat/recorded
+    expect:
+      exit_code: 0
+
+  - name: Prune reclaims it on the strength of the record
+    run: git-worktree-prune 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feat/recorded"
+
+  - name: Worktree and branch are gone
+    run: |
+      test ! -d $WORK_DIR/test-repo/feat/recorded
+      git -C $WORK_DIR/test-repo/main show-ref --verify --quiet refs/heads/feat/recorded && exit 1 || exit 0
+    expect:
+      exit_code: 0

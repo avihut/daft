@@ -311,6 +311,13 @@ pub fn execute(
     if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_dir) {
         store.record(&worktree_path, &params.new_branch_name);
     }
+    // Record that this branch starts life local-only (#858). Prune reads it to
+    // say *why* a branch is out of its scope; the protection itself comes from
+    // the absence of a published record, so a failed write costs a diagnostic,
+    // not safety. When `checkout.push` is on, the autopush below adds the
+    // published record on top.
+    let _ =
+        crate::core::worktree::provenance::mark_local(git, &worktree_path, &params.new_branch_name);
     sink.on_stage(
         &StepKey::new(StageId::CreateBranch),
         StageEvent::Completed { annotation: None },

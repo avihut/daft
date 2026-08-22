@@ -1,0 +1,63 @@
+name: Prune keeps a never-published worktree holding only an excluded file
+description: >
+  The incident behind issue #858: a fresh worktree parked with a git-excluded
+  file (handoff notes, .env, node_modules) was deleted by the next sync, taking
+  the file with it. Excluded and ignored files leave `git status --porcelain`
+  empty, so the dirty guard never sees them - the worktree has to survive
+  because the branch was never published, not because it looked dirty. The
+  pristine-status step is load-bearing: without it this scenario could pass for
+  the wrong reason.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Start a branch and never push it
+    run: git-worktree-checkout -b feat/parked
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feat/parked"
+
+  - name: Park an excluded file in the worktree
+    run: |
+      common=$(git -C "$WORK_DIR/test-repo/main" rev-parse --path-format=absolute --git-common-dir)
+      mkdir -p "$common/info"
+      printf 'HANDOFF.md\n' >> "$common/info/exclude"
+      printf 'parked work\n' > "$WORK_DIR/test-repo/feat/parked/HANDOFF.md"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/feat/parked/HANDOFF.md"
+
+  - name: The worktree is pristine to git, so the dirty guard will not save it
+    run: test -z "$(git status --porcelain)" && echo "pristine"
+    cwd: "$WORK_DIR/test-repo/feat/parked"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "pristine"
+
+  - name: Prune leaves the worktree and the excluded file alone
+    run: git-worktree-prune 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "pruned feat/parked"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feat/parked"
+      files_exist:
+        - "$WORK_DIR/test-repo/feat/parked/HANDOFF.md"
+      branch_exists:
+        - repo: "$WORK_DIR/test-repo/main"
+          branch: "feat/parked"

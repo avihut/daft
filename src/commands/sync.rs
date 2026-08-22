@@ -926,10 +926,10 @@ fn run_tui(
 
         // ── Phase 2: Identify gone branches + build DAG ────────────────
         let gone_branches = {
-            // Carry the cancel flag: its `ls-remote` probes are network
-            // calls that must be torn down on the first Ctrl+C, like every
-            // other orchestrator git op (#663) — otherwise a stalled remote
-            // here ignores the cancel until it returns.
+            // Identification is local since #858 (ref reads + one config
+            // read, no `ls-remote`), so nothing here can stall on the network.
+            // The cancel flag is still carried so any git op added to this
+            // block inherits the orchestrator's teardown (#663).
             let git = GitCommand::new(false)
                 .with_gitoxide(orch_settings.use_gitoxide)
                 .with_cancel(Arc::clone(&orch_cancel));
@@ -938,7 +938,6 @@ fn run_tui(
                 &git,
                 &shared_worktree_map,
                 &orch_settings.remote,
-                orch_settings.use_gitoxide,
                 Some(orch_base_branch.as_str()),
                 &mut sink,
             )

@@ -350,6 +350,41 @@ pub fn update_single_worktree(
         };
     }
 
+    // A branch with no upstream has nothing to pull, and `git pull` without
+    // tracking information is a hard error — which would fail the whole sync
+    // run for the sin of having a freshly started worktree in it. Until #858 a
+    // branch with no upstream was also a branch prune deleted on sight, so
+    // neither update path had to handle one. Now it survives, and both paths
+    // meet it.
+    //
+    // Asked at `target_path` rather than through the process working
+    // directory: the DAG runs these on threads of one process, so the
+    // question has to name the worktree it is about.
+    //
+    // The check is unconditional, including under trailing `-- <pull args>`.
+    // `daft update -- origin main` names its source explicitly and would pull
+    // without tracking config, so that invocation is skipped where it used to
+    // work. Taking the trade deliberately: the sequential path already refused
+    // these before this change, so applying it here makes the two paths agree
+    // rather than inventing a third rule; the cost is a visible skip warning
+    // rather than lost work; and the obvious narrowing — "skip only when no
+    // pull args were given" — misfires on the options that take a
+    // separate-word value (`-X theirs`, `-s recursive`, `-S <keyid>`), each of
+    // which would suppress the guard and hand a hard error back to the whole
+    // run.
+    if !has_upstream_at(target_path) {
+        progress.on_warning(&format!(
+            "Skipping '{worktree_name}': no tracking branch configured"
+        ));
+        return WorktreeFetchResult {
+            worktree_name: worktree_name.to_string(),
+            success: true,
+            message: "Skipped: no tracking branch".to_string(),
+            skipped: true,
+            ..Default::default()
+        };
+    }
+
     // Run git pull with explicit working directory (thread-safe)
     let pull_args_refs: Vec<&str> = pull_args.iter().map(|s| s.as_str()).collect();
 
@@ -445,7 +480,7 @@ pub fn process_worktree(
     }
 
     if refspec.is_same_branch() {
-        process_same_branch(git, worktree_name, pull_args, params, progress)
+        process_same_branch(git, target_path, worktree_name, pull_args, params, progress)
     } else {
         process_cross_branch(
             git,
@@ -461,13 +496,21 @@ pub fn process_worktree(
 /// Same-branch mode: uses `git pull` with configured arguments.
 fn process_same_branch(
     git: &GitCommand,
+    target_path: &Path,
     worktree_name: &str,
     pull_args: &[String],
     params: &FetchParams,
     progress: &mut dyn ProgressSink,
 ) -> WorktreeFetchResult {
-    // Check if branch has an upstream
-    if check_has_upstream(git).is_err() {
+    // Named at `target_path`, not asked of the process working directory. The
+    // predecessor resolved the branch through a gitoxide handle discovered once
+    // per process, so from the second worktree onward it answered for the
+    // first: an untracked worktree enumerated first made every later worktree
+    // look untracked and silently skipped the whole run (exit 0, nothing
+    // updated), and a tracked one first sent an untracked worktree into
+    // `git pull` to die on "no tracking information". Prune used to hide both
+    // by deleting untracked worktrees on sight (#858).
+    if !has_upstream_at(target_path) {
         progress.on_warning(&format!(
             "Skipping '{worktree_name}': no tracking branch configured"
         ));
@@ -595,14 +638,43 @@ fn process_cross_branch(
     }
 }
 
-/// Check if the current branch has an upstream tracking branch.
-fn check_has_upstream(git: &GitCommand) -> Result<()> {
-    let branch = git.symbolic_ref_short_head()?;
-    let remote_key = format!("branch.{}.remote", branch);
-    if git.config_get(&remote_key)?.is_none() {
-        anyhow::bail!("No upstream configured for branch '{}'", branch);
+/// Whether the branch checked out at `path` has an upstream configured.
+///
+/// The single upstream check for both update paths, sequential and concurrent.
+/// Path-scoped on purpose: neither the process working directory nor a cached
+/// repository handle says anything about the worktree currently being
+/// processed — the DAG runs these on threads of one process, and the
+/// sequential loop walks many worktrees in one process too. A git failure
+/// counts as "no upstream" so the caller skips; for an update, skipping is the
+/// harmless direction.
+///
+/// Asks whether `branch.<n>.remote` is set, and deliberately not whether
+/// `@{upstream}` *resolves*. Resolution additionally fails once the
+/// remote-tracking ref is pruned, which is exactly the gone-but-unmerged shape
+/// prune keeps: that branch has tracking, and reporting it as untracked would
+/// both state something false and skip an update that should happen.
+fn has_upstream_at(path: &Path) -> bool {
+    let Some(branch) = branch_at(path) else {
+        return false;
+    };
+    crate::utils::git_command_at(path)
+        .args(["config", "--get", &format!("branch.{branch}.remote")])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// The branch checked out at `path`, or `None` when detached or unreadable.
+fn branch_at(path: &Path) -> Option<String> {
+    let output = crate::utils::git_command_at(path)
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
-    Ok(())
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!branch.is_empty()).then_some(branch)
 }
 
 /// Check if a git pull error is a fast-forward-only failure (diverged branches).
@@ -613,6 +685,79 @@ fn is_ff_only_failure(error_msg: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A freshly started branch has no upstream, and until #858 prune deleted
+    /// it before any update path could meet one. Now it survives, and the
+    /// concurrent update path has to recognise it — `git pull` with no
+    /// tracking information is a hard error that would fail the whole run.
+    #[test]
+    fn upstream_presence_is_answered_per_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = dir.path().join("remote.git");
+        let clone = dir.path().join("clone");
+
+        let git = |cwd: &std::path::Path, args: &[&str]| {
+            crate::utils::git_command_at(cwd)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .output()
+                .unwrap()
+        };
+
+        git(
+            dir.path(),
+            &["init", "-q", "--bare", "-b", "main", "remote.git"],
+        );
+        let seed = dir.path().join("seed");
+        std::fs::create_dir(&seed).unwrap();
+        git(&seed, &["init", "-q", "-b", "main"]);
+        std::fs::write(seed.join("README.md"), "hi\n").unwrap();
+        git(&seed, &["add", "."]);
+        git(&seed, &["commit", "-qm", "init"]);
+        git(
+            &seed,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&seed, &["push", "-q", "origin", "main"]);
+        git(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+
+        assert!(
+            has_upstream_at(&clone),
+            "a cloned default branch tracks its remote"
+        );
+
+        git(
+            &clone,
+            &["checkout", "-q", "-b", "feat/fresh", "--no-track"],
+        );
+        assert!(
+            !has_upstream_at(&clone),
+            "a branch started locally has nothing to pull from"
+        );
+
+        // The gone-but-unmerged shape prune deliberately keeps: tracking is
+        // still configured, the remote-tracking ref is not. `@{upstream}` stops
+        // resolving at this point, so a resolution-based probe would report the
+        // branch untracked — false, and it would skip an update the sequential
+        // path performs.
+        git(&clone, &["checkout", "-q", "main"]);
+        git(&clone, &["update-ref", "-d", "refs/remotes/origin/main"]);
+        assert!(
+            has_upstream_at(&clone),
+            "a pruned tracking ref does not un-configure the upstream"
+        );
+    }
 
     #[test]
     fn test_parse_refspec_same_branch() {
