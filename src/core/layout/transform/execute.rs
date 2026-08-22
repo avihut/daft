@@ -384,13 +384,20 @@ fn exec_set_bare(bare: bool, git: &GitCommand) -> Result<()> {
     Ok(())
 }
 
+/// Make `path` a linked worktree of this repository.
+///
+/// Includes rebuilding its index: a registration without one leaves the
+/// worktree reporting every tracked file as both deleted and untracked, and
+/// this op is the reverse of `UnregisterWorktree`, which removes the index
+/// along with the registration directory.
 fn exec_register_worktree(
     branch: &str,
     path: &Path,
     progress: &mut dyn ProgressSink,
 ) -> Result<()> {
     let git_dir = crate::core::repo::get_git_common_dir()?;
-    super::legacy::register_worktree(&git_dir, path, branch, progress)
+    super::legacy::register_worktree(&git_dir, path, branch, progress)?;
+    init_worktree_index(path, branch, progress)
 }
 
 fn exec_unregister_worktree(
@@ -590,6 +597,10 @@ fn exec_init_worktree_index(
     branch: &str,
     progress: &mut dyn ProgressSink,
 ) -> Result<()> {
+    init_worktree_index(path, branch, progress)
+}
+
+fn init_worktree_index(path: &Path, branch: &str, progress: &mut dyn ProgressSink) -> Result<()> {
     // Point HEAD at the branch before rebuilding the index. A worktree that
     // just changed role has lost the HEAD it used to resolve through: after
     // `UnregisterWorktree` the only one left is the bare repo's, which names
@@ -906,7 +917,10 @@ pub fn describe_op(op: &TransformOp) -> String {
             format!("Set core.bare = {bare}")
         }
         TransformOp::RegisterWorktree { branch, path } => {
-            format!("Register worktree '{branch}' at {}", path.display())
+            format!(
+                "Register worktree '{branch}' at {} and build its index",
+                path.display()
+            )
         }
         TransformOp::UnregisterWorktree { branch, path } => {
             format!("Unregister worktree '{branch}' at {}", path.display())
@@ -940,5 +954,374 @@ pub fn describe_op(op: &TransformOp) -> String {
             format!("Create directory {}", path.display())
         }
         TransformOp::ValidateIntegrity => "Validate repository integrity".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::NullBridge;
+    use crate::core::layout::BuiltinLayout;
+    use crate::test_support::CwdGuard;
+    use serial_test::serial;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    use super::super::plan::{build_plan, classify_worktrees};
+    use super::super::state::{LayoutState, compute_target_state, read_source_state};
+
+    /// Run git in `dir` with a fixed test identity — never global config
+    /// (CLAUDE.md Critical Rule #1).
+    fn git_ok(dir: &Path, args: &[&str]) -> String {
+        let out = crate::utils::git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A throwaway non-bare repo at `<tmp>/repo` whose main working tree is on
+    /// `branch`. Paths are canonicalized so they compare against the state the
+    /// engine reads back.
+    fn scratch_repo(branch: &str) -> (TempDir, PathBuf) {
+        let base = tempfile::tempdir().expect("tempdir");
+        let repo = base.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(&repo, &["init", "-q", "-b", "main"]);
+        fs::write(repo.join("README.md"), "hello\n").unwrap();
+        git_ok(&repo, &["add", "."]);
+        git_ok(&repo, &["commit", "-q", "-m", "init"]);
+        if branch != "main" {
+            git_ok(&repo, &["switch", "-q", "-c", branch]);
+        }
+        let repo = repo.canonicalize().unwrap();
+        (base, repo)
+    }
+
+    /// A throwaway repo in daft's bare shape: a bare git dir at `<repo>/.git`
+    /// with linked worktrees beside it. `worktrees` are `(branch, subdir)`.
+    fn scratch_bare_repo(worktrees: &[(&str, &str)]) -> (TempDir, PathBuf) {
+        let base = tempfile::tempdir().expect("tempdir");
+        let src = base.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        git_ok(&src, &["init", "-q", "-b", "main"]);
+        fs::write(src.join("README.md"), "hello\n").unwrap();
+        git_ok(&src, &["add", "."]);
+        git_ok(&src, &["commit", "-q", "-m", "init"]);
+
+        let repo = base.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(
+            base.path(),
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                src.to_str().unwrap(),
+                repo.join(".git").to_str().unwrap(),
+            ],
+        );
+        let repo = repo.canonicalize().unwrap();
+
+        for (branch, subdir) in worktrees {
+            let path = repo.join(subdir);
+            git_ok(
+                &repo.join(".git"),
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    path.to_str().unwrap(),
+                    "-b",
+                    branch,
+                ],
+            );
+        }
+        (base, repo)
+    }
+
+    fn ctx_for(source: &LayoutState, target: &LayoutState) -> ExecutionContext {
+        ExecutionContext {
+            project_root: source.project_root.clone(),
+            git_dir: source.git_dir.clone(),
+            target_git_dir: target.git_dir.clone(),
+            remote: "origin".to_string(),
+            source_worktree: source.project_root.clone(),
+        }
+    }
+
+    /// Names of the `worktrees/<n>` registration dirs, sorted.
+    fn registrations(git_dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(git_dir.join("worktrees"))
+            .map(|rd| {
+                rd.filter_map(Result::ok)
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// An op guaranteed to fail without having touched anything.
+    fn doomed_op(base: &Path) -> TransformOp {
+        TransformOp::MoveWorktree {
+            branch: "no-such-branch".to_string(),
+            from: base.join("does-not-exist"),
+            to: base.join("nowhere/at/all"),
+        }
+    }
+
+    // ── #859 ──────────────────────────────────────────────────────────────
+
+    /// A plain clone whose main working tree is on a feature branch, taken to
+    /// `contained` and then failed at the last step: the repository must come
+    /// back exactly as it was — in particular *with an index*, which the old
+    /// `SetBare(true)` deleted and `SetBare(false)` could not restore.
+    #[test]
+    #[serial]
+    fn failed_transform_of_a_nondefault_root_rolls_back_completely() {
+        let (base, repo) = scratch_repo("feature/x");
+        let dev = repo.parent().unwrap().join("repo.dev");
+        git_ok(
+            &repo,
+            &["worktree", "add", "-q", dev.to_str().unwrap(), "-b", "dev"],
+        );
+
+        let _cwd = CwdGuard::enter(&repo);
+        let git = GitCommand::new(false);
+
+        let source = read_source_state(&git, "main").unwrap();
+        assert!(
+            source
+                .worktrees
+                .iter()
+                .any(|wt| wt.branch == "feature/x" && wt.is_root),
+            "the main working tree holds the root role even on a feature branch"
+        );
+
+        let target = compute_target_state(&BuiltinLayout::Contained.to_layout(), &source).unwrap();
+        let classified = classify_worktrees(&source, &target, &[], false);
+        let mut plan = build_plan(&source, &target, &classified, false).unwrap();
+
+        let before_list = git_ok(&repo, &["worktree", "list", "--porcelain"]);
+        let before_regs = registrations(&source.git_dir);
+
+        // Fail after every real op has run, just before validation.
+        let last = plan.ops.len() - 1;
+        plan.ops.insert(last, doomed_op(base.path()));
+
+        let ctx = ctx_for(&source, &target);
+        execute_plan(&plan, &git, &ctx, &mut NullBridge)
+            .expect_err("the doomed op must fail the plan");
+
+        assert!(
+            repo.join(".git/index").exists(),
+            "rollback must not leave the repo without an index"
+        );
+        assert_eq!(
+            git_ok(&repo, &["config", "--get", "core.bare"]).trim(),
+            "false"
+        );
+        assert_eq!(
+            git_ok(&repo, &["status", "--porcelain"]),
+            "",
+            "the working tree must be clean, not a pile of staged deletions"
+        );
+        assert_eq!(
+            git_ok(&repo, &["worktree", "list", "--porcelain"]),
+            before_list
+        );
+        assert_eq!(registrations(&source.git_dir), before_regs);
+        assert!(
+            repo.join("README.md").exists(),
+            "the nested files must be back at the root"
+        );
+        assert!(
+            !repo.join("feature").exists(),
+            "the abandoned nest directory must not survive"
+        );
+    }
+
+    /// The same transform, allowed to finish: the end state is a bare repo with
+    /// the feature branch registered as a linked worktree and no stale index.
+    #[test]
+    #[serial]
+    fn successful_transform_of_a_nondefault_root_registers_it_and_drops_the_index() {
+        let (_base, repo) = scratch_repo("feature/x");
+
+        let _cwd = CwdGuard::enter(&repo);
+        let git = GitCommand::new(false);
+
+        let source = read_source_state(&git, "main").unwrap();
+        let target = compute_target_state(&BuiltinLayout::Contained.to_layout(), &source).unwrap();
+        let classified = classify_worktrees(&source, &target, &[], false);
+        let plan = build_plan(&source, &target, &classified, false).unwrap();
+
+        let ctx = ctx_for(&source, &target);
+        execute_plan(&plan, &git, &ctx, &mut NullBridge).expect("transform should succeed");
+
+        let wt = repo.join("feature/x");
+        assert!(wt.join("README.md").exists());
+        assert_eq!(
+            git_ok(&repo, &["config", "--get", "core.bare"]).trim(),
+            "true"
+        );
+        assert_eq!(
+            git_ok(&wt, &["status", "--porcelain"]),
+            "",
+            "the relocated worktree must be clean"
+        );
+        assert_eq!(
+            git_ok(&wt, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+            "feature/x",
+            "the index must be rebuilt against the pivot's own branch"
+        );
+        assert!(
+            !repo.join(".git/index").exists(),
+            "a bare repo keeps no working-tree index"
+        );
+    }
+
+    /// The bare mirror: no worktree for the default branch, so the sole
+    /// worktree takes the root. A failure must put the registration back.
+    #[test]
+    #[serial]
+    fn failed_bare_to_nonbare_transform_restores_the_registration() {
+        let (base, repo) = scratch_bare_repo(&[("feature/x", "feature/x")]);
+
+        let _cwd = CwdGuard::enter(&repo);
+        let git = GitCommand::new(false);
+
+        let source = read_source_state(&git, "main").unwrap();
+        assert!(source.is_bare);
+        assert!(source.worktrees.iter().all(|wt| !wt.is_root));
+
+        let target = compute_target_state(&BuiltinLayout::Sibling.to_layout(), &source).unwrap();
+        let classified = classify_worktrees(&source, &target, &[], false);
+        let mut plan = build_plan(&source, &target, &classified, false).unwrap();
+
+        let before_list = git_ok(&repo, &["worktree", "list", "--porcelain"]);
+
+        let last = plan.ops.len() - 1;
+        plan.ops.insert(last, doomed_op(base.path()));
+
+        let ctx = ctx_for(&source, &target);
+        execute_plan(&plan, &git, &ctx, &mut NullBridge)
+            .expect_err("the doomed op must fail the plan");
+
+        assert_eq!(
+            git_ok(&repo, &["config", "--get", "core.bare"]).trim(),
+            "true"
+        );
+        assert_eq!(
+            git_ok(&repo, &["worktree", "list", "--porcelain"]),
+            before_list,
+            "the worktree must be registered again at its original path"
+        );
+        assert!(repo.join("feature/x/README.md").exists());
+        assert_eq!(
+            git_ok(&repo.join("feature/x"), &["status", "--porcelain"]),
+            ""
+        );
+        assert!(
+            !repo.join(".git/index").exists(),
+            "the index built at the root must not survive the rollback"
+        );
+        assert!(
+            !repo.join("README.md").exists(),
+            "collapsed files must go back into the worktree"
+        );
+    }
+
+    // ── Individual ops ────────────────────────────────────────────────────
+
+    /// `git worktree add` names registrations after the *path basename*, so a
+    /// slashed branch's registration cannot be guessed from its name.
+    #[test]
+    #[serial]
+    fn unregister_resolves_a_slashed_branch_by_path() {
+        let (_base, repo) = scratch_repo("main");
+        let wt = repo.join("task/x");
+        git_ok(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                wt.to_str().unwrap(),
+                "-b",
+                "task/x",
+            ],
+        );
+        assert_eq!(
+            registrations(&repo.join(".git")),
+            vec!["x".to_string()],
+            "git names it after the basename, not the branch"
+        );
+
+        let _cwd = CwdGuard::enter(&repo);
+        exec_unregister_worktree("task/x", &wt, &mut NullBridge).unwrap();
+
+        assert!(
+            registrations(&repo.join(".git")).is_empty(),
+            "the branch-derived name 'task-x' would have missed entirely"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn failed_move_removes_the_parent_dirs_it_created() {
+        let (_base, repo) = scratch_repo("main");
+        let _cwd = CwdGuard::enter(&repo);
+        let git = GitCommand::new(false);
+
+        let to = repo.join("deep/nested/target");
+        exec_move_worktree(&repo.join("missing"), &to, &repo, &git)
+            .expect_err("moving a nonexistent worktree must fail");
+
+        assert!(
+            !repo.join("deep").exists(),
+            "a move that never happened must leave no scaffolding behind"
+        );
+    }
+
+    #[test]
+    fn prune_stops_at_the_project_root() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().canonicalize().unwrap().join("repo");
+        let deep = root.join("a/b/c");
+        fs::create_dir_all(&deep).unwrap();
+
+        prune_empty_dirs_within(&deep, &root);
+
+        assert!(!root.join("a").exists(), "empty chain should be removed");
+        assert!(root.exists(), "the project root itself is never removed");
+    }
+
+    #[test]
+    fn prune_leaves_dirs_outside_the_project_root_alone() {
+        let base = tempfile::tempdir().unwrap();
+        let outside = base.path().canonicalize().unwrap().join("elsewhere");
+        let root = base.path().canonicalize().unwrap().join("repo");
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&root).unwrap();
+
+        prune_empty_dirs_within(&outside, &root);
+
+        assert!(
+            outside.exists(),
+            "sibling/centralized parents are not daft's to remove"
+        );
     }
 }

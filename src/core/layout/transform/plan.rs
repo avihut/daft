@@ -387,10 +387,9 @@ pub fn build_plan(
         ops.push(TransformOp::InitWorktreeIndex { path, branch });
     }
 
-    // f. RegisterWorktree (if going bare, register the pivot).
-    //    Must be followed by InitWorktreeIndex to rebuild the index — the
-    //    worktree was previously the main working tree of a non-bare repo
-    //    and needs a fresh index as a linked worktree.
+    // f. RegisterWorktree (if going bare, register the pivot). The op rebuilds
+    //    the worktree's index as part of registering it — it was the main
+    //    working tree of a non-bare repo and needs a fresh one in its new role.
     if bare_changed
         && target.is_bare
         && let Some(cw) = root_cw
@@ -398,10 +397,6 @@ pub fn build_plan(
         ops.push(TransformOp::RegisterWorktree {
             branch: cw.branch.clone(),
             path: cw.target_path.clone(),
-        });
-        ops.push(TransformOp::InitWorktreeIndex {
-            path: cw.target_path.clone(),
-            branch: cw.branch.clone(),
         });
     }
 
@@ -749,19 +744,13 @@ mod tests {
         );
         assert!(index_of(&plan, |op| matches!(op, TransformOp::SetBare(true))).is_some());
         assert!(
-            index_of(
-                &plan,
-                |op| matches!(op, TransformOp::RegisterWorktree { branch, .. } if branch == "feature/x")
-            )
-            .is_some()
-        );
-        assert!(
             index_of(&plan, |op| matches!(
                 op,
-                TransformOp::InitWorktreeIndex { branch, .. } if branch == "feature/x"
+                TransformOp::RegisterWorktree { branch, path }
+                    if branch == "feature/x" && path == Path::new("/repo/feature/x")
             ))
             .is_some(),
-            "the index must be rebuilt against the pivot's branch"
+            "the pivot becomes a linked worktree (which rebuilds its index)"
         );
     }
 
