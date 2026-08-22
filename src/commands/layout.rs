@@ -39,7 +39,7 @@ Layouts control where worktrees are placed relative to the bare repository.
 Built-in layouts:
 
   contained           Worktrees inside the repo directory (bare required)
-  contained-classic   Like contained but default branch is a regular clone
+  contained-classic   Like contained but the main working tree is a regular clone
   contained-flat      Like contained but branch slashes flattened to dashes
   sibling             Worktrees next to the repo directory (default)
   nested              Worktrees in a hidden subdirectory
@@ -599,28 +599,61 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         source.project_root = wrapper.to_path_buf();
     }
 
-    // Compute target state using the (possibly adjusted) project root
-    let target = transform::compute_target_state(
-        &target_layout,
-        &source.project_root,
-        &default_branch,
-        &source.worktrees,
-    )?;
+    // Compute target state using the (possibly adjusted) project root. This is
+    // where an impossible transform is refused — before the dirty check,
+    // before --force stashing, before any mutation.
+    let target = transform::compute_target_state(&target_layout, &source)?;
 
     // Classify worktrees
     let classified =
         transform::classify_worktrees(&source, &target, &args.include, args.include_all);
 
+    // The root role follows the main working tree, not the default branch. When
+    // the two differ the user is about to get a layout where the default branch
+    // has no worktree (or has an ordinary linked one) — say so rather than let
+    // them find out from `daft list`.
+    if let Some(cw) = classified
+        .iter()
+        .find(|cw| cw.disposition == transform::WorktreeDisposition::Root)
+        && cw.branch != default_branch
+        && cw.current_path != cw.target_path
+    {
+        let default_has_worktree = source
+            .worktrees
+            .iter()
+            .any(|wt| wt.branch == default_branch);
+        let lead = if default_has_worktree {
+            format!(
+                "The main working tree is on '{}', not the default branch '{}'",
+                cw.branch, default_branch
+            )
+        } else {
+            format!(
+                "Default branch '{}' has no worktree; the main working tree is on '{}'",
+                default_branch, cw.branch
+            )
+        };
+        let tail = if cw.target_path == source.project_root {
+            format!(
+                " — it becomes the repository root at {}.",
+                cw.target_path.display()
+            )
+        } else {
+            format!(" — it moves to {}.", cw.target_path.display())
+        };
+        output.notice(&format!("{lead}{tail}"));
+    }
+
     // Check for dirty worktrees (unless --force).
-    // Only check the default branch worktree (the repo root for non-bare
-    // layouts). Non-default worktrees are linked worktrees that git manages
-    // independently — their dirty state is preserved via stash ops.
-    // Layout artifacts (.gitignore with auto-added patterns, worktree
-    // directories managed by the layout) are excluded from the check.
+    // Only check the worktree holding the root role — the main working tree,
+    // whatever branch it carries, or the one about to become it. The rest are
+    // linked worktrees that git relocates intact, and whose dirty state is
+    // preserved via stash ops. Layout artifacts (.gitignore with auto-added
+    // patterns, worktree directories managed by the layout) are excluded.
     if !args.force {
         let prev_dir = get_current_directory()?;
         for cw in &classified {
-            if cw.disposition != transform::WorktreeDisposition::DefaultBranch {
+            if cw.disposition != transform::WorktreeDisposition::Root {
                 continue;
             }
             if cw.current_path.exists() {
@@ -693,6 +726,7 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     let exec_ctx = transform::ExecutionContext {
         project_root: source.project_root.clone(),
         git_dir: source.git_dir.clone(),
+        target_git_dir: target.git_dir.clone(),
         remote: settings.remote.clone(),
         source_worktree: source.project_root.clone(),
     };
@@ -710,24 +744,27 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     exec_result?;
 
     // After transform, CWD may be in a directory that was moved or removed.
-    // CD to a known-valid location: the target's default branch worktree if
-    // it exists, or the project root.
-    let target_default = target
+    // CD to a known-valid location: the target's root worktree if it exists,
+    // or the project root.
+    let target_root = target
         .worktrees
         .iter()
-        .find(|wt| wt.is_default)
+        .find(|wt| wt.is_root)
         .map(|wt| wt.path.clone())
         .unwrap_or_else(|| source.project_root.clone());
-    if target_default.exists() {
-        crate::utils::change_directory(&target_default)?;
+    let landing = if target_root.exists() {
+        target_root
     } else {
-        crate::utils::change_directory(&source.project_root)?;
-    }
+        source.project_root.clone()
+    };
+    crate::utils::change_directory(&landing)?;
 
     // Clean up layout artifacts from the source layout (e.g., .gitignore
     // entries auto-added by nested). Must happen after worktrees are moved
-    // so that .worktrees/ is empty and can be ignored.
-    revert_layout_gitignore(&source, &git, output);
+    // so that .worktrees/ is empty and can be ignored. The file is looked up
+    // where it *landed*: a NestFromRoot has already carried it out of the
+    // project root and into the nested worktree.
+    revert_layout_gitignore(&source, &landing, &git, output);
 
     // Auto-add .gitignore entries if the target layout places worktrees
     // inside the repo (e.g. nested → .worktrees/). Only relevant for non-bare
@@ -793,7 +830,7 @@ fn has_real_uncommitted_changes(
 
     // Worktree parent directories (e.g., .worktrees/ for nested)
     for wt in &source.worktrees {
-        if wt.is_default {
+        if wt.is_root {
             continue;
         }
         if let Ok(rel) = wt.path.strip_prefix(&source.project_root)
@@ -827,19 +864,22 @@ fn has_real_uncommitted_changes(
 /// preserving any user-added entries. If the .gitignore becomes empty, deletes it.
 fn revert_layout_gitignore(
     source: &transform::LayoutState,
+    root_dir: &Path,
     _git: &GitCommand,
     output: &mut dyn Output,
 ) {
     // Only relevant for non-bare source layouts that place worktrees inside
-    // the project root (nested is the main case).
-    let gitignore_path = source.project_root.join(".gitignore");
+    // the project root (nested is the main case). `root_dir` is where the main
+    // working tree ended up, which is not `source.project_root` whenever the
+    // transform nested it.
+    let gitignore_path = root_dir.join(".gitignore");
     if !gitignore_path.exists() {
         return;
     }
 
     // Compute the auto-gitignore pattern the source layout would have added.
     // This is the first path component of a worktree path relative to the root.
-    let sample_wt = source.worktrees.iter().find(|wt| !wt.is_default);
+    let sample_wt = source.worktrees.iter().find(|wt| !wt.is_root);
     let pattern = sample_wt.and_then(|wt| {
         wt.path
             .strip_prefix(&source.project_root)
@@ -881,7 +921,7 @@ fn revert_layout_gitignore(
                     "--ignore-unmatch",
                     ".gitignore",
                 ])
-                .current_dir(&source.project_root)
+                .current_dir(root_dir)
                 .output();
             output.step("Reverted layout-specific .gitignore");
         }
@@ -891,7 +931,7 @@ fn revert_layout_gitignore(
             // If it was tracked, stage the change
             let _ = std::process::Command::new("git")
                 .args(["add", "--ignore-errors", ".gitignore"])
-                .current_dir(&source.project_root)
+                .current_dir(root_dir)
                 .output();
             output.step("Reverted layout-specific .gitignore entry");
         }

@@ -26,7 +26,12 @@ use crate::hooks::tracking::TrackedAttribute;
 /// `execute_plan` can build `MoveHookParams` for each `MoveWorktree` op.
 pub struct ExecutionContext {
     pub project_root: PathBuf,
+    /// The `.git` directory the transform starts from.
     pub git_dir: PathBuf,
+    /// Where `.git` ends up. Used by the index epilogues, which must name the
+    /// file explicitly rather than re-derive it from a cwd that the transform
+    /// may have moved out from under itself.
+    pub target_git_dir: PathBuf,
     pub remote: String,
     pub source_worktree: PathBuf,
 }
@@ -117,7 +122,7 @@ pub fn execute_plan(
             run_teardown_hooks(params, sink);
         }
 
-        if let Err(e) = execute_op(op, git, sink) {
+        if let Err(e) = execute_op(op, git, ctx, sink) {
             sink.on_warning(&format!("Operation failed: {e:#}"));
             // Note: rollback does not fire inverse move hooks. Hook-managed
             // state (e.g., direnv, mise trust) may be inconsistent after
@@ -126,8 +131,11 @@ pub fn execute_plan(
             // failures elsewhere.
             sink.on_warning("Attempting rollback of completed operations...");
 
-            if let Err(rb_err) = rollback(&rollback_stack, git, sink) {
-                sink.on_warning(&format!("Rollback encountered errors: {rb_err:#}"));
+            match rollback(&rollback_stack, git, ctx, sink) {
+                Ok(()) => drop_index_after_rollback(plan, ctx),
+                Err(rb_err) => {
+                    sink.on_warning(&format!("Rollback encountered errors: {rb_err:#}"));
+                }
             }
 
             return Err(e.context(format!(
@@ -148,16 +156,57 @@ pub fn execute_plan(
         }
     }
 
+    drop_index_after_success(plan, ctx);
+
     Ok(ExecuteResult {
         ops_completed: total,
         ops_total: total,
     })
 }
 
+// ── Index epilogues ────────────────────────────────────────────────────────
+//
+// A bare repository keeps no working-tree index: leaving one behind makes
+// `git status` in the repo dir report every tracked file as deleted. Dropping
+// it is therefore part of *finishing* a bare transform — never part of
+// `SetBare(true)` itself, which has to stay trivially reversible so a failed
+// plan can roll `core.bare` back without having destroyed the index the
+// working tree still needs (#859).
+
+/// After a fully successful plan that ends bare, remove the now-meaningless
+/// working-tree index. Best-effort: a missing file is the normal case.
+fn drop_index_after_success(plan: &TransformPlan, ctx: &ExecutionContext) {
+    if plan
+        .ops
+        .iter()
+        .any(|op| matches!(op, TransformOp::SetBare(true)))
+    {
+        let _ = fs::remove_file(ctx.target_git_dir.join("index"));
+    }
+}
+
+/// After a *complete* rollback of a plan that started bare, remove the index
+/// `InitWorktreeIndex` built at the root, so the restored repository is bare
+/// again in the same sense it was before.
+fn drop_index_after_rollback(plan: &TransformPlan, ctx: &ExecutionContext) {
+    if plan
+        .ops
+        .iter()
+        .any(|op| matches!(op, TransformOp::SetBare(false)))
+    {
+        let _ = fs::remove_file(ctx.git_dir.join("index"));
+    }
+}
+
 // ── Per-op dispatch ────────────────────────────────────────────────────────
 
 /// Execute a single transform operation.
-fn execute_op(op: &TransformOp, git: &GitCommand, progress: &mut dyn ProgressSink) -> Result<()> {
+fn execute_op(
+    op: &TransformOp,
+    git: &GitCommand,
+    ctx: &ExecutionContext,
+    progress: &mut dyn ProgressSink,
+) -> Result<()> {
     match op {
         TransformOp::StashChanges {
             branch,
@@ -173,7 +222,7 @@ fn execute_op(op: &TransformOp, git: &GitCommand, progress: &mut dyn ProgressSin
             branch: _,
             from,
             to,
-        } => exec_move_worktree(from, to, git),
+        } => exec_move_worktree(from, to, &ctx.project_root, git),
 
         TransformOp::MoveGitDir { from, to } => exec_move_git_dir(from, to),
 
@@ -183,13 +232,15 @@ fn execute_op(op: &TransformOp, git: &GitCommand, progress: &mut dyn ProgressSin
             exec_register_worktree(branch, path, progress)
         }
 
-        TransformOp::UnregisterWorktree { branch } => exec_unregister_worktree(branch),
+        TransformOp::UnregisterWorktree { branch, path } => {
+            exec_unregister_worktree(branch, path, progress)
+        }
 
         TransformOp::CollapseIntoRoot {
             worktree_path,
             root_path,
             ..
-        } => exec_collapse_into_root(worktree_path, root_path),
+        } => exec_collapse_into_root(worktree_path, root_path, &ctx.project_root),
 
         TransformOp::NestFromRoot {
             root_path,
@@ -197,7 +248,9 @@ fn execute_op(op: &TransformOp, git: &GitCommand, progress: &mut dyn ProgressSin
             ..
         } => exec_nest_from_root(root_path, subdir_path),
 
-        TransformOp::InitWorktreeIndex { path } => exec_init_worktree_index(path, progress),
+        TransformOp::InitWorktreeIndex { path, branch } => {
+            exec_init_worktree_index(path, branch, progress)
+        }
 
         TransformOp::CreateDirectory { path } => {
             fs::create_dir_all(path)
@@ -240,19 +293,47 @@ fn exec_pop_stash(
     Ok(())
 }
 
-fn exec_move_worktree(from: &Path, to: &Path, git: &GitCommand) -> Result<()> {
-    // Ensure parent directory exists
-    if let Some(parent) = to.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create parent directory: {}", parent.display()))?;
+fn exec_move_worktree(from: &Path, to: &Path, project_root: &Path, git: &GitCommand) -> Result<()> {
+    let created = ensure_parent_dirs(to)?;
+
+    if let Err(e) = git.worktree_move(from, to) {
+        // Leave no scaffolding behind for a move that never happened — the
+        // empty `repo/task/` left by the #859 failure came from here.
+        for dir in created.iter().rev() {
+            let _ = fs::remove_dir(dir);
+        }
+        return Err(e);
     }
 
-    git.worktree_move(from, to)?;
-
-    // Clean up empty parent directories left behind
-    cleanup_empty_parents(from);
+    if let Some(parent) = from.parent() {
+        prune_empty_dirs_within(parent, project_root);
+    }
 
     Ok(())
+}
+
+/// Create `to`'s parent chain, returning the directories that did not exist
+/// beforehand (shallowest first) so a failed move can remove exactly those.
+fn ensure_parent_dirs(to: &Path) -> Result<Vec<PathBuf>> {
+    let Some(parent) = to.parent() else {
+        return Ok(Vec::new());
+    };
+
+    let mut missing: Vec<PathBuf> = Vec::new();
+    let mut cursor = Some(parent);
+    while let Some(dir) = cursor {
+        if dir.exists() {
+            break;
+        }
+        missing.push(dir.to_path_buf());
+        cursor = dir.parent();
+    }
+    missing.reverse();
+
+    fs::create_dir_all(parent)
+        .with_context(|| format!("Failed to create parent directory: {}", parent.display()))?;
+
+    Ok(missing)
 }
 
 fn exec_move_git_dir(from: &Path, to: &Path) -> Result<()> {
@@ -292,22 +373,14 @@ fn exec_move_git_dir(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Flip `core.bare` — and nothing else.
+///
+/// The stale index a bare repo is left holding is cleaned up by
+/// `drop_index_after_success`, not here: this op's reverse is `SetBare(!bare)`,
+/// so anything it destroys is destroyed for good the moment a later op fails.
 fn exec_set_bare(bare: bool, git: &GitCommand) -> Result<()> {
     let value = if bare { "true" } else { "false" };
     git.config_set("core.bare", value)?;
-
-    // When going bare, remove the index file so git doesn't think the bare repo
-    // has a working tree with deletions.
-    if bare {
-        let git_dir = crate::core::repo::get_git_common_dir()?;
-        let index_file = git_dir.join("index");
-        if index_file.exists() {
-            fs::remove_file(&index_file).with_context(|| {
-                format!("Failed to remove index file: {}", index_file.display())
-            })?;
-        }
-    }
-
     Ok(())
 }
 
@@ -320,24 +393,84 @@ fn exec_register_worktree(
     super::legacy::register_worktree(&git_dir, path, branch, progress)
 }
 
-fn exec_unregister_worktree(branch: &str) -> Result<()> {
+fn exec_unregister_worktree(
+    branch: &str,
+    path: &Path,
+    progress: &mut dyn ProgressSink,
+) -> Result<()> {
     let git_dir = crate::core::repo::get_git_common_dir()?;
-    let worktree_name = branch.replace('/', "-");
-    let worktrees_dir = git_dir.join("worktrees").join(&worktree_name);
 
-    if worktrees_dir.exists() {
-        fs::remove_dir_all(&worktrees_dir).with_context(|| {
-            format!(
-                "Failed to remove worktree registration: {}",
-                worktrees_dir.display()
-            )
-        })?;
-    }
+    let Some(registration) = find_worktree_registration(&git_dir, path) else {
+        progress.on_warning(&format!(
+            "No worktree registration found for '{branch}' at {} — nothing to unregister.",
+            path.display()
+        ));
+        return Ok(());
+    };
+
+    fs::remove_dir_all(&registration).with_context(|| {
+        format!(
+            "Failed to remove worktree registration: {}",
+            registration.display()
+        )
+    })?;
 
     Ok(())
 }
 
-fn exec_collapse_into_root(worktree_path: &Path, root_path: &Path) -> Result<()> {
+/// Find the `<common>/worktrees/<name>` registration that belongs to
+/// `worktree_path`.
+///
+/// The name cannot be derived from the branch: `git worktree add` names the
+/// registration after the *path basename* (`R/task/x` -> `x`) and disambiguates
+/// collisions with a numeric suffix. Its `gitdir` file — the same link
+/// `fixup_gitdir_references` rewrites — is the authoritative back-pointer.
+fn find_worktree_registration(git_dir: &Path, worktree_path: &Path) -> Option<PathBuf> {
+    let worktrees_dir = git_dir.join("worktrees");
+    let wanted_dir = canonical_or_owned(worktree_path);
+    let wanted_file = canonical_or_owned(&worktree_path.join(".git"));
+
+    for entry in fs::read_dir(&worktrees_dir).ok()? {
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+
+        let Ok(recorded) = fs::read_to_string(entry.path().join("gitdir")) else {
+            continue;
+        };
+        let recorded = PathBuf::from(recorded.trim());
+        if recorded.as_os_str().is_empty() {
+            continue;
+        }
+
+        if canonical_or_owned(&recorded) == wanted_file {
+            return Some(entry.path());
+        }
+        // The `.git` pointer file may already be gone (a collapse removes it);
+        // fall back to the directory that holds it.
+        if let Some(parent) = recorded.parent()
+            && canonical_or_owned(parent) == wanted_dir
+        {
+            return Some(entry.path());
+        }
+    }
+
+    None
+}
+
+/// Canonicalize when the path exists, otherwise keep it verbatim — enough to
+/// see through macOS's `/tmp` -> `/private/tmp` symlink without failing on
+/// paths a transform has already moved.
+fn canonical_or_owned(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn exec_collapse_into_root(
+    worktree_path: &Path,
+    root_path: &Path,
+    project_root: &Path,
+) -> Result<()> {
     let staging = root_path.join(".daft-transform-staging");
     fs::create_dir_all(&staging)
         .with_context(|| format!("Failed to create staging dir: {}", staging.display()))?;
@@ -386,6 +519,11 @@ fn exec_collapse_into_root(worktree_path: &Path, root_path: &Path) -> Result<()>
     }
 
     fs::remove_dir(&staging).ok();
+
+    // `/repo/task/x` -> `/repo` leaves `/repo/task` behind.
+    if let Some(parent) = worktree_path.parent() {
+        prune_empty_dirs_within(parent, project_root);
+    }
 
     Ok(())
 }
@@ -447,7 +585,28 @@ fn exec_nest_from_root(root_path: &Path, subdir_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn exec_init_worktree_index(path: &Path, progress: &mut dyn ProgressSink) -> Result<()> {
+fn exec_init_worktree_index(
+    path: &Path,
+    branch: &str,
+    progress: &mut dyn ProgressSink,
+) -> Result<()> {
+    // Point HEAD at the branch before rebuilding the index. A worktree that
+    // just changed role has lost the HEAD it used to resolve through: after
+    // `UnregisterWorktree` the only one left is the bare repo's, which names
+    // the default branch — reset against that would rebuild the index from the
+    // wrong tree and fail `ValidateIntegrity` (legacy.rs::initialize_index has
+    // always done both steps).
+    let head_result = Command::new("git")
+        .args(["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")])
+        .current_dir(path)
+        .output()
+        .context("Failed to set HEAD")?;
+
+    if !head_result.status.success() {
+        let stderr = String::from_utf8_lossy(&head_result.stderr);
+        progress.on_warning(&format!("git symbolic-ref warning: {}", stderr.trim()));
+    }
+
     let reset_result = Command::new("git")
         .args(["reset", "--mixed", "HEAD"])
         .current_dir(path)
@@ -616,7 +775,7 @@ fn fixup_gitdir_references(new_git_dir: &Path) -> Result<()> {
 /// Compute the reverse operation for rollback purposes.
 ///
 /// Returns `None` for operations that cannot be meaningfully reversed
-/// (stash, register/unregister, index init, validation, directory creation).
+/// (stash, index init, validation, directory creation).
 fn reverse_op(op: &TransformOp) -> Option<TransformOp> {
     match op {
         TransformOp::MoveWorktree { branch, from, to } => Some(TransformOp::MoveWorktree {
@@ -631,6 +790,16 @@ fn reverse_op(op: &TransformOp) -> Option<TransformOp> {
         }),
 
         TransformOp::SetBare(bare) => Some(TransformOp::SetBare(!bare)),
+
+        TransformOp::RegisterWorktree { branch, path } => Some(TransformOp::UnregisterWorktree {
+            branch: branch.clone(),
+            path: path.clone(),
+        }),
+
+        TransformOp::UnregisterWorktree { branch, path } => Some(TransformOp::RegisterWorktree {
+            branch: branch.clone(),
+            path: path.clone(),
+        }),
 
         TransformOp::CollapseIntoRoot {
             branch,
@@ -655,8 +824,6 @@ fn reverse_op(op: &TransformOp) -> Option<TransformOp> {
         // These operations are not easily reversible
         TransformOp::StashChanges { .. }
         | TransformOp::PopStash { .. }
-        | TransformOp::RegisterWorktree { .. }
-        | TransformOp::UnregisterWorktree { .. }
         | TransformOp::InitWorktreeIndex { .. }
         | TransformOp::CreateDirectory { .. }
         | TransformOp::ValidateIntegrity => None,
@@ -667,13 +834,14 @@ fn reverse_op(op: &TransformOp) -> Option<TransformOp> {
 fn rollback(
     stack: &[TransformOp],
     git: &GitCommand,
+    ctx: &ExecutionContext,
     progress: &mut dyn ProgressSink,
 ) -> Result<()> {
     let mut first_error: Option<anyhow::Error> = None;
 
     for op in stack.iter().rev() {
         progress.on_step(&format!("Rollback: {}", describe_op(op)));
-        if let Err(e) = execute_op(op, git, progress) {
+        if let Err(e) = execute_op(op, git, ctx, progress) {
             progress.on_warning(&format!("Rollback step failed: {e:#}"));
             if first_error.is_none() {
                 first_error = Some(e);
@@ -692,20 +860,25 @@ fn rollback(
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/// Walk up from a path and remove empty directories until we hit a non-empty
-/// one or reach a filesystem root.
-fn cleanup_empty_parents(path: &Path) {
-    let mut current = path.to_path_buf();
-    while let Some(parent) = current.parent() {
-        // Stop at filesystem root
-        if parent == current {
-            break;
-        }
-        // Try to remove — will fail (harmlessly) if non-empty
+/// Remove `start` and its ancestors while they are empty, stopping at — and
+/// never removing — `project_root`.
+///
+/// Only acts on directories strictly inside `project_root`, so the parents of
+/// sibling and centralized worktrees (which daft does not own) are left alone.
+/// The predecessor of this helper started at the *moved* path, which no longer
+/// exists, so it broke on its first `remove_dir` and never climbed at all.
+fn prune_empty_dirs_within(start: &Path, project_root: &Path) {
+    let root = canonical_or_owned(project_root);
+    let mut current = canonical_or_owned(start);
+
+    while current != root && current.starts_with(&root) {
         if fs::remove_dir(&current).is_err() {
             break;
         }
-        current = parent.to_path_buf();
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => break,
+        }
     }
 }
 
@@ -735,8 +908,8 @@ pub fn describe_op(op: &TransformOp) -> String {
         TransformOp::RegisterWorktree { branch, path } => {
             format!("Register worktree '{branch}' at {}", path.display())
         }
-        TransformOp::UnregisterWorktree { branch } => {
-            format!("Unregister worktree '{branch}'")
+        TransformOp::UnregisterWorktree { branch, path } => {
+            format!("Unregister worktree '{branch}' at {}", path.display())
         }
         TransformOp::CollapseIntoRoot {
             worktree_path,
@@ -760,8 +933,8 @@ pub fn describe_op(op: &TransformOp) -> String {
                 subdir_path.display()
             )
         }
-        TransformOp::InitWorktreeIndex { path } => {
-            format!("Initialize worktree index at {}", path.display())
+        TransformOp::InitWorktreeIndex { path, branch } => {
+            format!("Initialize index for '{branch}' at {}", path.display())
         }
         TransformOp::CreateDirectory { path } => {
             format!("Create directory {}", path.display())
