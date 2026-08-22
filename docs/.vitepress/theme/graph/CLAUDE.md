@@ -205,9 +205,13 @@ Playback then splits into one **headless player** and any number of **viewers**:
   starting `null`, attached on arrival — so shared viewers cannot drift. The
   player's owner also owns visibility gating (`observeVisibility`).
 
-The landing hero (`DemoStage.vue`) is deliberately nothing more than this:
-`HERO_SCRIPT` + `loop: true` through the two standard viewers. Any capability
-the hero needs must land as a player or viewer feature, never as hero-only code.
+The landing hero (`landing/DemoStage.vue`) is deliberately nothing more than
+this: `HERO_SCRIPT` + `loop: true` through the two standard viewers. Any
+capability the hero needs must land as a player or viewer feature, never as
+hero-only code. The landing's five point scenes (`landing/PointScene.vue`) are
+the same composition over registry-built scripts; the viewers' and the paired
+stage's styles live in `graph/viewers.css`, shared by the landing, the
+playground, and docs embeds.
 
 Clicking the canvas toggles play; `settle()` (and reduced motion) land on a
 step's end state. The shell speaks the same color law for important operations:
@@ -346,10 +350,11 @@ state serializable.
 ```
 
 Both viewers are registered globally (theme `enhanceApp`), so docs pages can
-embed them straight from markdown. Give the host element a size (the canvas
-fills it) and a `--vp-c-bg-soft`-like background. Static diagrams for docs pages
-are one-step scripts with `still` — the full grammar (hollow, badges, arcs)
-works in a single frame.
+embed them straight from markdown. `landing/PointScene.vue` is the reference
+host for pairing the two on one shared player. Give the host element a size (the
+canvas fills it) and a `--vp-c-bg-soft`-like background. Static diagrams for
+docs pages are one-step scripts with `still` — the full grammar (hollow, badges,
+arcs) works in a single frame.
 
 ## Extending
 

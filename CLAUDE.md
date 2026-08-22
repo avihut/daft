@@ -566,7 +566,9 @@ review). Spelled-out paths keep the walk-up; guesses do not.
     CLAUDE.md), in the same change or a filed follow-up, so docs animations can
     show the command. The `/composer` editor's palette and shell parser derive
     from the same registry, so a new op spec reaches them for free — but the
-    shell spelling lives in `graph/shell.ts` and needs its parse arm. Commands
+    shell spelling lives in `graph/shell.ts` and needs its parse arm. If the
+    command changes what one of the landing page's five points shows, update
+    `docs/.vitepress/theme/landing/points.ts` per `landing/CLAUDE.md`. Commands
     with no graph-visible effect (config, completions, ...) skip this step.
 
 ## Adding a New DB-backed Feature
@@ -703,6 +705,11 @@ adding or changing user-facing features.
   template
 - `docs/about/` — meta (why-daft, glossary, FAQ, troubleshooting, comparison,
   contributing, changelog)
+- `docs/index.md` + `docs/.vitepress/theme/landing/` — the landing page: the
+  install line, the replayed session, five points in workflow order, the close.
+  Its shape and the rules for changing it (copy as mechanism, scenes from the
+  verb registry, five points — swap, never append) are in
+  `docs/.vitepress/theme/landing/CLAUDE.md`
 - `docs/composer.md` — the full-window diagram composer (unlisted): the
   `@dumbshow/vue` editor (over `@dumbshow/core`) loaded with daft's language
   pack. The editor's document model and hard rules are normative in the dumbshow
