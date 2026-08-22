@@ -39,7 +39,7 @@ export const CATALOG: CatalogEntry[] = [
   {
     id: "start",
     title: "start",
-    syntax: "daft start <branch> [<base>]",
+    syntax: "daft start <branch>",
     blurb:
       "A worktree orbits out on its edge, boots under the teal setup ring, and claims the next port.",
     demo: [clone("web"), start("checkout")],
@@ -102,7 +102,7 @@ export const CATALOG: CatalogEntry[] = [
   {
     id: "exec",
     title: "exec",
-    syntax: "daft exec --related -- <cmd>",
+    syntax: "daft exec --related -- <command>",
     blurb:
       "One command across the whole feature — no graph change, just reach.",
     demo: [

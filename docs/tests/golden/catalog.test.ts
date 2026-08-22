@@ -37,6 +37,23 @@ describe("CMP-L2 catalog demos build clean", () => {
     });
   }
 
+  test("no entry advertises an argument its op does not have", () => {
+    for (const entry of CATALOG) {
+      const verb = entry.demo[entry.focus]?.verb;
+      const spec = OPS.find((o) => o.id === verb);
+      if (!spec) throw new Error(`${entry.id}: no op for ${verb}`);
+      const placeholders = [...entry.syntax.matchAll(/<([^>]+)>/g)].map(
+        (m) => m[1],
+      );
+      for (const name of placeholders)
+        expect(`${entry.id}: <${name}>`).toBe(
+          spec.syntax.includes(`<${name}>`)
+            ? `${entry.id}: <${name}>`
+            : `${entry.id}: not in "${spec.syntax}"`,
+        );
+    }
+  });
+
   test("the vocabulary tour covers all 15 act kinds", () => {
     const tour = GALLERY.find((g) => g.id === "vocabulary");
     if (!tour) throw new Error("no vocabulary tour in the gallery");

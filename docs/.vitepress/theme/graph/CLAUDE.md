@@ -23,11 +23,11 @@ renames), `RepoDiagram.vue` and `RepoTerminal.vue` (the two viewers), `verbs.ts`
 `gallery.ts` (scripts the playground replays), `Playground.vue` (the
 `/playground` page), `composer/` (the pack side of the `/composer` editor —
 element semantics, inspector views and panes, the docs embed template; see "The
-composer" below). Styles live in `../home.css` under the `.dg-`/`.dl-` prefixes
-(playground styles in the page component; editor styles ship with the package
-and are imported by `docs/composer.md` as `@dumbshow/core/style.css`). Change
-this file and the renderer together — the grammar here is normative, not
-descriptive.
+composer" below). Viewer styles live in `viewers.css` under the `.dg-`/`.dl-`
+prefixes (the landing's own styles in `../landing/home.css`, playground styles
+in the page component; editor styles ship with the package and are imported by
+`docs/composer.md` as `@dumbshow/core/style.css`). Change this file and the
+renderer together — the grammar here is normative, not descriptive.
 
 ## The language-pack seam
 
@@ -294,9 +294,14 @@ CLAUDE.md before touching editor behavior. What is daft's, here in `composer/`:
   (`<RepoDiagram :script=.../>` + `<RepoTerminal .../>`), wired into the pack as
   `embedSnippet`.
 - **`seed.ts`'s rename law** — `renameEntity` rewrites a name in seed, args,
-  composite `repo:branch` targets, and placement keys up to the first `rename`
-  op; callers freeze current geometry first (`scenePlacements` plus the pack's
-  `freezePlacements`, both in `seed.ts`) or hash-derived positions teleport.
+  composite `repo:branch` targets, and placement keys up to the `rename` op that
+  renames that entity away; callers freeze current geometry first
+  (`scenePlacements` plus the pack's `freezePlacements`, both in `seed.ts`) or
+  hash-derived positions teleport. It takes a `RenameTarget`, never a bare name:
+  a branch belongs to one repo, and `web:checkout` and `orders:checkout` are two
+  worktrees of one feature — renaming the selected one leaves its sibling alone.
+  A repo rename has no op that renames it away, so it rewrites the whole
+  timeline.
 - **The seed and the placements are daft's JSON** (document format v2):
   `seed.ts` declares their schemas (`Seed`/`SeedRepo`/`SeedWt`, `Placements`
   keyed by repo name and `"repo:branch"`), validates them
