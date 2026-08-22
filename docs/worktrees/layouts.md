@@ -204,6 +204,29 @@ daft handles everything automatically — moving worktrees to their new location
 converting the internal Git structure when needed, and updating its records.
 Your shell is moved to the new location of whatever branch you were on.
 
+### What moves where
+
+The branch checked out in the **main working tree** — the directory that holds
+`.git`, whatever branch it happens to be on — is what daft nests into a
+subdirectory or collapses back into the repository root. That is usually the
+default branch, but it does not have to be: a clone you adopt mid-task is
+sitting on a feature branch, and the transform follows it.
+
+The default branch only names things. It decides where `.git` lives for
+`contained-classic`, and it is the preferred choice when a bare repository gains
+a working tree. If it has no worktree, it keeps having none — daft says so and
+moves on rather than creating one behind your back.
+
+Two cases are refused up front, before anything moves:
+
+- A bare repository going non-bare where the default branch has no worktree and
+  more than one worktree could take the root. Run `daft go <default-branch>` and
+  retry.
+- A `contained-classic` clone whose directory no longer matches its branch (you
+  switched branches inside it) going to a layout that wants it somewhere else.
+  Git cannot move a main working tree; transform to `sibling` first, then to the
+  layout you want.
+
 ::: tip If any worktrees have uncommitted changes, the transform will warn you.
 Use `--force` to proceed anyway. :::
 

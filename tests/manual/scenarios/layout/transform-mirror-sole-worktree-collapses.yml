@@ -1,0 +1,49 @@
+name: A bare repo with no default-branch worktree collapses its only worktree
+description: >
+  The mirror of #859: going bare -> non-bare there may be no worktree for the
+  default branch to put at the repository root. With exactly one candidate the
+  choice is unambiguous, so daft takes it and says so.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone contained and add a feature worktree
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      git-worktree-checkout -b task/local-docker
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/task/local-docker"
+
+  - name: Drop the default branch's worktree with plain git
+    run: git -C $WORK_DIR/test-repo worktree remove $WORK_DIR/test-repo/main
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main/README.md"
+
+  - name: Transform to sibling
+    run: daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo/task/local-docker"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "'task/local-docker' becomes the main working tree"
+        - "default branch 'main' has no worktree"
+        - "Transformed"
+
+  - name: The sole worktree became the repository root
+    run:
+      test -z "$(git -C $WORK_DIR/test-repo status --porcelain | grep -v
+      '.gitignore')"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/README.md"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: task/local-docker

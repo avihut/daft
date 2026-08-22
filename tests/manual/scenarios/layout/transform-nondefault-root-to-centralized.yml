@@ -1,0 +1,47 @@
+name: Transform a non-default main working tree to centralized
+description: >
+  #859 against the one builtin that places worktrees outside the project root:
+  the main working tree stays put on its feature branch, the linked worktree
+  moves into the daft data directory.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with plain git and switch to a local-only branch
+    run: |
+      git clone -q $REMOTE_TEST_REPO test-repo
+      git -C $WORK_DIR/test-repo switch -q -c task/local-docker
+    expect:
+      exit_code: 0
+
+  - name: Add a linked worktree beside the clone
+    run:
+      git -C $WORK_DIR/test-repo worktree add -q $WORK_DIR/test-repo.develop
+      develop
+    expect:
+      exit_code: 0
+
+  - name: Transform to centralized
+    run: daft layout transform centralized 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Transformed"
+
+  - name: The root stays, develop lands in the data directory
+    run: git -C $WORK_DIR/test-repo worktree list
+    expect:
+      exit_code: 0
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: task/local-docker
+        - dir: "$DAFT_DATA_DIR/worktrees/test-repo/develop"
+          branch: develop
+
+  - name: Clean up the centralized worktrees
+    run: rm -rf $DAFT_DATA_DIR/worktrees/test-repo
+    expect:
+      exit_code: 0
