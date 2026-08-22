@@ -608,15 +608,60 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     let classified =
         transform::classify_worktrees(&source, &target, &args.include, args.include_all);
 
+    // Check for dirty worktrees (unless --force).
+    //
+    // Two worktrees are checked. The one holding the root role — the main
+    // working tree, whatever branch it carries, or the one about to become it
+    // — because the transform physically rewrites it. And the default branch's
+    // worktree, which used to be the *same* entry back when the root role was
+    // keyed on the branch name: now that the role follows the main working
+    // tree, a dirty linked worktree on the default branch would otherwise slip
+    // past this guard and get rejected by `ValidateIntegrity` at the very last
+    // op instead, rolling the whole transform back. An up-front refusal naming
+    // the worktree is the behaviour worth keeping.
+    //
+    // Other linked worktrees are still not checked: git relocates them intact,
+    // and `--force` preserves their dirty state via stash ops. Layout artifacts
+    // (.gitignore with auto-added patterns, worktree directories managed by the
+    // layout) are excluded from what counts as dirty.
+    if !args.force {
+        let prev_dir = get_current_directory()?;
+        for cw in &classified {
+            let checked = cw.disposition == transform::WorktreeDisposition::Root
+                || cw.branch == default_branch;
+            if !checked {
+                continue;
+            }
+            if cw.current_path.exists() {
+                change_directory(&cw.current_path)?;
+                if has_real_uncommitted_changes(&git, &source)? {
+                    change_directory(&prev_dir)?;
+                    anyhow::bail!(
+                        "Worktree '{}' has uncommitted changes. Commit, stash, or use --force.",
+                        cw.branch
+                    );
+                }
+            }
+        }
+        change_directory(&prev_dir)?;
+    }
+
+    // Build the plan
+    let mut plan = transform::build_plan(&source, &target, &classified, args.force)?;
+
     // The root role follows the main working tree, not the default branch. When
     // the two differ the user is about to get a layout where the default branch
     // has no worktree (or has an ordinary linked one) — say so rather than let
     // them find out from `daft list`.
+    //
+    // Emitted *after* `build_plan`, which is where a transform git cannot
+    // perform is refused: announcing a move and then declaring it impossible
+    // reads as a contradiction.
     if let Some(cw) = classified
         .iter()
         .find(|cw| cw.disposition == transform::WorktreeDisposition::Root)
         && cw.branch != default_branch
-        && cw.current_path != cw.target_path
+        && !transform::paths_equivalent(&cw.current_path, &cw.target_path)
     {
         // A bare source has no main working tree yet, so its pivot *becomes*
         // one; a non-bare source's pivot already is one and merely relocates.
@@ -644,35 +689,6 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         };
         output.notice(&format!("{moving}; {default_state}"));
     }
-
-    // Check for dirty worktrees (unless --force).
-    // Only check the worktree holding the root role — the main working tree,
-    // whatever branch it carries, or the one about to become it. The rest are
-    // linked worktrees that git relocates intact, and whose dirty state is
-    // preserved via stash ops. Layout artifacts (.gitignore with auto-added
-    // patterns, worktree directories managed by the layout) are excluded.
-    if !args.force {
-        let prev_dir = get_current_directory()?;
-        for cw in &classified {
-            if cw.disposition != transform::WorktreeDisposition::Root {
-                continue;
-            }
-            if cw.current_path.exists() {
-                change_directory(&cw.current_path)?;
-                if has_real_uncommitted_changes(&git, &source)? {
-                    change_directory(&prev_dir)?;
-                    anyhow::bail!(
-                        "Worktree '{}' has uncommitted changes. Commit, stash, or use --force.",
-                        cw.branch
-                    );
-                }
-            }
-        }
-        change_directory(&prev_dir)?;
-    }
-
-    // Build the plan
-    let mut plan = transform::build_plan(&source, &target, &classified, args.force)?;
 
     // Insert stash/pop ops for dirty worktrees when --force
     if args.force {
@@ -886,11 +902,23 @@ fn revert_layout_gitignore(
     }
 
     // Compute the auto-gitignore pattern the source layout would have added.
-    // This is the first path component of a worktree path relative to the root.
+    // This is the first path component of a worktree path relative to the main
+    // working tree — `nested`'s `.worktrees/` is the case that exists.
+    //
+    // Relative to the main working tree, *not* `project_root`: for a wrapper
+    // layout (`contained-classic`) those differ, and measuring from the wrapper
+    // yields an ordinary branch directory name — `dev/` for a worktree at
+    // `repo/dev` — which is a line the user may well have written themselves
+    // in `repo/main/.gitignore`. Stripping that would be data loss. Measuring
+    // from the main working tree makes the sibling worktree fail
+    // `strip_prefix`, so nothing is derived and the file is left alone.
+    let Some(source_root) = source.worktrees.iter().find(|wt| wt.is_root) else {
+        return;
+    };
     let sample_wt = source.worktrees.iter().find(|wt| !wt.is_root);
     let pattern = sample_wt.and_then(|wt| {
         wt.path
-            .strip_prefix(&source.project_root)
+            .strip_prefix(&source_root.path)
             .ok()
             .and_then(|rel| rel.components().next())
             .map(|c| format!("{}/", c.as_os_str().to_string_lossy()))
