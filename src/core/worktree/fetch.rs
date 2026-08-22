@@ -352,14 +352,26 @@ pub fn update_single_worktree(
 
     // A branch with no upstream has nothing to pull, and `git pull` without
     // tracking information is a hard error — which would fail the whole sync
-    // run for the sin of having a freshly started worktree in it. The
-    // Until #858 a branch with no upstream was also a branch prune deleted on
-    // sight, so neither update path had to handle one. Now it survives, and
-    // both paths meet it.
+    // run for the sin of having a freshly started worktree in it. Until #858 a
+    // branch with no upstream was also a branch prune deleted on sight, so
+    // neither update path had to handle one. Now it survives, and both paths
+    // meet it.
     //
     // Asked at `target_path` rather than through the process working
     // directory: the DAG runs these on threads of one process, so the
     // question has to name the worktree it is about.
+    //
+    // The check is unconditional, including under trailing `-- <pull args>`.
+    // `daft update -- origin main` names its source explicitly and would pull
+    // without tracking config, so that invocation is skipped where it used to
+    // work. Taking the trade deliberately: the sequential path already refused
+    // these before this change, so applying it here makes the two paths agree
+    // rather than inventing a third rule; the cost is a visible skip warning
+    // rather than lost work; and the obvious narrowing — "skip only when no
+    // pull args were given" — misfires on the options that take a
+    // separate-word value (`-X theirs`, `-s recursive`, `-S <keyid>`), each of
+    // which would suppress the guard and hand a hard error back to the whole
+    // run.
     if !has_upstream_at(target_path) {
         progress.on_warning(&format!(
             "Skipping '{worktree_name}': no tracking branch configured"
