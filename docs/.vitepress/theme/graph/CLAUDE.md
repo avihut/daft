@@ -333,6 +333,15 @@ eventually); `pack.*` specs pin daft-language behavior and stay here. Extend the
 catalog in the same change that adds composer behavior — pack-side additions
 land here, machinery additions land in dumbshow.
 
+Which suite gates what: `mise run docs:test:golden` (browser-free, sub-second)
+runs as the `golden` job in `docs.yml` and as the `docs-golden` pre-merge ring —
+a registry or script change that rewrites what the docs animate reddens the PR.
+`mise run docs:test:ui` gates nothing yet: its specs drive real animation timing
+and go flaky under machine load, so it stays a local task, deliberately absent
+from CI _and_ the merge gate rather than present in only one of them (CLAUDE.md,
+"Quality Gates: CI <-> Merge-Gate Parity"). Run it before pushing anything that
+touches the composer or the viewers.
+
 ### North star — the daft sandbox
 
 The composer's interactive shell is deliberately the seed of the **daft

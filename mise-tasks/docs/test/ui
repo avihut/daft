@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #MISE description="Run composer UI tests (Playwright against the dev server)"
-#MISE depends=["docs:site:setup"]
+#MISE depends=["docs:test:setup"]
 #MISE dir="docs"
 set -euo pipefail
 
