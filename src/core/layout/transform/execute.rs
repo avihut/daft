@@ -249,7 +249,7 @@ fn execute_op(
         } => exec_nest_from_root(root_path, subdir_path),
 
         TransformOp::InitWorktreeIndex { path, branch } => {
-            exec_init_worktree_index(path, branch, progress)
+            init_worktree_index(path, branch, progress)
         }
 
         TransformOp::CreateDirectory { path } => {
@@ -592,21 +592,14 @@ fn exec_nest_from_root(root_path: &Path, subdir_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn exec_init_worktree_index(
-    path: &Path,
-    branch: &str,
-    progress: &mut dyn ProgressSink,
-) -> Result<()> {
-    init_worktree_index(path, branch, progress)
-}
-
+/// Point HEAD at `branch`, then rebuild the index at `path`.
+///
+/// Both steps, in that order. A worktree that just changed role has lost the
+/// HEAD it used to resolve through: after `UnregisterWorktree` the only one
+/// left is the bare repo's, which names the default branch — resetting against
+/// that rebuilds the index from the wrong tree and fails `ValidateIntegrity`.
+/// `legacy.rs::initialize_index` has always done both.
 fn init_worktree_index(path: &Path, branch: &str, progress: &mut dyn ProgressSink) -> Result<()> {
-    // Point HEAD at the branch before rebuilding the index. A worktree that
-    // just changed role has lost the HEAD it used to resolve through: after
-    // `UnregisterWorktree` the only one left is the bare repo's, which names
-    // the default branch — reset against that would rebuild the index from the
-    // wrong tree and fail `ValidateIntegrity` (legacy.rs::initialize_index has
-    // always done both steps).
     let head_result = Command::new("git")
         .args(["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")])
         .current_dir(path)
