@@ -436,10 +436,12 @@ function renamedArgs(
   target: RenameTarget,
   to: string,
 ): VerbArgs {
-  // A bare branch argument (`start`'s branch, `forge merges`' branch) carries
-  // no repo of its own: it means the item's `repo` argument, and an item
-  // without one means the story's home repo — which a single-repo document
-  // always is.
+  // A bare branch argument carries no repo of its own: `start`'s branch means
+  // the item's `repo` argument, and an item without one means the story's home
+  // repo — which a single-repo document always is. (`forge merges`' branch is
+  // the deliberate exception: it means every repo carrying that branch, so in
+  // a multi-repo story this rewrite narrows it. Its pool re-resolves either
+  // spelling, and a split feature arc has no one right reading.)
   const bare =
     target.kind === "branch" &&
     (typeof args.repo !== "string" || args.repo === target.repo);
