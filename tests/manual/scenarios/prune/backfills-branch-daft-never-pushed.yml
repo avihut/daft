@@ -1,0 +1,90 @@
+name: Prune records a publication it observed but did not perform
+description: >
+  daft is not the only thing that pushes in a repo, so a record describing only
+  daft's own pushes would leave every branch anyone else published permanently
+  out of prune's reach. Here the branch is published with plain `git push -u`,
+  never through daft's push seam - the step asserting no record exists yet is
+  what proves the stamp that appears later came from prune observing the
+  tracking ref, not from the push. Unsetting the upstream afterwards is what
+  proves the record does the work: with tracking gone, git's own `: gone]` arm
+  can never fire, so only the observation can reclaim it.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Start a branch
+    run: git-worktree-checkout -b feat/outside
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feat/outside"
+
+  - name: Publish it with plain git, bypassing daft's push seam
+    run: git push -u origin feat/outside 2>&1
+    cwd: "$WORK_DIR/test-repo/feat/outside"
+    expect:
+      exit_code: 0
+
+  - name: Daft recorded nothing, because daft did not push it
+    run: git config branch.feat/outside.daftPublished || echo "no record"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "no record"
+
+  - name: A prune run records what it can see
+    run: git-worktree-prune 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feat/outside"
+
+  - name: The record now names the remote it was observed on
+    run: git config branch.feat/outside.daftPublished
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "origin"
+
+  - name: Drop the upstream so only the record can answer
+    run: |
+      git branch --unset-upstream feat/outside 2>/dev/null || true
+      git config branch.feat/outside.remote || echo "no-upstream"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "no-upstream"
+
+  - name: Delete the branch on the remote
+    run: git -C $WORK_DIR/test-repo/main push origin --delete feat/outside
+    expect:
+      exit_code: 0
+
+  - name: Prune reclaims it on the strength of the observation
+    run: git-worktree-prune 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "pruned feat/outside"
+
+  - name: Worktree and branch are gone
+    run: |
+      test ! -d $WORK_DIR/test-repo/feat/outside
+      git -C $WORK_DIR/test-repo/main show-ref --verify --quiet refs/heads/feat/outside && exit 1 || exit 0
+    expect:
+      exit_code: 0

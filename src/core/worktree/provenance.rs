@@ -18,11 +18,16 @@
 //! | `branch.<n>.daftPublished` | the push seam| `"<remote> <rfc3339>"` — daft pushed it    |
 //!
 //! `daftPublished` is the only record that can *authorize* a deletion, so it
-//! is written through one function ([`mark_published`]), called only at daft's
-//! push seams (the single-branch path and the batched one), only for a push
-//! git itself reported, and carrying the remote it attests to — a stamp for
-//! `origin` must not authorize pruning against a different `daft.remote`.
-//! `daftOrigin` can only withhold or annotate.
+//! is written through one function ([`mark_published`]), called at daft's push
+//! seams (the single-branch path and the batched one) for a push git itself
+//! reported, and by prune's backfill for a tracking ref it observed present.
+//! It carries the remote it attests to — a stamp for `origin` must not
+//! authorize pruning against a different `daft.remote`. `daftOrigin` can only
+//! withhold or annotate.
+//!
+//! The backfill is what keeps this honest in a repo daft does not exclusively
+//! own: a teammate's `git push -u` is a fact daft can see, and a record of
+//! daft's own pushes alone would treat their branches as unknown forever.
 //!
 //! Git maintains the lifecycle for free: `git branch -m` renames the whole
 //! `branch.<name>` section and `git branch -d`/`-D` removes it, and daft's own
@@ -63,8 +68,9 @@ pub fn mark_local(git: &GitCommand, cwd: &Path, branch: &str) -> Result<()> {
 ///
 /// The only writer of the one record that can authorize a deletion. Call it
 /// where git has confirmed the push succeeded — its own report, not a bare
-/// exit status — and never for a delete push, which proves the branch is
-/// *gone* from the remote: the opposite attestation.
+/// exit status — or where daft has directly observed the branch on the remote,
+/// and never for a delete push, which proves the branch is *gone* from the
+/// remote: the opposite attestation.
 pub fn mark_published(git: &GitCommand, cwd: &Path, remote: &str, branch: &str) -> Result<()> {
     let stamp = format!("{remote} {}", chrono::Utc::now().to_rfc3339());
     git.config_set_at(&format!("branch.{branch}.{PUBLISHED_KEY}"), &stamp, cwd)
@@ -126,6 +132,14 @@ impl Provenance {
     /// that authorizes deleting a worktree.
     pub fn published_on(&self, branch: &str, remote: &str) -> bool {
         self.published.get(branch).is_some_and(|r| r == remote)
+    }
+
+    /// Note in this snapshot that `branch` has just been recorded as published
+    /// to `remote`, so a caller that stamps and then queries stays consistent
+    /// without re-reading the whole config.
+    pub fn record_published(&mut self, branch: &str, remote: &str) {
+        self.published
+            .insert(branch.to_string(), remote.to_string());
     }
 
     /// Whether daft created `branch` locally and never published it.

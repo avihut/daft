@@ -373,12 +373,15 @@ answer at the moment it acts, so record it then.
   makes a bridge shippable incrementally: pre-existing branches, hand-made
   branches, and people working outside daft degrade to "kept", never to
   "deleted". A record may authorize a destructive step only when it attests to
-  an action daft performed and confirmed — never to an inference — so such
-  records are written through a single function, called only at the seams that
-  perform the action, and only on success the underlying tool confirmed. Where a
-  second code path performs the same action (a batched push beside a single
-  one), it stamps too — a seam that acts without recording is how the record
-  silently starts lying.
+  an action daft performed and confirmed, or state daft read straight out of the
+  tool — never to an inference — so such records are written through a single
+  function, called at every seam that acts or observes, and only on success the
+  underlying tool confirmed. Where a second code path performs the same action
+  (a batched push beside a single one), it stamps too — a seam that acts without
+  recording is how the record silently starts lying. Record observations, not
+  just actions: daft is rarely the only writer in a repo, and a record
+  describing only daft's own work leaves everything anyone else did permanently
+  unknown.
 - **Never infer the fact from correlated state.** If two cases that must be
   treated differently are locally indistinguishable, no predicate separates them
   — the fact has to be written down.

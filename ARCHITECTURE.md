@@ -124,10 +124,15 @@ The shape is always the same:
    takes the non-destructive branch — so a missing stamp, an older branch, or a
    wiped config makes daft more conservative, never less. A record may
    _authorize_ a destructive step only when it attests to something daft itself
-   did and confirmed; never to an inference. Those records get one writer
-   function, called at every seam that performs the action — a second path that
-   acts without recording is how the record starts lying — and only on success
-   the underlying tool itself reported, never on a bare exit status.
+   did and confirmed, or state daft read directly from the tool; never to an
+   inference. Those records get one writer function, called at every seam that
+   performs the action or makes the observation — a second path that acts
+   without recording is how the record starts lying — and only on success the
+   underlying tool itself reported, never on a bare exit status. Recording
+   observations as well as actions is what keeps the record honest in a repo
+   daft does not exclusively own: someone else's `git push -u` is a fact daft
+   can see, and a record that described only daft's own work would quietly treat
+   their branches as unknown forever.
 
 The failure this prevents is inferring a missing fact from state that merely
 correlates with it. The tell is that two cases which must be treated differently
