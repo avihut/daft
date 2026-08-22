@@ -108,7 +108,7 @@ test("a mutated composer document derives to its recorded shape", () => {
   doc = setSilent(doc, 4, true);
   doc = setChapterTitle(doc, 1, "Act I — build");
   doc = insertItem(doc, 5, { kind: "op", op: "prune", args: {} });
-  doc = renameEntity(doc, "repo", "web", "store");
+  doc = renameEntity(doc, { kind: "repo", name: "web" }, "store");
   const derived = derive(doc, DAFT_PACK);
   checkGolden("composer-doc", {
     doc,

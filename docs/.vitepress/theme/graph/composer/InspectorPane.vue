@@ -13,6 +13,7 @@ import {
   freezePlacements,
   removeSeedRepo,
   removeSeedWt,
+  type RenameTarget,
   renameEntity,
   scenePlacements,
   setSeedRel,
@@ -76,17 +77,14 @@ const itemSelection = computed<ItemSelection | null>(() =>
 );
 
 /** The Attributes rename: freeze geometry, rewrite the name everywhere. */
-function doRenameEntity(
-  kind: "repo" | "branch",
-  from: string,
-  to: string,
-): void {
+function doRenameEntity(target: RenameTarget, to: string): void {
   let next = freezePlacements(props.doc, scenePlacements(props.compiled));
-  next = renameEntity(next, kind, from, to);
+  next = renameEntity(next, target, to);
   emit("edit", next, null);
+  const from = target.kind === "repo" ? target.name : target.branch;
   const cur = entitySelection.value;
   if (cur?.kind === "rel") {
-    if (kind === "repo" && (cur.a === from || cur.b === from))
+    if (target.kind === "repo" && (cur.a === from || cur.b === from))
       emit("select", {
         type: "entity",
         sel: {
@@ -96,9 +94,15 @@ function doRenameEntity(
         },
       });
   } else if (cur) {
-    if (kind === "repo" && cur.repo === from)
+    // The selection follows the renamed entity — and only it: a sibling
+    // repo's worktree of the same branch kept its name.
+    if (target.kind === "repo" && cur.repo === from)
       emit("select", { type: "entity", sel: { ...cur, repo: to } });
-    else if (kind === "branch" && cur.wt === from)
+    else if (
+      target.kind === "branch" &&
+      cur.repo === target.repo &&
+      cur.wt === from
+    )
       emit("select", { type: "entity", sel: { ...cur, wt: to } });
   }
   emit("notice", `Renamed ${from} → ${to} everywhere`);

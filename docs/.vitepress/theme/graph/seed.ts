@@ -190,7 +190,8 @@ export function worldFromSeed(seed: Seed, placements: Placements): World {
     world.spots = structuredClone(placements.repos);
   for (const sr of seed.repos) {
     const repo = addRepo(world, sr.name);
-    const base = 3000 + (world.repos.length - 1) * 1000;
+    // addRepo owns port allocation; its `main` port is the repo's base.
+    const base = repo.nextPort - 1;
     repo.wts = sr.wts.map((w) => ({
       branch: w.branch,
       ...(w.port ? { port: w.port } : {}),
@@ -402,43 +403,81 @@ export function setSeedRel(
 
 /* ------------------------------ rename-entity ---------------------------- */
 
-function renameValue(
+/**
+ * What a rename addresses. A repo is named once, globally; a branch is one
+ * repo's worktree — the same branch name in a sibling repo is another
+ * worktree of the same feature, and renaming one must not rename the other.
+ */
+export type RenameTarget =
+  | { kind: "repo"; name: string }
+  | { kind: "branch"; repo: string; branch: string };
+
+function renamedValue(
   value: unknown,
-  kind: "repo" | "branch",
-  from: string,
+  target: RenameTarget,
   to: string,
+  bare: boolean,
 ): unknown {
   if (typeof value !== "string") return value;
-  if (value === from) return to;
-  // Composite "repo:branch" targets rewrite on their matching side.
-  if (kind === "repo" && value.startsWith(`${from}:`))
-    return `${to}${value.slice(from.length)}`;
-  if (kind === "branch" && value.endsWith(`:${from}`))
-    return `${value.slice(0, value.length - from.length)}${to}`;
-  return value;
+  if (target.kind === "repo") {
+    if (value === target.name) return to;
+    // Composite "repo:branch" targets rewrite on their matching side.
+    if (value.startsWith(`${target.name}:`))
+      return `${to}${value.slice(target.name.length)}`;
+    return value;
+  }
+  if (value === `${target.repo}:${target.branch}`)
+    return `${target.repo}:${to}`;
+  return bare && value === target.branch ? to : value;
 }
 
-function renameArgs(
+function renamedArgs(
   args: VerbArgs,
-  kind: "repo" | "branch",
-  from: string,
+  target: RenameTarget,
   to: string,
 ): VerbArgs {
+  // A bare branch argument (`start`'s branch, `forge merges`' branch) carries
+  // no repo of its own: it means the item's `repo` argument, and an item
+  // without one means the story's home repo — which a single-repo document
+  // always is.
+  const bare =
+    target.kind === "branch" &&
+    (typeof args.repo !== "string" || args.repo === target.repo);
   const out: VerbArgs = {};
   for (const [key, value] of Object.entries(args)) {
     out[key] = Array.isArray(value)
-      ? value.map((v) => renameValue(v, kind, from, to))
-      : renameValue(value, kind, from, to);
+      ? value.map((v) => renamedValue(v, target, to, bare))
+      : renamedValue(value, target, to, bare);
   }
   return out;
 }
 
 /**
+ * Does this item rename the entity being renamed *away*? Only `rename` does,
+ * and it only ever renames a branch — which is why a repo rename rewrites the
+ * whole timeline. A rename of the same branch in another repo is a different
+ * worktree and stops nothing.
+ */
+function renamesAway(item: DocItem, target: RenameTarget): boolean {
+  if (target.kind !== "branch" || item.kind !== "op" || item.op !== "rename")
+    return false;
+  const t = item.args.target;
+  return (
+    typeof t === "string" &&
+    (t === `${target.repo}:${target.branch}` || t === target.branch)
+  );
+}
+
+/**
  * The Attributes-panel rename: rewrite an entity's name everywhere it is
  * referenced — seed, op args, placements — from its creation up to the
- * first `rename` op that renames it (later items already refer to the new
- * name that op introduced). This is what makes the transcript projection
- * rewrite every past command instead of leaving stale errors.
+ * first `rename` op that renames it away (later items already refer to the
+ * new name that op introduced). This is what makes the transcript
+ * projection rewrite every past command instead of leaving stale errors.
+ *
+ * A branch rename is scoped to one repo: `web:checkout` and
+ * `orders:checkout` are two worktrees of one feature, and the Attributes
+ * pane renames the one you selected.
  *
  * Callers should freeze currently-derived geometry first (via
  * `freezePlacements`) — worktree angles derive from label hashes, so a
@@ -446,16 +485,16 @@ function renameArgs(
  */
 export function renameEntity(
   doc: ComposerDoc,
-  kind: "repo" | "branch",
-  from: string,
+  target: RenameTarget,
   to: string,
 ): ComposerDoc {
+  const from = target.kind === "repo" ? target.name : target.branch;
   if (!to.trim() || from === to) return doc;
   const next = clone(doc);
   const seed = seedOf(next);
   const placements = placementsOf(next);
 
-  if (kind === "repo") {
+  if (target.kind === "repo") {
     for (const repo of seed.repos) if (repo.name === from) repo.name = to;
     seed.rels = seed.rels.map(([a, b]) => [
       a === from ? to : a,
@@ -467,12 +506,15 @@ export function renameEntity(
       placements.repos[to] = rp;
     }
   } else {
-    for (const repo of seed.repos)
-      for (const wt of repo.wts) if (wt.branch === from) wt.branch = to;
+    const owner = seed.repos.find((r) => r.name === target.repo);
+    if (owner)
+      for (const wt of owner.wts) if (wt.branch === from) wt.branch = to;
   }
 
+  // Placement keys are always "repo:branch", so the composite arm settles
+  // both kinds — a bare reading would reach into sibling repos.
   for (const [key, p] of Object.entries(placements.wts)) {
-    const renamed = renameValue(key, kind, from, to) as string;
+    const renamed = renamedValue(key, target, to, false) as string;
     if (renamed !== key) {
       delete placements.wts[key];
       placements.wts[renamed] = p;
@@ -482,19 +524,12 @@ export function renameEntity(
   let stopped = false;
   next.timeline = next.timeline.map((item): DocItem => {
     if (stopped || item.kind !== "op") return item;
-    // A rename op that renames this entity ends the bulk rewrite — items
-    // after it already refer to the name that op introduced. Its target may
-    // be spelled bare or as a composite "repo:branch".
-    const rewritesIt =
-      item.op === "rename" &&
-      Object.values(item.args).some(
-        (v) =>
-          typeof v === "string" &&
-          (v === from || v.endsWith(`:${from}`) || v.startsWith(`${from}:`)),
-      );
+    // The op that renames this entity away ends the bulk rewrite — items
+    // after it already refer to the name that op introduced.
+    const rewritesIt = renamesAway(item, target);
     const out: DocItem = {
       ...item,
-      args: renameArgs(item.args, kind, from, to),
+      args: renamedArgs(item.args, target, to),
     };
     if (rewritesIt) stopped = true;
     return out;

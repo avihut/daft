@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { ComposerDoc } from "@dumbshow/core";
+import { type RenameTarget, seedOf } from "../seed";
 import type { World } from "../verbs";
 import { type EntitySelection, isSeedRel } from "./elements";
 
@@ -22,7 +23,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  renameEntity: [kind: "repo" | "branch", from: string, to: string];
+  renameEntity: [target: RenameTarget, to: string];
   updateSeedWt: [
     repo: string,
     branch: string,
@@ -48,7 +49,7 @@ const entity = computed(() => {
       ),
     };
   }
-  const seedRepo = props.doc.seed.repos.find((r) => r.name === s.repo);
+  const seedRepo = seedOf(props.doc).repos.find((r) => r.name === s.repo);
   if (s.kind === "repo") {
     return {
       kind: "repo" as const,
@@ -75,7 +76,13 @@ function commitEntityName(event: Event): void {
   if (e.kind === "rel") return;
   const to = (event.target as HTMLInputElement).value.trim();
   if (!to || to === e.name) return;
-  emit("renameEntity", e.kind === "repo" ? "repo" : "branch", e.name, to);
+  emit(
+    "renameEntity",
+    e.kind === "repo"
+      ? { kind: "repo", name: e.name }
+      : { kind: "branch", repo: e.repo, branch: e.name },
+    to,
+  );
 }
 
 function commitSeedPort(event: Event): void {
