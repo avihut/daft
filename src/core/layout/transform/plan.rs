@@ -147,6 +147,52 @@ impl TransformPlan {
             })
             .collect()
     }
+
+    /// Paths the plan has to *create*, with the branch that lands there.
+    ///
+    /// `CollapseIntoRoot`'s destination is deliberately absent: the project
+    /// root already exists — receiving content into it is the whole point.
+    pub fn new_destinations(&self) -> Vec<(PathBuf, Option<String>)> {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                TransformOp::MoveWorktree { branch, to, .. }
+                | TransformOp::MoveMainWorktree { branch, to, .. } => {
+                    Some((to.clone(), branch.clone()))
+                }
+                TransformOp::NestFromRoot {
+                    branch,
+                    subdir_path,
+                    ..
+                } => Some((subdir_path.clone(), branch.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The `(from, to)` pairs the plan performs as a bare `rename(2)`, with no
+    /// copy path behind them — everything except the linked-worktree moves,
+    /// which choose a [`MoveStrategy`] at plan time.
+    pub fn plain_renames(&self) -> Vec<(PathBuf, PathBuf)> {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                TransformOp::MoveMainWorktree { from, to, .. }
+                | TransformOp::MoveGitDir { from, to } => Some((from.clone(), to.clone())),
+                TransformOp::NestFromRoot {
+                    root_path,
+                    subdir_path,
+                    ..
+                } => Some((root_path.clone(), subdir_path.clone())),
+                TransformOp::CollapseIntoRoot {
+                    worktree_path,
+                    root_path,
+                    ..
+                } => Some((worktree_path.clone(), root_path.clone())),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

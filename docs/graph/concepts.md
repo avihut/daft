@@ -28,9 +28,9 @@ Identity lives in the repository's git directory (`daft-id`), so it survives
 moves and dies with the repo; the catalog is the index that survives _outside_
 the repo. That asymmetry drives the lifecycle rules:
 
-- **Registration is ambient.** Clone, init, adopt, and everyday commands running
-  inside a repo upsert its entry. `daft repo add` exists only for repositories
-  daft has never operated in, and for renaming (`--name`).
+- **Registration is ambient.** Clone, init, and everyday commands running inside
+  a repo upsert its entry. `daft repo add` exists only for repositories daft has
+  never operated in, and for renaming (`--name`).
 - **Names are unique among live entries.** Two clones that would derive the same
   name get suffixed (`api`, `api-2`) with a notice; rename with
   `daft repo add --name`.

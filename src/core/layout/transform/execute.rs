@@ -289,6 +289,22 @@ fn copy_then_remove(
         Ok(())
     };
 
+    // The evidence for "the copy is complete" is taken from the source, right
+    // now, and at full strength: `-uall` so an untracked directory is listed
+    // file by file rather than collapsing to one `?? dir/`, and `--ignored` so
+    // a build directory that failed to copy is not invisible. Plan-time
+    // snapshots are the wrong witness here — they are normalized, they are
+    // default-verbosity, and when none matched this path the check was skipped
+    // entirely, leaving `rev-parse --show-toplevel` as the only thing between a
+    // partial copy and `remove_dir_all` of the original.
+    let before = match strict_status(from) {
+        Ok(lines) => lines,
+        Err(e) => {
+            unwind_dirs(&created);
+            return Err(e);
+        }
+    };
+
     progress.on_step(&format!(
         "Copying {} to {} (different volume)",
         from.display(),
@@ -314,22 +330,37 @@ fn copy_then_remove(
                 to.display()
             );
         }
-        if let Some(snapshot) = ctx
-            .status_snapshots
-            .iter()
-            .find(|s| s.source_path == canonical_or_owned(from))
-        {
-            let after = normalize(&porcelain_status(to)?, &ctx.artifacts);
-            let d = drift(&snapshot.lines, &after);
-            if !d.missing.is_empty() {
-                anyhow::bail!(
-                    "the copy at {} is missing {} status entr{} the source has (e.g. {})",
-                    to.display(),
-                    d.missing.len(),
-                    if d.missing.len() == 1 { "y" } else { "ies" },
-                    d.missing[0]
-                );
-            }
+        // Two probes seconds apart of a directory that was just copied: any
+        // difference at all is a difference the copy introduced. `missing`
+        // alone was too weak — a destination that cannot carry the executable
+        // bit or a symlink reports the affected files as *new* modifications,
+        // which classed as benign additions and let the source be deleted.
+        let after = strict_status(to)?;
+        if after != before {
+            let d = drift(&before, &after);
+            let sample: Vec<&str> = d
+                .missing
+                .iter()
+                .chain(d.extra.iter())
+                .take(3)
+                .map(String::as_str)
+                .collect();
+            anyhow::bail!(
+                "the copy at {} does not match the source: {} entr{} differ ({}{})",
+                to.display(),
+                d.missing.len() + d.extra.len(),
+                if d.missing.len() + d.extra.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+                sample.join("; "),
+                if d.missing.len() + d.extra.len() > 3 {
+                    "; …"
+                } else {
+                    ""
+                }
+            );
         }
         Ok(())
     })();
@@ -545,26 +576,143 @@ fn canonical_or_owned(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// `git status` at full strength, sorted: every untracked file named
+/// individually (`-uall`) and every ignored path that matches an ignore
+/// pattern (`--ignored=matching` — one entry per matched pattern, so an
+/// ignored `node_modules/` costs one line rather than a hundred thousand).
+///
+/// Used to compare a cross-volume copy against its source, where the question
+/// is whether the bytes arrived, not whether the tracked state matches.
+fn strict_status(worktree: &Path) -> Result<Vec<String>> {
+    let out = crate::utils::git_command_at(worktree)
+        .args([
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignored=matching",
+        ])
+        .output()
+        .with_context(|| format!("running git status in {}", worktree.display()))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git status failed in {}: {}",
+            worktree.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let mut lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    lines.sort();
+    Ok(lines)
+}
+
+/// Remove the staging directory, refusing to pretend the move finished while
+/// it still holds files.
+///
+/// `remove_dir` failing used to be swallowed. A staging directory left with
+/// content is a working tree split in two, in a place no message names and no
+/// rollback visits — the one outcome worth stopping the plan for.
+fn drain_staging(staging: &Path) -> Result<()> {
+    let leftovers: Vec<String> = match fs::read_dir(staging) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect(),
+        Err(_) => return Ok(()),
+    };
+    if !leftovers.is_empty() {
+        anyhow::bail!(
+            "{} still holds {} after the move; put {} back by hand before retrying",
+            staging.display(),
+            leftovers.join(", "),
+            if leftovers.len() == 1 { "it" } else { "them" }
+        );
+    }
+    let _ = fs::remove_dir(staging);
+    Ok(())
+}
+
+/// A directory that is itself a linked worktree — it holds a `.git` *file*.
+///
+/// Both directions skip these. A nest must not sweep a linked worktree into
+/// the subdirectory it is creating, and a collapse must not haul one up into
+/// the root: neither is part of the working tree being relocated, and the
+/// collapse is the recorded inverse of the nest, so an asymmetry between them
+/// makes the undo move files the original never touched.
+fn is_linked_worktree_dir(entry: &fs::DirEntry) -> bool {
+    match entry.file_type() {
+        Ok(ft) if ft.is_dir() => {
+            let dotgit = entry.path().join(".git");
+            // A `.git` file alone is not enough: a populated submodule has one
+            // too, and pointing at `…/modules/<name>` rather than
+            // `…/worktrees/<name>`. Skipping a submodule here would strand it
+            // at the old path (submodules are a blocker for exactly this
+            // reason, so this is belt to that brace).
+            fs::read_to_string(&dotgit)
+                .map(|s| {
+                    s.strip_prefix("gitdir:")
+                        .map(|p| p.trim().replace('\\', "/").contains("/worktrees/"))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
 fn exec_collapse_into_root(
     worktree_path: &Path,
     root_path: &Path,
     project_root: &Path,
 ) -> Result<()> {
     let staging = root_path.join(".daft-transform-staging");
+    if staging.exists() {
+        anyhow::bail!(
+            "{} is left over from an interrupted transform; move its contents back into {} \
+             and remove it before retrying",
+            staging.display(),
+            root_path.display()
+        );
+    }
+
+    // What will move, decided once — and checked against the root before
+    // anything is renamed. `fs::rename` refuses a non-empty destination, and
+    // by the time the staging→root loop runs the source directory is already
+    // gone: a collision discovered there leaves the tree split between the
+    // root and a hidden staging directory, with nothing to roll back through.
+    let moving: Vec<std::ffi::OsString> = fs::read_dir(worktree_path)
+        .with_context(|| format!("Failed to read worktree dir: {}", worktree_path.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name() != ".git")
+        .filter(|e| !is_linked_worktree_dir(e))
+        .map(|e| e.file_name())
+        .collect();
+    let colliding: Vec<String> = moving
+        .iter()
+        .filter(|name| root_path.join(name).symlink_metadata().is_ok())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect();
+    if !colliding.is_empty() {
+        anyhow::bail!(
+            "{} already holds {} — the collapse would have to overwrite {}",
+            root_path.display(),
+            colliding.join(", "),
+            if colliding.len() == 1 { "it" } else { "them" }
+        );
+    }
+
     fs::create_dir_all(&staging)
         .with_context(|| format!("Failed to create staging dir: {}", staging.display()))?;
 
-    // Move each file/dir from worktree_path to staging (skip .git)
-    for entry in fs::read_dir(worktree_path)
-        .with_context(|| format!("Failed to read worktree dir: {}", worktree_path.display()))?
-    {
-        let entry = entry?;
-        let name = entry.file_name();
-        if name == ".git" {
-            continue;
-        }
-        fs::rename(entry.path(), staging.join(&name))
-            .with_context(|| format!("Failed to move {} to staging", entry.path().display()))?;
+    for name in &moving {
+        fs::rename(worktree_path.join(name), staging.join(name)).with_context(|| {
+            format!(
+                "Failed to move {} to staging",
+                worktree_path.join(name).display()
+            )
+        })?;
     }
 
     // Remove the worktree's .git pointer file (it's a text file, not a
@@ -590,13 +738,14 @@ fn exec_collapse_into_root(
         let name = entry.file_name();
         fs::rename(entry.path(), root_path.join(&name)).with_context(|| {
             format!(
-                "Failed to move {} from staging to root",
-                entry.path().display()
+                "Failed to move {} from staging to root; the rest of the working tree is in {}",
+                entry.path().display(),
+                staging.display()
             )
         })?;
     }
 
-    fs::remove_dir(&staging).ok();
+    drain_staging(&staging)?;
 
     // `/repo/task/x` -> `/repo` leaves `/repo/task` behind.
     if let Some(parent) = worktree_path.parent() {
@@ -607,7 +756,29 @@ fn exec_collapse_into_root(
 }
 
 fn exec_nest_from_root(root_path: &Path, subdir_path: &Path) -> Result<()> {
+    // The destination must not already hold anything. A nest that merges into
+    // an occupied directory cannot be undone: its recorded inverse
+    // (`CollapseIntoRoot`) moves *everything* back out, including what was
+    // there first, and then removes the directory. `MoveMainWorktree` has
+    // guarded this since it was written; this is the same guard.
+    if let Ok(mut existing) = fs::read_dir(subdir_path)
+        && existing.next().is_some()
+    {
+        anyhow::bail!(
+            "{} already exists and is not empty; the main working tree cannot be nested into it",
+            subdir_path.display()
+        );
+    }
+
     let staging = root_path.join(".daft-transform-staging");
+    if staging.exists() {
+        anyhow::bail!(
+            "{} is left over from an interrupted transform; move its contents back into {} \
+             and remove it before retrying",
+            staging.display(),
+            root_path.display()
+        );
+    }
     fs::create_dir_all(&staging)
         .with_context(|| format!("Failed to create staging dir: {}", staging.display()))?;
 
@@ -630,11 +801,8 @@ fn exec_nest_from_root(root_path: &Path, subdir_path: &Path) -> Result<()> {
         }
 
         // Skip linked worktree directories (they have a .git *file* inside)
-        if entry.file_type()?.is_dir() {
-            let dotgit = entry.path().join(".git");
-            if dotgit.exists() && dotgit.is_file() {
-                continue;
-            }
+        if is_linked_worktree_dir(&entry) {
+            continue;
         }
 
         fs::rename(entry.path(), staging.join(&name))
@@ -652,13 +820,15 @@ fn exec_nest_from_root(root_path: &Path, subdir_path: &Path) -> Result<()> {
         let name = entry.file_name();
         fs::rename(entry.path(), subdir_path.join(&name)).with_context(|| {
             format!(
-                "Failed to move {} from staging to subdir",
-                entry.path().display()
+                "Failed to move {} from staging to {}; the rest of the working tree is in {}",
+                entry.path().display(),
+                subdir_path.display(),
+                staging.display()
             )
         })?;
     }
 
-    fs::remove_dir(&staging).ok();
+    drain_staging(&staging)?;
 
     Ok(())
 }
@@ -675,7 +845,17 @@ fn exec_nest_from_root(root_path: &Path, subdir_path: &Path) -> Result<()> {
 fn exec_validate_integrity(ctx: &ExecutionContext, progress: &mut dyn ProgressSink) -> Result<()> {
     let mut errors: Vec<String> = Vec::new();
 
-    // 1. Run git fsck to check repository integrity
+    // 1. `git fsck` — reported, never fatal.
+    //
+    // fsck is not a comparison: it answers "is this object store sound?", not
+    // "did the transform change anything?". A transform relocates directories
+    // and per-worktree state files; it does not write objects. So every fsck
+    // complaint it can surface — a broken reflog entry, a ref to a missing
+    // object, blobs lost to an interrupted fetch — is damage that predates the
+    // command, and failing the plan on it rolls a correct transform back,
+    // every time, forever, dragging the user through the compound undo to
+    // repair nothing. The snapshot comparison below is the check that speaks
+    // to what this command promises.
     progress.on_step("Running git fsck...");
     match crate::utils::git_command_at(&ctx.project_root)
         .arg("--git-dir")
@@ -685,11 +865,20 @@ fn exec_validate_integrity(ctx: &ExecutionContext, progress: &mut dyn ProgressSi
     {
         Ok(result) if result.status.success() => {}
         Ok(result) => {
+            // Named even when stderr is empty: a non-zero exit that says
+            // nothing used to be reported as a pass.
             let stderr = String::from_utf8_lossy(&result.stderr);
             let msg = stderr.trim();
-            if !msg.is_empty() {
-                errors.push(format!("git fsck: {msg}"));
-            }
+            let detail = if msg.is_empty() {
+                format!("exited {}", result.status)
+            } else {
+                msg.to_string()
+            };
+            progress.on_warning(&format!(
+                "git fsck reports pre-existing repository problems ({detail}). \
+                 The transform did not cause these and does not fix them; run \
+                 `git fsck` yourself when convenient."
+            ));
         }
         Err(e) => {
             progress.on_warning(&format!("Could not run git fsck: {e}"));
@@ -1248,12 +1437,18 @@ mod tests {
         }
     }
 
+    /// `--no-optional-locks` is load-bearing, not decoration: `git status`
+    /// opportunistically refreshes stale stat data and **writes the index
+    /// back**. A test that compares index bytes before and after a rollback
+    /// therefore fails whenever a plain `status()` ran between the two reads —
+    /// order-dependently, since the refresh only happens when git judges the
+    /// cached stat data stale. Same for `diff --cached`.
     fn status(wt: &Path) -> String {
-        git_ok(wt, &["status", "--porcelain"])
+        git_ok(wt, &["--no-optional-locks", "status", "--porcelain"])
     }
 
     fn diff_cached(wt: &Path) -> String {
-        git_ok(wt, &["diff", "--cached"])
+        git_ok(wt, &["--no-optional-locks", "diff", "--cached"])
     }
 
     // ── #859 / #875 ──────────────────────────────────────────────────────
@@ -1807,5 +2002,139 @@ mod tests {
             outside.exists(),
             "sibling/centralized parents are not daft's to remove"
         );
+    }
+
+    // ── #875 review: the compound root operations ────────────────────────
+
+    /// A nest that merges into an occupied directory cannot be undone: its
+    /// recorded inverse (`CollapseIntoRoot`) moves *everything* back out,
+    /// including what was there first, and then removes the directory. So it
+    /// refuses, the way `exec_move_main_worktree` always has.
+    #[test]
+    fn nest_refuses_a_destination_that_already_holds_something() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join("README.md"), "root readme\n").unwrap();
+        let subdir = root.join("foo");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(subdir.join("README.md"), "someone else's readme\n").unwrap();
+
+        let err = exec_nest_from_root(&root, &subdir).unwrap_err();
+        assert!(format!("{err:#}").contains("already exists"), "{err:#}");
+
+        assert_eq!(
+            fs::read_to_string(subdir.join("README.md")).unwrap(),
+            "someone else's readme\n",
+            "the occupant must be untouched"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("README.md")).unwrap(),
+            "root readme\n",
+            "and nothing may have moved"
+        );
+        assert!(!root.join(".daft-transform-staging").exists());
+    }
+
+    /// An empty destination is fine — that is the ordinary case where a
+    /// previous op created the parent chain.
+    #[test]
+    fn nest_accepts_an_empty_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join("README.md"), "x\n").unwrap();
+        let subdir = root.join("task/x");
+        fs::create_dir_all(&subdir).unwrap();
+
+        exec_nest_from_root(&root, &subdir).unwrap();
+        assert!(subdir.join("README.md").exists());
+        assert!(root.join(".git").exists(), ".git never moves");
+        assert!(!root.join("README.md").exists());
+    }
+
+    /// Both directions skip a linked worktree: the nest must not sweep one
+    /// into the subdirectory it is creating, and its inverse must not haul one
+    /// up into the root. An asymmetry between them makes the undo move files
+    /// the original never touched.
+    #[test]
+    #[serial]
+    fn nest_and_collapse_both_leave_a_linked_worktree_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join("README.md"), "x\n").unwrap();
+        let linked = root.join("develop");
+        fs::create_dir_all(&linked).unwrap();
+        fs::write(linked.join(".git"), "gitdir: ../.git/worktrees/develop\n").unwrap();
+        fs::write(linked.join("own.txt"), "belongs to develop\n").unwrap();
+
+        let subdir = root.join("task/x");
+        exec_nest_from_root(&root, &subdir).unwrap();
+        assert!(
+            linked.join("own.txt").exists(),
+            "the linked worktree stays at the root"
+        );
+        assert!(subdir.join("README.md").exists());
+
+        let _cwd = CwdGuard::enter(tmp.path());
+        exec_collapse_into_root(&subdir, &root, &root).unwrap();
+        assert!(
+            linked.join("own.txt").exists(),
+            "and the inverse does not haul it up"
+        );
+        assert_eq!(fs::read_to_string(root.join("README.md")).unwrap(), "x\n");
+    }
+
+    /// `fs::rename` refuses a non-empty destination, and by the time the
+    /// staging→root loop runs the source directory is already gone: a
+    /// collision discovered there left the tree split between the root and a
+    /// hidden staging directory with nothing to roll back through. It is
+    /// checked before anything moves instead.
+    #[test]
+    #[serial]
+    fn collapse_refuses_to_overwrite_an_entry_the_root_already_holds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join("README.md"), "root's own\n").unwrap();
+        let wt = root.join("task/x");
+        fs::create_dir_all(&wt).unwrap();
+        fs::write(wt.join("README.md"), "the worktree's\n").unwrap();
+
+        let _cwd = CwdGuard::enter(tmp.path());
+        let err = exec_collapse_into_root(&wt, &root, &root).unwrap_err();
+        assert!(format!("{err:#}").contains("README.md"), "{err:#}");
+
+        assert_eq!(
+            fs::read_to_string(root.join("README.md")).unwrap(),
+            "root's own\n"
+        );
+        assert_eq!(
+            fs::read_to_string(wt.join("README.md")).unwrap(),
+            "the worktree's\n"
+        );
+        assert!(!root.join(".daft-transform-staging").exists());
+    }
+
+    /// A staging directory left over from an interrupted run is a working tree
+    /// split in two. Reusing it would bury the evidence.
+    #[test]
+    fn a_leftover_staging_dir_stops_the_operation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join(".daft-transform-staging")).unwrap();
+        fs::write(
+            root.join(".daft-transform-staging/rescue-me.txt"),
+            "from an interrupted run\n",
+        )
+        .unwrap();
+
+        let err = exec_nest_from_root(&root, &root.join("task/x")).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("interrupted transform"),
+            "{err:#}"
+        );
+        assert!(root.join(".daft-transform-staging/rescue-me.txt").exists());
     }
 }

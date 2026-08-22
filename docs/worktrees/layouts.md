@@ -248,12 +248,33 @@ is, why it blocks, and the exact commands that settle it, in both directions:
   pointers are relative to a git dir the move invalidates; git's own
   `worktree move` refuses them too): `git submodule deinit --all`, transform,
   then `git submodule update --init`.
-- A worktree locked with `git worktree lock` that has to move:
-  `git worktree unlock <path>`.
+- A worktree locked with `git worktree lock` that has to move, or whose
+  registration a role change would dissolve: `git worktree unlock <path>`.
+- A directory already sitting where the target layout puts a worktree. Two trees
+  merged into one cannot be told apart again, so the undo could not put either
+  back — move or remove the occupant first.
+- Anything daft could not read: a worktree whose git directory does not resolve,
+  or an index it could not ask about submodules. Unknown is not clear, and a
+  transform does not guess at state it is about to move.
+- A rename that would cross a filesystem boundary. Linked worktrees have a copy
+  path for this (below); a repository's own root does not.
+
+The role-change checks apply wherever the root worktree changes role _or_ place
+— including between two non-bare layouts, where only the working tree moves.
 
 `daft layout transform <layout> --dry-run` runs the same check and prints the
 blockers with the plan, so "can this repo transform?" is answerable without
-attempting it (it exits non-zero when it cannot).
+attempting it (it exits non-zero when it cannot). A dry run never asks for the
+cross-volume confirmation — it copies nothing.
+
+`git fsck` runs at the end and its complaints are reported, but they never fail
+the transform: fsck answers "is this object store sound?", not "did the
+transform change anything?" — and a transform writes no objects, so anything it
+surfaces predates the command. What holds the transform to its promise is the
+`git status` snapshot taken of every worktree before execution and compared
+after it: an entry that _vanished_ fails the plan and rolls it back; an entry
+that _appeared_ is reported as a warning, since a move hook writing into the
+tree is not a loss.
 
 ### Decisions daft asks about
 
@@ -272,6 +293,11 @@ flag when there is no terminal to ask on:
 `--as` name, and the confirmation when a worktree has to be _copied_ to a
 destination on another volume (a `centralized` data dir on another disk). It
 never picks a pivot.
+
+Both flags answer a question a given transform may not be asking, and daft says
+so rather than accepting a flag it will ignore: `--pivot` needs a bare
+repository that is gaining a main working tree, and `--as` needs a main working
+tree that is detached.
 
 A `contained-classic` clone whose directory no longer matches its branch (you
 switched branches inside it) is renamed as a unit — its `.git` lives inside it —

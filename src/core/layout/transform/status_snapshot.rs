@@ -44,14 +44,28 @@ impl Artifacts {
     /// `nested` → `sibling` transform must ignore `.worktrees/` even though
     /// only the source has it, and the reverse must ignore it even though
     /// only the target will.
+    ///
+    /// Relative to the **main working tree**, not the project root, and only
+    /// for worktrees that actually sit inside it. Only a `nested`-style layout
+    /// puts linked worktrees where the main working tree's `git status` can
+    /// see them; `contained` and friends put them beside it, inside a wrapper
+    /// that is not a working tree at all. Measuring from the project root
+    /// turned every branch name's first segment into a blanket mask — a repo
+    /// on branch `main` with an untracked `./main` binary, or one with a
+    /// top-level `docs/` and a `docs` branch, had those entries stripped from
+    /// the before snapshot, the after snapshot and the carried count alike, so
+    /// losing them would have read as "Integrity check passed".
     pub fn for_transform(source: &LayoutState, target: &LayoutState) -> Self {
         let mut prefixes: Vec<String> = Vec::new();
         for state in [source, target] {
+            let Some(root) = state.worktrees.iter().find(|wt| wt.is_root) else {
+                continue;
+            };
             for wt in &state.worktrees {
                 if wt.is_root {
                     continue;
                 }
-                if let Ok(rel) = wt.path.strip_prefix(&state.project_root)
+                if let Ok(rel) = wt.path.strip_prefix(&root.path)
                     && let Some(first) = rel.components().next()
                 {
                     let first = first.as_os_str().to_string_lossy().into_owned();
@@ -76,7 +90,11 @@ impl Artifacts {
     /// is a layout artifact.
     pub fn ignores(&self, path: &str) -> bool {
         let path = path.trim_end_matches('/');
-        if path == ".gitignore" {
+        // `.gitignore` only where a layout maintains one: the nested layouts
+        // keep a `.worktrees/` line in it, which is exactly the case that
+        // produces a prefix. Everywhere else it is an ordinary file, and
+        // exempting it hid a real change for no benefit.
+        if path == ".gitignore" && !self.prefixes.is_empty() {
             return true;
         }
         self.prefixes
@@ -234,6 +252,49 @@ mod tests {
         // And the reverse direction finds the same prefix in the target.
         let b = Artifacts::for_transform(&target, &source);
         assert_eq!(a, b);
+    }
+
+    /// #875 review: prefixes were measured from the *project root*, so for
+    /// any bare or wrapped target — where no worktree is the root — every
+    /// worktree contributed the first segment of its branch name as a blanket
+    /// mask. A repo on branch `main` with an untracked `./main` binary had that
+    /// entry stripped from the before snapshot, the after snapshot and the
+    /// carried count alike, so losing it read as "Integrity check passed".
+    #[test]
+    fn a_branch_name_is_not_an_artifact_prefix() {
+        // contained: the wrapper holds every worktree; none is the main
+        // working tree, so nothing a worktree's own `git status` can see.
+        let source = state("/repo", &[("/repo/main", false), ("/repo/docs", false)]);
+        let target = state("/repo", &[("/repo/main", false), ("/repo/docs", false)]);
+        let a = Artifacts::for_transform(&source, &target);
+        assert!(
+            !a.ignores("main"),
+            "an untracked ./main binary is not an artifact"
+        );
+        assert!(
+            !a.ignores("docs/index.md"),
+            "a top-level docs/ is not an artifact"
+        );
+        assert!(
+            !a.ignores(".gitignore"),
+            "no nested layout maintains one here"
+        );
+    }
+
+    /// Only a layout that puts linked worktrees *inside* the main working tree
+    /// produces an artifact prefix — and only then is `.gitignore` daft's to
+    /// maintain.
+    #[test]
+    fn only_a_nested_layout_exempts_the_gitignore() {
+        let nested = state(
+            "/repo",
+            &[("/repo", true), ("/repo/.worktrees/feat", false)],
+        );
+        let sibling = state("/repo", &[("/repo", true), ("/repo.feat", false)]);
+        assert!(Artifacts::for_transform(&nested, &sibling).ignores(".gitignore"));
+        assert!(!Artifacts::for_transform(&sibling, &sibling).ignores(".gitignore"));
+        // A sibling worktree is beside the main working tree, never inside it.
+        assert!(!Artifacts::for_transform(&sibling, &sibling).ignores("repo.feat"));
     }
 
     #[test]

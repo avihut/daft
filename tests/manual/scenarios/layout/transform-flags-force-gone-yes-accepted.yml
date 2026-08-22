@@ -31,6 +31,21 @@ steps:
       files_exist:
         - "$WORK_DIR/test-repo/README.md"
 
+  - name: A flag this transform is not asking for is refused, not ignored
+    # #875 review: `--as` was silently dropped whenever the main working tree
+    # had a branch, and `--pivot` whenever the target layout stayed bare —
+    # including when it named a branch that does not exist. A swallowed flag
+    # reads as "daft did what I asked".
+    run: NO_COLOR=1 daft layout transform contained --as somewhere 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--as names the directory for a main working tree that is *detached*"
+      files_exist:
+        - "$WORK_DIR/test-repo/README.md"
+        - "$WORK_DIR/test-repo/.git/index"
+
   - name: -y is accepted and inert on a transform with nothing to confirm
     run: NO_COLOR=1 daft layout transform contained -y 2>&1
     cwd: "$WORK_DIR/test-repo"
@@ -41,6 +56,16 @@ steps:
       is_git_worktree:
         - dir: "$WORK_DIR/test-repo/task/local-docker"
           branch: task/local-docker
+
+  - name: --pivot on a repository that is staying bare is refused too
+    run:
+      NO_COLOR=1 daft layout transform contained-flat --pivot no-such-branch
+      2>&1
+    cwd: "$WORK_DIR/test-repo/task/local-docker"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "keeps this repository bare"
 
   - name: --yes on the way back
     run: NO_COLOR=1 daft layout transform sibling --yes 2>&1

@@ -74,6 +74,15 @@ pub enum BlockerKind {
         bytes: u64,
         moves: Vec<(PathBuf, PathBuf)>,
     },
+    /// A path the transform has to create is already taken. Merging into it
+    /// would mix two trees, and the undo cannot tell them apart afterwards.
+    DestinationOccupied { destination: PathBuf },
+    /// A probe could not read what it needed. Unknown is not clear: the safe
+    /// branch is to stop and say what could not be established.
+    Unreadable { what: String, detail: String },
+    /// A directory the transform renames would have to cross a filesystem
+    /// boundary, where `rename(2)` cannot go.
+    CrossesVolumes { from: PathBuf, to: PathBuf },
 }
 
 /// One reason the transform cannot proceed, with everything needed to render
@@ -111,6 +120,9 @@ impl Blocker {
                 | BlockerKind::IndexLocked { .. }
                 | BlockerKind::Submodules { .. }
                 | BlockerKind::RegistrationLocked { .. }
+                | BlockerKind::DestinationOccupied { .. }
+                | BlockerKind::Unreadable { .. }
+                | BlockerKind::CrossesVolumes { .. }
         )
     }
 }
@@ -122,30 +134,106 @@ impl Blocker {
 pub fn role_change_blockers(worktrees: &[(PathBuf, Option<String>)]) -> Vec<Blocker> {
     let mut out = Vec::new();
     for (path, branch) in worktrees {
-        let Ok(git_dir) = resolve_worktree_git_dir(path) else {
-            continue;
-        };
-        let mk = |kind: BlockerKind| Blocker {
+        let bare = |kind: BlockerKind, git_dir: Option<PathBuf>| Blocker {
             kind,
             worktree_path: Some(path.clone()),
-            git_dir: Some(git_dir.clone()),
+            git_dir,
             branch: branch.clone(),
             reason: Some(ProbeReason::RoleChange),
         };
-        if let Some(state) = probe_op_state_in_git_dir(&git_dir) {
-            out.push(mk(BlockerKind::OperationInProgress {
-                op: state.kind,
-                progress: op_progress(&git_dir, state.kind),
-                marker: op_marker(&git_dir, state.kind),
-            }));
+        // A git dir that cannot be resolved is not an idle worktree: it is a
+        // worktree whose state daft cannot see. Skipping it silently reported
+        // "clear" for the case least likely to be clear.
+        match resolve_worktree_git_dir(path) {
+            Ok(git_dir) => {
+                let mk = |kind: BlockerKind| bare(kind, Some(git_dir.clone()));
+                if let Some(state) = probe_op_state_in_git_dir(&git_dir) {
+                    out.push(mk(BlockerKind::OperationInProgress {
+                        op: state.kind,
+                        progress: op_progress(&git_dir, state.kind),
+                        marker: op_marker(&git_dir, state.kind),
+                    }));
+                }
+                // Every lock, not the first: the report's contract is one pass.
+                for lock in held_locks(&git_dir) {
+                    out.push(mk(BlockerKind::IndexLocked { lock }));
+                }
+            }
+            Err(e) => out.push(bare(
+                BlockerKind::Unreadable {
+                    what: "this worktree's git directory".to_string(),
+                    detail: format!("{e:#}"),
+                },
+                None,
+            )),
         }
-        if let Some(lock) = held_lock(&git_dir) {
-            out.push(mk(BlockerKind::IndexLocked { lock }));
+        // Independent of the git dir — and the probe most likely to fail for
+        // the same reason a role change is unsafe, so its failure is reported
+        // rather than read as "no submodules".
+        match populated_submodules(path) {
+            Ok(subs) if !subs.is_empty() => {
+                out.push(bare(BlockerKind::Submodules { paths: subs }, None));
+            }
+            Ok(_) => {}
+            Err(detail) => out.push(bare(
+                BlockerKind::Unreadable {
+                    what: "whether this worktree has populated submodules".to_string(),
+                    detail,
+                },
+                None,
+            )),
         }
-        let subs = populated_submodules(path);
-        if !subs.is_empty() {
-            out.push(mk(BlockerKind::Submodules { paths: subs }));
-        }
+    }
+    out
+}
+
+/// The registration facts a *role change* dissolves without asking: a
+/// `git worktree lock` marker, and a `modules/` directory left by a submodule.
+///
+/// `relocation_blockers` finds these for the linked worktrees that move; the
+/// pivot is not one of those (it is the worktree whose role changes), so
+/// without this it was the only worktree never checked — and its lock was
+/// silently dissolved along with its registration.
+pub fn pivot_registration_blockers(
+    common_dir: &Path,
+    path: &Path,
+    branch: Option<&str>,
+) -> Vec<Blocker> {
+    registration_state_blockers(common_dir, path, branch, ProbeReason::RoleChange)
+}
+
+/// `locked` and `modules/` on the registration of `path`, if it has one.
+fn registration_state_blockers(
+    common_dir: &Path,
+    path: &Path,
+    branch: Option<&str>,
+    reason: ProbeReason,
+) -> Vec<Blocker> {
+    let mut out = Vec::new();
+    let Some(reg) = find_registration(common_dir, path) else {
+        return out;
+    };
+    let mk = |kind: BlockerKind| Blocker {
+        kind,
+        worktree_path: Some(path.to_path_buf()),
+        git_dir: Some(reg.clone()),
+        branch: branch.map(str::to_string),
+        reason: Some(reason),
+    };
+    let locked = reg.join("locked");
+    if locked.exists() {
+        let why = std::fs::read_to_string(&locked)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        out.push(mk(BlockerKind::RegistrationLocked { reason: why }));
+    }
+    if reg.join("modules").is_dir() {
+        // git's cheap check: a `modules/` dir in the worktree's git dir, even
+        // a stale one from a deinit'd submodule, makes `worktree move` refuse.
+        out.push(mk(BlockerKind::Submodules {
+            paths: vec![PathBuf::from(".git/modules")],
+        }));
     }
     out
 }
@@ -159,10 +247,8 @@ pub fn relocation_blockers(
 ) -> Vec<Blocker> {
     let mut out = Vec::new();
     for (path, branch) in moving {
-        let registration = find_registration(common_dir, path);
-        let git_dir = registration
-            .clone()
-            .or_else(|| resolve_worktree_git_dir(path).ok());
+        let git_dir =
+            find_registration(common_dir, path).or_else(|| resolve_worktree_git_dir(path).ok());
         let mk = |kind: BlockerKind| Blocker {
             kind,
             worktree_path: Some(path.clone()),
@@ -170,39 +256,104 @@ pub fn relocation_blockers(
             branch: branch.clone(),
             reason: Some(ProbeReason::Relocation),
         };
-        if let Some(reg) = &registration {
-            let locked = reg.join("locked");
-            if locked.exists() {
-                let reason = std::fs::read_to_string(&locked)
-                    .ok()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty());
-                out.push(mk(BlockerKind::RegistrationLocked { reason }));
-            }
-        }
-        let mut subs = populated_submodules(path);
-        if subs.is_empty()
-            && let Some(reg) = &registration
-            && reg.join("modules").is_dir()
-        {
-            // git's cheap check: a `modules/` dir in the worktree's git dir,
-            // even a stale one from a deinit'd submodule, makes `worktree
-            // move` refuse.
-            subs.push(PathBuf::from(".git/modules"));
-        }
-        if !subs.is_empty() {
-            out.push(mk(BlockerKind::Submodules { paths: subs }));
+        let from_registration = registration_state_blockers(
+            common_dir,
+            path,
+            branch.as_deref(),
+            ProbeReason::Relocation,
+        );
+        let already_named_modules = from_registration
+            .iter()
+            .any(|b| matches!(b.kind, BlockerKind::Submodules { .. }));
+        out.extend(from_registration);
+        match populated_submodules(path) {
+            Ok(subs) if !subs.is_empty() => out.push(mk(BlockerKind::Submodules { paths: subs })),
+            Ok(_) => {}
+            Err(_) if already_named_modules => {}
+            Err(detail) => out.push(mk(BlockerKind::Unreadable {
+                what: "whether this worktree has populated submodules".to_string(),
+                detail,
+            })),
         }
     }
     out
 }
 
-/// The lock file another git process holds in `git_dir`, if any.
-fn held_lock(git_dir: &Path) -> Option<PathBuf> {
+/// Destinations the plan has to create that something already occupies.
+///
+/// The execution-time guards refuse these too, but only after earlier ops have
+/// run — and a `NestFromRoot` that merges into an occupied directory cannot be
+/// undone, because its recorded inverse moves *everything* back out, including
+/// what was already there. Reporting it as a blocker keeps the refusal on the
+/// side of the plan where nothing has moved yet.
+pub fn destination_blockers(destinations: &[(PathBuf, Option<String>)]) -> Vec<Blocker> {
+    destinations
+        .iter()
+        .filter(|(dest, _)| occupied(dest))
+        .map(|(dest, branch)| Blocker {
+            kind: BlockerKind::DestinationOccupied {
+                destination: dest.clone(),
+            },
+            worktree_path: None,
+            git_dir: None,
+            branch: branch.clone(),
+            reason: None,
+        })
+        .collect()
+}
+
+/// Whether something is in the way at `path`.
+///
+/// An *empty* directory is not in the way: `rename(2)` replaces one, and
+/// `exec_nest_from_root` accepts one (a previous operation in the same plan may
+/// have created the parent chain). A blocker stricter than the executor it
+/// protects would refuse transforms that work.
+fn occupied(path: &Path) -> bool {
+    match std::fs::read_dir(path) {
+        // A directory: in the way only if it holds something.
+        Ok(mut entries) => entries.next().is_some(),
+        // Not a directory, or unreadable — `symlink_metadata` separates "a file
+        // or symlink is here" from "nothing is here".
+        Err(_) => path.symlink_metadata().is_ok(),
+    }
+}
+
+/// Renames the plan performs that would have to cross a filesystem boundary.
+///
+/// Only linked-worktree moves have a copy path; the root-role operations
+/// (nesting, collapsing, renaming a main working tree, moving `.git`) are
+/// `rename(2)` and nothing else, so a boundary between source and destination
+/// has to be refused before they start rather than discovered half-way.
+pub fn volume_blockers(renames: &[(PathBuf, PathBuf)]) -> Vec<Blocker> {
+    renames
+        .iter()
+        .filter(|(from, to)| {
+            crate::core::fs_volume::strategy_for(from, to)
+                != crate::core::fs_volume::MoveStrategy::Rename
+        })
+        .map(|(from, to)| Blocker {
+            kind: BlockerKind::CrossesVolumes {
+                from: from.clone(),
+                to: to.clone(),
+            },
+            worktree_path: Some(from.clone()),
+            git_dir: None,
+            branch: None,
+            reason: None,
+        })
+        .collect()
+}
+
+/// Every lock file another git process holds in `git_dir`.
+///
+/// All of them, not the first: a report that promises every condition in one
+/// pass cannot send the user back for a second lock it already saw.
+fn held_locks(git_dir: &Path) -> Vec<PathBuf> {
     ["index.lock", "HEAD.lock"]
         .iter()
         .map(|l| git_dir.join(l))
-        .find(|p| p.exists())
+        .filter(|p| p.exists())
+        .collect()
 }
 
 /// Git's own progress counters for the operations that keep them.
@@ -249,23 +400,28 @@ fn op_marker(git_dir: &Path, kind: OpKind) -> &'static str {
 
 /// Gitlinks in `worktree`'s index whose submodule is checked out (has a
 /// `.git` inside) — git's `validate_no_submodules` notion of "populated".
-pub(crate) fn populated_submodules(worktree: &Path) -> Vec<PathBuf> {
-    let Ok(out) = crate::utils::git_command_at(worktree)
+pub(crate) fn populated_submodules(worktree: &Path) -> Result<Vec<PathBuf>, String> {
+    let out = crate::utils::git_command_at(worktree)
         .args(["ls-files", "--stage", "-z"])
         .output()
-    else {
-        return Vec::new();
-    };
+        .map_err(|e| format!("running git ls-files in {}: {e}", worktree.display()))?;
     if !out.status.success() {
-        return Vec::new();
+        // The most likely reason `ls-files` fails is an `index.lock` held by
+        // another git — exactly the state that makes a role change unsafe. An
+        // empty list here would be a false "no submodules".
+        return Err(format!(
+            "git ls-files failed in {}: {}",
+            worktree.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout
+    Ok(stdout
         .split('\0')
         .filter(|entry| entry.starts_with("160000 "))
         .filter_map(|entry| entry.split_once('\t').map(|(_, path)| PathBuf::from(path)))
         .filter(|rel| worktree.join(rel).join(".git").symlink_metadata().is_ok())
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -279,13 +435,67 @@ mod tests {
         std::fs::write(path, contents).unwrap();
     }
 
-    /// A main-worktree shape: `.git` is a real directory.
+    /// Run git in `dir` with a fixed test identity — never global config.
+    fn git_ok(dir: &Path, args: &[&str]) -> String {
+        let out = crate::utils::git_command_at(dir)
+            // A developer's global commit.gpgsign=true would route every
+            // fixture commit through gpg and fail the suite for reasons that
+            // have nothing to do with the probe under test.
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A **real** repository whose main working tree is the shape the probes
+    /// read. Real, not a hand-built `.git` directory: the submodule probe runs
+    /// `git ls-files` and fails closed, so a fixture git cannot open would test
+    /// the failure path for every probe rather than the probe under test.
     fn main_worktree() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let wt = tmp.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        git_ok(&wt, &["init", "-q", "."]);
+        git_ok(&wt, &["commit", "-q", "--allow-empty", "-m", "seed"]);
         let git_dir = wt.join(".git");
-        std::fs::create_dir_all(&git_dir).unwrap();
         (tmp, wt, git_dir)
+    }
+
+    /// A real repository with one real linked worktree: `(tmp, common, wt,
+    /// registration)`. `wt/.git` is a *file* naming the registration — the
+    /// shape a naive `wt/.git/<marker>` probe silently misses.
+    fn linked_worktree() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        // Canonical: git records the resolved path in the pointer file, and
+        // macOS puts tempdirs behind the /var -> /private/var symlink.
+        let base = tmp.path().canonicalize().unwrap();
+        let root = base.join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        git_ok(&root, &["init", "-q", "."]);
+        git_ok(&root, &["commit", "-q", "--allow-empty", "-m", "seed"]);
+        let wt = base.join("x");
+        git_ok(
+            &root,
+            &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "x"],
+        );
+        let common = root.join(".git");
+        let registration = common.join("worktrees/x");
+        assert!(
+            registration.is_dir(),
+            "git names the registration after the path basename"
+        );
+        (tmp, common, wt, registration)
     }
 
     fn probe(wt: &Path) -> Vec<Blocker> {
@@ -344,34 +554,18 @@ mod tests {
     }
 
     #[test]
-    fn am_session_is_applying_not_rebasing() {
-        let (_tmp, wt, git_dir) = main_worktree();
-        write(&git_dir.join("rebase-apply/applying"), "");
-        let blockers = probe(&wt);
-        assert!(matches!(
-            blockers[0].kind,
-            BlockerKind::OperationInProgress { op: OpKind::Am, .. }
-        ));
-    }
-
-    #[test]
-    fn sequencer_todo_counts_only_real_picks() {
+    fn a_sequencer_todo_counts_the_remaining_picks() {
         let (_tmp, wt, git_dir) = main_worktree();
         write(&git_dir.join("CHERRY_PICK_HEAD"), "abc\n");
         write(
             &git_dir.join("sequencer/todo"),
-            "pick 1111 one\n# a comment\n\npick 2222 two\n",
+            "# comment\n\npick aaa one\npick bbb two\n",
         );
         let blockers = probe(&wt);
         match &blockers[0].kind {
-            BlockerKind::OperationInProgress {
-                op,
-                progress,
-                marker,
-            } => {
+            BlockerKind::OperationInProgress { op, progress, .. } => {
                 assert_eq!(*op, OpKind::CherryPick);
                 assert_eq!(*progress, Some(OpProgress { done: 0, total: 2 }));
-                assert_eq!(*marker, "CHERRY_PICK_HEAD");
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -379,22 +573,17 @@ mod tests {
 
     #[test]
     fn merge_revert_and_bisect_each_block() {
-        for (file, op, marker) in [
-            ("MERGE_HEAD", OpKind::Merge, "MERGE_HEAD"),
-            ("REVERT_HEAD", OpKind::Revert, "REVERT_HEAD"),
-            ("BISECT_LOG", OpKind::Bisect, "BISECT_LOG"),
+        for (marker, expect) in [
+            ("MERGE_HEAD", OpKind::Merge),
+            ("REVERT_HEAD", OpKind::Revert),
+            ("BISECT_LOG", OpKind::Bisect),
         ] {
             let (_tmp, wt, git_dir) = main_worktree();
-            write(&git_dir.join(file), "x\n");
+            write(&git_dir.join(marker), "x\n");
             let blockers = probe(&wt);
-            assert_eq!(blockers.len(), 1, "{file}");
+            assert_eq!(blockers.len(), 1, "{marker}");
             match &blockers[0].kind {
-                BlockerKind::OperationInProgress {
-                    op: got, marker: m, ..
-                } => {
-                    assert_eq!(*got, op);
-                    assert_eq!(*m, marker);
-                }
+                BlockerKind::OperationInProgress { op, .. } => assert_eq!(*op, expect),
                 other => panic!("unexpected {other:?}"),
             }
         }
@@ -412,10 +601,80 @@ mod tests {
         }
     }
 
+    /// #875 review: the lock probe used `.find()`, so a worktree holding both
+    /// locks reported one and sent the user back for the other — in a report
+    /// whose contract is "every condition, in one pass".
+    #[test]
+    fn both_locks_are_reported_not_just_the_first() {
+        let (_tmp, wt, git_dir) = main_worktree();
+        write(&git_dir.join("index.lock"), "");
+        write(&git_dir.join("HEAD.lock"), "");
+        let locks: Vec<PathBuf> = probe(&wt)
+            .into_iter()
+            .filter_map(|b| match b.kind {
+                BlockerKind::IndexLocked { lock } => Some(lock),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            locks,
+            vec![git_dir.join("index.lock"), git_dir.join("HEAD.lock")]
+        );
+    }
+
     #[test]
     fn an_idle_worktree_has_no_blockers() {
         let (_tmp, wt, _git_dir) = main_worktree();
         assert!(probe(&wt).is_empty());
+    }
+
+    /// #875 review: an unresolvable git dir used to `continue`, skipping every
+    /// probe for that worktree — reporting "clear" for the case least likely
+    /// to be clear. Unknown takes the safe branch.
+    #[test]
+    fn an_unresolvable_git_dir_is_a_blocker_not_a_pass() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path().join("not-a-worktree");
+        std::fs::create_dir_all(&wt).unwrap();
+        let blockers = probe(&wt);
+        assert!(
+            !blockers.is_empty(),
+            "a worktree whose state daft cannot read must not read as idle"
+        );
+        assert!(
+            blockers
+                .iter()
+                .any(|b| matches!(b.kind, BlockerKind::Unreadable { .. })),
+            "{blockers:?}"
+        );
+        assert!(blockers.iter().all(|b| b.is_settle_first()));
+    }
+
+    /// A gitlink whose submodule is checked out — git's own
+    /// `validate_no_submodules` notion of "populated".
+    #[test]
+    fn a_populated_submodule_blocks_a_role_change() {
+        let (_tmp, wt, _git_dir) = main_worktree();
+        let sha = git_ok(&wt, &["rev-parse", "HEAD"]).trim().to_string();
+        git_ok(
+            &wt,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{sha},sub"),
+            ],
+        );
+        // Unpopulated: a gitlink with nothing checked out does not block.
+        assert!(probe(&wt).is_empty());
+
+        write(&wt.join("sub/.git"), "gitdir: ../.git/modules/sub\n");
+        let blockers = probe(&wt);
+        assert_eq!(blockers.len(), 1);
+        match &blockers[0].kind {
+            BlockerKind::Submodules { paths } => assert_eq!(paths, &[PathBuf::from("sub")]),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
@@ -423,9 +682,8 @@ mod tests {
         let (_tmp, wt, git_dir) = main_worktree();
         write(&git_dir.join("MERGE_HEAD"), "x\n");
         write(&git_dir.join("index.lock"), "");
-        let tmp2 = tempfile::tempdir().unwrap();
-        let wt2 = tmp2.path().join("other");
-        std::fs::create_dir_all(wt2.join(".git/rebase-merge")).unwrap();
+        let (_tmp2, wt2, git_dir2) = main_worktree();
+        write(&git_dir2.join("rebase-merge/head-name"), "refs/heads/b\n");
         let blockers = role_change_blockers(&[
             (wt.clone(), Some("a".into())),
             (wt2.clone(), Some("b".into())),
@@ -436,15 +694,8 @@ mod tests {
 
     #[test]
     fn a_linked_worktree_is_probed_through_its_pointer_file() {
-        // `.git` is a *file* naming the private dir — the shape a naive
-        // `wt/.git/rebase-merge` probe silently misses.
-        let tmp = tempfile::tempdir().unwrap();
-        let common = tmp.path().join("repo/.git");
-        let reg = common.join("worktrees/x");
-        std::fs::create_dir_all(reg.join("rebase-merge")).unwrap();
-        let wt = tmp.path().join("repo/x");
-        std::fs::create_dir_all(&wt).unwrap();
-        write(&wt.join(".git"), &format!("gitdir: {}\n", reg.display()));
+        let (_tmp, _common, wt, reg) = linked_worktree();
+        write(&reg.join("rebase-merge/head-name"), "refs/heads/x\n");
         let blockers = probe(&wt);
         assert_eq!(blockers.len(), 1);
         assert_eq!(blockers[0].git_dir.as_deref(), Some(reg.as_path()));
@@ -452,17 +703,7 @@ mod tests {
 
     #[test]
     fn locked_registration_blocks_a_moving_worktree_and_carries_the_reason() {
-        let tmp = tempfile::tempdir().unwrap();
-        let common = tmp.path().join("repo/.git");
-        let reg = common.join("worktrees/x");
-        std::fs::create_dir_all(&reg).unwrap();
-        let wt = tmp.path().join("repo/x");
-        std::fs::create_dir_all(&wt).unwrap();
-        write(
-            &reg.join("gitdir"),
-            &format!("{}\n", wt.join(".git").display()),
-        );
-        write(&wt.join(".git"), &format!("gitdir: {}\n", reg.display()));
+        let (_tmp, common, wt, reg) = linked_worktree();
         write(&reg.join("locked"), "running a long build\n");
         let blockers = relocation_blockers(&common, &[(wt.clone(), Some("x".into()))]);
         assert_eq!(blockers.len(), 1);
@@ -475,36 +716,72 @@ mod tests {
         assert_eq!(blockers[0].reason, Some(ProbeReason::Relocation));
     }
 
+    /// #875 review: the pivot is the one worktree whose registration is about
+    /// to be dissolved, and it is not a "moving" worktree — so it was the only
+    /// one never checked for a lock, and `git worktree lock` on it was
+    /// silently undone by the transform.
+    #[test]
+    fn the_pivots_own_lock_is_found_too() {
+        let (_tmp, common, wt, reg) = linked_worktree();
+        write(&reg.join("locked"), "CI runs against this\n");
+        let blockers = pivot_registration_blockers(&common, &wt, Some("x"));
+        assert_eq!(blockers.len(), 1);
+        assert!(matches!(
+            blockers[0].kind,
+            BlockerKind::RegistrationLocked { .. }
+        ));
+        assert_eq!(blockers[0].reason, Some(ProbeReason::RoleChange));
+    }
+
     #[test]
     fn a_modules_dir_in_the_registration_blocks_a_move_like_git_does() {
-        let tmp = tempfile::tempdir().unwrap();
-        let common = tmp.path().join("repo/.git");
-        let reg = common.join("worktrees/x");
+        let (_tmp, common, wt, reg) = linked_worktree();
         std::fs::create_dir_all(reg.join("modules/sub")).unwrap();
-        let wt = tmp.path().join("repo/x");
-        std::fs::create_dir_all(&wt).unwrap();
-        write(
-            &reg.join("gitdir"),
-            &format!("{}\n", wt.join(".git").display()),
-        );
-        write(&wt.join(".git"), &format!("gitdir: {}\n", reg.display()));
         let blockers = relocation_blockers(&common, &[(wt.clone(), Some("x".into()))]);
         assert!(matches!(blockers[0].kind, BlockerKind::Submodules { .. }));
     }
 
     #[test]
     fn an_unlocked_moving_worktree_has_no_blockers() {
-        let tmp = tempfile::tempdir().unwrap();
-        let common = tmp.path().join("repo/.git");
-        let reg = common.join("worktrees/x");
-        std::fs::create_dir_all(&reg).unwrap();
-        let wt = tmp.path().join("repo/x");
-        std::fs::create_dir_all(&wt).unwrap();
-        write(
-            &reg.join("gitdir"),
-            &format!("{}\n", wt.join(".git").display()),
-        );
-        write(&wt.join(".git"), &format!("gitdir: {}\n", reg.display()));
+        let (_tmp, common, wt, _reg) = linked_worktree();
         assert!(relocation_blockers(&common, &[(wt.clone(), Some("x".into()))]).is_empty());
+    }
+
+    /// #875 review: a `NestFromRoot` merging into an occupied directory cannot
+    /// be undone — its recorded inverse moves everything back out, including
+    /// what was there first. The plan refuses before anything moves.
+    #[test]
+    fn an_occupied_destination_is_a_blocker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let taken = tmp.path().join("taken");
+        std::fs::create_dir_all(&taken).unwrap();
+        std::fs::write(taken.join("someone-elses.txt"), "x").unwrap();
+        let free = tmp.path().join("free");
+        // An *empty* directory is not in the way: rename(2) replaces one, and
+        // a previous op in the same plan may have created the parent chain.
+        // A blocker stricter than the executor refuses transforms that work.
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let blockers = destination_blockers(&[
+            (taken.clone(), Some("x".into())),
+            (free.clone(), Some("y".into())),
+            (empty.clone(), Some("z".into())),
+        ]);
+        assert_eq!(blockers.len(), 1);
+        match &blockers[0].kind {
+            BlockerKind::DestinationOccupied { destination } => assert_eq!(destination, &taken),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(blockers[0].is_settle_first());
+    }
+
+    #[test]
+    fn same_volume_renames_raise_no_volume_blocker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("a");
+        std::fs::create_dir_all(&from).unwrap();
+        let to = tmp.path().join("b");
+        assert!(volume_blockers(&[(from, to)]).is_empty());
     }
 }

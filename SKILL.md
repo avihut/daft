@@ -278,8 +278,8 @@ lifecycle automation use `daft.yml` hooks.
 ### Repo Catalog and the Graph
 
 daft keeps a machine-local **repo catalog** — every repo it touches registers
-automatically (clone, init, adopt, or any daft command run inside it). Names
-derive from the remote URL; collisions auto-suffix (`api`, `api-2`).
+automatically (clone, init, or any daft command run inside it). Names derive
+from the remote URL; collisions auto-suffix (`api`, `api-2`).
 
 | Command                                                    | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -604,20 +604,20 @@ process manages them and writes output to log files.
   `Skipped` in `daft hooks jobs` listings.
 - `background: true` at the hook level sets the default for all its jobs.
 - `--hooks <auto|foreground|background|off>` picks how a run's hook phase
-  executes, on every command that fires hooks: `go`, `start`, `clone`, `adopt`,
-  `merge`. `foreground` runs background jobs inline and waits (CI, debugging); a
-  promoted job's failure then fails the hook, which for `worktree-post-create`
-  aborts the command. `background` detaches the whole phase, but only where that
-  changes nothing but timing: it declines for a phase daft still acts on (every
-  `pre-*` gate, `post-clone`, and `post-merge` when the merge used an ephemeral
-  worktree or `--remove-branch`) and for a phase declaring an execution order
-  background jobs cannot preserve (`parallel: false`, `piped:`, `follow:` —
-  express it with `needs:` instead). A declined phase runs inline and daft says
-  so. `off` is exactly `--skip-hooks all`, and is the only mode that also
-  affects legacy `.daft/hooks/*` scripts. All of it is orthogonal to
-  `--skip-hooks`, which picks _which_ jobs run, so the two compose.
-  `DAFT_NO_BACKGROUND_JOBS=1` promotes for commands without the flag. Promoted
-  jobs keep the standard job timeout.
+  executes, on every command that fires hooks: `go`, `start`, `clone`, `merge`.
+  `foreground` runs background jobs inline and waits (CI, debugging); a promoted
+  job's failure then fails the hook, which for `worktree-post-create` aborts the
+  command. `background` detaches the whole phase, but only where that changes
+  nothing but timing: it declines for a phase daft still acts on (every `pre-*`
+  gate, `post-clone`, and `post-merge` when the merge used an ephemeral worktree
+  or `--remove-branch`) and for a phase declaring an execution order background
+  jobs cannot preserve (`parallel: false`, `piped:`, `follow:` — express it with
+  `needs:` instead). A declined phase runs inline and daft says so. `off` is
+  exactly `--skip-hooks all`, and is the only mode that also affects legacy
+  `.daft/hooks/*` scripts. All of it is orthogonal to `--skip-hooks`, which
+  picks _which_ jobs run, so the two compose. `DAFT_NO_BACKGROUND_JOBS=1`
+  promotes for commands without the flag. Promoted jobs keep the standard job
+  timeout.
 - `daft hooks jobs` lists, cancels, retries, and prunes records; removing a
   worktree cancels its running background jobs.
 
@@ -876,8 +876,8 @@ All hooks receive: `DAFT_HOOK`, `DAFT_COMMAND`, `DAFT_PROJECT_ROOT`,
 `DAFT_GIT_DIR`, `DAFT_REMOTE`, `DAFT_SOURCE_WORKTREE`. Worktree hooks add
 `DAFT_WORKTREE_PATH`, `DAFT_BRANCH_NAME`; creation hooks `DAFT_IS_NEW_BRANCH`,
 `DAFT_BASE_BRANCH`; clone hooks `DAFT_REPOSITORY_URL`, `DAFT_DEFAULT_BRANCH`;
-removal hooks `DAFT_REMOVAL_REASON` (`remote-deleted`, `manual`, `ejecting`);
-move hooks `DAFT_IS_MOVE`, `DAFT_OLD_WORKTREE_PATH`, `DAFT_OLD_BRANCH_NAME`.
+removal hooks `DAFT_REMOVAL_REASON` (`remote-deleted`, `manual`); move hooks
+`DAFT_IS_MOVE`, `DAFT_OLD_WORKTREE_PATH`, `DAFT_OLD_BRANCH_NAME`.
 
 For anonymous sandbox worktrees `DAFT_BRANCH_NAME` is the empty string (the
 contract is "empty means no branch") and `DAFT_COMMIT` carries the pinned commit

@@ -68,11 +68,19 @@ pub const PER_WORKTREE_DIRS: &[&str] = &[
     "refs/bisect",
     "refs/worktree",
     "refs/rewritten",
+    // The reflogs of the per-worktree refs above. Without these the logs are
+    // stranded in the common dir, and the detach direction finds a
+    // `logs/refs` in the registration that collides with the common one.
+    "logs/refs/bisect",
+    "logs/refs/worktree",
+    "logs/refs/rewritten",
 ];
 
 /// Directories that hold *both* per-worktree and common entries. A relocation
-/// descends one level into these and moves leaves: `logs/HEAD` is per-worktree
-/// while `logs/refs/` is common, so renaming `logs/` wholesale would collide.
+/// descends into these to their leaf files rather than renaming them
+/// wholesale: `logs/HEAD` is per-worktree while `logs/refs/heads/` is common,
+/// so moving `logs/` — or even `logs/refs/` — would collide with a directory
+/// every repository with branch reflogs already has.
 const SPLIT_DIRS: &[&str] = &["logs", "refs", "info"];
 
 /// Registration bookkeeping that never relocates: `gitdir` and `commondir`
@@ -452,12 +460,18 @@ pub fn detach_worktree(common_dir: &Path, worktree_path: &Path) -> Result<Detach
                 files.push((PathBuf::from(entry.file_name()), fs::read(entry.path())?));
             }
         }
-        fs::remove_dir_all(&registration)
-            .with_context(|| format!("removing registration {}", registration.display()))?;
+        // Recorded before the removal: `remove_dir_all` is a multi-syscall
+        // walk that can fail half-way (a concurrent git dropping an
+        // `index.lock` in makes the final rmdir ENOTEMPTY), and a step
+        // recorded only on success would leave the journal unable to put the
+        // registration back — `git worktree prune` would then reap what is
+        // left, taking the index with it.
         journal.record(Step::RemovedTree {
             path: registration.clone(),
             files,
         });
+        fs::remove_dir_all(&registration)
+            .with_context(|| format!("removing registration {}", registration.display()))?;
         Ok(())
     })();
 
@@ -589,8 +603,16 @@ fn refuse_locks(dir: &Path) -> Result<()> {
 }
 
 /// The per-worktree entries a registration holds, as relative paths: every
-/// top-level entry except the bookkeeping and HEAD, descending one level into
-/// the split directories.
+/// top-level entry except the bookkeeping and HEAD, descending into the split
+/// directories all the way to their leaf files.
+///
+/// The descent is to leaves, not one level. A registration that has ever held
+/// a per-worktree ref — `refs/bisect/*` from a bisect, `refs/worktree/*` from
+/// a pinned ref — also holds `logs/refs/...` for it, and a one-level descent
+/// yields the directory `logs/refs`, which every repository with branch
+/// reflogs already has in its common dir. That is a `Collision::Refuse`, so
+/// the transform would refuse with a message blaming drift for a condition
+/// that is static: every retry, every `--dry-run`, forever.
 fn registration_entries(registration: &Path) -> Result<Vec<PathBuf>> {
     let mut rels: Vec<PathBuf> = Vec::new();
     let mut index: Option<PathBuf> = None;
@@ -608,10 +630,7 @@ fn registration_entries(registration: &Path) -> Result<Vec<PathBuf>> {
             continue;
         }
         if entry.file_type()?.is_dir() && SPLIT_DIRS.contains(&name_str.as_str()) {
-            for child in fs::read_dir(entry.path())? {
-                let child = child?;
-                rels.push(PathBuf::from(&name).join(child.file_name()));
-            }
+            collect_leaves(&entry.path(), &PathBuf::from(&name), &mut rels)?;
         } else {
             rels.push(PathBuf::from(name));
         }
@@ -621,6 +640,20 @@ fn registration_entries(registration: &Path) -> Result<Vec<PathBuf>> {
         rels.push(index); // last
     }
     Ok(rels)
+}
+
+/// Every non-directory entry under `dir`, as `prefix`-relative paths.
+fn collect_leaves(dir: &Path, prefix: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry?;
+        let rel = prefix.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            collect_leaves(&entry.path(), &rel, out)?;
+        } else {
+            out.push(rel);
+        }
+    }
+    Ok(())
 }
 
 fn refuse_collisions(rels: &[PathBuf], dest_dir: &Path) -> Result<()> {
@@ -675,18 +708,21 @@ fn move_entry(rel: &Path, from_dir: &Path, to_dir: &Path, journal: &mut Relocati
         (true, Collision::Append) => {
             let bytes = fs::read(&src)?;
             let original_len = fs::metadata(&dest)?.len();
+            // Recorded before either mutation: undoing an append that did not
+            // happen truncates `dest` to the length it already has and writes
+            // `src` back with the bytes it already holds — both no-ops.
+            journal.record(Step::Appended {
+                dest: dest.clone(),
+                original_len,
+                src: src.clone(),
+                bytes: bytes.clone(),
+            });
             {
                 use std::io::Write;
                 let mut f = fs::OpenOptions::new().append(true).open(&dest)?;
                 f.write_all(&bytes)?;
             }
             fs::remove_file(&src)?;
-            journal.record(Step::Appended {
-                dest,
-                original_len,
-                src,
-                bytes,
-            });
         }
         (true, Collision::Refuse) => {
             // `refuse_collisions` ran first; reaching here means the tree
@@ -729,12 +765,16 @@ fn create_dir_all_journalled(path: &Path, journal: &mut Relocation) -> Result<()
 }
 
 fn write_journalled(path: &Path, bytes: &[u8], journal: &mut Relocation) -> Result<()> {
+    // Recorded *before* the write: `fs::write` truncates first, so a failure
+    // part-way through still changed the file, and a step recorded only on
+    // success would leave that change outside the journal. Undoing a write
+    // that never happened is a no-op; failing to undo one that did is not.
     let prior = fs::read(path).ok();
-    fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))?;
     journal.record(Step::Wrote {
         path: path.to_path_buf(),
         prior,
     });
+    fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
@@ -751,8 +791,15 @@ fn strip_role_config(config_worktree: &Path, journal: &mut Relocation) -> Result
     unset_config_key(config_worktree, "core.worktree", journal)
 }
 
-/// `git config --file <file> --unset <key>`, journalled. Exit 5 (no such
-/// key) is success.
+/// `git config --file <file> --unset-all <key>`, journalled.
+///
+/// `--unset-all` rather than `--unset`: git spends exit 5 on two opposite
+/// meanings, "the key was not set" and "the key has several values, refusing
+/// to guess which to remove". With `--unset` the second reading leaves the
+/// key set while this function reports success — and a surviving
+/// `core.worktree` beside `core.bare = true` makes git refuse the repository
+/// outright. `--unset-all` removes every line, so exit 5 can only mean the
+/// key was absent.
 fn unset_config_key(file: &Path, key: &str, journal: &mut Relocation) -> Result<()> {
     if !file.is_file() {
         return Ok(());
@@ -761,7 +808,7 @@ fn unset_config_key(file: &Path, key: &str, journal: &mut Relocation) -> Result<
     let out = crate::utils::git_command_at(file.parent().unwrap_or(Path::new(".")))
         .args(["config", "--file"])
         .arg(file)
-        .args(["--unset", key])
+        .args(["--unset-all", key])
         .output()
         .with_context(|| format!("unsetting {key} in {}", file.display()))?;
     match out.status.code() {
@@ -1172,6 +1219,131 @@ mod tests {
         assert!(common.join("refs/bisect/bad").exists());
         assert!(common.join("logs/refs/heads/feature/x").exists());
         assert!(common.join("logs/HEAD").exists());
+    }
+
+    /// #875 review: a registration that has ever held a per-worktree ref also
+    /// holds its reflog under `logs/refs/`. Descending only one level into the
+    /// split dirs yielded the *directory* `logs/refs`, whose collision policy
+    /// is `Refuse` — against a `logs/refs` that every repository with branch
+    /// reflogs already has. The refusal blamed drift, but the condition was
+    /// static: the repository could never be transformed again.
+    #[test]
+    fn detach_carries_per_worktree_reflogs_past_the_common_logs_refs() {
+        let (tmp, common) = fake_common(true);
+        plant_state(&common);
+        let wt = worktree_dir(&tmp);
+        attach_worktree(&common, &wt, Some("feature/x"), "main").unwrap();
+
+        let reg = common.join("worktrees/x");
+        // What a bisect leaves behind in a linked worktree's registration.
+        write(&reg.join("logs/refs/bisect/bad"), "bisect reflog\n");
+        write(&reg.join("logs/refs/worktree/pin"), "pinned ref reflog\n");
+        // What every repository with branch reflogs has in its common dir.
+        assert!(common.join("logs/refs/heads/feature/x").exists());
+
+        detach_worktree(&common, &wt).expect("a per-worktree reflog must not wedge the transform");
+
+        assert_eq!(
+            fs::read_to_string(common.join("logs/refs/bisect/bad")).unwrap(),
+            "bisect reflog\n"
+        );
+        assert_eq!(
+            fs::read_to_string(common.join("logs/refs/worktree/pin")).unwrap(),
+            "pinned ref reflog\n"
+        );
+        assert!(
+            common.join("logs/refs/heads/feature/x").exists(),
+            "the common branch reflog must survive untouched"
+        );
+    }
+
+    /// The attach direction of the same fact: the reflogs of the per-worktree
+    /// refs travel with them instead of being stranded in the common dir.
+    #[test]
+    fn attach_carries_the_reflogs_of_per_worktree_refs() {
+        let (tmp, common) = fake_common(true);
+        plant_state(&common);
+        write(&common.join("logs/refs/bisect/bad"), "bisect reflog\n");
+        let wt = worktree_dir(&tmp);
+
+        let attached = attach_worktree(&common, &wt, Some("feature/x"), "main").unwrap();
+        assert!(attached.registration.join("logs/refs/bisect/bad").exists());
+        assert!(!common.join("logs/refs/bisect/bad").exists());
+        assert!(
+            common.join("logs/refs/heads/feature/x").exists(),
+            "a branch reflog is common and must stay"
+        );
+    }
+
+    /// #875 review: `git config --unset` spends exit 5 on both "no such key"
+    /// and "several values, refusing to guess". Reading the second as success
+    /// left `core.worktree` set beside `core.bare = true`, which makes git
+    /// refuse the repository outright ("unable to set up work tree using
+    /// invalid config"). `--unset-all` has only the first meaning.
+    #[test]
+    fn attach_strips_a_multivalued_core_worktree() {
+        let (tmp, common) = fake_common(true);
+        plant_state(&common);
+        write(
+            &common.join("config"),
+            "[core]\n\tbare = true\n\tworktree = /old/place\n\tworktree = /other/place\n",
+        );
+        let wt = worktree_dir(&tmp);
+
+        attach_worktree(&common, &wt, Some("feature/x"), "main").unwrap();
+
+        let left = fs::read_to_string(common.join("config")).unwrap();
+        assert!(
+            !left.contains("worktree ="),
+            "every core.worktree line must go, not just a lone one: {left}"
+        );
+    }
+
+    /// #875 review: `remove_dir_all` is a multi-syscall walk. Recording the
+    /// step only after it returned `Ok` meant a partial removal — children
+    /// gone, the directory itself not — left the journal unable to put the
+    /// registration back, and `git worktree prune` would then reap what was
+    /// left, taking the index with it.
+    #[cfg(unix)]
+    #[test]
+    fn detach_undo_restores_a_registration_whose_removal_failed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (tmp, common) = fake_common(true);
+        plant_state(&common);
+        let wt = worktree_dir(&tmp);
+        attach_worktree(&common, &wt, Some("feature/x"), "main").unwrap();
+        let reg = common.join("worktrees/x");
+        let index_before = fs::read(reg.join("index")).unwrap();
+        let gitdir_before = fs::read(reg.join("gitdir")).unwrap();
+
+        // A read-only `worktrees/` lets the walk unlink the registration's
+        // children but not the registration directory itself: rmdir needs the
+        // parent writable.
+        let parent = common.join("worktrees");
+        let original = fs::metadata(&parent).unwrap().permissions();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+        let err = detach_worktree(&common, &wt).unwrap_err();
+        fs::set_permissions(&parent, original).unwrap();
+
+        assert!(
+            format!("{err:#}").contains("removing registration"),
+            "the failure must be the one this test injects: {err:#}"
+        );
+        assert_eq!(
+            fs::read(reg.join("index")).unwrap(),
+            index_before,
+            "the index must be back in the registration"
+        );
+        assert_eq!(
+            fs::read(reg.join("gitdir")).unwrap(),
+            gitdir_before,
+            "without gitdir the registration is prunable — and it holds the index"
+        );
+        assert!(
+            reg.join("commondir").exists() && reg.join("HEAD").exists(),
+            "a registration git can still resolve"
+        );
     }
 
     #[test]

@@ -122,15 +122,42 @@ pub fn plan_line(
             segments.push(format!("{summary} carried along"));
         }
     } else {
+        // The root can change *role* without changing *place*: contained and
+        // contained-classic render the same worktree paths, so the whole
+        // transform is Unregister + MoveGitDir + SetBare. Counting only
+        // MoveWorktree ops reported that as "0 worktrees relocated" and never
+        // mentioned the uncommitted work being carried — the plan line's
+        // entire purpose.
+        let role = plan.ops.iter().find_map(|op| match op {
+            TransformOp::RegisterWorktree { branch, .. } => Some((branch.clone(), true)),
+            TransformOp::UnregisterWorktree { branch, .. } => Some((branch.clone(), false)),
+            _ => None,
+        });
+        if let Some((branch, becomes_linked)) = role {
+            let who = branch
+                .as_deref()
+                .map(|b| format!("'{b}'"))
+                .unwrap_or_else(|| "the main working tree".to_string());
+            segments.push(if becomes_linked {
+                format!("{who} becomes a linked worktree of a bare repository")
+            } else {
+                format!("{who} becomes the main working tree")
+            });
+            if let Some(summary) = root.and_then(carried_for).as_ref().and_then(tree_summary) {
+                segments.push(format!("{summary} carried along"));
+            }
+        }
         let moves = plan
             .ops
             .iter()
             .filter(|op| matches!(op, TransformOp::MoveWorktree { .. }))
             .count();
-        segments.push(format!(
-            "{moves} worktree{} relocated",
-            if moves == 1 { "" } else { "s" }
-        ));
+        if moves > 0 || segments.is_empty() {
+            segments.push(format!(
+                "{moves} worktree{} relocated",
+                if moves == 1 { "" } else { "s" }
+            ));
+        }
         let dirty = classified
             .iter()
             .filter(|cw| cw.disposition == WorktreeDisposition::Conforming)
@@ -319,9 +346,8 @@ pub fn render_blockers(
             }
             BlockerKind::MissingPivot { candidates } => {
                 out.push_str(&format!(
-                    "  The default branch '{}' has no worktree, so the '{layout_name}' layout needs one of\n  these worktrees at {}. Which one is a choice daft will not make for you.\n",
+                    "  The default branch '{}' has no worktree, so the '{layout_name}' layout needs one of\n  these worktrees to become the main working tree. Which one is a choice daft\n  will not make for you.\n",
                     source.default_branch,
-                    show(&source.project_root)
                 ));
                 let bw = candidates.iter().map(|c| c.branch.len()).max().unwrap_or(0);
                 let paths: Vec<String> = candidates.iter().map(|c| show(&c.path)).collect();
@@ -337,9 +363,19 @@ pub fn render_blockers(
                 out.push_str(&format!("      name one:  {retry} --pivot <branch>\n"));
             }
             BlockerKind::MissingAs { derived, commit } => {
+                // The main working tree, not the project root: a
+                // contained-classic source keeps its working tree one level
+                // inside the wrapper, and naming the wrapper here pointed the
+                // user at a directory that is not detached at anything.
+                let main_path = source
+                    .worktrees
+                    .iter()
+                    .find(|wt| wt.is_root)
+                    .map(|wt| wt.path.clone())
+                    .unwrap_or_else(|| source.project_root.clone());
                 out.push_str(&format!(
                     "  The main working tree at {} is detached at {}, so the '{layout_name}'\n  layout has no branch to name its directory.\n",
-                    show(&source.project_root),
+                    show(&main_path),
                     short_oid(commit)
                 ));
                 out.push_str(&format!("      name it:  {retry} --as <dir>\n"));
@@ -361,6 +397,52 @@ pub fn render_blockers(
                     format_bytes(*bytes)
                 ));
                 out.push_str(&format!("      accept:  {retry} -y\n"));
+            }
+            BlockerKind::DestinationOccupied { destination } => {
+                let what = b
+                    .branch
+                    .as_deref()
+                    .map(|b| format!("'{b}'"))
+                    .unwrap_or_else(|| "a worktree".to_string());
+                out.push_str(&format!(
+                    "  {} already exists, and the '{layout_name}' layout puts {what} there.\n",
+                    show(destination)
+                ));
+                out.push_str(
+                    "  Merging the two would mix trees daft cannot tell apart again, so an undo\n  could not put either back.\n",
+                );
+                out.push_str(&format!(
+                    "      move it:    mv {} {}.bak\n",
+                    show(destination),
+                    show(destination)
+                ));
+                out.push_str(&format!("      or remove:  rm -rf {}\n", show(destination)));
+            }
+            BlockerKind::Unreadable { what, detail } => {
+                out.push_str(&format!(
+                    "  daft could not establish {what}{}.\n",
+                    wt.as_deref()
+                        .map(|w| format!(" at {w}"))
+                        .unwrap_or_default()
+                ));
+                out.push_str(&format!("  {detail}\n"));
+                out.push_str(
+                    "  A transform that cannot read the state it is about to move does not\n  guess at it.\n",
+                );
+                out.push_str("      check:  git -C . status   (from that worktree)\n");
+            }
+            BlockerKind::CrossesVolumes { from, to } => {
+                out.push_str(&format!(
+                    "  {} and {} are on different volumes, and this step is a rename.\n",
+                    show(from),
+                    show(to)
+                ));
+                out.push_str(
+                    "  Only linked worktrees have a copy path; a repository's own root cannot\n  be moved across a filesystem boundary in place.\n",
+                );
+                out.push_str(
+                    "      move first:  relocate the repository onto one volume, then transform\n",
+                );
             }
         }
     }
@@ -547,6 +629,88 @@ mod tests {
         assert_eq!(
             plan_line(&source, &cw, &noop, "sibling", None),
             "Nothing to move — the 'sibling' layout leaves every worktree where it is."
+        );
+    }
+
+    /// #875 review: contained and contained-classic render identical worktree
+    /// paths, so the whole transform is Unregister + MoveGitDir + SetBare and
+    /// nothing "moves". Counting MoveWorktree ops alone reported that as
+    /// "0 worktrees relocated" and never mentioned the uncommitted work being
+    /// carried — the plan line's entire purpose.
+    #[test]
+    fn plan_line_names_a_role_change_that_moves_nothing() {
+        let source = state(
+            true,
+            "main",
+            vec![(Some("task/local-docker"), "/repo/task/local-docker", true)],
+        );
+        let cw = vec![classified(
+            Some("task/local-docker"),
+            "/repo/task/local-docker",
+            "/repo/task/local-docker",
+            true,
+        )];
+        let plan = plan_with(
+            vec![
+                TransformOp::UnregisterWorktree {
+                    branch: Some("task/local-docker".into()),
+                    path: "/repo/task/local-docker".into(),
+                    common_dir: "/repo/.git".into(),
+                },
+                TransformOp::MoveGitDir {
+                    from: "/repo/.git".into(),
+                    to: "/repo/task/local-docker/.git".into(),
+                },
+                TransformOp::SetBare {
+                    bare: false,
+                    common_dir: "/repo/.git".into(),
+                },
+                TransformOp::ValidateIntegrity,
+            ],
+            vec![("/repo/task/local-docker", counts(1, 1, 1, 0))],
+        );
+        let line = plan_line(&source, &cw, &plan, "contained-classic", None);
+        assert!(
+            line.starts_with("'task/local-docker' becomes the main working tree"),
+            "{line}"
+        );
+        assert!(
+            line.contains("1 modified, 1 staged, 1 untracked carried along"),
+            "{line}"
+        );
+        assert!(!line.contains("0 worktrees relocated"), "{line}");
+    }
+
+    /// The other direction: a main working tree that becomes a linked worktree
+    /// of a bare repository without changing address.
+    #[test]
+    fn plan_line_names_the_reverse_role_change() {
+        let source = state(false, "main", vec![(Some("task/x"), "/repo/task/x", true)]);
+        let cw = vec![classified(
+            Some("task/x"),
+            "/repo/task/x",
+            "/repo/task/x",
+            true,
+        )];
+        let plan = plan_with(
+            vec![
+                TransformOp::SetBare {
+                    bare: true,
+                    common_dir: "/repo/.git".into(),
+                },
+                TransformOp::RegisterWorktree {
+                    branch: Some("task/x".into()),
+                    path: "/repo/task/x".into(),
+                    common_dir: "/repo/.git".into(),
+                },
+                TransformOp::ValidateIntegrity,
+            ],
+            vec![("/repo/task/x", counts(0, 0, 0, 0))],
+        );
+        let line = plan_line(&source, &cw, &plan, "contained", None);
+        assert!(
+            line.starts_with("'task/x' becomes a linked worktree of a bare repository"),
+            "{line}"
         );
     }
 

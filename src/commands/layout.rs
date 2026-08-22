@@ -664,30 +664,49 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         branch: args.pivot.clone(),
         dirname: args.as_dir.clone(),
     };
-    if let Some(name) = &over.dirname {
-        if let Err(why) = crate::core::worktree::sandbox::validate_dirname(name) {
-            anyhow::bail!("--as {name}: {why}");
-        }
-        if source.project_root.join(name).exists() {
-            anyhow::bail!(
-                "--as {name}: {} already exists",
-                source.project_root.join(name).display()
-            );
-        }
-    }
-    if over.branch.is_some() && !source.is_bare {
-        anyhow::bail!(
-            "--pivot chooses which worktree takes the repository root when a bare \
-             repository gains a main working tree; this repository already has one."
-        );
+    if let Some(name) = &over.dirname
+        && let Err(why) = check_dirname(name, &source.project_root)
+    {
+        anyhow::bail!("--as {name}: {why}");
     }
     let bare_flips = source.is_bare != target_layout.needs_bare();
     let situation = transform::root_situation(&target_layout, &source);
 
+    // Both flags answer a question this transform may not be asking. Saying so
+    // beats accepting the flag and ignoring it — a silently swallowed
+    // `--pivot bogus-branch` reads as "daft chose that worktree", which is the
+    // opposite of what happened.
+    if over.branch.is_some() {
+        if !source.is_bare {
+            anyhow::bail!(
+                "--pivot chooses which worktree takes the repository root when a bare \
+                 repository gains a main working tree; this repository already has one."
+            );
+        }
+        if target_layout.needs_bare() {
+            anyhow::bail!(
+                "--pivot chooses which worktree takes the repository root when a bare \
+                 repository gains a main working tree; the '{}' layout keeps this \
+                 repository bare, so no worktree takes that role.",
+                target_layout.name
+            );
+        }
+    }
+    if over.dirname.is_some() && !matches!(situation, transform::RootSituation::DetachedMain { .. })
+    {
+        anyhow::bail!(
+            "--as names the directory for a main working tree that is *detached*, and so \
+             has no branch to name it by. This repository's main working tree is placed by \
+             its branch."
+        );
+    }
+
     // Probe for in-progress operations *before* asking anything: asking the
     // user to name a directory and then refusing because of a rebase is the
-    // contradiction this ordering exists to avoid.
-    if bare_flips {
+    // contradiction this ordering exists to avoid. A detached main working
+    // tree is the other early case — the layout is about to nest it, which
+    // moves it, whether or not the repository's bare flag flips.
+    if bare_flips || matches!(situation, transform::RootSituation::DetachedMain { .. }) {
         let early: Vec<(PathBuf, Option<String>)> = match &situation {
             transform::RootSituation::AmbiguousPivot { candidates } if over.branch.is_none() => {
                 candidates
@@ -723,7 +742,18 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
                 args.yes,
             ) {
                 transform::DirnameDecision::Settled => {}
-                transform::DirnameDecision::Use(name) => over.dirname = Some(name),
+                // Same two guards `--as` gets. `-y` takes a name daft derived
+                // rather than one the user typed, but derived_dirname is the
+                // scheme anonymous worktrees already use, so its collisions
+                // are ordinary — and an empty HEAD derives an empty name.
+                transform::DirnameDecision::Use(name) => {
+                    if let Err(why) = check_dirname(&name, &source.project_root) {
+                        anyhow::bail!(
+                            "cannot nest the detached main working tree as '{name}': {why}"
+                        );
+                    }
+                    over.dirname = Some(name);
+                }
                 transform::DirnameDecision::Ask(default) if blockers.is_empty() => {
                     over.dirname = Some(prompt_dirname(
                         output,
@@ -807,15 +837,39 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         transform::classify_worktrees(&source, &target, &args.include, args.include_all);
 
     // ── Everything that can block, in one pass ──────────────────────────
-    if bare_flips
-        && let Some(cw) = classified
-            .iter()
-            .find(|cw| cw.disposition == transform::WorktreeDisposition::Root)
+    //
+    // The root is probed whenever the transform touches it — when its role
+    // flips (main working tree ⇄ linked worktree) *and* when it merely moves.
+    // `NestFromRoot`, `CollapseIntoRoot` and `MoveMainWorktree` are emitted
+    // from the root's current-vs-target paths alone, with no reference to the
+    // bare flag, so gating the probe on that flag left every same-bareness
+    // relocation — sibling ⇄ contained-classic among them — unprobed. An
+    // in-progress operation is this command's only remaining refusal class;
+    // it cannot be one that depends on which pair of layouts is involved.
+    let root_cw = classified
+        .iter()
+        .find(|cw| cw.disposition == transform::WorktreeDisposition::Root);
+    if let Some(cw) = root_cw
+        && (bare_flips || !transform::paths_equivalent(&cw.current_path, &cw.target_path))
     {
         probe_role_change(
             vec![(cw.current_path.clone(), cw.branch.clone())],
             &mut blockers,
         );
+    }
+    // The pivot's own registration: a `git worktree lock` on it, or a stale
+    // `modules/`. `relocation_blockers` never sees the pivot (it is not a
+    // Conforming worktree), so without this the one worktree whose
+    // registration is about to be dissolved was the only one never checked.
+    if bare_flips
+        && source.is_bare
+        && let Some(cw) = root_cw
+    {
+        blockers.extend(transform::preflight::pivot_registration_blockers(
+            &source.git_dir,
+            &cw.current_path,
+            cw.branch.as_deref(),
+        ));
     }
     let moving: Vec<(PathBuf, Option<String>)> = classified
         .iter()
@@ -847,7 +901,14 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
             .sum::<u64>()
     });
     let mut confirm_copy = false;
-    match transform::decide::decide_copy_confirm(!copy_moves.is_empty(), interactive, args.yes) {
+    // A dry run copies nothing, so it has nothing to confirm: making it ask
+    // turned the one command that answers "can this repo transform?" into a
+    // refusal telling the user to pass `-y` to a dry run.
+    match transform::decide::decide_copy_confirm(
+        !copy_moves.is_empty() && !args.dry_run,
+        interactive,
+        args.yes,
+    ) {
         transform::ConfirmDecision::Accept => {}
         transform::ConfirmDecision::Ask => confirm_copy = true,
         transform::ConfirmDecision::Blocked => blockers.push(transform::Blocker::repo_wide(
@@ -857,6 +918,15 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
             },
         )),
     }
+
+    // A destination that already exists, and a rename that would cross a
+    // filesystem boundary: both are refused by the executor too, but only
+    // after earlier operations have run. Reported here they cost nothing but
+    // a stat, and the refusal lands where nothing has moved yet.
+    blockers.extend(transform::preflight::destination_blockers(
+        &plan.new_destinations(),
+    ));
+    blockers.extend(transform::preflight::volume_blockers(&plan.plain_renames()));
 
     // The plan line — always, before anything happens. It absorbs the #873
     // notice: the root role follows the main working tree, so when it is on a
@@ -983,15 +1053,31 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     // working tree). Best-effort, like every other ambient registration.
     crate::catalog::touch_current_repo();
 
-    // CD to the worktree for the user's original branch (it may have moved)
-    if let Some(ref branch) = user_branch
-        && let Ok(Some(wt_path)) = git.find_worktree_for_branch(branch)
-    {
-        output.cd_path(&wt_path);
-    }
+    // CD to the worktree for the user's original branch (it may have moved).
+    // When there is no branch to look up — a detached main working tree, which
+    // this command now nests rather than refusing — or the branch no longer
+    // has a worktree, the shell still has to leave: its cwd may be a directory
+    // the transform deleted, and only the parent shell can fix that. `landing`
+    // is where this process already moved to.
+    let redirect = user_branch
+        .as_ref()
+        .and_then(|branch| git.find_worktree_for_branch(branch).ok().flatten())
+        .unwrap_or(landing);
+    output.cd_path(&redirect);
 
     output.result(&format!("Transformed to layout '{}'.", target_layout.name));
 
+    Ok(())
+}
+
+/// The two conditions a nested main working tree's directory name has to meet,
+/// whichever route it arrived by: `--as`, the `-y` default, or the prompt.
+fn check_dirname(name: &str, project_root: &Path) -> Result<(), String> {
+    crate::core::worktree::sandbox::validate_dirname(name)?;
+    let dest = project_root.join(name);
+    if dest.exists() {
+        return Err(format!("{} already exists", dest.display()));
+    }
     Ok(())
 }
 
@@ -1024,13 +1110,7 @@ fn prompt_dirname(
     let name: String = dialoguer::Input::with_theme(&prompt_theme())
         .with_prompt("Directory name for the detached main working tree")
         .with_initial_text(default)
-        .validate_with(move |s: &String| -> std::result::Result<(), String> {
-            crate::core::worktree::sandbox::validate_dirname(s)?;
-            if root.join(s).exists() {
-                return Err(format!("{} already exists.", root.join(s).display()));
-            }
-            Ok(())
-        })
+        .validate_with(move |s: &String| check_dirname(s, &root))
         .interact_text()
         .unwrap_or_else(|_| crate::prompt::exit_cancelled_with(TRANSFORM_CANCELLED));
     Ok(name)

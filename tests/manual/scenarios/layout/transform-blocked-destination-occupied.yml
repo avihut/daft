@@ -1,0 +1,75 @@
+name: A destination that is already taken is refused, not merged into
+description: >
+  #875 review: detached *linked* worktrees are deliberately invisible to a
+  transform — they are skipped, so nothing plans a move for them. Their
+  directories are not invisible. A repository on branch `foo` with a detached
+  worktree parked at `<repo>/foo` has the contained layout aiming the main
+  working tree at exactly that path; nesting into it merged two trees, and the
+  recorded inverse (`CollapseIntoRoot`, which moves *everything* back out) then
+  hauled the parked worktree's own files into the root and deleted its
+  directory. The collision is refused up front instead, where nothing has moved.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: A plain clone on branch foo, with a detached worktree parked at foo/
+    run: |
+      set -euo pipefail
+      git clone -q $REMOTE_TEST_REPO test-repo
+      cd $WORK_DIR/test-repo
+      git switch -q -c foo
+      echo "local change" >> README.md
+      git worktree add -q --detach $WORK_DIR/test-repo/foo HEAD
+      echo "belongs to the parked worktree" > $WORK_DIR/test-repo/foo/PARKED.md
+      git status --porcelain > $BASE_DIR/before.txt
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/foo/PARKED.md"
+
+  - name: The transform refuses and names the occupied path
+    run: NO_COLOR=1 daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        # Text only the DestinationOccupied arm prints — "'foo'" alone would be
+        # satisfied by the plan line and the branch name.
+        - "already exists, and the 'contained' layout puts 'foo' there"
+        - "Merging the two would mix trees daft cannot tell apart again"
+        - "or remove:"
+        - "condition to settle first"
+
+  - name: Both trees are exactly as they were
+    run: |
+      set -euo pipefail
+      git -C $WORK_DIR/test-repo status --porcelain > $BASE_DIR/after.txt
+      diff $BASE_DIR/before.txt $BASE_DIR/after.txt
+      test "$(cat $WORK_DIR/test-repo/foo/PARKED.md)" = "belongs to the parked worktree"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/README.md"
+        - "$WORK_DIR/test-repo/.git/index"
+        - "$WORK_DIR/test-repo/foo/PARKED.md"
+
+  - name: Freeing the path lets the same command through
+    run: |
+      set -euo pipefail
+      git -C $WORK_DIR/test-repo worktree remove --force $WORK_DIR/test-repo/foo
+    expect:
+      exit_code: 0
+
+  - name: The retry succeeds and carries the tree
+    run: NO_COLOR=1 daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "1 modified carried along"
+        - "Transformed"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/foo"
+          branch: foo
