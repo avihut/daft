@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.3](https://github.com/avihut/daft/compare/v1.27.2...v1.27.3) - 2026-08-22
+
+
+### Bug Fixes
+
+- Prune only reclaims branches something attests were published (#872)
+- **deps**: Bump h2 to 0.4.18 (RUSTSEC-2026-0258) (#855)
 ## [1.27.2](https://github.com/avihut/daft/compare/v1.27.1...v1.27.2) - 2026-08-14
 
 
