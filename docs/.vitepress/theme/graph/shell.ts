@@ -49,9 +49,15 @@ const ok = (op: string, args: VerbArgs): ParseOutcome => ({
   args,
 });
 
+/**
+ * The repo the shell stands in — undefined at `~`, which is the point: a
+ * verb that mutates one repo must refuse rather than silently act on
+ * another. Verbs that only guess a default (`start`'s repo, a bare `go`,
+ * which carrier to prefer) fall back to the home repo explicitly.
+ */
 function cwdRepo(world: World, cwd: string): WorldRepo | undefined {
   const name = cwd.split("/").filter((p) => p && p !== "~")[0];
-  return world.repos.find((r) => r.name === name) ?? world.repos[0];
+  return world.repos.find((r) => r.name === name);
 }
 
 function cwdKey(cwd: string): string | null {
@@ -106,7 +112,8 @@ export function parseCommand(
 
   const verb = argv[1];
   const rest = argv.slice(2);
-  const home = cwdRepo(world, cwd);
+  const here = cwdRepo(world, cwd);
+  const home = here ?? world.repos[0];
 
   switch (verb) {
     case "clone": {
@@ -129,11 +136,10 @@ export function parseCommand(
         // Local-first, like the real grammar: two names read as
         // repo + branch only when the first is not a local branch.
         const [a, b] = rest;
-        if (
-          home &&
-          activeBranches(home).includes(b) &&
-          !world.repos.some((r) => r.name === a)
-        )
+        const named = world.repos.find((r) => r.name === a);
+        if (named && activeBranches(named).includes(b))
+          return err(`daft start: ${b} already exists in ${a}`);
+        if (!named && home && activeBranches(home).includes(b))
           return err(`daft start: ${b} already exists in ${home.name}`);
         return ok("start", { repo: a, branch: b });
       }
@@ -297,7 +303,7 @@ export function parseCommand(
           return err(
             `error: unknown repo "${arg}" — nothing cloned or added by that name`,
           );
-        const a = home?.name;
+        const a = here?.name;
         if (!a || a === arg)
           return err("daft repo link: cd into the repo to link from");
         if (
@@ -310,7 +316,7 @@ export function parseCommand(
       }
       if (sub === "unlink") {
         if (!arg) return err("daft repo unlink: name the repo to unlink");
-        const a = home?.name;
+        const a = here?.name;
         const rel =
           world.rels.find(
             ([x, y]) => (x === a && y === arg) || (x === arg && y === a),

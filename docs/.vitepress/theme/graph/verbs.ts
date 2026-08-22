@@ -60,6 +60,13 @@ export interface World {
   cwd?: string;
   /** Author-pinned repo spots (composer placements); addRepo consults it. */
   spots?: Record<string, { x: number; y: number }>;
+  /**
+   * The next repo's port base. Monotonic on purpose: keyed off
+   * `repos.length` instead, a repo cloned after `daft repo remove` would
+   * reuse the removed repo's ports — and a colliding port badge disproves
+   * the very thing the badge exists to show.
+   */
+  nextBase?: number;
 }
 
 export function emptyWorld(): World {
@@ -150,7 +157,8 @@ export function addRepo(world: World, name: string): WorldRepo {
       (s) => !world.repos.some((r) => r.x === s.x && r.y === s.y),
     ) ??
     REPO_SPOTS[i % REPO_SPOTS.length];
-  const base = 3000 + i * 1000;
+  const base = world.nextBase ?? 3000;
+  world.nextBase = base + 1000;
   const repo: WorldRepo = {
     name,
     x: spot.x,
@@ -396,7 +404,15 @@ function startParams(
 ): { repoName: string; branch: string; cross: boolean } {
   const homeName = world.repos[0]?.name ?? "web";
   const repoName = str(args, "repo", homeName);
-  const branch = str(args, "branch", nextBranch(world));
+  let branch = str(args, "branch", nextBranch(world));
+  // A branch the repo already carries moves to the next free name — and it
+  // moves HERE, where the printed command is computed, so the line the
+  // terminal shows can never name a branch other than the one `run` creates.
+  // A repo the story has yet to clone arrives carrying `main` and nothing
+  // else, so that is its whole collision set.
+  const target = findRepo(world, repoName);
+  const taken = target ? !!findWt(world, repoName, branch) : branch === "main";
+  if (taken) branch = nextBranch(world);
   return { repoName, branch, cross: repoName !== homeName };
 }
 
@@ -578,7 +594,7 @@ const start: OpSpec = {
     const cmd = startCommand(world, args);
     const p = startParams(world, args);
     const repoName = p.repoName;
-    let branch = p.branch;
+    const branch = p.branch;
     const cross = p.cross;
     let target = findRepo(world, repoName);
     const beats: Beat[] = [{ cmd }];
@@ -598,7 +614,6 @@ const start: OpSpec = {
         },
       );
     }
-    if (findWt(world, repoName, branch)) branch = nextBranch(world);
     // A feature spanning repos ties them together: relate to every carrier,
     // arc to the latest one — exactly the hero's cross-repo grammar.
     const links = carriers(world, branch, repoName);

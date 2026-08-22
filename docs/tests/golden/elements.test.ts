@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { derive, emptyDoc } from "@dumbshow/core";
-import { dropElement } from "../../.vitepress/theme/graph/composer/elements";
+import {
+  canvasDrop,
+  dropElement,
+} from "../../.vitepress/theme/graph/composer/elements";
 import { DAFT_PACK } from "../../.vitepress/theme/graph/pack";
 import {
   addSeedRepo,
@@ -65,6 +68,43 @@ describe("CMP-D5 element-drop semantics", () => {
     });
     expect("error" in out && out.error).toContain(
       "created by the timeline — grow it with daft start",
+    );
+  });
+
+  test("repo onto repo refuses when the timeline already related them", () => {
+    // The seed would carry a second copy of a line `daft repo link` made:
+    // drawn twice, two hits under `pick`, one relation.
+    const doc = {
+      ...emptyDoc(DAFT_PACK),
+      timeline: [
+        { kind: "op" as const, op: "clone", args: { name: "web" } },
+        { kind: "op" as const, op: "clone", args: { name: "orders" } },
+        {
+          kind: "op" as const,
+          op: "repo-link",
+          args: { a: "web", b: "orders" },
+        },
+      ],
+    };
+    const derived = derive(doc, DAFT_PACK);
+    const repoHit = (repo: string) => ({
+      kind: "repo" as const,
+      repo,
+      sx: 0,
+      sy: 0,
+      r: 21,
+    });
+    const out = canvasDrop({
+      doc,
+      world: derived.world,
+      compiled: derived.compiled,
+      source: { kind: "node", hit: repoHit("web") },
+      wx: 0,
+      wy: 0,
+      over: repoHit("orders"),
+    });
+    expect(out && "error" in out && out.error).toBe(
+      "web and orders are already related.",
     );
   });
 

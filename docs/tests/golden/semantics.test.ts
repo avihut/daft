@@ -40,6 +40,38 @@ function available(id: string, world: World): boolean {
 }
 
 describe("CMP-L4 verb semantics", () => {
+  test("start names the branch it actually creates", () => {
+    // The printed line and the world are resolved once, together: a branch
+    // the repo already carries moves to the next free name in BOTH.
+    const world = build([clone("web"), start("checkout")]).world;
+    const spec = OPS.find((o) => o.id === "start");
+    if (!spec) throw new Error("no start op");
+    const before = wt(world, "web", "checkout");
+    const cmd = spec.command(world, { repo: "web", branch: "checkout" });
+    const step = spec.run(world, { repo: "web", branch: "checkout" });
+    const grown = world.repos
+      .find((r) => r.name === "web")
+      ?.wts.filter((w) => w.branch !== "main" && w !== before)
+      .map((w) => w.branch);
+    expect(grown).toHaveLength(1);
+    expect(cmd).toBe(`daft start ${grown?.[0]}`);
+    const cmdBeat = step.beats.find((b) => "cmd" in b);
+    expect(cmdBeat && "cmd" in cmdBeat && cmdBeat.cmd).toBe(cmd);
+  });
+
+  test("ports never collide after a repo is removed", () => {
+    const world = build([
+      clone("web"),
+      clone("orders"),
+      { verb: "repo-remove", args: { name: "web" } },
+      clone("payments"),
+    ]).world;
+    const ports = world.repos.flatMap((r) =>
+      r.wts.map((w) => w.port).filter((p): p is string => !!p),
+    );
+    expect(new Set(ports).size).toBe(ports.length);
+  });
+
   test("push marks pushed and exhausts its pool", () => {
     const before = build([clone("web"), start("checkout")]).world;
     expect(wt(before, "web", "checkout")?.pushed).toBeFalsy();

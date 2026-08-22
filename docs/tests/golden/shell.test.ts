@@ -31,6 +31,10 @@ const cloned = worldAfter([
   { op: "clone", args: { name: "web" } },
   { op: "start", args: { repo: "web", branch: "checkout" } },
 ]);
+const two = worldAfter([
+  { op: "clone", args: { name: "web" } },
+  { op: "clone", args: { name: "orders" } },
+]);
 
 describe("shell grammar table", () => {
   test("refusals", () => {
@@ -67,11 +71,28 @@ describe("shell grammar table", () => {
         "~/web/main",
         "daft start: checkout already exists in web",
       ],
+      // Both names known: the branch is already there, whichever name
+      // leads. Accepting it made `start` create a different branch than the
+      // line said.
+      [
+        "daft start web checkout",
+        cloned,
+        "~/web/main",
+        "daft start: checkout already exists in web",
+      ],
       [
         "daft push",
         cloned,
         "~/web/main",
         "daft push: nothing to push from web/main",
+      ],
+      // Standing at ~ names no repo — linking would otherwise silently
+      // pick the first one in the story.
+      [
+        "daft repo link orders",
+        two,
+        "~",
+        "daft repo link: cd into the repo to link from",
       ],
       [
         "cd main",

@@ -288,7 +288,15 @@ export function canvasDrop(drop: {
   if (hit.kind === "rel") return null;
   if (hit.kind === "repo") {
     if (over?.kind === "repo" && over.repo !== hit.repo) {
-      const next = setSeedRel(doc, hit.repo, over.repo, true);
+      // The live world carries seed relations AND the ones `repo link` made:
+      // seeding a second copy of an existing line would draw it twice and
+      // give `pick` two hits for one relation.
+      const live = world.rels.some(
+        ([x, y]) =>
+          (x === hit.repo && y === over.repo) ||
+          (x === over.repo && y === hit.repo),
+      );
+      const next = live ? doc : setSeedRel(doc, hit.repo, over.repo, true);
       if (next === doc)
         return {
           error: `${hit.repo} and ${over.repo} are already related.`,
