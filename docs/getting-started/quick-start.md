@@ -133,11 +133,11 @@ Already have a traditional repository? Convert it:
 
 ```bash
 cd my-existing-project
-daft adopt
+daft layout transform contained
 ```
 
-This restructures your repo into the worktree layout. Uncommitted changes are
-preserved.
+This restructures your repo into the worktree layout. Everything in the working
+tree — modified, staged, untracked, ignored — comes along.
 
 ::: tip Git-native commands
 

@@ -302,23 +302,7 @@ fn refuse_across_filesystems(old_root: &Path, new_root: &Path) -> Result<()> {
     )
 }
 
-#[cfg(unix)]
-fn same_filesystem(a: &Path, b: &Path) -> Result<bool> {
-    use std::os::unix::fs::MetadataExt;
-    let a_dev = std::fs::metadata(a)
-        .with_context(|| String::from("could not stat ") + &a.display().to_string())?
-        .dev();
-    let b_dev = std::fs::metadata(b)
-        .with_context(|| String::from("could not stat ") + &b.display().to_string())?
-        .dev();
-    Ok(a_dev == b_dev)
-}
-
-/// No `st_dev` off unix; the rename's own `EXDEV` is the backstop there.
-#[cfg(not(unix))]
-fn same_filesystem(_a: &Path, _b: &Path) -> Result<bool> {
-    Ok(true)
-}
+use crate::core::fs_volume::{nearest_existing_ancestor, same_filesystem};
 
 /// Apply the root's two destination refusals to every relocated worktree.
 ///
@@ -371,10 +355,6 @@ fn refuse_bad_worktree_destinations(worktrees: &[PlannedWorktree]) -> Result<()>
         }
     }
     Ok(())
-}
-
-fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
-    path.ancestors().find(|p| p.is_dir()).map(Path::to_path_buf)
 }
 
 /// Decide each worktree's fate. See [`Disposition`] for what each case means.

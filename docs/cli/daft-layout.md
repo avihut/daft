@@ -86,10 +86,12 @@ daft layout transform [OPTIONS] <LAYOUT>
 
 | Option | Description | Default |
 |--------|-------------|----------|
-| `-f, --force` | Force transform even with uncommitted changes |  |
 | `--dry-run` | Show plan without executing |  |
+| `--as <DIR>` | Directory name for a detached main working tree, when the target layout nests it |  |
+| `--pivot <BRANCH>` | Worktree that becomes the main working tree when a bare repo gains one |  |
 | `--include <BRANCH>` | Also relocate this non-conforming worktree (repeatable) |  |
 | `--include-all` | Relocate all non-conforming worktrees |  |
+| `-y, --yes` | Auto-accept interactive prompts |  |
 | `-q, --quiet` | Operate quietly; suppress progress reporting |  |
 | `-v, --verbose` | Show detailed hook execution |  |
 

@@ -62,11 +62,14 @@ slow/secrets-bound checks in Actions.
 
 ## How do I migrate an existing repo to daft?
 
-`daft adopt`. See [Adopting existing repos](/worktrees/adopting-existing-repos).
+`daft layout transform contained`. See
+[Adopting existing repos](/worktrees/adopting-existing-repos).
 
 ## How do I uninstall daft from a repo?
 
-`daft eject`. The repo is restored to a single-working-tree layout.
+`daft layout transform sibling`. The main working tree is restored at the
+repository root; any other worktrees stay as siblings (`daft remove` the ones
+you do not want).
 
 ## Is daft safe for collaborators who don't use it?
 

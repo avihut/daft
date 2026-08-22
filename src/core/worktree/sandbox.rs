@@ -156,6 +156,34 @@ pub fn sandbox_dirname(spelling: &str) -> Option<String> {
     Some(spelling.replace('/', "-"))
 }
 
+/// Validate a directory name a user typed for a worktree (`--as <dir>`).
+///
+/// Not [`sandbox_dirname`]: that one decides whether a *commit-ish spelling*
+/// earns a name and silently flattens `/` to `-`; a name the user typed is
+/// taken literally, so `/` is refused rather than rewritten, and `HEAD` —
+/// a legal directory name — is allowed. Returns the reason a name is rejected.
+pub fn validate_dirname(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("A directory name cannot be empty.".into());
+    }
+    if name.contains('/') {
+        return Err("A directory name cannot contain '/'.".into());
+    }
+    if name.contains("..") {
+        return Err("A directory name cannot contain '..'.".into());
+    }
+    if name.starts_with('-') || name.starts_with('.') {
+        return Err("A directory name cannot start with '-' or '.'.".into());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err("Use letters, digits, '.', '_' or '-' only.".into());
+    }
+    Ok(())
+}
+
 /// The directory a sandbox for `spelling` at `commit` will occupy: the name
 /// the spelling earns, or a hex prefix of the commit when it earns none.
 ///

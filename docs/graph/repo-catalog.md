@@ -15,7 +15,7 @@ resolution. This page is the working reference for it.
 
 The catalog fills itself. These all register (or refresh) the repo they touch:
 
-- `daft clone` / `daft init` / `daft adopt` / `daft eject`
+- `daft clone` / `daft init` / `daft layout transform`
 - any of `daft go`, `list`, `exec`, `update`, `prune` running inside a repo
 
 Explicit management exists for the gaps:

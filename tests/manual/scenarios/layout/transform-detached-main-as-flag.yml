@@ -1,0 +1,84 @@
+name: A detached main working tree nests under the name given by --as
+description: >
+  A detached HEAD has no branch to name its directory by, so a layout that nests
+  the main working tree needs a name. Non-interactively daft refuses naming
+  `--as <dir>` (and `-y`, which accepts a name derived from the commit); with
+  `--as` the tree nests under that name, still detached, with its working tree
+  state intact (#875; used to be refused outright).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with plain git, detach HEAD, dirty the tree
+    run: |
+      set -euo pipefail
+      git clone -q $REMOTE_TEST_REPO test-repo
+      cd $WORK_DIR/test-repo
+      git checkout -q --detach HEAD
+      echo "local change" >> README.md
+      echo scratch > NOTES.md
+      git rev-parse HEAD > $BASE_DIR/oid-before.txt
+      git status --porcelain > $BASE_DIR/status-before.txt
+    expect:
+      exit_code: 0
+
+  - name: Without a name the transform refuses, naming --as
+    run: NO_COLOR=1 daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "is detached at"
+        - "has no branch to name its directory"
+        - "--as <dir>"
+        - "-y"
+
+  - name: Nothing moved
+    run: git -C $WORK_DIR/test-repo config --get core.bare
+    expect:
+      exit_code: 0
+      output_contains:
+        - "false"
+      files_exist:
+        - "$WORK_DIR/test-repo/.git/index"
+        - "$WORK_DIR/test-repo/README.md"
+
+  - name: A bad name is refused before anything happens
+    run: NO_COLOR=1 daft layout transform contained --as ../escape 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--as"
+      files_exist:
+        - "$WORK_DIR/test-repo/.git/index"
+
+  - name: --as names the directory
+    run: NO_COLOR=1 daft layout transform contained --as trunk 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main working tree (detached at"
+        - "trunk/"
+        - "1 modified, 1 untracked carried along"
+        - "Transformed"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/trunk"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/README.md"
+        - "$WORK_DIR/test-repo/.git/index"
+
+  - name: Still detached at the same commit, state intact
+    run: |
+      set -euo pipefail
+      cd $WORK_DIR/test-repo/trunk
+      test "$(git rev-parse --abbrev-ref HEAD)" = HEAD
+      test "$(git rev-parse HEAD)" = "$(cat $BASE_DIR/oid-before.txt)"
+      git status --porcelain > $BASE_DIR/status-after.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/status-after.txt
+      test "$(git -C $WORK_DIR/test-repo config --get core.bare)" = true
+    expect:
+      exit_code: 0

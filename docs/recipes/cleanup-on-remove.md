@@ -74,9 +74,9 @@ worktree removal. That's the right default — a stuck container shouldn't preve
 the directory from being deleted, because next time you'd just have a stuck
 container _and_ a half-removed worktree.
 
-`DAFT_REMOVAL_REASON` is set by the runtime to `manual`, `remote-deleted`, or
-`ejecting` — useful when you want different behavior for an auto-prune cleanup
-vs an explicit `daft remove`. See the per-removal-reason variant below.
+`DAFT_REMOVAL_REASON` is set by the runtime to `manual` or `remote-deleted` —
+useful when you want different behavior for an auto-prune cleanup vs an explicit
+`daft remove`. See the per-removal-reason variant below.
 
 ## Variants
 
@@ -151,7 +151,7 @@ cleanup than a half-removed worktree blocked on a stale 404.
         # Branch was deleted on remote — archive any uncommitted experiments
         tar czf "$HOME/daft-archives/$(basename "$DAFT_WORKTREE_PATH").tar.gz" .
         ;;
-      manual|ejecting)
+      manual)
         # User-driven removal — skip archive (they meant it)
         ;;
     esac
@@ -161,7 +161,6 @@ Reason values:
 
 - `remote-deleted` — auto-detected by `daft prune` / `daft sync`
 - `manual` — explicit `daft remove`
-- `ejecting` — the worktree is being un-managed by daft, not deleted
 
 See [Lifecycle hooks → Removal](/hooks/lifecycle#removal-remove-hooks-only) for
 the full table.

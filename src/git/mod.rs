@@ -14,6 +14,7 @@ mod refs;
 mod remote;
 mod stash;
 mod worktree;
+pub mod worktree_state;
 
 pub use config::{ConfigEntry, ConfigScope, daft_config_entries_global};
 pub use refs::FirstParentCommit;

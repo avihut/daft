@@ -1,0 +1,98 @@
+name: A paused rebase blocks a role change even when the bare flag does not flip
+description: >
+  #875 review: in-progress operations are this command's only remaining refusal
+  class, so the refusal cannot depend on which pair of layouts is involved.
+  sibling and contained-classic are both non-bare, yet the main working tree
+  still changes place — `NestFromRoot` moves it into a subdirectory, entry by
+  entry, through a staging directory. Gating the probe on the bare flag left
+  that transform unprobed: a repository paused mid-rebase transformed silently,
+  sweeping the conflicted tree along with it.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with the sibling layout and dirty the main working tree
+    run: |
+      set -euo pipefail
+      git-worktree-clone --layout sibling $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      echo "local change" >> README.md
+      git status --porcelain > $BASE_DIR/before.txt
+    expect:
+      exit_code: 0
+
+  - name: Pause a rebase in it, the way git's rebase-merge backend writes it
+    run: |
+      set -euo pipefail
+      GD=$(git -C $WORK_DIR/test-repo rev-parse --absolute-git-dir)
+      mkdir -p "$GD/rebase-merge"
+      echo "refs/heads/main" > "$GD/rebase-merge/head-name"
+      echo 2 > "$GD/rebase-merge/msgnum"
+      echo 5 > "$GD/rebase-merge/end"
+      git -C $WORK_DIR/test-repo rev-parse HEAD > "$GD/rebase-merge/onto"
+    expect:
+      exit_code: 0
+
+  - name: Neither layout is bare, and the transform is still refused
+    run: NO_COLOR=1 daft layout transform contained-classic 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "1 condition to settle first"
+        - "has a rebase in progress"
+        - ".git/rebase-merge, 2 of 5 applied"
+        - "rebase --continue"
+        - "rebase --abort"
+        - "then: daft layout transform contained-classic"
+
+  - name: Nothing moved
+    run: git -C $WORK_DIR/test-repo status --porcelain
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/README.md"
+        - "$WORK_DIR/test-repo/.git/index"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/.git/rebase-merge"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main/README.md"
+
+  - name: --dry-run reports the same condition rather than a clean plan
+    run: NO_COLOR=1 daft layout transform contained-classic --dry-run 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "has a rebase in progress"
+        - "Transform plan"
+
+  - name: Settling it makes the printed retry true, and the tree is carried
+    run: |
+      set -euo pipefail
+      GD=$(git -C $WORK_DIR/test-repo rev-parse --absolute-git-dir)
+      rm -rf "$GD/rebase-merge"
+    expect:
+      exit_code: 0
+
+  - name: The retry the refusal printed succeeds
+    run: NO_COLOR=1 daft layout transform contained-classic 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "1 modified carried along"
+        - "Transformed"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/main"
+          branch: main
+
+  - name: The working tree state came along
+    run: |
+      set -euo pipefail
+      git -C $WORK_DIR/test-repo/main status --porcelain > $BASE_DIR/after.txt
+      diff $BASE_DIR/before.txt $BASE_DIR/after.txt
+    expect:
+      exit_code: 0

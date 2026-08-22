@@ -573,16 +573,16 @@ pub(crate) fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) 
 }
 
 /// Result of counting changed files in a worktree.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct ChangedFiles {
-    pub(crate) staged: usize,
-    pub(crate) unstaged: usize,
-    pub(crate) untracked: usize,
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ChangedFiles {
+    pub staged: usize,
+    pub unstaged: usize,
+    pub untracked: usize,
     /// Files with unresolved merge conflicts. Counted on their own, never as
     /// staged or unstaged — see [`classify_porcelain_status`].
-    pub(crate) conflicted: usize,
+    pub conflicted: usize,
     /// Relative paths of all changed/untracked files (for mtime computation).
-    pub(crate) paths: Vec<String>,
+    pub paths: Vec<String>,
 }
 
 /// The seven `XY` pairs `git status --porcelain` uses for unmerged paths.
@@ -599,7 +599,7 @@ const UNMERGED_PAIRS: [[u8; 2]; 7] = [
 ];
 
 /// Count staged, unstaged, untracked and conflicted files in a worktree.
-pub(crate) fn count_changed_files(worktree_path: &Path) -> ChangedFiles {
+pub fn count_changed_files(worktree_path: &Path) -> ChangedFiles {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(worktree_path)
@@ -623,7 +623,7 @@ pub(crate) fn count_changed_files(worktree_path: &Path) -> ChangedFiles {
 /// so a conflicted file used to be counted twice over — once as staged, once
 /// as unstaged — and a two-file conflict rendered as `+2 -2`, which reads like
 /// four files of ordinary work rather than two files needing a decision.
-pub(crate) fn classify_porcelain_status(stdout: &str) -> ChangedFiles {
+pub fn classify_porcelain_status(stdout: &str) -> ChangedFiles {
     let mut counts = ChangedFiles::default();
 
     for line in stdout.lines() {

@@ -143,8 +143,6 @@ git-worktree-carry() { __daft_wrapper git-worktree-carry "$@"; }
 git-worktree-prune() { __daft_wrapper git-worktree-prune "$@"; }
 git-worktree-branch() { __daft_wrapper git-worktree-branch "$@"; }
 git-worktree-branch-delete() { __daft_wrapper git-worktree-branch-delete "$@"; }
-git-worktree-flow-adopt() { __daft_wrapper git-worktree-flow-adopt "$@"; }
-git-worktree-flow-eject() { __daft_wrapper git-worktree-flow-eject "$@"; }
 git-worktree-sync() { __daft_wrapper git-worktree-sync "$@"; }
 git-worktree-warm() { __daft_wrapper git-worktree-warm "$@"; }
 
@@ -165,10 +163,6 @@ git() {
             shift; __daft_wrapper git-worktree-branch "$@" ;;
         worktree-branch-delete)
             shift; __daft_wrapper git-worktree-branch-delete "$@" ;;
-        worktree-flow-adopt)
-            shift; __daft_wrapper git-worktree-flow-adopt "$@" ;;
-        worktree-flow-eject)
-            shift; __daft_wrapper git-worktree-flow-eject "$@" ;;
         worktree-sync)
             shift; __daft_wrapper git-worktree-sync "$@" ;;
         worktree-warm)
@@ -228,10 +222,6 @@ daft() {
             shift; __daft_wrapper daft-rename "${__daft_pre[@]}" "$@" ;;
         worktree-fetch|update)
             shift; __daft_wrapper git-worktree-fetch "${__daft_pre[@]}" "$@" ;;
-        worktree-flow-adopt|adopt)
-            shift; __daft_wrapper git-worktree-flow-adopt "${__daft_pre[@]}" "$@" ;;
-        worktree-flow-eject|eject)
-            shift; __daft_wrapper git-worktree-flow-eject "${__daft_pre[@]}" "$@" ;;
         worktree-sync|sync)
             shift; __daft_wrapper git-worktree-sync "${__daft_pre[@]}" "$@" ;;
         worktree-warm|warm)
@@ -422,14 +412,6 @@ function git-worktree-branch-delete
     __daft_wrapper git-worktree-branch-delete $argv
 end
 
-function git-worktree-flow-adopt
-    __daft_wrapper git-worktree-flow-adopt $argv
-end
-
-function git-worktree-flow-eject
-    __daft_wrapper git-worktree-flow-eject $argv
-end
-
 function git-worktree-sync
     __daft_wrapper git-worktree-sync $argv
 end
@@ -455,10 +437,6 @@ function git --wraps git
             __daft_wrapper git-worktree-branch $argv[2..-1]
         case worktree-branch-delete
             __daft_wrapper git-worktree-branch-delete $argv[2..-1]
-        case worktree-flow-adopt
-            __daft_wrapper git-worktree-flow-adopt $argv[2..-1]
-        case worktree-flow-eject
-            __daft_wrapper git-worktree-flow-eject $argv[2..-1]
         case worktree-sync
             __daft_wrapper git-worktree-sync $argv[2..-1]
         case worktree-warm
@@ -514,10 +492,6 @@ function daft --wraps daft
             __daft_wrapper daft-rename $pre $argv[2..-1]
         case worktree-fetch update
             __daft_wrapper git-worktree-fetch $pre $argv[2..-1]
-        case worktree-flow-adopt adopt
-            __daft_wrapper git-worktree-flow-adopt $pre $argv[2..-1]
-        case worktree-flow-eject eject
-            __daft_wrapper git-worktree-flow-eject $pre $argv[2..-1]
         case worktree-sync sync
             __daft_wrapper git-worktree-sync $pre $argv[2..-1]
         case worktree-warm warm

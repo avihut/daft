@@ -978,13 +978,29 @@ fn build_fig_layout_subcommand() -> FigSubcommand {
         args: Some(layout_arg.clone()),
         options: Some(vec![
             FigOption {
-                name: FigName::Multiple(vec!["--force".into(), "-f".into()]),
-                description: "Force transform even with uncommitted changes".into(),
+                name: FigName::Single("--dry-run".into()),
+                description: "Show plan without executing".into(),
                 args: None,
             },
             FigOption {
-                name: FigName::Single("--dry-run".into()),
-                description: "Show plan without executing".into(),
+                name: FigName::Single("--as".into()),
+                description: "Directory name for a detached main working tree".into(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
+            },
+            FigOption {
+                name: FigName::Single("--pivot".into()),
+                description: "Worktree that becomes the main working tree".into(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--yes".into(), "-y".into()]),
+                description: "Auto-accept interactive prompts".into(),
                 args: None,
             },
             FigOption {

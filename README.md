@@ -57,11 +57,11 @@ branch.
 
 ## Adopt Existing Repositories
 
-Already have a repository? Convert it to the worktree workflow with one command:
+Already have a repository? Move it into the worktree workflow with one command:
 
 ```bash
 cd my-existing-project
-git worktree-flow-adopt
+daft layout transform contained
 ```
 
 This restructures your repo:
@@ -74,10 +74,11 @@ my-project/                 my-project/
                                 └── README.md
 ```
 
-Your uncommitted changes are preserved. If you change your mind:
+Everything in the working tree — modified, staged, untracked, ignored — travels
+with it. If you change your mind:
 
 ```bash
-git worktree-flow-eject      # Converts back to traditional layout
+daft layout transform sibling   # Back to a traditional layout
 ```
 
 ## Why daft?
@@ -162,8 +163,6 @@ daft shell-init fish | source
 | `git worktree-merge <source> --into <tgt>`   | Merge any branch into any worktree from anywhere |
 | `git worktree-prune`                         | Remove worktrees for deleted remote branches     |
 | `git worktree-carry`                         | Carry uncommitted changes to other worktrees     |
-| `git worktree-flow-adopt`                    | Convert traditional repo to worktree layout      |
-| `git worktree-flow-eject`                    | Convert back to traditional layout               |
 
 Run any command with `--help` for full options.
 

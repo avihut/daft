@@ -415,7 +415,7 @@ test_zsh_git_subcommand_registration() {
 test_all_commands_generate() {
     run_test "All commands generate completions for all shells"
 
-    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch" "git-worktree-flow-adopt" "git-worktree-flow-eject")
+    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch")
     local shells=("bash" "zsh" "fish" "fig")
     local success=true
 

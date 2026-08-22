@@ -6,13 +6,11 @@
 /// All subcommands available via `daft <subcmd>`.
 pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "activate",
-    "adopt",
     "carry",
     "clone",
     "completions",
     "config",
     "doctor",
-    "eject",
     "env",
     "file",
     "go",
@@ -43,8 +41,6 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "worktree-checkout",
     "worktree-clone",
     "worktree-fetch",
-    "worktree-flow-adopt",
-    "worktree-flow-eject",
     "worktree-init",
     "worktree-list",
     "worktree-merge",

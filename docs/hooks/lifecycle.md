@@ -95,9 +95,9 @@ being created or removed.
 
 ### Removal (remove hooks only)
 
-| Variable              | Description                                                                  |
-| --------------------- | ---------------------------------------------------------------------------- |
-| `DAFT_REMOVAL_REASON` | Why the worktree is being removed: `remote-deleted`, `manual`, or `ejecting` |
+| Variable              | Description                                                     |
+| --------------------- | --------------------------------------------------------------- |
+| `DAFT_REMOVAL_REASON` | Why the worktree is being removed: `remote-deleted` or `manual` |
 
 ### Merge (both merge hooks)
 
@@ -126,8 +126,8 @@ being created or removed.
 
 ### Move (move hooks only)
 
-These variables are set when hooks run as part of a worktree move (rename,
-layout transform, or adopt). They are available in all four move phases.
+These variables are set when hooks run as part of a worktree move (rename or
+layout transform). They are available in all four move phases.
 
 | Variable                 | Description                                     |
 | ------------------------ | ----------------------------------------------- |
@@ -175,8 +175,8 @@ A repo can also **commit** a hook's default fail mode in `daft.yml` via
 above still takes precedence.
 
 Hook failures during moves produce **warnings**, not errors. The move operation
-(rename, transform, adopt) always completes. This prevents a broken hook from
-leaving the worktree in a half-moved state.
+(rename, transform) always completes. This prevents a broken hook from leaving
+the worktree in a half-moved state.
 
 ## Merge hooks
 

@@ -6,70 +6,103 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use super::state::{ClassifiedWorktree, LayoutState, WorktreeDisposition};
+use super::status_snapshot::StatusSnapshot;
+use crate::core::fs_volume::MoveStrategy;
+use crate::core::worktree::list::ChangedFiles;
 
 // ── TransformOp ──────────────────────────────────────────────────────────
 
 /// A discrete, atomic operation in a layout transform.
 #[derive(Debug, Clone)]
 pub enum TransformOp {
-    /// Stash uncommitted changes before moving a worktree.
-    StashChanges {
-        branch: String,
-        worktree_path: PathBuf,
-    },
-    /// Move an entire worktree directory from one path to another.
+    /// Move an entire linked-worktree directory from one path to another.
     MoveWorktree {
-        branch: String,
+        branch: Option<String>,
+        from: PathBuf,
+        to: PathBuf,
+        /// How the bytes get there. Decided at plan time so `--dry-run` can
+        /// say "copy across volumes" rather than discovering `EXDEV` mid-plan.
+        strategy: MoveStrategy,
+    },
+    /// Rename a *main* working tree's directory.
+    ///
+    /// `git worktree move` refuses a main working tree — but its `.git` is a
+    /// real directory *inside* it, so a plain rename carries the repository,
+    /// the index and the working tree together. What goes stale is the linked
+    /// worktrees' `.git` pointer files, which name the old
+    /// `<main>/.git/worktrees/<n>` path; the executor rewrites exactly that
+    /// set (the registrations' own `gitdir` files stay correct — the linked
+    /// worktrees did not move).
+    MoveMainWorktree {
+        branch: Option<String>,
         from: PathBuf,
         to: PathBuf,
     },
     /// Relocate the `.git` directory.
     MoveGitDir { from: PathBuf, to: PathBuf },
-    /// Flip `core.bare` in git config.
-    SetBare(bool),
-    /// Register a worktree path in bare-mode git internals.
-    RegisterWorktree { branch: String, path: PathBuf },
-    /// Unregister a worktree that was tracked in bare-mode git internals.
+    /// Flip `core.bare` in the config of `common_dir`.
+    ///
+    /// `common_dir` is resolved at plan time, never from the CWD — the ops
+    /// around this one move the working tree the CWD may be standing in.
+    SetBare { bare: bool, common_dir: PathBuf },
+    /// Register `path` as a linked worktree of `common_dir`, **carrying** the
+    /// main working tree's private git state (HEAD, index, reflog, …) into
+    /// the registration rather than rebuilding it.
+    ///
+    /// Pivot only: `build_plan` emits this exclusively for the root-role
+    /// worktree and `reverse_op` preserves that. The executor refuses unless
+    /// `core.bare` is already true in `common_dir` — the role change, in the
+    /// one place git records it.
+    RegisterWorktree {
+        branch: Option<String>,
+        path: PathBuf,
+        common_dir: PathBuf,
+    },
+    /// Unregister the linked worktree at `path`, **carrying** its private git
+    /// state back into `common_dir`, which is about to become a main working
+    /// tree's `.git`. Same pivot-only invariant and `core.bare` guard.
     ///
     /// `path` is where the worktree lives *when this op runs* — the
     /// registration is resolved through it, because git names registration
     /// directories after the path basename, not the branch.
-    UnregisterWorktree { branch: String, path: PathBuf },
+    UnregisterWorktree {
+        branch: Option<String>,
+        path: PathBuf,
+        common_dir: PathBuf,
+    },
     /// Move the root worktree from a subdirectory into the project root
     /// (bare/contained -> non-bare/sibling transition).
     CollapseIntoRoot {
-        branch: String,
+        branch: Option<String>,
         worktree_path: PathBuf,
         root_path: PathBuf,
     },
     /// Move the root worktree from the project root into a subdirectory
     /// (non-bare/sibling -> bare/contained transition).
     NestFromRoot {
-        branch: String,
+        branch: Option<String>,
         root_path: PathBuf,
         subdir_path: PathBuf,
     },
-    /// Point HEAD at `branch` and rebuild the index at `path`.
-    ///
-    /// Needed whenever a working tree changes role (bare <-> non-bare): the
-    /// HEAD it used to resolve through is gone, and the remaining one names a
-    /// different branch.
-    InitWorktreeIndex { path: PathBuf, branch: String },
-    /// Create a directory that must exist before subsequent ops.
-    CreateDirectory { path: PathBuf },
-    /// Re-apply stashed changes after a worktree has been moved.
-    PopStash {
-        branch: String,
-        worktree_path: PathBuf,
-    },
-    /// Final integrity check — verify all worktree paths are valid.
+    /// Final integrity check — `git fsck`, and every worktree's status
+    /// compared against the snapshot taken before execution.
     ValidateIntegrity,
 }
 
 // ── TransformPlan ────────────────────────────────────────────────────────
+
+/// What a plan carries across, per worktree — for the plan line and
+/// `--dry-run`.
+#[derive(Debug, Clone)]
+pub struct CarriedState {
+    pub branch: Option<String>,
+    pub from: PathBuf,
+    pub to: PathBuf,
+    pub counts: ChangedFiles,
+}
 
 /// A sequenced list of operations that transforms one layout into another.
 #[derive(Debug)]
@@ -80,6 +113,86 @@ pub struct TransformPlan {
     pub skipped: Vec<ClassifiedWorktree>,
     /// Human-readable summary of the plan.
     pub description: String,
+    /// Per-worktree tree state the plan carries. Empty when no snapshots were
+    /// supplied.
+    pub carried: Vec<CarriedState>,
+}
+
+impl TransformPlan {
+    /// Whether any op copies a worktree across volumes.
+    pub fn copies_across_volumes(&self) -> bool {
+        self.ops.iter().any(|op| {
+            matches!(
+                op,
+                TransformOp::MoveWorktree {
+                    strategy: MoveStrategy::CopyThenRemove,
+                    ..
+                }
+            )
+        })
+    }
+
+    /// The `(from, to)` pairs of every cross-volume copy in the plan.
+    pub fn cross_volume_moves(&self) -> Vec<(PathBuf, PathBuf)> {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                TransformOp::MoveWorktree {
+                    from,
+                    to,
+                    strategy: MoveStrategy::CopyThenRemove,
+                    ..
+                } => Some((from.clone(), to.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Paths the plan has to *create*, with the branch that lands there.
+    ///
+    /// `CollapseIntoRoot`'s destination is deliberately absent: the project
+    /// root already exists — receiving content into it is the whole point.
+    pub fn new_destinations(&self) -> Vec<(PathBuf, Option<String>)> {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                TransformOp::MoveWorktree { branch, to, .. }
+                | TransformOp::MoveMainWorktree { branch, to, .. } => {
+                    Some((to.clone(), branch.clone()))
+                }
+                TransformOp::NestFromRoot {
+                    branch,
+                    subdir_path,
+                    ..
+                } => Some((subdir_path.clone(), branch.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The `(from, to)` pairs the plan performs as a bare `rename(2)`, with no
+    /// copy path behind them — everything except the linked-worktree moves,
+    /// which choose a [`MoveStrategy`] at plan time.
+    pub fn plain_renames(&self) -> Vec<(PathBuf, PathBuf)> {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                TransformOp::MoveMainWorktree { from, to, .. }
+                | TransformOp::MoveGitDir { from, to } => Some((from.clone(), to.clone())),
+                TransformOp::NestFromRoot {
+                    root_path,
+                    subdir_path,
+                    ..
+                } => Some((root_path.clone(), subdir_path.clone())),
+                TransformOp::CollapseIntoRoot {
+                    worktree_path,
+                    root_path,
+                    ..
+                } => Some((worktree_path.clone(), root_path.clone())),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -157,7 +270,7 @@ pub fn classify_worktrees(
                 WorktreeDisposition::Root
             } else if paths_equivalent(&src_wt.path, &tgt_wt.path)
                 || include_all
-                || include.contains(&src_wt.branch)
+                || src_wt.branch.as_ref().is_some_and(|b| include.contains(b))
                 || is_source_conforming(&src_wt.path, &source.project_root)
             {
                 WorktreeDisposition::Conforming
@@ -187,17 +300,21 @@ pub fn classify_worktrees(
 /// 2. Relocate the pivot while it is still an ordinary linked worktree
 /// 3. Unregister the pivot (bare -> non-bare) — early, so its reverse
 ///    (`RegisterWorktree`) runs *after* the collapse has been undone and the
-///    worktree directory is back
-/// 4. Root collapse / nest
+///    worktree directory is back; and so the pivot's git state is carried into
+///    the common dir before anything else touches either
+/// 4. Root collapse / nest / rename
 /// 5. MoveGitDir
-/// 6. SetBare, then InitWorktreeIndex / RegisterWorktree
+/// 6. SetBare, then RegisterWorktree (which carries the pivot's state in)
 /// 7. Regular move ops
 /// 8. ValidateIntegrity
+///
+/// `snapshots` — the worktrees' status as captured before execution — only
+/// feed the plan's `carried` summary; an empty slice is fine.
 pub fn build_plan(
     source: &LayoutState,
     target: &LayoutState,
     classified: &[ClassifiedWorktree],
-    _dry_run: bool,
+    snapshots: &[StatusSnapshot],
 ) -> Result<TransformPlan> {
     let mut vacate_ops: Vec<TransformOp> = Vec::new();
     let mut regular_ops: Vec<TransformOp> = Vec::new();
@@ -230,6 +347,10 @@ pub fn build_plan(
                         branch: cw.branch.clone(),
                         from: cw.current_path.clone(),
                         to: cw.target_path.clone(),
+                        strategy: crate::core::fs_volume::strategy_for(
+                            &cw.current_path,
+                            &cw.target_path,
+                        ),
                     };
 
                     // A worktree needs early vacating if:
@@ -281,26 +402,30 @@ pub fn build_plan(
                     root_path: cw.target_path.clone(),
                 });
             }
-            // Subdirectory -> different subdirectory. Only movable while the
-            // repo is bare, where the pivot is still an ordinary linked
-            // worktree — `git worktree move` refuses a main working tree.
+            // Subdirectory -> different subdirectory. While the repo is bare
+            // the pivot is still an ordinary linked worktree and
+            // `git worktree move` handles it.
             (false, false) if source.is_bare => {
                 pivot_move = Some(TransformOp::MoveWorktree {
                     branch: cw.branch.clone(),
                     from: cw.current_path.clone(),
                     to: cw.target_path.clone(),
+                    strategy: crate::core::fs_volume::strategy_for(
+                        &cw.current_path,
+                        &cw.target_path,
+                    ),
                 });
             }
+            // A non-bare *main* working tree in a subdirectory — a
+            // contained-classic clone whose directory name no longer matches
+            // its branch. Its `.git` lives inside it, so the directory renames
+            // as a unit; the linked worktrees' pointers are repaired after.
             (false, false) => {
-                anyhow::bail!(
-                    "The main working tree for '{}' is at {} but the target layout places \
-                     it at {}, and git cannot move a main working tree.\n\
-                     Transform to 'sibling' first (`daft layout transform sibling`), then \
-                     to the layout you want.",
-                    cw.branch,
-                    cw.current_path.display(),
-                    cw.target_path.display()
-                );
+                root_op = Some(TransformOp::MoveMainWorktree {
+                    branch: cw.branch.clone(),
+                    from: cw.current_path.clone(),
+                    to: cw.target_path.clone(),
+                });
             }
             // Root -> root (shouldn't happen if paths differ, but be safe)
             (true, true) => {}
@@ -317,8 +442,19 @@ pub fn build_plan(
 
     // ── 3. Git dir and bare flag changes ─────────────────────────────────
 
-    let git_dir_changed = !paths_equivalent(&source.git_dir, &target.git_dir);
+    // A MoveMainWorktree carries `.git` inside the directory it renames, so
+    // the git dir the *next* op finds is the rebased one, not `source.git_dir`.
+    let effective_source_git_dir = match &root_op {
+        Some(TransformOp::MoveMainWorktree { from, to, .. }) => source
+            .git_dir
+            .strip_prefix(from)
+            .map(|rel| to.join(rel))
+            .unwrap_or_else(|_| source.git_dir.clone()),
+        _ => source.git_dir.clone(),
+    };
+    let git_dir_changed = !paths_equivalent(&effective_source_git_dir, &target.git_dir);
     let bare_changed = source.is_bare != target.is_bare;
+    let has_main_move = matches!(root_op, Some(TransformOp::MoveMainWorktree { .. }));
 
     // ── 4. Sequence everything ───────────────────────────────────────────
 
@@ -336,18 +472,23 @@ pub fn build_plan(
     //     Deliberately ahead of the collapse: rollback unwinds strictly LIFO,
     //     so the reverse RegisterWorktree must land after the reverse
     //     NestFromRoot has recreated the directory it writes `.git` into.
+    //     The common dir recorded here is the *source* one: `MoveGitDir` has
+    //     not run yet, and under rollback the inverse lands on the other side
+    //     of the `MoveGitDir` undo — back at the same dir.
     if bare_changed
         && !target.is_bare
         && let Some(cw) = root_cw
         && let Some(path) = unregister_path
     {
+        debug_assert_eq!(cw.disposition, WorktreeDisposition::Root);
         ops.push(TransformOp::UnregisterWorktree {
             branch: cw.branch.clone(),
             path,
+            common_dir: source.git_dir.clone(),
         });
     }
 
-    // b. Root collapse/nest
+    // b. Root collapse/nest/rename
     if let Some(op) = root_op {
         ops.push(op);
     }
@@ -355,45 +496,35 @@ pub fn build_plan(
     // c. MoveGitDir
     if git_dir_changed {
         ops.push(TransformOp::MoveGitDir {
-            from: source.git_dir.clone(),
+            from: effective_source_git_dir.clone(),
             to: target.git_dir.clone(),
         });
     }
 
-    // d. SetBare
+    // d. SetBare — against the common dir as it exists by now.
     if bare_changed {
-        ops.push(TransformOp::SetBare(target.is_bare));
-    }
-
-    // e. InitWorktreeIndex (if going from bare to non-bare).
-    //    The pivot's per-worktree HEAD died with its registration, so HEAD has
-    //    to be re-pointed at its branch before the index is rebuilt — otherwise
-    //    the index is built against whatever the bare repo's HEAD names.
-    if bare_changed && !target.is_bare {
-        // `select_pivot` either names a pivot or refuses the transform for every
-        // bare -> non-bare case, and `classify_worktrees` always marks the
-        // target's root entry, so this is `Some` by construction. There is
-        // deliberately no default-branch fallback: building the index for the
-        // default branch rather than the pivot is the #859 bug itself.
-        let cw = root_cw.context(
-            "internal error: a bare -> non-bare plan reached index init without a root worktree",
-        )?;
-        ops.push(TransformOp::InitWorktreeIndex {
-            path: cw.target_path.clone(),
-            branch: cw.branch.clone(),
+        ops.push(TransformOp::SetBare {
+            bare: target.is_bare,
+            common_dir: if git_dir_changed {
+                target.git_dir.clone()
+            } else {
+                effective_source_git_dir.clone()
+            },
         });
     }
 
-    // f. RegisterWorktree (if going bare, register the pivot). The op rebuilds
-    //    the worktree's index as part of registering it — it was the main
-    //    working tree of a non-bare repo and needs a fresh one in its new role.
+    // f. RegisterWorktree (if going bare, register the pivot). The op carries
+    //    the main working tree's git state into the registration — HEAD and
+    //    index included — so nothing is rebuilt.
     if bare_changed
         && target.is_bare
         && let Some(cw) = root_cw
     {
+        debug_assert_eq!(cw.disposition, WorktreeDisposition::Root);
         ops.push(TransformOp::RegisterWorktree {
             branch: cw.branch.clone(),
             path: cw.target_path.clone(),
+            common_dir: target.git_dir.clone(),
         });
     }
 
@@ -426,6 +557,9 @@ pub fn build_plan(
         if has_nest {
             parts.push("nest the main working tree into a subdirectory".to_string());
         }
+        if has_main_move {
+            parts.push("rename the main working tree".to_string());
+        }
         if git_dir_changed {
             parts.push("relocate .git directory".to_string());
         }
@@ -452,10 +586,23 @@ pub fn build_plan(
         format!("Transform: {}", parts.join(", "))
     };
 
+    // ── What the plan carries ────────────────────────────────────────────
+
+    let carried = snapshots
+        .iter()
+        .map(|s| CarriedState {
+            branch: s.branch.clone(),
+            from: s.source_path.clone(),
+            to: s.target_path.clone(),
+            counts: s.counts.clone(),
+        })
+        .collect();
+
     Ok(TransformPlan {
         ops,
         skipped,
         description,
+        carried,
     })
 }
 
@@ -480,7 +627,8 @@ mod tests {
                 .into_iter()
                 .map(
                     |(branch, path, is_root)| super::super::state::WorktreeEntry {
-                        branch: branch.to_string(),
+                        branch: Some(branch.to_string()),
+                        head: None,
                         path: PathBuf::from(path),
                         is_root,
                     },
@@ -495,7 +643,11 @@ mod tests {
 
     fn plan_for(source: &LayoutState, target: &LayoutState) -> Result<TransformPlan> {
         let classified = classify_worktrees(source, target, &[], false);
-        build_plan(source, target, &classified, false)
+        build_plan(source, target, &classified, &[])
+    }
+
+    fn is_branch(branch: &Option<String>, name: &str) -> bool {
+        branch.as_deref() == Some(name)
     }
 
     #[test]
@@ -537,7 +689,11 @@ mod tests {
             "Should move .git"
         );
         assert!(
-            index_of(&plan, |op| matches!(op, TransformOp::SetBare(false))).is_some(),
+            index_of(&plan, |op| matches!(
+                op,
+                TransformOp::SetBare { bare: false, .. }
+            ))
+            .is_some(),
             "Should flip bare"
         );
         assert!(
@@ -553,7 +709,7 @@ mod tests {
         assert!(
             index_of(
                 &plan,
-                |op| matches!(op, TransformOp::MoveWorktree { branch, .. } if branch == "dev")
+                |op| matches!(op, TransformOp::MoveWorktree { branch, .. } if is_branch(branch, "dev"))
             )
             .is_none(),
             "dev should not move"
@@ -581,7 +737,7 @@ mod tests {
 
         let dev_move_idx = index_of(
             &plan,
-            |op| matches!(op, TransformOp::MoveWorktree { branch, .. } if branch == "dev"),
+            |op| matches!(op, TransformOp::MoveWorktree { branch, .. } if is_branch(branch, "dev")),
         );
         let unregister_idx = index_of(&plan, |op| {
             matches!(op, TransformOp::UnregisterWorktree { .. })
@@ -656,7 +812,7 @@ mod tests {
         );
         let plan = plan_for(&source, &target).unwrap();
         assert_eq!(plan.skipped.len(), 1);
-        assert_eq!(plan.skipped[0].branch, "exp");
+        assert_eq!(plan.skipped[0].branch.as_deref(), Some("exp"));
     }
 
     #[test]
@@ -676,7 +832,7 @@ mod tests {
             vec![("main", "/repo/main", false), ("exp", "/repo/exp", false)],
         );
         let classified = classify_worktrees(&source, &target, &["exp".to_string()], false);
-        let plan = build_plan(&source, &target, &classified, false).unwrap();
+        let plan = build_plan(&source, &target, &classified, &[]).unwrap();
         assert_eq!(plan.skipped.len(), 0);
     }
 
@@ -705,7 +861,7 @@ mod tests {
             ],
         );
         let classified = classify_worktrees(&source, &target, &[], true);
-        let plan = build_plan(&source, &target, &classified, false).unwrap();
+        let plan = build_plan(&source, &target, &classified, &[]).unwrap();
         assert_eq!(plan.skipped.len(), 0);
     }
 
@@ -739,15 +895,23 @@ mod tests {
             index_of(&plan, |op| matches!(op, TransformOp::MoveWorktree { .. })).is_none(),
             "git refuses `worktree move` on a main working tree — never plan one"
         );
-        assert!(index_of(&plan, |op| matches!(op, TransformOp::SetBare(true))).is_some());
         assert!(
             index_of(&plan, |op| matches!(
                 op,
-                TransformOp::RegisterWorktree { branch, path }
-                    if branch == "feature/x" && path == Path::new("/repo/feature/x")
+                TransformOp::SetBare { bare: true, .. }
+            ))
+            .is_some()
+        );
+        assert!(
+            index_of(&plan, |op| matches!(
+                op,
+                TransformOp::RegisterWorktree { branch, path, common_dir }
+                    if is_branch(branch, "feature/x")
+                        && path == Path::new("/repo/feature/x")
+                        && common_dir == Path::new("/repo/.git")
             ))
             .is_some(),
-            "the pivot becomes a linked worktree (which rebuilds its index)"
+            "the pivot becomes a linked worktree, carrying its state"
         );
     }
 
@@ -777,7 +941,7 @@ mod tests {
         assert!(
             index_of(
                 &plan,
-                |op| matches!(op, TransformOp::MoveWorktree { branch, .. } if branch == "main")
+                |op| matches!(op, TransformOp::MoveWorktree { branch, .. } if is_branch(branch, "main"))
             )
             .is_some(),
             "the default branch's worktree is just another linked worktree"
@@ -810,7 +974,7 @@ mod tests {
 
         let dev_idx = index_of(
             &plan,
-            |op| matches!(op, TransformOp::MoveWorktree { branch, .. } if branch == "dev"),
+            |op| matches!(op, TransformOp::MoveWorktree { branch, .. } if is_branch(branch, "dev")),
         )
         .expect("dev should move");
         let nest_idx = index_of(&plan, |op| matches!(op, TransformOp::NestFromRoot { .. }))
@@ -843,7 +1007,7 @@ mod tests {
             ],
         );
         let plan = plan_for(&source, &target).unwrap();
-        assert!(index_of(&plan, |op| matches!(op, TransformOp::SetBare(_))).is_none());
+        assert!(index_of(&plan, |op| matches!(op, TransformOp::SetBare { .. })).is_none());
         assert!(index_of(&plan, |op| matches!(op, TransformOp::NestFromRoot { .. })).is_none());
         assert!(
             index_of(&plan, |op| matches!(
@@ -855,7 +1019,7 @@ mod tests {
         assert!(
             index_of(
                 &plan,
-                |op| matches!(op, TransformOp::MoveWorktree { branch, .. } if branch == "dev")
+                |op| matches!(op, TransformOp::MoveWorktree { branch, .. } if is_branch(branch, "dev"))
             )
             .is_some()
         );
@@ -918,10 +1082,11 @@ mod tests {
     }
 
     #[test]
-    fn test_drifted_wrapper_source_is_refused() {
+    fn test_drifted_wrapper_source_renames_the_main_working_tree() {
         // contained-classic clone in `/repo/main` that has since switched to
-        // `feature/x`: the target wants `/repo/feature/x`, but git will not
-        // move a main working tree.
+        // `feature/x`: the target wants `/repo/feature/x`. `.git` lives inside
+        // the clone directory, so the directory renames as a unit; `.git` then
+        // moves out of it to the bare root — from its *rebased* path.
         let source = make_state(
             "/repo/main/.git",
             false,
@@ -936,11 +1101,55 @@ mod tests {
             "/repo",
             vec![("feature/x", "/repo/feature/x", true)],
         );
-        let classified = classify_worktrees(&source, &target, &[], false);
-        let err = build_plan(&source, &target, &classified, false).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("cannot move a main working tree"), "{msg}");
-        assert!(msg.contains("transform sibling"), "{msg}");
+        let plan = plan_for(&source, &target).unwrap();
+
+        let rename_idx = index_of(&plan, |op| {
+            matches!(op, TransformOp::MoveMainWorktree { from, to, .. }
+                if from == Path::new("/repo/main") && to == Path::new("/repo/feature/x"))
+        })
+        .expect("the main working tree directory is renamed");
+        let git_idx = index_of(&plan, |op| {
+            matches!(op, TransformOp::MoveGitDir { from, to }
+                if from == Path::new("/repo/feature/x/.git") && to == Path::new("/repo/.git"))
+        })
+        .expect(".git moves out of the renamed directory, from its new path");
+        assert!(rename_idx < git_idx);
+        assert!(
+            index_of(&plan, |op| matches!(op, TransformOp::MoveWorktree { .. })).is_none(),
+            "never `git worktree move` a main working tree"
+        );
+    }
+
+    #[test]
+    fn test_drifted_to_contained_classic_suppresses_a_dead_move_git_dir() {
+        // The rename already puts `.git` exactly where the target wants it.
+        let source = make_state(
+            "/repo/main/.git",
+            false,
+            "master",
+            "/repo",
+            vec![("feature/x", "/repo/main", true)],
+        );
+        let target = make_state(
+            "/repo/feature/x/.git",
+            false,
+            "master",
+            "/repo",
+            vec![("feature/x", "/repo/feature/x", true)],
+        );
+        let plan = plan_for(&source, &target).unwrap();
+        assert!(
+            index_of(&plan, |op| matches!(
+                op,
+                TransformOp::MoveMainWorktree { .. }
+            ))
+            .is_some()
+        );
+        assert!(
+            index_of(&plan, |op| matches!(op, TransformOp::MoveGitDir { .. })).is_none(),
+            "no .git move: the rename carried it to the target path"
+        );
+        assert_eq!(plan.ops.len(), 2);
     }
 
     // ── #859 mirror: bare -> non-bare with no default-branch worktree ──────
@@ -964,26 +1173,72 @@ mod tests {
         let plan = plan_for(&source, &target).unwrap();
 
         let unregister_idx = index_of(&plan, |op| {
-            matches!(op, TransformOp::UnregisterWorktree { branch, path }
-                if branch == "feature/x" && path == Path::new("/repo/feature/x"))
+            matches!(op, TransformOp::UnregisterWorktree { branch, path, common_dir }
+                if is_branch(branch, "feature/x")
+                    && path == Path::new("/repo/feature/x")
+                    && common_dir == Path::new("/repo/.git"))
         })
-        .expect("should unregister the pivot by its current path");
+        .expect("should unregister the pivot by its current path, carrying its state out");
         let collapse_idx = index_of(&plan, |op| {
             matches!(op, TransformOp::CollapseIntoRoot { .. })
         })
         .expect("should collapse");
         assert!(unregister_idx < collapse_idx);
 
-        assert!(index_of(&plan, |op| matches!(op, TransformOp::SetBare(false))).is_some());
         assert!(
             index_of(&plan, |op| matches!(
                 op,
-                TransformOp::InitWorktreeIndex { path, branch }
-                    if path == Path::new("/repo") && branch == "feature/x"
+                TransformOp::SetBare { bare: false, .. }
             ))
-            .is_some(),
-            "the root index must be built against the pivot's branch, not the default's"
+            .is_some()
         );
+        // No index rebuild anywhere: HEAD and index arrived by relocation.
+        assert_eq!(plan.ops.len(), 4, "{:?}", plan.ops);
+    }
+
+    #[test]
+    fn test_register_and_unregister_carry_the_git_dir_they_run_against() {
+        // contained-classic (`.git` inside the pivot dir) -> contained (bare):
+        // Unregister never happens (source is non-bare), but Register must
+        // name the *target* git dir, which is where `.git` is by then.
+        let source = make_state(
+            "/repo/main/.git",
+            false,
+            "main",
+            "/repo",
+            vec![("main", "/repo/main", true)],
+        );
+        let target = make_state(
+            "/repo/.git",
+            true,
+            "main",
+            "/repo",
+            vec![("main", "/repo/main", true)],
+        );
+        let plan = plan_for(&source, &target).unwrap();
+        let git_idx = index_of(&plan, |op| matches!(op, TransformOp::MoveGitDir { .. })).unwrap();
+        let reg_idx = index_of(&plan, |op| {
+            matches!(op, TransformOp::RegisterWorktree { common_dir, .. }
+                if common_dir == Path::new("/repo/.git"))
+        })
+        .expect("register against the relocated git dir");
+        let bare_idx = index_of(&plan, |op| {
+            matches!(op, TransformOp::SetBare { bare: true, common_dir }
+                if common_dir == Path::new("/repo/.git"))
+        })
+        .expect("SetBare against the relocated git dir");
+        assert!(git_idx < bare_idx && bare_idx < reg_idx);
+
+        // And the reverse: contained (bare) -> contained-classic. Unregister
+        // runs before MoveGitDir, so it names the *source* git dir.
+        let plan = plan_for(&target, &source).unwrap();
+        let unreg_idx = index_of(&plan, |op| {
+            matches!(op, TransformOp::UnregisterWorktree { common_dir, .. }
+                if common_dir == Path::new("/repo/.git"))
+        })
+        .expect("unregister against the source git dir");
+        let git_idx = index_of(&plan, |op| matches!(op, TransformOp::MoveGitDir { .. })).unwrap();
+        assert!(unreg_idx < git_idx);
     }
 
     #[test]
@@ -1050,7 +1305,67 @@ mod tests {
             ))
             .is_none()
         );
-        assert!(index_of(&plan, |op| matches!(op, TransformOp::SetBare(_))).is_none());
+        assert!(index_of(&plan, |op| matches!(op, TransformOp::SetBare { .. })).is_none());
         assert!(index_of(&plan, |op| matches!(op, TransformOp::MoveWorktree { .. })).is_some());
+    }
+
+    #[test]
+    fn test_detached_main_nests_under_the_supplied_directory() {
+        // The state carries a branchless root; the plan just follows the paths.
+        let mut source = make_state(
+            "/repo/.git",
+            false,
+            "main",
+            "/repo",
+            vec![("x", "/repo", true)],
+        );
+        source.worktrees[0].branch = None;
+        source.worktrees[0].head = Some("abc123".into());
+        let mut target = make_state(
+            "/repo/.git",
+            true,
+            "main",
+            "/repo",
+            vec![("x", "/repo/sandbox", true)],
+        );
+        target.worktrees[0].branch = None;
+        let plan = plan_for(&source, &target).unwrap();
+        assert!(
+            index_of(
+                &plan,
+                |op| matches!(op, TransformOp::NestFromRoot { branch: None, subdir_path, .. }
+                if subdir_path == Path::new("/repo/sandbox"))
+            )
+            .is_some()
+        );
+        assert!(
+            index_of(
+                &plan,
+                |op| matches!(op, TransformOp::RegisterWorktree { branch: None, path, .. }
+                if path == Path::new("/repo/sandbox"))
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn test_same_volume_moves_are_planned_as_renames() {
+        let source = make_state(
+            "/repo/.git",
+            true,
+            "main",
+            "/repo",
+            vec![("f/x", "/repo/f/x", false)],
+        );
+        let target = make_state(
+            "/repo/.git",
+            true,
+            "main",
+            "/repo",
+            vec![("f/x", "/repo/f-x", false)],
+        );
+        let plan = plan_for(&source, &target).unwrap();
+        assert!(!plan.copies_across_volumes());
+        assert!(plan.cross_volume_moves().is_empty());
     }
 }

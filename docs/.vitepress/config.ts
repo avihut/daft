@@ -525,7 +525,6 @@ export default defineConfig({
                 items: [
                   { text: "clone", link: "/reference/cli/daft-clone" },
                   { text: "init", link: "/reference/cli/daft-init" },
-                  { text: "adopt", link: "/reference/cli/daft-adopt" },
                 ],
               },
               {
@@ -550,7 +549,6 @@ export default defineConfig({
                   { text: "exec", link: "/reference/cli/daft-exec" },
                   { text: "run", link: "/reference/cli/daft-run" },
                   { text: "env", link: "/reference/cli/daft-env" },
-                  { text: "eject", link: "/reference/cli/daft-eject" },
                   {
                     text: "repo add",
                     link: "/reference/cli/daft-repo-add",
@@ -648,10 +646,6 @@ export default defineConfig({
                         text: "worktree-init",
                         link: "/reference/cli/git-worktree-init",
                       },
-                      {
-                        text: "flow-adopt",
-                        link: "/reference/cli/git-worktree-flow-adopt",
-                      },
                     ],
                   },
                   {
@@ -709,10 +703,6 @@ export default defineConfig({
                       {
                         text: "worktree-exec",
                         link: "/reference/cli/git-worktree-exec",
-                      },
-                      {
-                        text: "flow-eject",
-                        link: "/reference/cli/git-worktree-flow-eject",
                       },
                     ],
                   },

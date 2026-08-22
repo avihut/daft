@@ -70,11 +70,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     // Value completion for --skip-hooks flag
     let has_skip_hooks = matches!(
         command_name,
-        "git-worktree-checkout"
-            | "git-worktree-clone"
-            | "git-worktree-flow-adopt"
-            | "daft-go"
-            | "daft-start"
+        "git-worktree-checkout" | "git-worktree-clone" | "daft-go" | "daft-start"
     );
 
     // Value completion for --hooks flag (the run's hook execution mode)
@@ -920,9 +916,22 @@ _daft() {
                 return
                 ;;
             transform|default)
+                if [[ "$words[3]" == "transform" ]]; then
+                    case "$words[CURRENT-1]" in
+                        --pivot)
+                            local -a pivots
+                            pivots=("${(@f)$(daft __complete layout-pivot "$curword" 2>/dev/null | sed 's/\t/:/')}")
+                            _describe 'worktree' pivots
+                            return
+                            ;;
+                        --as|--include)
+                            return
+                            ;;
+                    esac
+                fi
                 if [[ "$curword" == -* ]]; then
                     if [[ "$words[3]" == "transform" ]]; then
-                        compadd -- --force -f --dry-run --include --include-all -h --help
+                        compadd -- --dry-run --as --pivot --include --include-all -y --yes -q --quiet -v --verbose -h --help
                     else
                         compadd -- --reset -h --help
                     fi
@@ -1403,7 +1412,7 @@ _daft() {
         else
             compadd activate hooks shell-init multi-remote release-notes doctor layout shared \
                     config file repo skill clone init install go start carry exec run env warm update list prune rename sync push remove \
-                    merge worktree-merge adopt eject
+                    merge worktree-merge
         fi
         return
     fi

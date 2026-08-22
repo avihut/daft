@@ -1,0 +1,205 @@
+name: Every kind of tree state survives a round trip through every layout
+description: >
+  #875: modified, staged, staged-then-modified, untracked, ignored,
+  intent-to-add and unmerged (conflict) entries, taken out to each of the five
+  non-sibling layouts and back. After every hop `git status --porcelain` and
+  `git diff --cached` are byte-identical to the start, and no stash ever exists.
+  The unmerged entry is built directly in the index — a real merge conflict
+  would leave MERGE_HEAD, which is a blocker — so no stash is involved in making
+  it either. `.gitignore` is carved out of the comparison: the `nested` layout
+  maintains a line in it by design. (The plan line counts the way `daft list`
+  does: a staged-then-modified file is both staged and modified, and an
+  intent-to-add entry is a modification.)
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Plain clone on a task branch, dirtied every way a tree can be
+    run: |
+      set -euo pipefail
+      git clone -q $REMOTE_TEST_REPO test-repo
+      R=$WORK_DIR/test-repo
+      git -C "$R" switch -q -c task/local-docker
+      printf 'node_modules/\n' > "$R/.gitignore"
+      echo seed > "$R/docs.md"
+      git -C "$R" add .gitignore docs.md
+      git -C "$R" commit -q -m "seed"
+      mkdir -p "$R/node_modules" && echo junk > "$R/node_modules/x"
+      echo local >> "$R/README.md"
+      echo staged >> "$R/main.py" && git -C "$R" add main.py
+      echo a >> "$R/docs.md" && git -C "$R" add docs.md && echo b >> "$R/docs.md"
+      echo scratch > "$R/NOTES.md"
+      echo planned > "$R/new.txt" && git -C "$R" add -N new.txt
+      B=$(printf 'base\n'   | git -C "$R" hash-object -w --stdin)
+      O=$(printf 'ours\n'   | git -C "$R" hash-object -w --stdin)
+      T=$(printf 'theirs\n' | git -C "$R" hash-object -w --stdin)
+      printf '<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> theirs\n' > "$R/conflicted.txt"
+      printf '100644 %s 1\tconflicted.txt\n100644 %s 2\tconflicted.txt\n100644 %s 3\tconflicted.txt\n' \
+        "$B" "$O" "$T" | git -C "$R" update-index --index-info
+      git -C "$R" status --porcelain | grep -v '.gitignore' > $BASE_DIR/status-before.txt
+      git -C "$R" diff --cached -- . ':!.gitignore' > $BASE_DIR/diff-cached-before.txt
+      grep -q '^UU conflicted.txt' $BASE_DIR/status-before.txt
+      grep -q '^M  main.py' $BASE_DIR/status-before.txt
+      grep -q '^MM docs.md' $BASE_DIR/status-before.txt
+      test -s $BASE_DIR/diff-cached-before.txt
+    expect:
+      exit_code: 0
+
+  # ── contained ──────────────────────────────────────────────────────────
+  - name: Out to contained
+    run: NO_COLOR=1 daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        ["3 modified, 2 staged, 1 untracked, 1 conflicted carried along"]
+  - name: Identical in contained
+    run: |
+      set -euo pipefail
+      W=$WORK_DIR/test-repo/task/local-docker
+      git -C "$W" status --porcelain | grep -v '.gitignore' > $BASE_DIR/a.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/a.txt
+      git -C "$W" diff --cached -- . ':!.gitignore' > $BASE_DIR/b.txt
+      diff $BASE_DIR/diff-cached-before.txt $BASE_DIR/b.txt
+      test -f "$W/node_modules/x"
+      test -z "$(git -C "$W" stash list)"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/.git/index"
+        - "$WORK_DIR/test-repo/.git/refs/stash"
+  - name: Back to sibling from contained
+    run: NO_COLOR=1 daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo/task/local-docker"
+    expect:
+      exit_code: 0
+  - name: Identical after contained round trip
+    run: |
+      set -euo pipefail
+      W=$WORK_DIR/test-repo
+      git -C "$W" status --porcelain | grep -v '.gitignore' > $BASE_DIR/a.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/a.txt
+      git -C "$W" diff --cached -- . ':!.gitignore' > $BASE_DIR/b.txt
+      diff $BASE_DIR/diff-cached-before.txt $BASE_DIR/b.txt
+      test -f "$W/node_modules/x"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/.git/index"
+
+  # ── contained-classic ──────────────────────────────────────────────────
+  - name: Out to contained-classic
+    run: NO_COLOR=1 daft layout transform contained-classic 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+  - name: Identical in contained-classic
+    run: |
+      set -euo pipefail
+      W=$WORK_DIR/test-repo/task/local-docker
+      test -d "$W/.git"
+      git -C "$W" status --porcelain | grep -v '.gitignore' > $BASE_DIR/a.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/a.txt
+      git -C "$W" diff --cached -- . ':!.gitignore' > $BASE_DIR/b.txt
+      diff $BASE_DIR/diff-cached-before.txt $BASE_DIR/b.txt
+    expect:
+      exit_code: 0
+  - name: Back to sibling from contained-classic
+    run: NO_COLOR=1 daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo/task/local-docker"
+    expect:
+      exit_code: 0
+  - name: Identical after contained-classic round trip
+    run: |
+      set -euo pipefail
+      W=$WORK_DIR/test-repo
+      git -C "$W" status --porcelain | grep -v '.gitignore' > $BASE_DIR/a.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/a.txt
+      git -C "$W" diff --cached -- . ':!.gitignore' > $BASE_DIR/b.txt
+      diff $BASE_DIR/diff-cached-before.txt $BASE_DIR/b.txt
+    expect:
+      exit_code: 0
+
+  # ── contained-flat ─────────────────────────────────────────────────────
+  - name: Out to contained-flat
+    run: NO_COLOR=1 daft layout transform contained-flat 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+  - name: Identical in contained-flat
+    run: |
+      set -euo pipefail
+      W=$WORK_DIR/test-repo/task-local-docker
+      git -C "$W" status --porcelain | grep -v '.gitignore' > $BASE_DIR/a.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/a.txt
+      git -C "$W" diff --cached -- . ':!.gitignore' > $BASE_DIR/b.txt
+      diff $BASE_DIR/diff-cached-before.txt $BASE_DIR/b.txt
+    expect:
+      exit_code: 0
+  - name: Back to sibling from contained-flat
+    run: NO_COLOR=1 daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo/task-local-docker"
+    expect:
+      exit_code: 0
+  - name: Identical after contained-flat round trip
+    run: |
+      set -euo pipefail
+      W=$WORK_DIR/test-repo
+      git -C "$W" status --porcelain | grep -v '.gitignore' > $BASE_DIR/a.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/a.txt
+      git -C "$W" diff --cached -- . ':!.gitignore' > $BASE_DIR/b.txt
+      diff $BASE_DIR/diff-cached-before.txt $BASE_DIR/b.txt
+    expect:
+      exit_code: 0
+
+  # ── nested ─────────────────────────────────────────────────────────────
+  - name: Out to nested (the root stays the main working tree)
+    run: NO_COLOR=1 daft layout transform nested 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+  - name: Identical in nested
+    run: |
+      set -euo pipefail
+      W=$WORK_DIR/test-repo
+      git -C "$W" status --porcelain | grep -v '.gitignore' > $BASE_DIR/a.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/a.txt
+      git -C "$W" diff --cached -- . ':!.gitignore' > $BASE_DIR/b.txt
+      diff $BASE_DIR/diff-cached-before.txt $BASE_DIR/b.txt
+    expect:
+      exit_code: 0
+  - name: Back to sibling from nested
+    run: NO_COLOR=1 daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  # ── centralized ────────────────────────────────────────────────────────
+  - name: Out to centralized (the root stays the main working tree)
+    run: NO_COLOR=1 daft layout transform centralized 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+  - name: Back to sibling from centralized
+    run: NO_COLOR=1 daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+  - name: Identical at the end of the tour, and still no stash
+    run: |
+      set -euo pipefail
+      W=$WORK_DIR/test-repo
+      git -C "$W" status --porcelain | grep -v '.gitignore' > $BASE_DIR/a.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/a.txt
+      git -C "$W" diff --cached -- . ':!.gitignore' > $BASE_DIR/b.txt
+      diff $BASE_DIR/diff-cached-before.txt $BASE_DIR/b.txt
+      test -f "$W/node_modules/x"
+      test -z "$(git -C "$W" stash list)"
+      rm -rf $DAFT_DATA_DIR/worktrees/test-repo
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/.git/refs/stash"
+        - "$WORK_DIR/test-repo/.git/logs/refs/stash"

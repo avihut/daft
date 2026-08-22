@@ -1,0 +1,60 @@
+name: A checked-out submodule in the worktree that changes role is refused
+description: >
+  #875: a populated submodule's `.git` pointer is relative to a git dir the role
+  change invalidates (and git's own `worktree move` refuses a working tree
+  containing submodules). The transform refuses before anything moves, naming
+  the submodule and the deinit/re-init settle commands. Deinit unpopulates it,
+  and the retry succeeds.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+  - name: lib
+    use_fixture: standard-remote
+
+steps:
+  - name: Plain clone with a checked-out submodule
+    run: |
+      set -euo pipefail
+      git clone -q $REMOTE_TEST_REPO test-repo
+      cd $WORK_DIR/test-repo
+      git switch -q -c task/local-docker
+      git -c protocol.file.allow=always submodule add -q $REMOTE_LIB lib
+      git commit -qm "add lib submodule"
+      test -f lib/.git
+    expect:
+      exit_code: 0
+
+  - name: The transform is refused, naming the submodule
+    run: NO_COLOR=1 daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "submodule"
+        - "lib"
+        - "submodule deinit --all"
+        - "submodule update --init"
+      files_exist:
+        - "$WORK_DIR/test-repo/.git/index"
+        - "$WORK_DIR/test-repo/README.md"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/task/local-docker"
+
+  - name: Deinit, transform, re-init from the new path
+    run: |
+      set -euo pipefail
+      cd $WORK_DIR/test-repo
+      git submodule deinit -q --all
+      NO_COLOR=1 daft layout transform contained 2>&1
+      cd $WORK_DIR/test-repo/task/local-docker
+      git -c protocol.file.allow=always submodule update -q --init
+      test -f lib/README.md
+      git -C lib status --porcelain
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Transformed"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/task/local-docker"
+          branch: task/local-docker

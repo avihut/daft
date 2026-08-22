@@ -82,13 +82,3 @@ steps:
     run: daft completions fig --command=git-worktree-fetch 2>&1
     expect:
       exit_code: 0
-
-  - name: Fig completions for flow-adopt command
-    run: daft completions fig --command=git-worktree-flow-adopt 2>&1
-    expect:
-      exit_code: 0
-
-  - name: Fig completions for flow-eject command
-    run: daft completions fig --command=git-worktree-flow-eject 2>&1
-    expect:
-      exit_code: 0

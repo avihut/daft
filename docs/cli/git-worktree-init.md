@@ -65,5 +65,4 @@ git worktree-init [OPTIONS] <REPOSITORY_NAME>
 
 - [git-worktree-clone](./git-worktree-clone.md)
 - [git-worktree-checkout](./git-worktree-checkout.md)
-- [git-worktree-flow-adopt](./git-worktree-flow-adopt.md)
 

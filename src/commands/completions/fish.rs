@@ -124,11 +124,7 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
     // Value completions for --skip-hooks flag (selector vocabulary from daft.yml)
     let has_skip_hooks = matches!(
         command_name,
-        "git-worktree-checkout"
-            | "git-worktree-clone"
-            | "git-worktree-flow-adopt"
-            | "daft-go"
-            | "daft-start"
+        "git-worktree-checkout" | "git-worktree-clone" | "daft-go" | "daft-start"
     );
     if has_skip_hooks {
         output.push_str(&format!(
@@ -553,13 +549,11 @@ complete -c daft -n '__fish_use_subcommand' -a 'update' -d 'Update worktree bran
 complete -c daft -n '__fish_use_subcommand' -a 'prune' -d 'Remove stale worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'rename' -d 'Rename branch and move worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'remove' -d 'Delete branch and worktree'
-complete -c daft -n '__fish_use_subcommand' -a 'adopt' -d 'Convert repo to worktree layout'
 complete -c daft -n '__fish_use_subcommand' -a 'sync' -d 'Synchronize worktrees with remote'
 complete -c daft -n '__fish_use_subcommand' -a 'push' -d 'Push a branch, hooks in its worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'list' -d 'List worktrees with status'
 complete -c daft -n '__fish_use_subcommand' -a 'merge' -d 'Merge branches across worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'worktree-merge' -d 'Merge branches across worktrees'
-complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
 complete -c daft -n '__fish_use_subcommand' -a 'config' -d 'Configure daft settings'
 complete -c daft -n '__fish_use_subcommand' -a 'shared' -d 'Manage shared files across worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'repo' -d 'Repository-level operations'
@@ -598,10 +592,14 @@ complete -c daft -n '__fish_seen_subcommand_from rename' -a "(__fish_complete_di
 complete -c daft -n '__fish_seen_subcommand_from layout; and not __fish_seen_subcommand_from default list show transform' -f -a 'default list show transform'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from show' -F
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -f -a "(daft __complete layout-transform '' 2>/dev/null)"
-complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l force -s f -d 'Force transform even with uncommitted changes'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l dry-run -d 'Show plan without executing'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l as -r -d 'Directory name for a detached main working tree'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l pivot -r -x -a "(daft __complete layout-pivot '' 2>/dev/null | cut -f1)" -d 'Worktree that becomes the main working tree'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -s y -l yes -d 'Auto-accept interactive prompts'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l include -r -d 'Also relocate non-conforming worktree'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l include-all -d 'Relocate all non-conforming worktrees'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -s q -l quiet -d 'Operate quietly; suppress progress reporting'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -s v -l verbose -d 'Stream hook output'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -f -a "(daft __complete layout-default '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -l reset -d 'Reset to built-in default'
 complete -c daft -n '__fish_seen_subcommand_from multi-remote; and not __fish_seen_subcommand_from enable disable status set-default move' -f -a 'enable disable status set-default move'

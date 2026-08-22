@@ -1,0 +1,87 @@
+name: --force is gone from layout transform and -y is accepted
+description: >
+  #875: `--force` meant "accept loss" and a layout change loses nothing, so the
+  flag is removed rather than made a no-op — clap rejects it outright. `-y` /
+  `--yes` auto-accept the prompts that have a yes or a default; on a transform
+  that needs neither they are simply accepted and the tree is carried as ever.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Plain clone, dirtied
+    run: |
+      set -euo pipefail
+      git clone -q $REMOTE_TEST_REPO test-repo
+      cd $WORK_DIR/test-repo
+      git switch -q -c task/local-docker
+      echo "local change" >> README.md
+      git status --porcelain > $BASE_DIR/status-before.txt
+    expect:
+      exit_code: 0
+
+  - name: --force is rejected by the parser, not turned into a refusal
+    run: NO_COLOR=1 daft layout transform contained --force 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "unexpected argument '--force'"
+      files_exist:
+        - "$WORK_DIR/test-repo/README.md"
+
+  - name: A flag this transform is not asking for is refused, not ignored
+    # #875 review: `--as` was silently dropped whenever the main working tree
+    # had a branch, and `--pivot` whenever the target layout stayed bare —
+    # including when it named a branch that does not exist. A swallowed flag
+    # reads as "daft did what I asked".
+    run: NO_COLOR=1 daft layout transform contained --as somewhere 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--as names the directory for a main working tree that is *detached*"
+      files_exist:
+        - "$WORK_DIR/test-repo/README.md"
+        - "$WORK_DIR/test-repo/.git/index"
+
+  - name: -y is accepted and inert on a transform with nothing to confirm
+    run: NO_COLOR=1 daft layout transform contained -y 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Transformed"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/task/local-docker"
+          branch: task/local-docker
+
+  - name: --pivot on a repository that is staying bare is refused too
+    run:
+      NO_COLOR=1 daft layout transform contained-flat --pivot no-such-branch
+      2>&1
+    cwd: "$WORK_DIR/test-repo/task/local-docker"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "keeps this repository bare"
+
+  - name: --yes on the way back
+    run: NO_COLOR=1 daft layout transform sibling --yes 2>&1
+    cwd: "$WORK_DIR/test-repo/task/local-docker"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Transformed"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: task/local-docker
+
+  - name: The tree came through both hops untouched
+    run: |
+      set -euo pipefail
+      git -C $WORK_DIR/test-repo status --porcelain > $BASE_DIR/status-after.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/status-after.txt
+    expect:
+      exit_code: 0

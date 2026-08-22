@@ -32,7 +32,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "default branch 'main' has no worktree"
+        - "'main': no worktree"
         - "Transformed"
 
   - name: The worktree moved and became a regular clone

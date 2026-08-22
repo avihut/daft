@@ -18,8 +18,6 @@ const EXPECTED_SYMLINKS: &[&str] = &[
     "git-worktree-fetch",
     "git-worktree-branch",
     "git-worktree-branch-delete",
-    "git-worktree-flow-adopt",
-    "git-worktree-flow-eject",
     "git-worktree-list",
     "git-worktree-merge",
     "git-worktree-sync",
@@ -31,6 +29,14 @@ const EXPECTED_SYMLINKS: &[&str] = &[
     "daft-remove",
     "daft-rename",
 ];
+
+/// Command symlinks daft used to install and no longer does.
+///
+/// An in-place upgrade replaces the binary but never removes symlinks the new
+/// version stopped shipping, so `git worktree-flow-adopt` keeps resolving —
+/// straight into a multicall arm that no longer exists. Naming them is the
+/// only way a user finds out.
+const RETIRED_SYMLINKS: &[&str] = &["git-worktree-flow-adopt", "git-worktree-flow-eject"];
 
 /// Check that the daft binary is in PATH.
 pub fn check_binary_in_path() -> CheckResult {
@@ -126,9 +132,19 @@ fn check_command_symlinks_in(install_dir: &Path, homebrew_prefix: Option<PathBuf
         }
     }
 
+    // Symlinks from a previous version that this one no longer claims.
+    let retired: Vec<&str> = RETIRED_SYMLINKS
+        .iter()
+        .copied()
+        .filter(|name| {
+            let path = install_dir.join(name);
+            path.is_symlink() || path.exists()
+        })
+        .collect();
+
     let total = EXPECTED_SYMLINKS.len();
     let found = present.len();
-    let has_issues = !missing.is_empty() || !stale.is_empty();
+    let has_issues = !missing.is_empty() || !stale.is_empty() || !retired.is_empty();
 
     if !has_issues {
         CheckResult::pass("Command symlinks", &format!("{found}/{total} installed"))
@@ -141,7 +157,10 @@ fn check_command_symlinks_in(install_dir: &Path, homebrew_prefix: Option<PathBuf
         for name in &stale {
             details.push(format!("Stale: {name} (not managed by Homebrew)"));
         }
-        let issue_count = missing.len() + stale.len();
+        for name in &retired {
+            details.push(format!("Retired: {name} (this command no longer exists)"));
+        }
+        let issue_count = missing.len() + stale.len() + retired.len();
         CheckResult::warning(
             "Command symlinks",
             &format!("{found}/{total} installed, {issue_count} need attention"),
@@ -152,19 +171,28 @@ fn check_command_symlinks_in(install_dir: &Path, homebrew_prefix: Option<PathBuf
         )
         .with_details(details)
     } else {
-        let details: Vec<String> = missing.iter().map(|n| format!("Missing: {n}")).collect();
+        let mut details: Vec<String> = missing.iter().map(|n| format!("Missing: {n}")).collect();
+        for name in &retired {
+            details.push(format!(
+                "Retired: {} (this command no longer exists; rm {})",
+                name,
+                install_dir.join(name).display()
+            ));
+        }
         let missing_owned: Vec<String> = missing.iter().map(|s| s.to_string()).collect();
         let dry_dir = install_dir.to_path_buf();
-        CheckResult::warning(
-            "Command symlinks",
-            &format!("{found}/{total} installed, {} missing", missing.len()),
-        )
-        .with_suggestion("Run 'daft activate' to create missing symlinks")
-        .with_fix(Box::new(fix_command_symlinks))
-        .with_dry_run_fix(Box::new(move || {
-            dry_run_symlink_actions(&missing_owned, &dry_dir)
-        }))
-        .with_details(details)
+        let summary = match (missing.len(), retired.len()) {
+            (0, r) => format!("{found}/{total} installed, {r} retired"),
+            (m, 0) => format!("{found}/{total} installed, {m} missing"),
+            (m, r) => format!("{found}/{total} installed, {m} missing, {r} retired"),
+        };
+        CheckResult::warning("Command symlinks", &summary)
+            .with_suggestion("Run 'daft activate' to create missing symlinks")
+            .with_fix(Box::new(fix_command_symlinks))
+            .with_dry_run_fix(Box::new(move || {
+                dry_run_symlink_actions(&missing_owned, &dry_dir)
+            }))
+            .with_details(details)
     }
 }
 
@@ -671,7 +699,7 @@ mod tests {
 
     #[test]
     fn test_expected_symlinks_count() {
-        assert_eq!(EXPECTED_SYMLINKS.len(), 20);
+        assert_eq!(EXPECTED_SYMLINKS.len(), 18);
     }
 
     #[test]

@@ -237,12 +237,6 @@ fn complete(
         // git-worktree-prune: no arguments
         ("git-worktree-prune", _) => Ok(vec![]),
 
-        // git-worktree-flow-adopt: directory path (no dynamic completion)
-        ("git-worktree-flow-adopt", _) => Ok(vec![]),
-
-        // git-worktree-flow-eject: directory path (no dynamic completion)
-        ("git-worktree-flow-eject", _) => Ok(vec![]),
-
         // hooks run: complete configured hook types
         ("hooks-run", 1) => complete_configured_hooks(word),
 
@@ -260,6 +254,14 @@ fn complete(
         ("skip-hooks-value", 1) => complete_skip_hooks(word),
 
         // layout transform / layout default / clone --layout: complete layout names
+        // layout transform --pivot: the worktrees that could take the
+        // repository root — only checked-out branches qualify, a branch with no
+        // worktree has no directory to promote.
+        ("layout-pivot", _) => Ok(format_entries_as_strings(&complete_rich_branches(
+            word,
+            &CONFIG_PIVOT,
+        )?)),
+
         ("layout-transform", 1) | ("layout-default", 1) | ("layout-value", 1) => {
             complete_layouts(word)
         }
@@ -1298,7 +1300,7 @@ fn complete_skip_hooks(prefix: &str) -> Result<Vec<String>> {
     // Intentionally union job names and tags across *all* configured hooks,
     // not just the hook(s) that would fire for the command being completed.
     // Determining the firing set per command would mean re-deriving create-vs-
-    // navigate / clone-vs-adopt at completion time (repo-state dependent); the
+    // navigate at completion time (repo-state dependent); the
     // wider vocabulary is the cheaper, predictable choice. A consequence is that
     // e.g. `daft go --skip-hooks <Tab>` may offer a `post-clone` job name that
     // never runs for `go` — harmless (an unmatched selector just warns).
@@ -2497,6 +2499,17 @@ const CONFIG_EXEC: RichCompletionConfig = RichCompletionConfig {
 /// directory to copy into or out of. The current worktree is included: it is
 /// the default target and a valid `--from` when the target is a sibling.
 const CONFIG_WARM: RichCompletionConfig = RichCompletionConfig {
+    include_worktrees: true,
+    include_local: false,
+    include_remote: false,
+    exclude_current: false,
+};
+
+/// `daft layout transform --pivot <branch>`: the worktree that takes the
+/// repository root of a bare repository. Only checked-out branches qualify —
+/// a branch with no worktree has no directory to promote. The current one is
+/// a perfectly good pivot, so it stays in.
+const CONFIG_PIVOT: RichCompletionConfig = RichCompletionConfig {
     include_worktrees: true,
     include_local: false,
     include_remote: false,

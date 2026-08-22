@@ -24,8 +24,6 @@ daft_multicall_symlinks=(
   git-worktree-branch-delete
   git-worktree-fetch
   git-worktree-exec
-  git-worktree-flow-adopt
-  git-worktree-flow-eject
   git-worktree-sync
   git-worktree-list
   git-worktree-merge

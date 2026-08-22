@@ -19,7 +19,6 @@ use crate::{
     },
     settings::DaftSettings,
     styles::{self, bold, dim, dim_underline},
-    utils::*,
 };
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -86,18 +85,24 @@ struct ShowArgs {
 struct TransformArgs {
     /// Target layout name or template
     layout: String,
-    /// Force transform even with uncommitted changes
-    #[arg(short, long)]
-    force: bool,
     /// Show plan without executing
     #[arg(long)]
     dry_run: bool,
+    /// Directory name for a detached main working tree, when the target layout nests it
+    #[arg(long = "as", value_name = "DIR", conflicts_with = "pivot")]
+    as_dir: Option<String>,
+    /// Worktree that becomes the main working tree when a bare repo gains one
+    #[arg(long = "pivot", value_name = "BRANCH")]
+    pivot: Option<String>,
     /// Also relocate this non-conforming worktree (repeatable)
     #[arg(long = "include", value_name = "BRANCH")]
     include: Vec<String>,
     /// Relocate all non-conforming worktrees
     #[arg(long)]
     include_all: bool,
+    /// Auto-accept interactive prompts
+    #[arg(short = 'y', long = "yes")]
+    yes: bool,
     /// Operate quietly; suppress progress reporting
     #[arg(short, long)]
     quiet: bool,
@@ -594,143 +599,374 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         && let Some(current_layout_name) = db.get_layout(&source.git_dir)
         && let Some(current_layout) = global_config.resolve_layout_by_name(current_layout_name)
         && current_layout.needs_wrapper()
-        && let Some(wrapper) = source.project_root.parent()
     {
-        source.project_root = wrapper.to_path_buf();
+        // The main working tree sits at `<wrapper>/<template path>`, where the
+        // template path can have several components (`task/local-docker`) and
+        // was evaluated for whatever branch the clone was on when it was
+        // placed — the branch it is on now, or the default branch it was
+        // cloned on and has since switched away from. Match the directory
+        // against each before falling back to one level up.
+        let main_path = source.project_root.clone();
+        let root_branch = source
+            .worktrees
+            .iter()
+            .find(|wt| wt.is_root)
+            .and_then(|wt| wt.branch.clone());
+        let candidates: Vec<&str> = root_branch
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(default_branch.as_str()))
+            .collect();
+        let wrapper = candidates
+            .iter()
+            .find_map(|name| {
+                let rel =
+                    transform::compute_target_worktree_path(&current_layout, Path::new("/"), name)
+                        .ok()?;
+                let rel = rel.strip_prefix("/").ok()?.to_path_buf();
+                if rel.as_os_str().is_empty() || !main_path.ends_with(&rel) {
+                    return None;
+                }
+                main_path
+                    .ancestors()
+                    .nth(rel.components().count())
+                    .map(Path::to_path_buf)
+            })
+            .or_else(|| main_path.parent().map(Path::to_path_buf));
+        if let Some(wrapper) = wrapper {
+            source.project_root = wrapper;
+        }
+    }
+
+    // Prompts need a terminal and a human; the YAML harness (`DAFT_TESTING`)
+    // has neither, and a dry run must never block on one. Without a terminal
+    // every question has a flag twin, and the refusal names it.
+    let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::env::var("DAFT_TESTING").is_err()
+        && !args.dry_run;
+    let cwd = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.canonicalize().ok());
+    let mut blockers: Vec<transform::Blocker> = Vec::new();
+    let mut probed: Vec<PathBuf> = Vec::new();
+    let mut probe_role_change =
+        |wts: Vec<(PathBuf, Option<String>)>, blockers: &mut Vec<transform::Blocker>| {
+            let fresh: Vec<(PathBuf, Option<String>)> = wts
+                .into_iter()
+                .filter(|(p, _)| !probed.contains(p))
+                .collect();
+            probed.extend(fresh.iter().map(|(p, _)| p.clone()));
+            blockers.extend(transform::preflight::role_change_blockers(&fresh));
+        };
+
+    // ── The two questions daft cannot answer alone ──────────────────────
+    let mut over = transform::PivotOverride {
+        branch: args.pivot.clone(),
+        dirname: args.as_dir.clone(),
+    };
+    if let Some(name) = &over.dirname
+        && let Err(why) = check_dirname(name, &source.project_root)
+    {
+        anyhow::bail!("--as {name}: {why}");
+    }
+    let bare_flips = source.is_bare != target_layout.needs_bare();
+    let situation = transform::root_situation(&target_layout, &source);
+
+    // Both flags answer a question this transform may not be asking. Saying so
+    // beats accepting the flag and ignoring it — a silently swallowed
+    // `--pivot bogus-branch` reads as "daft chose that worktree", which is the
+    // opposite of what happened.
+    if over.branch.is_some() {
+        if !source.is_bare {
+            anyhow::bail!(
+                "--pivot chooses which worktree takes the repository root when a bare \
+                 repository gains a main working tree; this repository already has one."
+            );
+        }
+        if target_layout.needs_bare() {
+            anyhow::bail!(
+                "--pivot chooses which worktree takes the repository root when a bare \
+                 repository gains a main working tree; the '{}' layout keeps this \
+                 repository bare, so no worktree takes that role.",
+                target_layout.name
+            );
+        }
+    }
+    if over.dirname.is_some() && !matches!(situation, transform::RootSituation::DetachedMain { .. })
+    {
+        anyhow::bail!(
+            "--as names the directory for a main working tree that is *detached*, and so \
+             has no branch to name it by. This repository's main working tree is placed by \
+             its branch."
+        );
+    }
+
+    // Probe for in-progress operations *before* asking anything: asking the
+    // user to name a directory and then refusing because of a rebase is the
+    // contradiction this ordering exists to avoid. A detached main working
+    // tree is the other early case — the layout is about to nest it, which
+    // moves it, whether or not the repository's bare flag flips.
+    if bare_flips || matches!(situation, transform::RootSituation::DetachedMain { .. }) {
+        let early: Vec<(PathBuf, Option<String>)> = match &situation {
+            transform::RootSituation::AmbiguousPivot { candidates } if over.branch.is_none() => {
+                candidates
+                    .iter()
+                    .map(|&i| {
+                        (
+                            source.worktrees[i].path.clone(),
+                            source.worktrees[i].branch.clone(),
+                        )
+                    })
+                    .collect()
+            }
+            _ if !source.is_bare => source
+                .worktrees
+                .iter()
+                .filter(|wt| wt.is_root)
+                .map(|wt| (wt.path.clone(), wt.branch.clone()))
+                .collect(),
+            _ => Vec::new(),
+        };
+        probe_role_change(early, &mut blockers);
+    }
+
+    match &situation {
+        transform::RootSituation::DetachedMain { head } => {
+            let commit = head.clone().unwrap_or_default();
+            let derived = crate::core::worktree::sandbox::derived_dirname(&commit);
+            match transform::decide::decide_dirname(
+                over.dirname.as_deref(),
+                true,
+                &derived,
+                interactive,
+                args.yes,
+            ) {
+                transform::DirnameDecision::Settled => {}
+                // Same two guards `--as` gets. `-y` takes a name daft derived
+                // rather than one the user typed, but derived_dirname is the
+                // scheme anonymous worktrees already use, so its collisions
+                // are ordinary — and an empty HEAD derives an empty name.
+                transform::DirnameDecision::Use(name) => {
+                    if let Err(why) = check_dirname(&name, &source.project_root) {
+                        anyhow::bail!(
+                            "cannot nest the detached main working tree as '{name}': {why}"
+                        );
+                    }
+                    over.dirname = Some(name);
+                }
+                transform::DirnameDecision::Ask(default) if blockers.is_empty() => {
+                    over.dirname = Some(prompt_dirname(
+                        output,
+                        &commit,
+                        &target_layout.name,
+                        &source.project_root,
+                        &default,
+                    )?);
+                }
+                transform::DirnameDecision::Ask(derived)
+                | transform::DirnameDecision::Blocked(derived) => {
+                    blockers.push(transform::Blocker::repo_wide(
+                        transform::BlockerKind::MissingAs {
+                            derived,
+                            commit: commit.clone(),
+                        },
+                    ));
+                }
+            }
+        }
+        transform::RootSituation::AmbiguousPivot { candidates } => {
+            let rows: Vec<transform::PivotCandidate> = candidates
+                .iter()
+                .map(|&i| transform::PivotCandidate {
+                    branch: source.worktrees[i].label().to_string(),
+                    path: source.worktrees[i].path.clone(),
+                    counts: crate::core::worktree::list::count_changed_files(
+                        &source.worktrees[i].path,
+                    ),
+                })
+                .collect();
+            match transform::decide::decide_pivot(
+                over.branch.as_deref(),
+                true,
+                interactive,
+                args.yes,
+            ) {
+                transform::PivotDecision::Settled => {}
+                transform::PivotDecision::Ask if blockers.is_empty() => {
+                    over.branch = Some(prompt_pivot(
+                        output,
+                        &rows,
+                        &default_branch,
+                        &source.project_root,
+                        cwd.as_deref(),
+                    )?);
+                }
+                transform::PivotDecision::Ask | transform::PivotDecision::Blocked => {
+                    blockers.push(transform::Blocker::repo_wide(
+                        transform::BlockerKind::MissingPivot { candidates: rows },
+                    ));
+                }
+            }
+        }
+        transform::RootSituation::Settled => {}
+    }
+    // Without an answer to one of the two questions there is no target to
+    // plan against; report what is known so far. Every other blocker waits
+    // for the plan, so the report is one pass.
+    let undecided = blockers.iter().any(|b| {
+        matches!(
+            b.kind,
+            transform::BlockerKind::MissingAs { .. } | transform::BlockerKind::MissingPivot { .. }
+        )
+    });
+    if undecided {
+        anyhow::bail!(transform::report::render_blockers(
+            &blockers,
+            &target_layout.name,
+            &source,
+            cwd.as_deref()
+        ));
     }
 
     // Compute target state using the (possibly adjusted) project root. This is
-    // where an impossible transform is refused — before the dirty check,
-    // before --force stashing, before any mutation.
-    let target = transform::compute_target_state(&target_layout, &source)?;
+    // where an impossible transform is refused — before any mutation.
+    let target = transform::compute_target_state(&target_layout, &source, &over)?;
 
     // Classify worktrees
     let classified =
         transform::classify_worktrees(&source, &target, &args.include, args.include_all);
 
-    // Check for dirty worktrees (unless --force).
+    // ── Everything that can block, in one pass ──────────────────────────
     //
-    // Two worktrees are checked. The one holding the root role — the main
-    // working tree, whatever branch it carries, or the one about to become it
-    // — because the transform physically rewrites it. And the default branch's
-    // worktree, which used to be the *same* entry back when the root role was
-    // keyed on the branch name: now that the role follows the main working
-    // tree, a dirty linked worktree on the default branch would otherwise slip
-    // past this guard and get rejected by `ValidateIntegrity` at the very last
-    // op instead, rolling the whole transform back. An up-front refusal naming
-    // the worktree is the behaviour worth keeping.
-    //
-    // Other linked worktrees are still not checked: git relocates them intact,
-    // and `--force` preserves their dirty state via stash ops. Layout artifacts
-    // (.gitignore with auto-added patterns, worktree directories managed by the
-    // layout) are excluded from what counts as dirty.
-    if !args.force {
-        let prev_dir = get_current_directory()?;
-        for cw in &classified {
-            let checked = cw.disposition == transform::WorktreeDisposition::Root
-                || cw.branch == default_branch;
-            if !checked {
-                continue;
-            }
-            if cw.current_path.exists() {
-                change_directory(&cw.current_path)?;
-                if has_real_uncommitted_changes(&git, &source)? {
-                    change_directory(&prev_dir)?;
-                    anyhow::bail!(
-                        "Worktree '{}' has uncommitted changes. Commit, stash, or use --force.",
-                        cw.branch
-                    );
-                }
-            }
-        }
-        change_directory(&prev_dir)?;
+    // The root is probed whenever the transform touches it — when its role
+    // flips (main working tree ⇄ linked worktree) *and* when it merely moves.
+    // `NestFromRoot`, `CollapseIntoRoot` and `MoveMainWorktree` are emitted
+    // from the root's current-vs-target paths alone, with no reference to the
+    // bare flag, so gating the probe on that flag left every same-bareness
+    // relocation — sibling ⇄ contained-classic among them — unprobed. An
+    // in-progress operation is this command's only remaining refusal class;
+    // it cannot be one that depends on which pair of layouts is involved.
+    let root_cw = classified
+        .iter()
+        .find(|cw| cw.disposition == transform::WorktreeDisposition::Root);
+    if let Some(cw) = root_cw
+        && (bare_flips || !transform::paths_equivalent(&cw.current_path, &cw.target_path))
+    {
+        probe_role_change(
+            vec![(cw.current_path.clone(), cw.branch.clone())],
+            &mut blockers,
+        );
     }
+    // The pivot's own registration: a `git worktree lock` on it, or a stale
+    // `modules/`. `relocation_blockers` never sees the pivot (it is not a
+    // Conforming worktree), so without this the one worktree whose
+    // registration is about to be dissolved was the only one never checked.
+    if bare_flips
+        && source.is_bare
+        && let Some(cw) = root_cw
+    {
+        blockers.extend(transform::preflight::pivot_registration_blockers(
+            &source.git_dir,
+            &cw.current_path,
+            cw.branch.as_deref(),
+        ));
+    }
+    let moving: Vec<(PathBuf, Option<String>)> = classified
+        .iter()
+        .filter(|cw| cw.disposition == transform::WorktreeDisposition::Conforming)
+        .filter(|cw| !transform::paths_equivalent(&cw.current_path, &cw.target_path))
+        .map(|cw| (cw.current_path.clone(), cw.branch.clone()))
+        .collect();
+    blockers.extend(transform::preflight::relocation_blockers(
+        &source.git_dir,
+        &moving,
+    ));
+
+    // Snapshot every worktree's status: the plan line reports what is carried,
+    // and `ValidateIntegrity` holds the transform to it.
+    let artifacts = transform::Artifacts::for_transform(&source, &target);
+    let snapshots = transform::status_snapshot::capture(&classified, &artifacts)?;
 
     // Build the plan
-    let mut plan = transform::build_plan(&source, &target, &classified, args.force)?;
+    let plan = transform::build_plan(&source, &target, &classified, &snapshots)?;
 
-    // The root role follows the main working tree, not the default branch. When
-    // the two differ the user is about to get a layout where the default branch
-    // has no worktree (or has an ordinary linked one) — say so rather than let
-    // them find out from `daft list`.
-    //
-    // Emitted *after* `build_plan`, which is where a transform git cannot
-    // perform is refused: announcing a move and then declaring it impossible
-    // reads as a contradiction.
-    if let Some(cw) = classified
-        .iter()
-        .find(|cw| cw.disposition == transform::WorktreeDisposition::Root)
-        && cw.branch != default_branch
-        && !transform::paths_equivalent(&cw.current_path, &cw.target_path)
-    {
-        // A bare source has no main working tree yet, so its pivot *becomes*
-        // one; a non-bare source's pivot already is one and merely relocates.
-        let moving = if source.is_bare {
-            format!(
-                "'{}' becomes the main working tree at {}",
-                cw.branch,
-                cw.target_path.display()
-            )
-        } else {
-            format!(
-                "The main working tree is on '{}' and moves to {}",
-                cw.branch,
-                cw.target_path.display()
-            )
-        };
-        let default_state = if source
-            .worktrees
-            .iter()
-            .any(|wt| wt.branch == default_branch)
-        {
-            format!("the default branch '{default_branch}' keeps its own linked worktree")
-        } else {
-            format!("the default branch '{default_branch}' has no worktree")
-        };
-        output.notice(&format!("{moving}; {default_state}"));
+    // A move across volumes is a copy — say how much, and get a yes.
+    let copy_moves = plan.cross_volume_moves();
+    let copy_bytes = (!copy_moves.is_empty()).then(|| {
+        let roots: Vec<PathBuf> = copy_moves.iter().map(|(from, _)| from.clone()).collect();
+        let jobs = crate::core::size_walk::resolve_jobs(None);
+        crate::core::size_walk::walk_all(&roots, None, jobs)
+            .into_iter()
+            .map(|b| b.unwrap_or(0))
+            .sum::<u64>()
+    });
+    let mut confirm_copy = false;
+    // A dry run copies nothing, so it has nothing to confirm: making it ask
+    // turned the one command that answers "can this repo transform?" into a
+    // refusal telling the user to pass `-y` to a dry run.
+    match transform::decide::decide_copy_confirm(
+        !copy_moves.is_empty() && !args.dry_run,
+        interactive,
+        args.yes,
+    ) {
+        transform::ConfirmDecision::Accept => {}
+        transform::ConfirmDecision::Ask => confirm_copy = true,
+        transform::ConfirmDecision::Blocked => blockers.push(transform::Blocker::repo_wide(
+            transform::BlockerKind::NeedsCopyConfirm {
+                bytes: copy_bytes.unwrap_or(0),
+                moves: copy_moves.clone(),
+            },
+        )),
     }
 
-    // Insert stash/pop ops for dirty worktrees when --force
-    if args.force {
-        let prev_dir = get_current_directory()?;
-        let mut stash_ops = Vec::new();
-        let mut pop_ops = Vec::new();
-        for cw in &classified {
-            if cw.disposition == transform::WorktreeDisposition::NonConforming {
-                continue;
-            }
-            if cw.current_path.exists() {
-                change_directory(&cw.current_path)?;
-                if git.has_uncommitted_changes()? {
-                    stash_ops.push(transform::TransformOp::StashChanges {
-                        branch: cw.branch.clone(),
-                        worktree_path: cw.current_path.clone(),
-                    });
-                    pop_ops.push(transform::TransformOp::PopStash {
-                        branch: cw.branch.clone(),
-                        worktree_path: cw.target_path.clone(),
-                    });
-                }
-            }
-        }
-        change_directory(&prev_dir)?;
+    // A destination that already exists, and a rename that would cross a
+    // filesystem boundary: both are refused by the executor too, but only
+    // after earlier operations have run. Reported here they cost nothing but
+    // a stat, and the refusal lands where nothing has moved yet.
+    blockers.extend(transform::preflight::destination_blockers(
+        &plan.new_destinations(),
+    ));
+    blockers.extend(transform::preflight::volume_blockers(&plan.plain_renames()));
 
-        // Prepend stash ops and append pop ops (before ValidateIntegrity)
-        if !stash_ops.is_empty() {
-            let validate = plan.ops.pop(); // Remove ValidateIntegrity
-            let mut new_ops = stash_ops;
-            new_ops.append(&mut plan.ops);
-            new_ops.append(&mut pop_ops);
-            if let Some(v) = validate {
-                new_ops.push(v);
-            }
-            plan.ops = new_ops;
+    // The plan line — always, before anything happens. It absorbs the #873
+    // notice: the root role follows the main working tree, so when it is on a
+    // branch other than the default, say what the default is left with.
+    output.notice(&transform::report::plan_line(
+        &source,
+        &classified,
+        &plan,
+        &target_layout.name,
+        copy_bytes,
+    ));
+
+    if !blockers.is_empty() {
+        if args.dry_run {
+            transform::print_plan(&plan, output);
         }
+        anyhow::bail!(transform::report::render_blockers(
+            &blockers,
+            &target_layout.name,
+            &source,
+            cwd.as_deref()
+        ));
     }
 
     // Dry run: print plan and exit
     if args.dry_run {
         transform::print_plan(&plan, output);
+        return Ok(());
+    }
+
+    if confirm_copy
+        && !confirm_cross_volume_copy(
+            output,
+            &copy_moves,
+            copy_bytes.unwrap_or(0),
+            &source.project_root,
+            cwd.as_deref(),
+        )?
+    {
+        output.notice("Transform cancelled; nothing was changed.");
         return Ok(());
     }
 
@@ -746,6 +982,9 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         target_git_dir: target.git_dir.clone(),
         remote: settings.remote.clone(),
         source_worktree: source.project_root.clone(),
+        default_branch: default_branch.clone(),
+        status_snapshots: snapshots,
+        artifacts,
     };
     let mut hooks_config = crate::core::settings::load_hooks_config()?;
     if args.verbose {
@@ -809,71 +1048,161 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     })
     .context("Failed to save layout to repos.json")?;
 
-    // CD to the worktree for the user's original branch (it may have moved)
-    if let Some(ref branch) = user_branch
-        && let Ok(Some(wt_path)) = git.find_worktree_for_branch(branch)
-    {
-        output.cd_path(&wt_path);
-    }
+    // The catalog keys on the git common dir and the project root; both can
+    // move under a transform (contained-classic puts `.git` inside the main
+    // working tree). Best-effort, like every other ambient registration.
+    crate::catalog::touch_current_repo();
+
+    // CD to the worktree for the user's original branch (it may have moved).
+    // When there is no branch to look up — a detached main working tree, which
+    // this command now nests rather than refusing — or the branch no longer
+    // has a worktree, the shell still has to leave: its cwd may be a directory
+    // the transform deleted, and only the parent shell can fix that. `landing`
+    // is where this process already moved to.
+    let redirect = user_branch
+        .as_ref()
+        .and_then(|branch| git.find_worktree_for_branch(branch).ok().flatten())
+        .unwrap_or(landing);
+    output.cd_path(&redirect);
 
     output.result(&format!("Transformed to layout '{}'.", target_layout.name));
 
     Ok(())
 }
 
-/// Check for uncommitted changes, ignoring layout artifacts.
-///
-/// Layout artifacts are: auto-generated .gitignore entries and worktree
-/// directories managed by the layout system (e.g., `.worktrees/` for nested).
-/// These would show up as untracked files but are not real user changes.
-fn has_real_uncommitted_changes(
-    _git: &GitCommand,
-    source: &transform::LayoutState,
+/// The two conditions a nested main working tree's directory name has to meet,
+/// whichever route it arrived by: `--as`, the `-y` default, or the prompt.
+fn check_dirname(name: &str, project_root: &Path) -> Result<(), String> {
+    crate::core::worktree::sandbox::validate_dirname(name)?;
+    let dest = project_root.join(name);
+    if dest.exists() {
+        return Err(format!("{} already exists", dest.display()));
+    }
+    Ok(())
+}
+
+// ── transform prompts ─────────────────────────────────────────────────────
+//
+// One-shot prompts, so `dialoguer` (the daft-tui boundary: ratatui is for
+// panels and live state). Esc / Ctrl-C leave through the prompt module's
+// cancel path — exit 130, nothing changed.
+
+const TRANSFORM_CANCELLED: &str = "Transform cancelled; nothing was changed.";
+
+fn prompt_theme() -> dialoguer::theme::ColorfulTheme {
+    dialoguer::theme::ColorfulTheme::default()
+}
+
+/// Ask for the directory name of a detached main working tree.
+fn prompt_dirname(
+    output: &mut dyn Output,
+    commit: &str,
+    layout_name: &str,
+    project_root: &Path,
+    default: &str,
+) -> Result<String> {
+    let short = &commit[..commit.len().min(7)];
+    output.notice(&format!(
+        "The main working tree is detached at {short}, so the '{layout_name}' layout has no \
+         branch to name its directory."
+    ));
+    let root = project_root.to_path_buf();
+    let name: String = dialoguer::Input::with_theme(&prompt_theme())
+        .with_prompt("Directory name for the detached main working tree")
+        .with_initial_text(default)
+        .validate_with(move |s: &String| check_dirname(s, &root))
+        .interact_text()
+        .unwrap_or_else(|_| crate::prompt::exit_cancelled_with(TRANSFORM_CANCELLED));
+    Ok(name)
+}
+
+/// Ask which worktree takes the repository root of a bare repository.
+fn prompt_pivot(
+    output: &mut dyn Output,
+    candidates: &[transform::PivotCandidate],
+    default_branch: &str,
+    project_root: &Path,
+    cwd: Option<&Path>,
+) -> Result<String> {
+    output.notice(&format!(
+        "The default branch '{default_branch}' has no worktree, so one of these becomes the \
+         main working tree at {}.",
+        crate::output::format::tilde_path(&project_root.to_string_lossy())
+    ));
+    let _ = cwd;
+    output.notice(&dim("j/k move · Enter select · Esc cancel"));
+    let paths: Vec<String> = candidates
+        .iter()
+        .map(|c| crate::output::format::tilde_path(&c.path.to_string_lossy()))
+        .collect();
+    let bw = candidates.iter().map(|c| c.branch.len()).max().unwrap_or(0);
+    let pw = paths.iter().map(String::len).max().unwrap_or(0);
+    let rows: Vec<String> = candidates
+        .iter()
+        .zip(paths.iter())
+        .map(|(c, p)| {
+            format!(
+                "{:<bw$}  {:<pw$}  {}",
+                c.branch,
+                p,
+                transform::report::tree_summary_or_clean(&c.counts)
+            )
+        })
+        .collect();
+    let selection = dialoguer::Select::with_theme(&prompt_theme())
+        .with_prompt("Which worktree becomes the main working tree?")
+        .items(&rows)
+        .default(0)
+        .interact_opt()
+        .unwrap_or_else(|_| crate::prompt::exit_cancelled_with(TRANSFORM_CANCELLED));
+    match selection {
+        Some(i) => Ok(candidates[i].branch.clone()),
+        None => crate::prompt::exit_cancelled_with(TRANSFORM_CANCELLED),
+    }
+}
+
+/// Confirm a copy across volumes. `Ok(false)` is an explicit "no".
+fn confirm_cross_volume_copy(
+    output: &mut dyn Output,
+    moves: &[(PathBuf, PathBuf)],
+    bytes: u64,
+    project_root: &Path,
+    cwd: Option<&Path>,
 ) -> Result<bool> {
-    let output = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()
-        .context("Failed to execute git status")?;
-
-    if !output.status.success() {
-        return Ok(false);
+    let _ = cwd;
+    let show = |p: &Path| crate::output::format::tilde_path(&p.to_string_lossy());
+    let dest = moves
+        .first()
+        .and_then(|(_, to)| to.parent())
+        .map(show)
+        .unwrap_or_else(|| "the destination".to_string());
+    output.notice(&format!(
+        "{dest} is a different volume from {}, so the worktree{} below {} copied, not renamed — \
+         interruptible, and the source is kept until the copy is verified.",
+        show(project_root),
+        if moves.len() == 1 { "" } else { "s" },
+        if moves.len() == 1 { "is" } else { "are" },
+    ));
+    let size = crate::core::copy_paths::format_bytes(bytes);
+    let question = match moves {
+        [(from, to)] => format!(
+            "Copy {} ({size}) to {}?",
+            from.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| show(from)),
+            show(to)
+        ),
+        _ => format!("Copy {} worktrees ({size}) to {dest}?", moves.len()),
+    };
+    let answer = dialoguer::Confirm::with_theme(&prompt_theme())
+        .with_prompt(question)
+        .default(false)
+        .interact_opt()
+        .unwrap_or_else(|_| crate::prompt::exit_cancelled_with(TRANSFORM_CANCELLED));
+    match answer {
+        Some(yes) => Ok(yes),
+        None => crate::prompt::exit_cancelled_with(TRANSFORM_CANCELLED),
     }
-
-    let status = String::from_utf8_lossy(&output.stdout);
-
-    // Compute layout artifact paths to ignore
-    let mut ignore_patterns: Vec<String> = Vec::new();
-    ignore_patterns.push(".gitignore".to_string());
-
-    // Worktree parent directories (e.g., .worktrees/ for nested)
-    for wt in &source.worktrees {
-        if wt.is_root {
-            continue;
-        }
-        if let Ok(rel) = wt.path.strip_prefix(&source.project_root)
-            && let Some(first) = rel.components().next()
-        {
-            let dir_name = first.as_os_str().to_string_lossy();
-            ignore_patterns.push(format!("{dir_name}/"));
-            ignore_patterns.push(dir_name.to_string());
-        }
-    }
-
-    for line in status.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        // Porcelain format: "XY path" where XY is 2-char status
-        let path = if line.len() > 3 { &line[3..] } else { line };
-
-        let is_artifact = ignore_patterns.iter().any(|p| path.starts_with(p));
-        if !is_artifact {
-            return Ok(true); // Real change found
-        }
-    }
-
-    Ok(false) // Only artifacts, no real changes
 }
 
 /// Revert layout-specific .gitignore entries that were auto-added by the source
@@ -972,137 +1301,4 @@ fn revert_layout_gitignore(
             output.step("Reverted layout-specific .gitignore entry");
         }
     }
-}
-
-/// Legacy worktree relocation (superseded by the plan-based transform engine).
-/// Kept for reference during transition; no active callers.
-#[allow(dead_code)]
-/// Skips the bare root entry, detached HEAD worktrees, and any branch in
-/// `skip_branches` (used to preserve the default branch for eject).
-fn relocate_worktrees(
-    target_layout: &Layout,
-    git: &GitCommand,
-    output: &mut dyn Output,
-    skip_branches: &[&str],
-) -> Result<()> {
-    use crate::core::multi_remote::path::build_template_context;
-    use std::path::PathBuf;
-
-    let project_root = crate::get_project_root()?;
-    let porcelain = git.worktree_list_porcelain()?;
-
-    // Parse porcelain into (path, branch) pairs, skipping bare roots and
-    // detached-HEAD sandboxes (which have no branch to relocate).
-    let worktrees: Vec<(PathBuf, String)> =
-        crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain)
-            .into_iter()
-            .filter(|e| !e.is_bare && !e.is_detached)
-            .filter_map(|e| e.branch.map(|b| (e.path, b)))
-            .collect();
-
-    let mut moved_count = 0;
-
-    // Canonicalize project root for comparison with worktree paths
-    let project_root_canonical = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.clone());
-
-    for (current_path, branch) in &worktrees {
-        if skip_branches.iter().any(|s| s == branch) {
-            continue;
-        }
-
-        // Skip the main working tree (non-bare repo root). It's not a linked
-        // worktree and cannot be moved with `git worktree move`.
-        let current_canonical = current_path
-            .canonicalize()
-            .unwrap_or_else(|_| current_path.clone());
-        if current_canonical == project_root_canonical {
-            continue;
-        }
-
-        let ctx = build_template_context(&project_root, branch);
-        let expected_path = target_layout
-            .worktree_path(&ctx)
-            .with_context(|| format!("Failed to compute path for branch '{branch}'"))?;
-
-        // Canonicalize for comparison (handles symlinks, /tmp vs /private/tmp)
-        let expected_canonical = expected_path
-            .canonicalize()
-            .unwrap_or_else(|_| expected_path.clone());
-
-        if current_canonical == expected_canonical {
-            continue; // Already in the right place
-        }
-
-        // Create parent directory for the target path
-        if let Some(parent) = expected_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory {}", parent.display()))?;
-        }
-
-        output.step(&format!(
-            "Moving '{}': {} -> {}",
-            branch,
-            current_path.display(),
-            expected_path.display()
-        ));
-
-        git.worktree_move(current_path, &expected_path)
-            .with_context(|| {
-                format!(
-                    "Failed to move worktree '{}' from {} to {}",
-                    branch,
-                    current_path.display(),
-                    expected_path.display()
-                )
-            })?;
-
-        moved_count += 1;
-
-        // Clean up empty parent directories left behind
-        if let Some(parent) = current_path.parent() {
-            let _ = cleanup_empty_parents(parent, &project_root);
-        }
-    }
-
-    if moved_count > 0 {
-        output.step(&format!(
-            "Relocated {} worktree{}",
-            moved_count,
-            if moved_count == 1 { "" } else { "s" }
-        ));
-    }
-
-    Ok(())
-}
-
-/// Legacy public entry point — no active callers.
-#[allow(dead_code)]
-pub fn relocate_worktrees_public(
-    target_layout: &Layout,
-    git: &GitCommand,
-    output: &mut dyn Output,
-) -> Result<()> {
-    relocate_worktrees(target_layout, git, output, &[])
-}
-
-/// Remove empty parent directories up to (but not including) the stop directory.
-fn cleanup_empty_parents(mut dir: &std::path::Path, stop: &std::path::Path) -> Result<()> {
-    while dir != stop {
-        if dir
-            .read_dir()
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(false)
-        {
-            std::fs::remove_dir(dir)?;
-        } else {
-            break;
-        }
-        match dir.parent() {
-            Some(parent) => dir = parent,
-            None => break,
-        }
-    }
-    Ok(())
 }

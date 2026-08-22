@@ -196,6 +196,18 @@ pub(crate) fn exit_for_cancelled_prompt() -> ! {
     std::process::exit(130);
 }
 
+/// Cancel-exit for a prompt that was dismissed (Esc, or an interrupt the
+/// prompt library surfaced): print `msg` and exit 130 through the same path
+/// a signalled prompt takes, so the termios restore and exit code stay in
+/// one place.
+pub(crate) fn exit_cancelled_with(msg: &str) -> ! {
+    if let Ok(mut m) = PROMPT_CANCEL_MSG.lock() {
+        *m = Some(msg.to_string());
+    }
+    PROMPT_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+    exit_for_cancelled_prompt()
+}
+
 /// For process-global ctrlc handlers owned by commands (sync): if an
 /// interactive prompt is currently reading the terminal, print its
 /// cancel message and exit 130 — never returns in that case. The

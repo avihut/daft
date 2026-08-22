@@ -1,0 +1,107 @@
+name:
+  A bare repo with no default-branch worktree and several candidates needs
+  --pivot
+description: >
+  The mirror of #859 when the choice is not decidable: with the default branch
+  unworktreed and more than one worktree that could take the repository root,
+  daft will not guess (not from the cwd, not from -y). Non-interactively it
+  refuses before touching anything and names the flag that answers the question;
+  with `--pivot <branch>` the chosen worktree becomes the main working tree,
+  carrying its working tree state (#875).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone contained and add two feature worktrees
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      git-worktree-checkout develop
+      git-worktree-checkout -b task/local-docker
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+        - "$WORK_DIR/test-repo/task/local-docker"
+
+  - name: Drop the default branch's worktree with plain git, dirty the others
+    run: |
+      set -euo pipefail
+      git -C $WORK_DIR/test-repo worktree remove $WORK_DIR/test-repo/main
+      echo "local change" >> $WORK_DIR/test-repo/task/local-docker/README.md
+      echo staged > $WORK_DIR/test-repo/task/local-docker/staged.txt
+      git -C $WORK_DIR/test-repo/task/local-docker add staged.txt
+      echo scratch > $WORK_DIR/test-repo/task/local-docker/NOTES.md
+      echo dev > $WORK_DIR/test-repo/develop/dev.txt
+      git -C $WORK_DIR/test-repo/task/local-docker status --porcelain > $BASE_DIR/pivot-before.txt
+      git -C $WORK_DIR/test-repo/develop status --porcelain > $BASE_DIR/develop-before.txt
+    expect:
+      exit_code: 0
+
+  - name:
+      Transform to sibling is refused, naming --pivot and listing the candidates
+    run: NO_COLOR=1 daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo/task/local-docker"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "'main' has no worktree"
+        - "--pivot <branch>"
+        - "develop"
+        - "task/local-docker"
+        - "1 modified, 1 staged, 1 untracked"
+
+  - name: -y does not pick a pivot either
+    run: NO_COLOR=1 daft layout transform sibling -y 2>&1
+    cwd: "$WORK_DIR/test-repo/task/local-docker"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--pivot <branch>"
+
+  - name: Nothing moved
+    run: git -C $WORK_DIR/test-repo config --get core.bare
+    expect:
+      exit_code: 0
+      output_contains:
+        - "true"
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/README.md"
+        - "$WORK_DIR/test-repo/task/local-docker/README.md"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/.git/index"
+
+  - name: --pivot names the worktree that takes the root
+    run: NO_COLOR=1 daft layout transform sibling --pivot task/local-docker 2>&1
+    cwd: "$WORK_DIR/test-repo/task/local-docker"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "'task/local-docker' becomes the main working tree"
+        - "1 modified, 1 staged, 1 untracked carried along"
+        - "'main': no worktree"
+        - "Transformed"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: task/local-docker
+        - dir: "$WORK_DIR/test-repo.develop"
+          branch: develop
+
+  - name: Both worktrees carried their state
+    run: |
+      set -euo pipefail
+      git -C $WORK_DIR/test-repo status --porcelain > $BASE_DIR/pivot-after.txt
+      diff $BASE_DIR/pivot-before.txt $BASE_DIR/pivot-after.txt
+      git -C $WORK_DIR/test-repo.develop status --porcelain > $BASE_DIR/develop-after.txt
+      diff $BASE_DIR/develop-before.txt $BASE_DIR/develop-after.txt
+      test "$(git -C $WORK_DIR/test-repo config --get core.bare)" = false
+      test -z "$(git -C $WORK_DIR/test-repo stash list)"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/.git/index"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/.git/refs/stash"
+        - "$WORK_DIR/test-repo/.git/logs/refs/stash"

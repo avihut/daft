@@ -1,0 +1,107 @@
+name: Two blockers in one transform are both reported in one pass
+description: >
+  #875: a role-changing worktree mid-rebase and a locked worktree that has to
+  move are independent blockers. The refusal must name BOTH in a single run —
+  not the first one, then the second on the retry — with each condition, its
+  path, both settle commands, and one retry line. --dry-run reports the same set
+  and still prints the plan. Settling both makes the printed retry true.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Plain clone on a task branch with a linked worktree beside it
+    run: |
+      set -euo pipefail
+      git clone -q $REMOTE_TEST_REPO test-repo
+      cd $WORK_DIR/test-repo
+      git switch -q -c task/local-docker
+      git worktree add -q $WORK_DIR/test-repo.develop develop
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo.develop"
+
+  - name: Blocker one — a rebase paused in the worktree that changes role
+    # Manufactured the way git writes it (the rebase-merge backend), so the
+    # test does not depend on which backend a real conflict picks.
+    run: |
+      set -euo pipefail
+      GD=$(git -C $WORK_DIR/test-repo rev-parse --absolute-git-dir)
+      mkdir -p "$GD/rebase-merge"
+      echo "refs/heads/task/local-docker" > "$GD/rebase-merge/head-name"
+      echo 3 > "$GD/rebase-merge/msgnum"
+      echo 7 > "$GD/rebase-merge/end"
+      git -C $WORK_DIR/test-repo rev-parse HEAD > "$GD/rebase-merge/onto"
+    expect:
+      exit_code: 0
+
+  - name: Blocker two — the worktree that has to move is locked
+    run:
+      git -C $WORK_DIR/test-repo worktree lock $WORK_DIR/test-repo.develop
+      --reason "field test"
+    expect:
+      exit_code: 0
+
+  - name: Dry-run lists both blockers and still prints the plan
+    run: NO_COLOR=1 daft layout transform contained --dry-run 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "2 conditions to settle first"
+        - "has a rebase in progress"
+        - ".git/rebase-merge, 3 of 7 applied"
+        - 'is locked ("field test")'
+        - "Transform plan"
+        - "main working tree on 'task/local-docker'"
+
+  - name: The real run refuses, naming both conditions and both settle commands
+    run: NO_COLOR=1 daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "$WORK_DIR/test-repo has a rebase in progress"
+        - "rebase --continue"
+        - "rebase --abort"
+        - "$WORK_DIR/test-repo.develop is locked"
+        - "worktree unlock"
+        - "then: daft layout transform contained"
+
+  - name: Nothing moved
+    run: git -C $WORK_DIR/test-repo config --get core.bare
+    expect:
+      exit_code: 0
+      output_contains:
+        - "false"
+      files_exist:
+        - "$WORK_DIR/test-repo/.git/index"
+        - "$WORK_DIR/test-repo/README.md"
+        - "$WORK_DIR/test-repo.develop/README.md"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/task/local-docker"
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Settling both blockers makes the retry line true
+    run: |
+      set -euo pipefail
+      git -C $WORK_DIR/test-repo worktree unlock $WORK_DIR/test-repo.develop
+      GD=$(git -C $WORK_DIR/test-repo rev-parse --absolute-git-dir)
+      rm -rf "$GD/rebase-merge"
+    expect:
+      exit_code: 0
+
+  - name: The retry the refusal printed succeeds
+    run: NO_COLOR=1 daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Transformed"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/task/local-docker"
+          branch: task/local-docker
+        - dir: "$WORK_DIR/test-repo/develop"
+          branch: develop

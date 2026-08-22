@@ -33,7 +33,7 @@ steps:
       exit_code: 0
       output_contains:
         - "'task/local-docker' becomes the main working tree"
-        - "default branch 'main' has no worktree"
+        - "'main': no worktree"
         - "Transformed"
 
   - name: The sole worktree became the repository root
