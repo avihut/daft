@@ -50,5 +50,5 @@ cargo:h2@0.4.18
 # third-party releases, which does not apply to our own (mirrors the
 # minimumReleaseAgeExcludes entries in bunfig.toml / docs/bunfig.toml). One
 # line per pinned version: every bump re-adds the new versions the day they cut.
-npm:@dumbshow/core@0.3.0
-npm:@dumbshow/vue@0.3.0
+npm:@dumbshow/core@0.4.1
+npm:@dumbshow/vue@0.4.1

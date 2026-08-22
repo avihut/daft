@@ -15,7 +15,7 @@ function worldAfter(
 ): World {
   return derive(
     {
-      ...emptyDoc(),
+      ...emptyDoc(DAFT_PACK),
       timeline: ops.map((o) => ({
         kind: "op" as const,
         op: o.op,

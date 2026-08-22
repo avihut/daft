@@ -17,6 +17,17 @@ import {
 
 const DRAFT_KEY = `daft-composer-draft-v${DOC_VERSION}`;
 
+/**
+ * The document model reads a document's seed and placements through the
+ * pack that owns them (format v2). This spec tests generic editor
+ * mechanics, so it passes an identity schema — the roundtrip is about the
+ * envelope, not daft's JSON.
+ */
+const RAW_SCHEMA = {
+  seed: { empty: () => null, parse: (raw: unknown) => raw },
+  placements: { empty: () => null, parse: (raw: unknown) => raw },
+};
+
 test("CMP-A1 empty state offers nothing that needs a document", async ({
   page,
 }) => {
@@ -78,7 +89,7 @@ test("CMP-A3 save downloads the document and parseDoc roundtrips it", async ({
   expect(raw.version).toBe(DOC_VERSION);
   expect(raw.timeline).toHaveLength(1);
   // The serializer and parser agree byte for byte.
-  expect(serializeDoc(parseDoc(text))).toBe(text);
+  expect(serializeDoc(parseDoc(text, RAW_SCHEMA))).toBe(text);
 });
 
 test("CMP-A4 open validates and never clobbers the current document", async ({

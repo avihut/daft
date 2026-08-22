@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { derive, emptyDoc } from "@dumbshow/core";
 import { dropElement } from "../../.vitepress/theme/graph/composer/elements";
 import { DAFT_PACK } from "../../.vitepress/theme/graph/pack";
-import { addSeedRepo, addSeedWt } from "../../.vitepress/theme/graph/seed";
+import {
+  addSeedRepo,
+  addSeedWt,
+  placementsOf,
+} from "../../.vitepress/theme/graph/seed";
 
 /**
  * CMP-D5 (module half) — dropElement branches the pointer specs cannot
@@ -16,7 +20,7 @@ function wtHit(repo: string, wt: string) {
 
 describe("CMP-D5 element-drop semantics", () => {
   test("agent on a timeline-born worktree points at the event", () => {
-    let doc = emptyDoc();
+    let doc = emptyDoc(DAFT_PACK);
     doc = addSeedRepo(doc, { name: "web", wts: [{ branch: "main" }] });
     doc = {
       ...doc,
@@ -37,7 +41,7 @@ describe("CMP-D5 element-drop semantics", () => {
   });
 
   test("agent on main is refused", () => {
-    let doc = emptyDoc();
+    let doc = emptyDoc(DAFT_PACK);
     doc = addSeedRepo(doc, { name: "web", wts: [{ branch: "main" }] });
     const world = derive(doc, DAFT_PACK).world;
     const out = dropElement(doc, world, "agent", 0, 0, wtHit("web", "main"));
@@ -48,7 +52,7 @@ describe("CMP-D5 element-drop semantics", () => {
 
   test("worktree on a timeline-created repo defers to daft start", () => {
     const doc = {
-      ...emptyDoc(),
+      ...emptyDoc(DAFT_PACK),
       timeline: [{ kind: "op" as const, op: "clone", args: { name: "web" } }],
     };
     const world = derive(doc, DAFT_PACK).world;
@@ -65,7 +69,7 @@ describe("CMP-D5 element-drop semantics", () => {
   });
 
   test("the relation chip explains the repo-onto-repo gesture", () => {
-    const doc = emptyDoc();
+    const doc = emptyDoc(DAFT_PACK);
     const out = dropElement(
       doc,
       derive(doc, DAFT_PACK).world,
@@ -80,7 +84,7 @@ describe("CMP-D5 element-drop semantics", () => {
   });
 
   test("a seed worktree drop pins the polar slot under the pointer", () => {
-    let doc = emptyDoc();
+    let doc = emptyDoc(DAFT_PACK);
     doc = addSeedRepo(doc, { name: "web", wts: [{ branch: "main" }] });
     doc = addSeedWt(doc, "web", { branch: "checkout" });
     const world = derive(doc, DAFT_PACK).world;
@@ -93,11 +97,10 @@ describe("CMP-D5 element-drop semantics", () => {
       r: 21,
     });
     if ("error" in out) throw new Error(out.error);
-    const key = Object.keys(out.doc.placements.wts).find((k) =>
-      k.startsWith("web:"),
-    );
+    const wts = placementsOf(out.doc).wts;
+    const key = Object.keys(wts).find((k) => k.startsWith("web:"));
     expect(key).toBeDefined();
-    const slot = out.doc.placements.wts[key as string];
+    const slot = wts[key as string];
     expect(slot.dist).toBe(90);
     expect(slot.ang).toBeCloseTo(-Math.PI / 2, 2);
   });

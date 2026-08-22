@@ -147,7 +147,10 @@ the build used the new one.
 ## Color law
 
 Five colors carry meaning; everything else is neutral ink/paper drawn from the
-live theme tokens (`--vp-c-text-*`, `--vp-c-bg-soft`, `--daft-gold`):
+live theme tokens (`--vp-c-text-*`, `--vp-c-bg-soft`, `--daft-gold`). The editor
+chrome on `/composer` reads only dumbshow's `--dx-*` tokens (with neutral
+defaults); `theme/custom.css` maps those onto the same daft palette in one
+`:root` block, so the chrome and the canvas agree in both themes:
 
 - **Gold** — wayfinding and attention: `main`, creation/merge pulses, feature
   arcs, the `daft` verb in the shell.
@@ -288,8 +291,18 @@ CLAUDE.md before touching editor behavior. What is daft's, here in `composer/`:
   `embedSnippet`.
 - **`seed.ts`'s rename law** — `renameEntity` rewrites a name in seed, args,
   composite `repo:branch` targets, and placement keys up to the first `rename`
-  op; callers freeze current geometry first (`scenePlacements` plus the
-  package's `freezePlacements`) or hash-derived positions teleport.
+  op; callers freeze current geometry first (`scenePlacements` plus the pack's
+  `freezePlacements`, both in `seed.ts`) or hash-derived positions teleport.
+- **The seed and the placements are daft's JSON** (document format v2):
+  `seed.ts` declares their schemas (`Seed`/`SeedRepo`/`SeedWt`, `Placements`
+  keyed by repo name and `"repo:branch"`), validates them
+  (`parseSeed`/`parsePlacements` — a throw becomes the document's own parse
+  failure), and owns every write to them (`setRepoPlacement`, `setWtPlacement`,
+  `freezePlacements`, the seed mutations). The package stores and migrates both
+  halves unread and carries them across document versions verbatim, so a schema
+  change here is versioned inside this JSON — never by bumping the document
+  version. `seedOpeningStep` returns null when the seed declares nothing;
+  relations alone still open the scene.
 - **Placements are polar and freeze in families** (pack geometry law): repos pin
   as world `{x,y}`; worktrees pin as `{ang,dist}` around their repo — edge bend,
   label side, badge side, growth, and the sync ping all read the polar form.

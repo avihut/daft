@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import {
-  type ComposerDoc,
-  type EditorSelection,
-  freezePlacements,
-  type ItemSelection,
-  type VerbArgs,
-  type VocabLang,
+import type {
+  ComposerDoc,
+  EditorSelection,
+  ItemSelection,
+  VerbArgs,
+  VocabLang,
 } from "@dumbshow/core";
 import { AttributesForm } from "@dumbshow/vue";
 import type { Compiled } from "../pack";
 import {
+  freezePlacements,
   removeSeedRepo,
   removeSeedWt,
   renameEntity,

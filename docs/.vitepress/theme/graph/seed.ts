@@ -3,13 +3,17 @@
  *
  * A composer document's seed declares what exists before the story runs
  * (repos, worktrees, relations) and its placements pin author-dragged
- * geometry. Both are document JSON whose schema this language defined, so
- * reading them is pack work: building the pre-story world, drawing the
- * opening scene step, and replaying compiled events into the placement
- * shapes an author's drag would freeze. The generic editor reaches these
- * through the seed/placements hooks on DAFT_PACK (language.ts), never by
- * importing this module. Type imports go the other way on purpose: packs
- * implement against the editor's document shapes (./composer/doc.ts).
+ * geometry. Under document format v2 both are PACK-OWNED JSON: the schemas
+ * below are daft's. The generic side stores, serializes, and migrates them
+ * without reading their shape — they cross document-version bumps verbatim,
+ * so a change to these schemas is versioned inside this JSON, never by the
+ * document version — and hands them back through the seed/placements hooks
+ * on DAFT_PACK (language.ts): validating them, building the pre-story
+ * world, drawing the opening scene step, replaying compiled events into the
+ * placement shapes an author's drag would freeze, and writing pins back as
+ * whole values (core offers no key-level helper for JSON it cannot read).
+ * The generic editor never imports this module; packs implement against the
+ * editor's document shapes (@dumbshow/core).
  */
 
 import type {
@@ -17,14 +21,8 @@ import type {
   Compiled as CompiledOf,
   ComposerDoc,
   DocItem,
-  Placements,
-  RepoPlacement,
-  Seed,
-  SeedRepo,
-  SeedWt,
   StepDef as StepDefOf,
   VerbArgs,
-  WtPlacement,
 } from "@dumbshow/core";
 import { type Act, applyAct, createScene } from "./render";
 import {
@@ -38,6 +36,153 @@ import {
 type Beat = BeatOf<Act>;
 type StepDef = StepDefOf<Act>;
 type Compiled = CompiledOf<Act>;
+
+/* ------------------------------ the schemas ------------------------------ */
+
+/** Explicit world-space repo position, written when the author drags. */
+export interface RepoPlacement {
+  x: number;
+  y: number;
+}
+
+/** Explicit polar worktree placement around its repo. */
+export interface WtPlacement {
+  ang: number;
+  dist: number;
+}
+
+/**
+ * Author-pinned geometry. Worktree keys are `"repo:branch"`. Anything not
+ * listed keeps its deterministic hash-derived position.
+ */
+export interface Placements {
+  repos: Record<string, RepoPlacement>;
+  wts: Record<string, WtPlacement>;
+}
+
+export interface SeedWt {
+  branch: string;
+  port?: string;
+  agent?: boolean;
+  merged?: boolean;
+}
+
+export interface SeedRepo {
+  name: string;
+  wts: SeedWt[];
+}
+
+/** The world as the story opens — rendered as scene, never as commands. */
+export interface Seed {
+  repos: SeedRepo[];
+  rels: [string, string][];
+}
+
+/** What `emptyDoc(DAFT_PACK)` writes. */
+export function emptySeed(): Seed {
+  return { repos: [], rels: [] };
+}
+
+export function emptyPlacements(): Placements {
+  return { repos: {}, wts: {} };
+}
+
+/**
+ * A document's two pack-owned halves, read as daft's schemas. Every
+ * document the editor holds came through `emptyDoc`/`parseDoc` with this
+ * pack, so the shape is guaranteed; these are the one place the cast lives.
+ */
+export function seedOf(doc: ComposerDoc): Seed {
+  return doc.seed as Seed;
+}
+
+export function placementsOf(doc: ComposerDoc): Placements {
+  return doc.placements as Placements;
+}
+
+/* ------------------------------- validation ------------------------------ */
+
+/**
+ * Reject one document's JSON. The document model prefixes the message with
+ * the half it came from (`Not a composer document: seed — …`).
+ */
+function bad(msg: string): never {
+  throw new Error(msg);
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function isName(v: unknown): v is string {
+  return typeof v === "string" && v.trim().length > 0;
+}
+
+function isFinite2(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+/** Validate a document's seed JSON; throws naming what is wrong. */
+export function parseSeed(raw: unknown): Seed {
+  if (!isRecord(raw)) bad("the seed is not an object");
+  const repos: SeedRepo[] = [];
+  if (!Array.isArray(raw.repos)) bad("seed.repos is not a list");
+  for (const r of raw.repos as unknown[]) {
+    if (!isRecord(r) || !isName(r.name)) bad("a seed repo has no name");
+    if (!Array.isArray(r.wts)) bad(`seed repo ${r.name} has no worktrees`);
+    const wts: SeedWt[] = [];
+    for (const w of r.wts as unknown[]) {
+      if (!isRecord(w) || !isName(w.branch))
+        bad(`a worktree in ${r.name} has no branch`);
+      wts.push({
+        branch: w.branch,
+        ...(isName(w.port) ? { port: w.port } : {}),
+        ...(w.agent === true ? { agent: true } : {}),
+        ...(w.merged === true ? { merged: true } : {}),
+      });
+    }
+    repos.push({ name: r.name, wts });
+  }
+  const rels: [string, string][] = [];
+  if (!Array.isArray(raw.rels)) bad("seed.rels is not a list");
+  for (const rel of raw.rels as unknown[]) {
+    if (
+      !Array.isArray(rel) ||
+      rel.length !== 2 ||
+      !isName(rel[0]) ||
+      !isName(rel[1])
+    )
+      bad("a relation is not a [repo, repo] pair");
+    rels.push([rel[0], rel[1]]);
+  }
+  return { repos, rels };
+}
+
+/** Validate a document's placements JSON; throws naming what is wrong. */
+export function parsePlacements(raw: unknown): Placements {
+  if (!isRecord(raw)) bad("placements is not an object");
+  const repos: Record<string, RepoPlacement> = {};
+  if (raw.repos !== undefined) {
+    if (!isRecord(raw.repos)) bad("placements.repos is not an object");
+    for (const [name, p] of Object.entries(raw.repos)) {
+      if (!isRecord(p) || !isFinite2(p.x) || !isFinite2(p.y))
+        bad(`the placement for repo ${name} is malformed`);
+      repos[name] = { x: p.x, y: p.y };
+    }
+  }
+  const wts: Record<string, WtPlacement> = {};
+  if (raw.wts !== undefined) {
+    if (!isRecord(raw.wts)) bad("placements.wts is not an object");
+    for (const [key, p] of Object.entries(raw.wts)) {
+      if (!isRecord(p) || !isFinite2(p.ang) || !isFinite2(p.dist))
+        bad(`the placement for worktree ${key} is malformed`);
+      wts[key] = { ang: p.ang, dist: p.dist };
+    }
+  }
+  return { repos, wts };
+}
+
+/* ------------------------------ seed → scene ----------------------------- */
 
 export function worldFromSeed(seed: Seed, placements: Placements): World {
   const world = emptyWorld();
@@ -60,8 +205,17 @@ export function worldFromSeed(seed: Seed, placements: Placements): World {
   return world;
 }
 
-/** The opening scene: everything the seed declares, drawn without a shell. */
-export function seedOpeningStep(world: World, placements: Placements): StepDef {
+/**
+ * The opening scene: everything the seed declares, drawn without a shell —
+ * or null when it declares nothing, so the story opens on its first
+ * timeline step. Relations alone still open the scene: a relation between
+ * repos the timeline creates later renders once both ends exist.
+ */
+export function seedOpeningStep(
+  world: World,
+  placements: Placements,
+): StepDef | null {
+  if (!world.repos.length && !world.rels.length) return null;
   const beats: Beat[] = [];
   for (const repo of world.repos) {
     beats.push({
@@ -105,26 +259,82 @@ export function scenePlacements(compiled: Compiled): Placements {
   return { repos, wts };
 }
 
-/* ----------------------------- seed mutations ----------------------------- */
+/* ------------------------------- placements ------------------------------ */
+
+/*
+ * Placement writes are pure (document in, document out) and whole-value:
+ * the clone is the next document, and its placements are rewritten in
+ * place before it leaves — the same thing `setPlacements` does, spelled
+ * where the schema is known.
+ */
 
 function clone(doc: ComposerDoc): ComposerDoc {
   return structuredClone(doc);
 }
 
-export function addSeedRepo(doc: ComposerDoc, repo: SeedRepo): ComposerDoc {
-  if (doc.seed.repos.some((r) => r.name === repo.name)) return doc;
+/** Pin a repo at a world position; `null` unpins it. */
+export function setRepoPlacement(
+  doc: ComposerDoc,
+  name: string,
+  p: RepoPlacement | null,
+): ComposerDoc {
   const next = clone(doc);
-  next.seed.repos.push(structuredClone(repo));
+  const repos = placementsOf(next).repos;
+  if (p) repos[name] = { x: p.x, y: p.y };
+  else delete repos[name];
+  return next;
+}
+
+/** Pin a worktree's polar slot (key `"repo:branch"`); `null` unpins it. */
+export function setWtPlacement(
+  doc: ComposerDoc,
+  key: string,
+  p: WtPlacement | null,
+): ComposerDoc {
+  const next = clone(doc);
+  const wts = placementsOf(next).wts;
+  if (p) wts[key] = { ang: p.ang, dist: p.dist };
+  else delete wts[key];
+  return next;
+}
+
+/**
+ * Pin currently-derived geometry into the document without overriding pins
+ * the author already made (existing entries win). Used before mutations
+ * that would otherwise shuffle hash-derived positions — renames, sibling
+ * inserts — so the scene the author sees is the scene that persists.
+ */
+export function freezePlacements(
+  doc: ComposerDoc,
+  derived: Placements,
+): ComposerDoc {
+  const next = clone(doc);
+  const cur = placementsOf(next);
+  for (const [name, p] of Object.entries(derived.repos))
+    if (!cur.repos[name]) cur.repos[name] = { ...p };
+  for (const [key, p] of Object.entries(derived.wts))
+    if (!cur.wts[key]) cur.wts[key] = { ...p };
+  return next;
+}
+
+/* ----------------------------- seed mutations ----------------------------- */
+
+export function addSeedRepo(doc: ComposerDoc, repo: SeedRepo): ComposerDoc {
+  if (seedOf(doc).repos.some((r) => r.name === repo.name)) return doc;
+  const next = clone(doc);
+  seedOf(next).repos.push(structuredClone(repo));
   return next;
 }
 
 export function removeSeedRepo(doc: ComposerDoc, name: string): ComposerDoc {
   const next = clone(doc);
-  next.seed.repos = next.seed.repos.filter((r) => r.name !== name);
-  next.seed.rels = next.seed.rels.filter(([a, b]) => a !== name && b !== name);
-  delete next.placements.repos[name];
-  for (const key of Object.keys(next.placements.wts))
-    if (key.startsWith(`${name}:`)) delete next.placements.wts[key];
+  const seed = seedOf(next);
+  const placements = placementsOf(next);
+  seed.repos = seed.repos.filter((r) => r.name !== name);
+  seed.rels = seed.rels.filter(([a, b]) => a !== name && b !== name);
+  delete placements.repos[name];
+  for (const key of Object.keys(placements.wts))
+    if (key.startsWith(`${name}:`)) delete placements.wts[key];
   return next;
 }
 
@@ -133,11 +343,11 @@ export function addSeedWt(
   repoName: string,
   wt: SeedWt,
 ): ComposerDoc {
-  const repo = doc.seed.repos.find((r) => r.name === repoName);
+  const repo = seedOf(doc).repos.find((r) => r.name === repoName);
   if (!repo || repo.wts.some((w) => w.branch === wt.branch)) return doc;
   const next = clone(doc);
-  next.seed.repos
-    .find((r) => r.name === repoName)
+  seedOf(next)
+    .repos.find((r) => r.name === repoName)
     ?.wts.push(structuredClone(wt));
   return next;
 }
@@ -148,10 +358,10 @@ export function removeSeedWt(
   branch: string,
 ): ComposerDoc {
   const next = clone(doc);
-  const repo = next.seed.repos.find((r) => r.name === repoName);
+  const repo = seedOf(next).repos.find((r) => r.name === repoName);
   if (!repo) return doc;
   repo.wts = repo.wts.filter((w) => w.branch !== branch);
-  delete next.placements.wts[`${repoName}:${branch}`];
+  delete placementsOf(next).wts[`${repoName}:${branch}`];
   return next;
 }
 
@@ -162,8 +372,8 @@ export function updateSeedWt(
   patch: Partial<Omit<SeedWt, "branch">>,
 ): ComposerDoc {
   const next = clone(doc);
-  const wt = next.seed.repos
-    .find((r) => r.name === repoName)
+  const wt = seedOf(next)
+    .repos.find((r) => r.name === repoName)
     ?.wts.find((w) => w.branch === branch);
   if (!wt) return doc;
   Object.assign(wt, patch);
@@ -176,14 +386,15 @@ export function setSeedRel(
   b: string,
   on: boolean,
 ): ComposerDoc {
-  const has = doc.seed.rels.some(
+  const has = seedOf(doc).rels.some(
     ([x, y]) => (x === a && y === b) || (x === b && y === a),
   );
   if (has === on) return doc;
   const next = clone(doc);
-  if (on) next.seed.rels.push([a, b]);
+  const seed = seedOf(next);
+  if (on) seed.rels.push([a, b]);
   else
-    next.seed.rels = next.seed.rels.filter(
+    seed.rels = seed.rels.filter(
       ([x, y]) => !((x === a && y === b) || (x === b && y === a)),
     );
   return next;
@@ -241,28 +452,30 @@ export function renameEntity(
 ): ComposerDoc {
   if (!to.trim() || from === to) return doc;
   const next = clone(doc);
+  const seed = seedOf(next);
+  const placements = placementsOf(next);
 
   if (kind === "repo") {
-    for (const repo of next.seed.repos) if (repo.name === from) repo.name = to;
-    next.seed.rels = next.seed.rels.map(([a, b]) => [
+    for (const repo of seed.repos) if (repo.name === from) repo.name = to;
+    seed.rels = seed.rels.map(([a, b]) => [
       a === from ? to : a,
       b === from ? to : b,
     ]);
-    const rp = next.placements.repos[from];
+    const rp = placements.repos[from];
     if (rp) {
-      delete next.placements.repos[from];
-      next.placements.repos[to] = rp;
+      delete placements.repos[from];
+      placements.repos[to] = rp;
     }
   } else {
-    for (const repo of next.seed.repos)
+    for (const repo of seed.repos)
       for (const wt of repo.wts) if (wt.branch === from) wt.branch = to;
   }
 
-  for (const [key, p] of Object.entries(next.placements.wts)) {
+  for (const [key, p] of Object.entries(placements.wts)) {
     const renamed = renameValue(key, kind, from, to) as string;
     if (renamed !== key) {
-      delete next.placements.wts[key];
-      next.placements.wts[renamed] = p;
+      delete placements.wts[key];
+      placements.wts[renamed] = p;
     }
   }
 

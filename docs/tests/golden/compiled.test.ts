@@ -73,7 +73,7 @@ test("catalog demos compile to their recorded digests", () => {
 });
 
 test("a mutated composer document derives to its recorded shape", () => {
-  let doc = emptyDoc();
+  let doc = emptyDoc(DAFT_PACK);
   doc = insertItem(doc, 0, { kind: "op", op: "clone", args: { name: "web" } });
   doc = insertItem(doc, 1, {
     kind: "op",

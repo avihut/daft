@@ -19,10 +19,8 @@ import type {
   Beat as BeatOf,
   Compiled as CompiledOf,
   DiagramLanguage,
-  Placements,
   Player as PlayerOf,
   SceneEvent as SceneEventOf,
-  Seed,
   StepDef as StepDefOf,
 } from "@dumbshow/core";
 import {
@@ -47,7 +45,17 @@ import {
   readPalette,
   type Scene,
 } from "./render";
-import { scenePlacements, seedOpeningStep, worldFromSeed } from "./seed";
+import {
+  emptyPlacements,
+  emptySeed,
+  type Placements,
+  parsePlacements,
+  parseSeed,
+  type Seed,
+  scenePlacements,
+  seedOpeningStep,
+  worldFromSeed,
+} from "./seed";
 import { parseCommand } from "./shell";
 import {
   camFor,
@@ -71,13 +79,21 @@ export const DAFT_PACK: DiagramLanguage<World, Act, Scene, StepDef> = {
   ops: OPS,
   emptyWorld,
   scene: { createScene, applyAct, drawScene, camFor, readPalette, pick },
+  // Document format v2: the seed and the placements are this pack's own
+  // JSON (seed.ts declares the schemas). The generic side stores and
+  // migrates them unread and hands them back here to validate, open, and
+  // pin.
   seed: {
+    empty: emptySeed,
+    parse: parseSeed,
     world: (seed, placements) =>
       worldFromSeed(seed as Seed, placements as Placements),
     step: (world, placements) =>
       seedOpeningStep(world, placements as Placements),
   },
   placements: {
+    empty: emptyPlacements,
+    parse: parsePlacements,
     patchStep: (step, placements) =>
       patchWtPlacements(step.beats, (placements as Placements).wts),
     fromCompiled: (compiled) => scenePlacements(compiled as Compiled),

@@ -9,7 +9,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@dumbshow/core": "0.3.0",
-    "@dumbshow/vue": "0.3.0"
+    "@dumbshow/core": "0.4.1",
+    "@dumbshow/vue": "0.4.1"
   }
 }

@@ -9,20 +9,21 @@
  * explains the verb or event that owns that meaning instead.
  */
 
-import {
-  type Compiled as CompiledOf,
-  type ComposerDoc,
-  type ElementSpec,
-  freezePlacements,
-  setRepoPlacement,
-  setWtPlacement,
+import type {
+  Compiled as CompiledOf,
+  ComposerDoc,
+  ElementSpec,
 } from "@dumbshow/core";
 import type { Act, Hit } from "../render";
 import {
   addSeedRepo,
   addSeedWt,
+  freezePlacements,
   scenePlacements,
+  seedOf,
+  setRepoPlacement,
   setSeedRel,
+  setWtPlacement,
   updateSeedWt,
 } from "../seed";
 import { nextBranch, nextRepoName, type World } from "../verbs";
@@ -65,7 +66,7 @@ export type EntitySelection =
 
 /** Does the seed (not the timeline) own this relation? */
 export function isSeedRel(doc: ComposerDoc, a: string, b: string): boolean {
-  return doc.seed.rels.some(
+  return seedOf(doc).rels.some(
     ([x, y]) => (x === a && y === b) || (x === b && y === a),
   );
 }
@@ -172,13 +173,13 @@ export type ElementDrop =
   | { error: string };
 
 function isSeedRepo(doc: ComposerDoc, name: string): boolean {
-  return doc.seed.repos.some((r) => r.name === name);
+  return seedOf(doc).repos.some((r) => r.name === name);
 }
 
 function isSeedWt(doc: ComposerDoc, repo: string, branch: string): boolean {
   return (
-    doc.seed.repos
-      .find((r) => r.name === repo)
+    seedOf(doc)
+      .repos.find((r) => r.name === repo)
       ?.wts.some((w) => w.branch === branch) === true
   );
 }
