@@ -5,17 +5,9 @@
 //! sequenced via path-conflict analysis and executed with rollback support.
 
 pub mod execute;
-pub mod legacy;
 pub mod plan;
 pub mod print;
 pub mod state;
-
-// Re-export legacy items that are still used by adopt/eject and other callers
-pub use legacy::{
-    CollapseBareParams, CollapseBareResult, ConvertToBareParams, ConvertToBareResult,
-    ConvertToNonBareParams, ConvertToNonBareResult, WorktreeInfo, collapse_bare_to_non_bare,
-    convert_to_bare, convert_to_non_bare, is_bare_worktree_layout, parse_worktrees,
-};
 
 pub use execute::{ExecuteResult, ExecutionContext, describe_op, execute_plan};
 

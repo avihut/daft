@@ -107,10 +107,9 @@ hooks:
 Run and recommend daft commands using the short verbs exactly as written in this
 file: `daft go`, `daft start`, `daft clone`, `daft init`, `daft carry`,
 `daft exec`, `daft run`, `daft merge`, `daft list`, `daft update`, `daft prune`,
-`daft remove`, `daft rename`, `daft sync`, `daft push`, `daft adopt`,
-`daft eject`, plus the noun groups `daft hooks ...`, `daft repo ...`,
-`daft layout ...`, `daft config ...`, `daft doctor`, and `daft skill ...`.
-Invoke the `daft` binary directly.
+`daft remove`, `daft rename`, `daft sync`, `daft push`, plus the noun groups
+`daft hooks ...`, `daft repo ...`, `daft layout ...`, `daft config ...`,
+`daft doctor`, and `daft skill ...`. Invoke the `daft` binary directly.
 
 Never run or emit the alternate spellings some users have configured:
 `git worktree-*` subcommands, `git-worktree-*` binaries, long `daft worktree-*`
@@ -144,7 +143,6 @@ acknowledge their form once ("`gwtco` runs `daft go`").
 | `git worktree-branch -m`, `gwtrn`                    | `daft rename`                       |
 | `git worktree-sync`, `gwtsync`                       | `daft sync`                         |
 | `git worktree-push`, `gwtpush`                       | `daft push`                         |
-| `git worktree-flow-adopt` / `-eject`                 | `daft adopt` / `daft eject`         |
 | `git daft <noun> ...` (e.g. `git daft hooks trust`)  | `daft <noun> ...`                   |
 
 The long `daft worktree-<name>` spellings map the same way. Shortcut aliases are
@@ -236,8 +234,6 @@ root via `git rev-parse --git-common-dir`.
 | `daft sync [-f] [--rebase BRANCH [--autostash]] [--push [--force-with-lease] [--no-verify] [--jobs N] [--no-throttle]] [--include VALUE]...` | Prune stale worktrees + update all + optional rebase + optional push. Rebase and push apply only to branches you own by default; `--include` widens (`unowned`, an email, or a branch name). `-f`/`--prune-dirty` includes dirty worktrees. Parallel hook-bearing pushes are memory-governed (`--jobs N` caps concurrency, `--no-throttle` disables). First Ctrl+C cancels gracefully (partial results print, exit 130); a second force-kills.                                                                                                                                                                                                                                                                                                                                                                     |
 | `daft push [branch] [--no-verify] [--force-with-lease]`                                                                                      | Push one branch with the repo's git `pre-push` hook running in that branch's own worktree — the command's whole point. Defaults to the current branch; targets the branch's own upstream remote, falling back to `daft.remote` (origin) when it has none — and then sets upstream; a branch with no worktree pushes from the current directory. Single-branch by design (use `daft sync --push` for a fleet push).                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `daft merge ...`                                                                                                                             | Merge branches across worktrees without `git switch` — see Merging Across Worktrees below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `daft adopt [path]`                                                                                                                          | Convert a traditional repository to daft's worktree layout                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `daft eject`                                                                                                                                 | Convert back to a traditional repository layout                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 ### Management
 
@@ -762,9 +758,9 @@ Machine-Readable Output.
 
 ### Skipping Hooks Per-Invocation (`--skip-hooks`)
 
-The worktree-creating commands (`daft start`, `daft go`, `daft clone`,
-`daft adopt`) and `daft merge` accept `--skip-hooks` to exclude jobs for one run
-(repeatable or comma-separated):
+The worktree-creating commands (`daft start`, `daft go`, `daft clone`) and
+`daft merge` accept `--skip-hooks` to exclude jobs for one run (repeatable or
+comma-separated):
 
 ```bash
 daft start feat/x --skip-hooks all           # skip every hook
@@ -840,11 +836,11 @@ finishes; that wait is expected coordination, not a hang.
 
 ### Move Hooks
 
-When a worktree moves (`daft rename`, `daft layout transform`, `daft adopt`),
-daft replays identity-tracked hooks to tear down the old environment and set up
-the new one: `worktree-pre-remove` + `worktree-post-remove` (old identity) →
-move on disk → `worktree-pre-create` + `worktree-post-create` (new identity).
-Only tracked jobs run.
+When a worktree moves (`daft rename`, `daft layout transform`), daft replays
+identity-tracked hooks to tear down the old environment and set up the new one:
+`worktree-pre-remove` + `worktree-post-remove` (old identity) → move on disk →
+`worktree-pre-create` + `worktree-post-create` (new identity). Only tracked jobs
+run.
 
 ```yaml
 - name: link-output
@@ -1168,7 +1164,7 @@ When working in a daft-managed repository, apply these translations:
 | "Merge my branch"                 | `daft merge <branch> --into main --no-edit`                                                                   |
 | "Run my build on these worktrees" | `daft exec feat/a feat/b -- <cmd>` or `daft exec --all -- <cmd>`                                              |
 | "Start the dev server / stack"    | `daft run` — runs the reserved `run` task from `daft.yml`, if one exists                                      |
-| "Adopt existing repo"             | `daft adopt` — converts a traditional repo to daft layout                                                     |
+| "Adopt existing repo"             | `daft layout transform contained` — restructures a plain clone into daft's layout, carrying its working tree  |
 
 ### Per-worktree Isolation
 

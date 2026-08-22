@@ -54,16 +54,6 @@ steps:
     expect:
       exit_code: 0
 
-  - name: git-worktree-flow-adopt binary exists
-    run: command -v git-worktree-flow-adopt
-    expect:
-      exit_code: 0
-
-  - name: git-worktree-flow-eject binary exists
-    run: command -v git-worktree-flow-eject
-    expect:
-      exit_code: 0
-
   - name: git-worktree-list binary exists
     run: command -v git-worktree-list
     expect:

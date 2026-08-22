@@ -628,8 +628,7 @@ Default is `log`.
 #### Choosing how a run's hook jobs execute
 
 Every command that fires hooks and accepts `--skip-hooks` also accepts
-`--hooks <mode>`: `daft go`, `daft start`, `daft clone`, `daft adopt`, and
-`daft merge`.
+`--hooks <mode>`: `daft go`, `daft start`, `daft clone`, and `daft merge`.
 
 | Mode         | Effect                                                             |
 | ------------ | ------------------------------------------------------------------ |
@@ -683,11 +682,10 @@ stdout→stdin wiring while still reporting success. Express the ordering with
 `needs:` instead and the phase becomes eligible.
 
 In practice that leaves two phases the flag can reach, which are the ones it is
-for: `worktree-post-create` (from `go`, `start`, `clone`, and `adopt`) and
-`post-merge` (from `merge`, outside the two cleanup shapes above) — in both
-cases only when the phase declares no ordering of its own.
-`worktree-post-remove` is not in the list: no command that fires it accepts
-`--hooks`.
+for: `worktree-post-create` (from `go`, `start`, and `clone`) and `post-merge`
+(from `merge`, outside the two cleanup shapes above) — in both cases only when
+the phase declares no ordering of its own. `worktree-post-remove` is not in the
+list: no command that fires it accepts `--hooks`.
 
 `--hooks background` has no effect on legacy `.daft/hooks/*` script hooks: there
 is no per-job structure to dispatch. `foreground` is likewise a no-op there,

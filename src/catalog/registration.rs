@@ -6,7 +6,7 @@
 //! points with different noise contracts:
 //!
 //! * [`register_repo`] — full-fact registration for commands that just
-//!   created or converted a repo (clone, init, adopt, eject). Best-effort:
+//!   created or converted a repo (clone, init, layout transform). Best-effort:
 //!   catalog failures warn but never fail the parent command. Prints the
 //!   auto-suffix notice so the user learns their repo's catalog name when
 //!   it isn't the obvious one.

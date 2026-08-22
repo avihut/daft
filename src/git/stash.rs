@@ -29,8 +29,8 @@ impl GitCommand {
             let repo = self.gix_repo()?;
             // Fall back to subprocess if the cached repo is bare (no workdir).
             // This happens when the repo was discovered from the project root in
-            // a bare-repo worktree layout (e.g., flow-eject changes CWD to the
-            // project root, then later CDs into individual worktrees).
+            // a bare-repo worktree layout (e.g., layout transform changes CWD to
+            // the project root, then later CDs into individual worktrees).
             if repo.workdir().is_some() {
                 return oxide::has_uncommitted_changes(&repo);
             }

@@ -1559,8 +1559,7 @@ pub fn run() -> Result<()> {
 /// Fire the `worktree-post-create` hook for a worktree promoted from the
 /// ephemeral `.daft-tmp/<branch>` path to its layout-resolved sibling path.
 ///
-/// Mirrors `flow_adopt::run_post_adopt_hook` in shape — construct a
-/// `HookContext` for the new worktree (`source_worktree` == `worktree_path`
+/// Construct a `HookContext` for the new worktree (`source_worktree` == `worktree_path`
 /// because no source worktree is involved in a promotion), run the executor
 /// with a plain-CLI presenter, and surface the outcome without blocking.
 ///

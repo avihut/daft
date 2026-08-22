@@ -405,7 +405,7 @@ fn exec_register_worktree(
     progress: &mut dyn ProgressSink,
 ) -> Result<()> {
     let git_dir = crate::core::repo::get_git_common_dir()?;
-    super::legacy::register_worktree(&git_dir, path, branch, progress)?;
+    crate::git::worktree_state::register_worktree(&git_dir, path, branch, progress)?;
     init_worktree_index(path, branch, progress)
 }
 

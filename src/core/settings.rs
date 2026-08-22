@@ -1410,7 +1410,7 @@ impl DaftSettings {
     /// the safe subprocess default. With gitoxide the default, that same
     /// global-only read silently ignores a repo-local `daft.gitoxide = false`
     /// opt-*out*, and does so on exactly the layout-mutating commands
-    /// (`flow adopt`/`eject`, `layout transform`, `repo remove`) where a user
+    /// (`layout transform`, `repo remove`) where a user
     /// who hit a gix-specific problem would reach for it. Discovering the
     /// repo first and reading its config restores the opt-out on those paths.
     pub fn load_local_or_global() -> Result<Self> {
@@ -2045,8 +2045,8 @@ mod tests {
 
     /// #733: a repo-local `daft.gitoxide = false` must beat a global `true`.
     ///
-    /// The layout-mutating commands (`flow adopt`/`eject`, `layout
-    /// transform`, `repo remove`) resolve through `load_local_or_global`
+    /// The layout-mutating commands (`layout transform`, `repo remove`)
+    /// resolve through `load_local_or_global`
     /// exactly so a per-repo opt-out is honored now that gitoxide is the
     /// default. The pre-#733 `load_global` read (the control below) sees only
     /// the global `true` — the silent-opt-out-failure bug this method fixes.

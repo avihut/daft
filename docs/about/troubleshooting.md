@@ -57,11 +57,11 @@ git daft-hooks log show
 The branch is checked out in a different worktree. Either remove the other
 worktree first (`daft remove <branch>`), or use a different branch name.
 
-## `daft adopt` says my repo "looks like it's already adopted"
+## I want a single working tree again
 
-The repo already has the daft layout. Use `daft list` to see existing worktrees,
-or `daft eject` to restore a single-working-tree layout if you want to start
-over.
+`daft layout transform sibling` turns the main working tree back into a plain
+clone at the repository root. Other worktrees stay put as siblings; remove the
+ones you no longer need with `daft remove <branch>`.
 
 ## I can't tell which worktree is which
 

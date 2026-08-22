@@ -10,7 +10,7 @@ List repositories in the repo catalog
 ## Description
 
 Lists the repositories daft knows about. The catalog fills itself: cloning,
-initializing, adopting, or running daft commands inside a repo registers it
+initializing, or running daft commands inside a repo registers it
 automatically; `git daft repo add` registers one manually.
 
 Removed repositories keep a catalog entry (so their job logs stay

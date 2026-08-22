@@ -553,7 +553,7 @@ impl StartArgs {
         };
         // Lower `off` here, at the funnel every `start` path builds its
         // `Args` through, so the raw-selector readers downstream (the
-        // untrusted-related-repo notice) see it the way clone and adopt do.
+        // untrusted-related-repo notice) see it the way clone does.
         args.hooks.lower_off_into(&mut args.skip_hooks);
         args
     }

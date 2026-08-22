@@ -70,11 +70,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     // Value completion for --skip-hooks flag
     let has_skip_hooks = matches!(
         command_name,
-        "git-worktree-checkout"
-            | "git-worktree-clone"
-            | "git-worktree-flow-adopt"
-            | "daft-go"
-            | "daft-start"
+        "git-worktree-checkout" | "git-worktree-clone" | "daft-go" | "daft-start"
     );
 
     // Value completion for --hooks flag (the run's hook execution mode)
@@ -1403,7 +1399,7 @@ _daft() {
         else
             compadd activate hooks shell-init multi-remote release-notes doctor layout shared \
                     config file repo skill clone init install go start carry exec run env warm update list prune rename sync push remove \
-                    merge worktree-merge adopt eject
+                    merge worktree-merge
         fi
         return
     fi

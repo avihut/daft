@@ -53,8 +53,6 @@ pub(super) const COMMANDS: &[&str] = &[
     "git-worktree-carry",
     "git-worktree-fetch",
     "git-worktree-exec",
-    "git-worktree-flow-adopt",
-    "git-worktree-flow-eject",
     "git-worktree-list",
     "daft-go",
     "daft-start",
@@ -80,8 +78,6 @@ pub(super) fn get_command_for_name(command_name: &str) -> Option<Command> {
         "git-worktree-carry" => Some(crate::commands::carry::Args::command()),
         "git-worktree-fetch" => Some(crate::commands::fetch::Args::command()),
         "git-worktree-exec" => Some(crate::commands::exec::Args::command()),
-        "git-worktree-flow-adopt" => Some(crate::commands::flow_adopt::Args::command()),
-        "git-worktree-flow-eject" => Some(crate::commands::flow_eject::Args::command()),
         "git-worktree-list" => Some(crate::commands::list::Args::command()),
         "daft-go" => Some(crate::commands::checkout::GoArgs::command()),
         "daft-start" => Some(crate::commands::checkout::StartArgs::command()),
@@ -1551,11 +1547,10 @@ mod tests {
         // take the rich path, so a value block added only to the non-rich
         // generator silently misses them.
         for cmd in [
-            "git-worktree-checkout",   // rich
-            "daft-go",                 // rich
-            "git-worktree-clone",      // non-rich
-            "git-worktree-flow-adopt", // non-rich
-            "daft-start",              // rich
+            "git-worktree-checkout", // rich
+            "daft-go",               // rich
+            "git-worktree-clone",    // non-rich
+            "daft-start",            // rich
         ] {
             let bash = bash::generate_bash_completion_string(cmd).expect("bash gen");
             assert!(
@@ -1874,7 +1869,6 @@ mod tests {
             vec![
                 "git-worktree-clone",
                 "git-worktree-checkout",
-                "git-worktree-flow-adopt",
                 "daft-go",
                 "daft-start",
             ],

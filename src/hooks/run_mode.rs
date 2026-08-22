@@ -114,8 +114,8 @@ impl HookMode {
     ///
     /// `off` is sugar for `--skip-hooks all`, and several commands gate on
     /// the raw selector list *before* any executor exists — clone's
-    /// `--trust-hooks` conflict and `--install` trust implication, adopt's
-    /// post-adopt short-circuit, checkout's untrusted-repo notice. Lowering
+    /// `--trust-hooks` conflict and `--install` trust implication,
+    /// checkout's untrusted-repo notice. Lowering
     /// at entry is what lets every one of them keep reading the single
     /// mechanism they already read. Idempotent, so a command that also
     /// received an explicit `--skip-hooks all` does not grow a duplicate.

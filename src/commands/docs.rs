@@ -9,9 +9,9 @@ use clap::{Command, CommandFactory};
 use std::path::Path;
 
 use crate::commands::{
-    carry, checkout, clone, config, doctor, env, exec, fetch, file, flow_adopt, flow_eject, hooks,
-    init, install, layout, list, merge, multi_remote, prune, push, release_notes, repo, run,
-    shared, shell_init, shortcuts, skill, sync, warm, worktree_branch,
+    carry, checkout, clone, config, doctor, env, exec, fetch, file, hooks, init, install, layout,
+    list, merge, multi_remote, prune, push, release_notes, repo, run, shared, shell_init,
+    shortcuts, skill, sync, warm, worktree_branch,
 };
 use crate::styles;
 
@@ -288,10 +288,6 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
                     display_name: "worktree-init",
                     command: init::Args::command(),
                 },
-                CommandEntry {
-                    display_name: "worktree-flow-adopt",
-                    command: flow_adopt::Args::command(),
-                },
             ],
         },
         CommandCategory {
@@ -351,10 +347,6 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
                 CommandEntry {
                     display_name: "worktree-push",
                     command: push::Args::command(),
-                },
-                CommandEntry {
-                    display_name: "worktree-flow-eject",
-                    command: flow_eject::Args::command(),
                 },
             ],
         },
@@ -647,9 +639,7 @@ fn render_git_daft() -> Result<()> {
     println!("short aliases (daft <verb>)");
     println!("   go <branch>            Check out an existing branch worktree");
     println!("   start [repo] <branch>  Create a new branch worktree (-b)");
-    println!(
-        "   clone, init, carry, merge, update, list, prune, rename, sync, remove, adopt, eject"
-    );
+    println!("   clone, init, carry, merge, update, list, prune, rename, sync, remove");
 
     println!();
     println!("Global options");

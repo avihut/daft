@@ -88,11 +88,7 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
     // Value completion for --skip-hooks flag (selector vocabulary from daft.yml)
     let has_skip_hooks = matches!(
         command_name,
-        "git-worktree-checkout"
-            | "git-worktree-clone"
-            | "git-worktree-flow-adopt"
-            | "daft-go"
-            | "daft-start"
+        "git-worktree-checkout" | "git-worktree-clone" | "daft-go" | "daft-start"
     );
     if has_skip_hooks {
         output.push_str("    # Skip-hooks selector completion for --skip-hooks\n");
@@ -1165,7 +1161,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h -C" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo skill clone init install go start carry exec run env warm update list prune rename sync push remove merge worktree-merge adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo skill clone init install go start carry exec run env warm update list prune rename sync push remove merge worktree-merge" -- "$cur") )
         fi
         return 0
     fi

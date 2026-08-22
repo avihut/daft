@@ -16,9 +16,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_fetch.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_config.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_config_tui.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_hooks.sh"
-source "$(dirname "${BASH_SOURCE[0]}")/test_flow_adopt.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_rename.sh"
-source "$(dirname "${BASH_SOURCE[0]}")/test_flow_eject.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_sync.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_sync_cancel.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_sync_governor.sh"
@@ -364,8 +362,6 @@ run_all_integration_tests() {
     run_config_tests
     run_config_tui_tests
     run_hooks_tests
-    run_flow_adopt_tests
-    run_flow_eject_tests
     run_sync_tests
     run_sync_cancel_tests
     run_sync_governor_tests

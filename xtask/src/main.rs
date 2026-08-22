@@ -26,8 +26,6 @@ const COMMANDS: &[&str] = &[
     "git-worktree-carry",
     "git-worktree-fetch",
     "git-worktree-exec",
-    "git-worktree-flow-adopt",
-    "git-worktree-flow-eject",
     "git-worktree-list",
     "git-worktree-merge",
     "git-worktree-sync",
@@ -124,16 +122,6 @@ const DAFT_VERBS: &[DaftVerbEntry] = &[
         about_override: None,
     },
     DaftVerbEntry {
-        daft_name: "daft-adopt",
-        source_command: "git-worktree-flow-adopt",
-        about_override: None,
-    },
-    DaftVerbEntry {
-        daft_name: "daft-eject",
-        source_command: "git-worktree-flow-eject",
-        about_override: None,
-    },
-    DaftVerbEntry {
         daft_name: "daft-list",
         source_command: "git-worktree-list",
         about_override: None,
@@ -198,8 +186,6 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-carry" => Some(daft::commands::carry::Args::command()),
         "git-worktree-fetch" => Some(daft::commands::fetch::Args::command()),
         "git-worktree-exec" => Some(daft::commands::exec::Args::command()),
-        "git-worktree-flow-adopt" => Some(daft::commands::flow_adopt::Args::command()),
-        "git-worktree-flow-eject" => Some(daft::commands::flow_eject::Args::command()),
         "git-worktree-list" => Some(daft::commands::list::Args::command()),
         "git-worktree-merge" => Some(daft::commands::merge::Args::command()),
         "git-worktree-sync" => Some(daft::commands::sync::Args::command()),
@@ -269,12 +255,6 @@ fn daft_verb_tip(command_name: &str) -> Option<&'static str> {
         "git-worktree-sync" => Some(
             "::: tip\nThis command is also available as `daft sync`. See [daft sync](./daft-sync.md).\n:::\n",
         ),
-        "git-worktree-flow-adopt" => Some(
-            "::: tip\nThis command is also available as `daft adopt`. See [daft adopt](./daft-adopt.md).\n:::\n",
-        ),
-        "git-worktree-flow-eject" => Some(
-            "::: tip\nThis command is also available as `daft eject`. See [daft eject](./daft-eject.md).\n:::\n",
-        ),
         "git-worktree-list" => Some(
             "::: tip\nThis command is also available as `daft list`. See [daft list](./daft-list.md).\n:::\n",
         ),
@@ -298,21 +278,8 @@ fn daft_verb_tip(command_name: &str) -> Option<&'static str> {
 fn related_commands(command_name: &str) -> Vec<&'static str> {
     match command_name {
         // Setup cluster
-        "git-worktree-clone" => vec![
-            "git-worktree-init",
-            "git-worktree-checkout",
-            "git-worktree-flow-adopt",
-        ],
-        "git-worktree-init" => vec![
-            "git-worktree-clone",
-            "git-worktree-checkout",
-            "git-worktree-flow-adopt",
-        ],
-        "git-worktree-flow-adopt" => vec![
-            "git-worktree-clone",
-            "git-worktree-init",
-            "git-worktree-flow-eject",
-        ],
+        "git-worktree-clone" => vec!["git-worktree-init", "git-worktree-checkout"],
+        "git-worktree-init" => vec!["git-worktree-clone", "git-worktree-checkout"],
         // Branching cluster
         "git-worktree-checkout" => vec!["git-worktree-carry", "git-worktree-branch"],
         // Maintenance cluster
@@ -325,7 +292,6 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
         "git-worktree-prune" => vec![
             "git-worktree-fetch",
             "git-worktree-sync",
-            "git-worktree-flow-eject",
             "git-worktree-branch",
         ],
         "git-worktree-fetch" => vec![
@@ -347,11 +313,6 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
         // work, shared links config, warm copies caches. A reader who found
         // one of the three is usually looking for another.
         "git-worktree-warm" => vec!["git-worktree-carry", "daft-shared", "git-worktree-checkout"],
-        "git-worktree-flow-eject" => vec![
-            "git-worktree-flow-adopt",
-            "git-worktree-prune",
-            "git-worktree-clone",
-        ],
         "git-worktree-list" => vec![
             "git-worktree-checkout",
             "git-worktree-prune",
@@ -366,7 +327,6 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
             "git-worktree-list",
             "git-worktree-carry",
             "git-worktree-sync",
-            "git-worktree-flow-adopt",
         ],
         "git-worktree-push" => vec!["git-worktree-sync", "git-worktree-checkout"],
         // Config cluster
@@ -808,7 +768,6 @@ fn build_top_level_command() -> clap::Command {
         // Setup commands
         .subcommand(daft::commands::clone::Args::command().name("clone"))
         .subcommand(daft::commands::init::Args::command().name("init"))
-        .subcommand(daft::commands::flow_adopt::Args::command().name("adopt"))
         // Branching commands
         .subcommand(daft::commands::checkout::GoArgs::command().name("go"))
         .subcommand(daft::commands::checkout::StartArgs::command().name("start"))
@@ -822,7 +781,6 @@ fn build_top_level_command() -> clap::Command {
         .subcommand(daft::commands::prune::Args::command().name("prune"))
         .subcommand(daft::commands::fetch::Args::command().name("update"))
         .subcommand(daft::commands::sync::Args::command().name("sync"))
-        .subcommand(daft::commands::flow_eject::Args::command().name("eject"))
         // Configuration commands
         .subcommand(daft::commands::shared::Args::command().name("shared"))
         .subcommand(daft::commands::hooks::Args::command().name("hooks"))

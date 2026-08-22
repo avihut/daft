@@ -124,11 +124,7 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
     // Value completions for --skip-hooks flag (selector vocabulary from daft.yml)
     let has_skip_hooks = matches!(
         command_name,
-        "git-worktree-checkout"
-            | "git-worktree-clone"
-            | "git-worktree-flow-adopt"
-            | "daft-go"
-            | "daft-start"
+        "git-worktree-checkout" | "git-worktree-clone" | "daft-go" | "daft-start"
     );
     if has_skip_hooks {
         output.push_str(&format!(
@@ -553,13 +549,11 @@ complete -c daft -n '__fish_use_subcommand' -a 'update' -d 'Update worktree bran
 complete -c daft -n '__fish_use_subcommand' -a 'prune' -d 'Remove stale worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'rename' -d 'Rename branch and move worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'remove' -d 'Delete branch and worktree'
-complete -c daft -n '__fish_use_subcommand' -a 'adopt' -d 'Convert repo to worktree layout'
 complete -c daft -n '__fish_use_subcommand' -a 'sync' -d 'Synchronize worktrees with remote'
 complete -c daft -n '__fish_use_subcommand' -a 'push' -d 'Push a branch, hooks in its worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'list' -d 'List worktrees with status'
 complete -c daft -n '__fish_use_subcommand' -a 'merge' -d 'Merge branches across worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'worktree-merge' -d 'Merge branches across worktrees'
-complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
 complete -c daft -n '__fish_use_subcommand' -a 'config' -d 'Configure daft settings'
 complete -c daft -n '__fish_use_subcommand' -a 'shared' -d 'Manage shared files across worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'repo' -d 'Repository-level operations'

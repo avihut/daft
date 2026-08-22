@@ -484,4 +484,3 @@ normal. This limitation will be addressed in a future release.
 - [daft list](./daft-list.md) — inspect worktrees (including in-progress merges)
 - [daft carry](./daft-carry.md) — transfer uncommitted changes between worktrees
 - [daft sync](./daft-sync.md) — rebase + push many worktrees at once
-- [daft adopt](./daft-adopt.md) — convert a traditional repo into daft's layout

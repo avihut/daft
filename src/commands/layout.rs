@@ -809,6 +809,11 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     })
     .context("Failed to save layout to repos.json")?;
 
+    // The catalog keys on the git common dir and the project root; both can
+    // move under a transform (contained-classic puts `.git` inside the main
+    // working tree). Best-effort, like every other ambient registration.
+    crate::catalog::touch_current_repo();
+
     // CD to the worktree for the user's original branch (it may have moved)
     if let Some(ref branch) = user_branch
         && let Ok(Some(wt_path)) = git.find_worktree_for_branch(branch)
@@ -972,137 +977,4 @@ fn revert_layout_gitignore(
             output.step("Reverted layout-specific .gitignore entry");
         }
     }
-}
-
-/// Legacy worktree relocation (superseded by the plan-based transform engine).
-/// Kept for reference during transition; no active callers.
-#[allow(dead_code)]
-/// Skips the bare root entry, detached HEAD worktrees, and any branch in
-/// `skip_branches` (used to preserve the default branch for eject).
-fn relocate_worktrees(
-    target_layout: &Layout,
-    git: &GitCommand,
-    output: &mut dyn Output,
-    skip_branches: &[&str],
-) -> Result<()> {
-    use crate::core::multi_remote::path::build_template_context;
-    use std::path::PathBuf;
-
-    let project_root = crate::get_project_root()?;
-    let porcelain = git.worktree_list_porcelain()?;
-
-    // Parse porcelain into (path, branch) pairs, skipping bare roots and
-    // detached-HEAD sandboxes (which have no branch to relocate).
-    let worktrees: Vec<(PathBuf, String)> =
-        crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain)
-            .into_iter()
-            .filter(|e| !e.is_bare && !e.is_detached)
-            .filter_map(|e| e.branch.map(|b| (e.path, b)))
-            .collect();
-
-    let mut moved_count = 0;
-
-    // Canonicalize project root for comparison with worktree paths
-    let project_root_canonical = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.clone());
-
-    for (current_path, branch) in &worktrees {
-        if skip_branches.iter().any(|s| s == branch) {
-            continue;
-        }
-
-        // Skip the main working tree (non-bare repo root). It's not a linked
-        // worktree and cannot be moved with `git worktree move`.
-        let current_canonical = current_path
-            .canonicalize()
-            .unwrap_or_else(|_| current_path.clone());
-        if current_canonical == project_root_canonical {
-            continue;
-        }
-
-        let ctx = build_template_context(&project_root, branch);
-        let expected_path = target_layout
-            .worktree_path(&ctx)
-            .with_context(|| format!("Failed to compute path for branch '{branch}'"))?;
-
-        // Canonicalize for comparison (handles symlinks, /tmp vs /private/tmp)
-        let expected_canonical = expected_path
-            .canonicalize()
-            .unwrap_or_else(|_| expected_path.clone());
-
-        if current_canonical == expected_canonical {
-            continue; // Already in the right place
-        }
-
-        // Create parent directory for the target path
-        if let Some(parent) = expected_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory {}", parent.display()))?;
-        }
-
-        output.step(&format!(
-            "Moving '{}': {} -> {}",
-            branch,
-            current_path.display(),
-            expected_path.display()
-        ));
-
-        git.worktree_move(current_path, &expected_path)
-            .with_context(|| {
-                format!(
-                    "Failed to move worktree '{}' from {} to {}",
-                    branch,
-                    current_path.display(),
-                    expected_path.display()
-                )
-            })?;
-
-        moved_count += 1;
-
-        // Clean up empty parent directories left behind
-        if let Some(parent) = current_path.parent() {
-            let _ = cleanup_empty_parents(parent, &project_root);
-        }
-    }
-
-    if moved_count > 0 {
-        output.step(&format!(
-            "Relocated {} worktree{}",
-            moved_count,
-            if moved_count == 1 { "" } else { "s" }
-        ));
-    }
-
-    Ok(())
-}
-
-/// Legacy public entry point — no active callers.
-#[allow(dead_code)]
-pub fn relocate_worktrees_public(
-    target_layout: &Layout,
-    git: &GitCommand,
-    output: &mut dyn Output,
-) -> Result<()> {
-    relocate_worktrees(target_layout, git, output, &[])
-}
-
-/// Remove empty parent directories up to (but not including) the stop directory.
-fn cleanup_empty_parents(mut dir: &std::path::Path, stop: &std::path::Path) -> Result<()> {
-    while dir != stop {
-        if dir
-            .read_dir()
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(false)
-        {
-            std::fs::remove_dir(dir)?;
-        } else {
-            break;
-        }
-        match dir.parent() {
-            Some(parent) => dir = parent,
-            None => break,
-        }
-    }
-    Ok(())
 }

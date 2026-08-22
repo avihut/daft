@@ -40,7 +40,7 @@ use std::collections::HashMap;
 #[command(about = "List repositories in the repo catalog")]
 #[command(long_about = r#"
 Lists the repositories daft knows about. The catalog fills itself: cloning,
-initializing, adopting, or running daft commands inside a repo registers it
+initializing, or running daft commands inside a repo registers it
 automatically; `git daft repo add` registers one manually.
 
 Removed repositories keep a catalog entry (so their job logs stay
@@ -387,7 +387,7 @@ fn build_display_cells(
 ) -> Vec<CatalogRepoCells> {
     let cwd = location.cwd.as_deref();
     // One read-only load serves every row's layout lookup. The repo store
-    // (repos.json) is where clone/adopt/`layout set` record each repo's
+    // (repos.json) is where clone/`layout transform`/`layout set` record each repo's
     // layout; repos daft never laid out simply have no entry.
     let trust_db = crate::hooks::TrustDatabase::load().ok();
     rows.iter()

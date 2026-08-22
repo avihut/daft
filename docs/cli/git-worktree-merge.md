@@ -101,5 +101,4 @@ git worktree-merge [OPTIONS] [SOURCE_OR_TARGET]
 - [git-worktree-list](./git-worktree-list.md)
 - [git-worktree-carry](./git-worktree-carry.md)
 - [git-worktree-sync](./git-worktree-sync.md)
-- [git-worktree-flow-adopt](./git-worktree-flow-adopt.md)
 

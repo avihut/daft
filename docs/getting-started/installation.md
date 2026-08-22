@@ -133,7 +133,6 @@ cd /usr/local/bin
 for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
            git-worktree-branch git-worktree-branch-delete \
            git-worktree-prune git-worktree-carry git-worktree-fetch \
-           git-worktree-flow-adopt git-worktree-flow-eject \
            git-worktree-list git-worktree-sync git-worktree-push \
            git-worktree-warm git-daft \
            daft-go daft-start daft-remove daft-rename; do

@@ -1,6 +1,6 @@
 //! `daft repo add` — explicitly register a repository in the catalog.
 //!
-//! The catalog fills itself: clone/init/adopt register, and any daft
+//! The catalog fills itself: clone/init register, and any daft
 //! command running inside a repo lazily upserts it. `repo add` exists for
 //! the two cases ambience can't cover — a repo daft has never operated in,
 //! and renaming an entry (`--name`). Unlike ambient registration this path

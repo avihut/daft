@@ -136,8 +136,8 @@ does not block the rest.
 `skip:` / `only:` / `exclude_tags` are configuration — they live in `daft.yml`.
 For a one-off, the worktree-creating commands (`daft start`, `daft go`,
 `git worktree-checkout`, `git worktree-checkout-branch`) and
-`git worktree-clone` / `git worktree-flow-adopt` accept a `--skip-hooks` flag
-that excludes jobs for that single invocation:
+`git worktree-clone` accept a `--skip-hooks` flag that excludes jobs for that
+single invocation:
 
 ```bash
 daft start feat/x --skip-hooks all          # skip every job in every hook
@@ -198,9 +198,9 @@ a warning and the run proceeds — an empty result after skipping is a no-op, no
 an error.
 
 `--skip-hooks all` is the uniform way to skip every hook; it replaces the older
-`--no-hooks` flag on `clone` / `flow-adopt`. It cannot be combined with
-`--trust-hooks` (a partial `--skip-hooks tag:…` still runs your own hooks, so it
-remains compatible with `--trust-hooks`).
+`--no-hooks` flag on `clone`. It cannot be combined with `--trust-hooks` (a
+partial `--skip-hooks tag:…` still runs your own hooks, so it remains compatible
+with `--trust-hooks`).
 
 This is distinct from `git daft hooks run --job <name>` / `--tag <tag>`, which
 is an **inclusion** filter (run only the named jobs, re-running against an
