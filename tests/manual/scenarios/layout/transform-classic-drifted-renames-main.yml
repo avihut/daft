@@ -1,0 +1,76 @@
+name: A contained-classic clone that switched branches transforms in one step
+description: >
+  The clone directory is named after the branch it was created on. Switch
+  branches inside it and the target layout wants the main working tree at a
+  different subdirectory. Git will not `worktree move` a main working tree, but
+  its `.git` lives inside the directory — so the directory renames as a unit,
+  carrying the repository, the index and the working tree together, and the
+  linked worktrees' pointers are repaired after (#875; used to be refused,
+  #859).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name:
+      Clone with contained-classic, add a linked worktree, switch the clone's
+      branch
+    run: |
+      set -euo pipefail
+      git-worktree-clone --layout contained-classic $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      git-worktree-checkout develop
+      git -C $WORK_DIR/test-repo/main switch -q -c task/local-docker
+      echo "local change" >> $WORK_DIR/test-repo/main/README.md
+      echo scratch > $WORK_DIR/test-repo/main/NOTES.md
+      git -C $WORK_DIR/test-repo/main status --porcelain > $BASE_DIR/status-before.txt
+      git -C $WORK_DIR/test-repo/develop status --porcelain > $BASE_DIR/develop-before.txt
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main/.git"
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Transform to contained renames the main working tree directly
+    run: NO_COLOR=1 daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Transformed"
+      output_not_contains:
+        - "cannot move a main working tree"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/task/local-docker"
+          branch: task/local-docker
+        - dir: "$WORK_DIR/test-repo/develop"
+          branch: develop
+      # The emptied clone directory must not survive: a later nest would sweep
+      # it into the new worktree as `task/local-docker/main`. Git does not track
+      # empty directories, so this has to be checked on the filesystem.
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/task/local-docker/main"
+
+  - name: The repository is bare and the working tree state came along
+    run: |
+      set -euo pipefail
+      test "$(git -C $WORK_DIR/test-repo config --get core.bare)" = true
+      git -C $WORK_DIR/test-repo/task/local-docker status --porcelain > $BASE_DIR/status-after.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/status-after.txt
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/.git/index"
+
+  - name: The linked worktree still works — its pointer was repaired
+    run: |
+      set -euo pipefail
+      git -C $WORK_DIR/test-repo/develop status --porcelain > $BASE_DIR/develop-after.txt
+      diff $BASE_DIR/develop-before.txt $BASE_DIR/develop-after.txt
+      git -C $WORK_DIR/test-repo/develop rev-parse --absolute-git-dir
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo/.git/worktrees"

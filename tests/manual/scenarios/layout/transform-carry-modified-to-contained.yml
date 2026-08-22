@@ -1,0 +1,129 @@
+name: A dirty non-default main working tree carries its state into contained
+description: >
+  #875, in the shape the bug was field-reported in: a plain clone switched to a
+  task branch, five tracked files modified and unstaged, one untracked file, an
+  ignored directory with content, nothing staged, no operation in progress. The
+  transform must run without a prompt and without -y, and every byte of working
+  tree state must be on the other side of it. On v1.27.4 this exits 1 with
+  "uncommitted changes" — the dirty guard this issue deletes (it used to guard
+  daft's own index rebuild, which is gone too: per-worktree git state is moved,
+  not rebuilt).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with plain git, take a task branch, publish it
+    run: |
+      set -euo pipefail
+      git clone -q $REMOTE_TEST_REPO test-repo
+      cd $WORK_DIR/test-repo
+      git switch -q -c task/local-docker
+      printf 'node_modules/\n' > .gitignore
+      for f in Dockerfile compose.yml Makefile; do echo seed > $f; done
+      git add .gitignore Dockerfile compose.yml Makefile
+      git commit -q -m "seed docker files"
+      git push -q -u origin task/local-docker
+    expect:
+      exit_code: 0
+
+  - name: Dirty the tree the way a real task branch is dirty
+    run: |
+      set -euo pipefail
+      cd $WORK_DIR/test-repo
+      for f in README.md main.py Dockerfile compose.yml Makefile; do
+        echo "local change" >> $f
+      done
+      echo scratch > NOTES.md
+      mkdir -p node_modules
+      echo junk > node_modules/x
+      git status --porcelain > $BASE_DIR/status-before.txt
+      git diff --cached > $BASE_DIR/diff-cached-before.txt
+      test -s $BASE_DIR/status-before.txt
+      test ! -s $BASE_DIR/diff-cached-before.txt
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/node_modules/x"
+
+  - name: Transform to contained with no flags and no prompt
+    run: NO_COLOR=1 daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "task/local-docker"
+        - "Transformed"
+      output_not_contains:
+        - "uncommitted changes"
+        - "--force"
+
+  - name: The task branch is a registered worktree at its template path
+    run:
+      git -C $WORK_DIR/test-repo/task/local-docker rev-parse --abbrev-ref HEAD
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/task/local-docker"
+      files_exist:
+        - "$WORK_DIR/test-repo/task/local-docker/README.md"
+        - "$WORK_DIR/test-repo/task/local-docker/node_modules/x"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/README.md"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/task/local-docker"
+          branch: task/local-docker
+
+  - name: git status --porcelain is byte-identical across the transform
+    run: |
+      set -euo pipefail
+      git -C $WORK_DIR/test-repo/task/local-docker status --porcelain \
+        > $BASE_DIR/status-after.txt
+      diff $BASE_DIR/status-before.txt $BASE_DIR/status-after.txt
+    expect:
+      exit_code: 0
+
+  - name: The staged tree is identical too
+    run: |
+      set -euo pipefail
+      git -C $WORK_DIR/test-repo/task/local-docker diff --cached \
+        > $BASE_DIR/diff-cached-after.txt
+      diff $BASE_DIR/diff-cached-before.txt $BASE_DIR/diff-cached-after.txt
+    expect:
+      exit_code: 0
+
+  - name: No stash was ever created
+    run: |
+      set -euo pipefail
+      test -z "$(git -C $WORK_DIR/test-repo/task/local-docker stash list)"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/.git/refs/stash"
+        - "$WORK_DIR/test-repo/.git/logs/refs/stash"
+
+  - name: The index moved into the per-worktree git dir, not away
+    run: |
+      set -euo pipefail
+      GD=$(git -C $WORK_DIR/test-repo/task/local-docker rev-parse --absolute-git-dir)
+      case "$GD" in
+        */test-repo/.git/worktrees/*) ;;
+        *) echo "unexpected git dir: $GD"; exit 1 ;;
+      esac
+      test -f "$GD/index"
+      test -f "$GD/HEAD"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/.git/index"
+
+  - name: The repository is bare and still tracks the branch upstream
+    run: |
+      set -euo pipefail
+      test "$(git -C $WORK_DIR/test-repo config --get core.bare)" = true
+      git -C $WORK_DIR/test-repo/task/local-docker rev-parse --abbrev-ref --symbolic-full-name @{u}
+    expect:
+      exit_code: 0
+      output_contains:
+        - "origin/task/local-docker"

@@ -86,7 +86,6 @@ daft layout transform [OPTIONS] <LAYOUT>
 
 | Option | Description | Default |
 |--------|-------------|----------|
-| `-f, --force` | Force transform even with uncommitted changes |  |
 | `--dry-run` | Show plan without executing |  |
 | `--include <BRANCH>` | Also relocate this non-conforming worktree (repeatable) |  |
 | `--include-all` | Relocate all non-conforming worktrees |  |

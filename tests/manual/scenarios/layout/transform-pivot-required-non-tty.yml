@@ -1,8 +1,13 @@
-name: A bare repo with no default-branch worktree and several candidates refuses
+name:
+  A bare repo with no default-branch worktree and several candidates needs
+  --pivot
 description: >
   The mirror of #859 when the choice is not decidable: with the default branch
   unworktreed and more than one worktree that could take the repository root,
-  daft refuses before touching anything rather than guessing from the cwd.
+  daft will not guess (not from the cwd, not from -y). Non-interactively it
+  refuses before touching anything and names the flag that answers the question;
+  with `--pivot <branch>` the chosen worktree becomes the main working tree,
+  carrying its working tree state (#875).
 
 repos:
   - name: test-repo
@@ -26,14 +31,14 @@ steps:
     expect:
       exit_code: 0
 
-  - name: Transform to sibling is refused
-    run: daft layout transform sibling 2>&1
+  - name: Transform to sibling is refused, naming --pivot
+    run: NO_COLOR=1 daft layout transform sibling 2>&1
     cwd: "$WORK_DIR/test-repo/task/local-docker"
     expect:
       exit_code: 1
       output_contains:
         - "'main' has no worktree"
-        - "daft go main"
+        - "--pivot <branch>"
 
   - name: Nothing moved
     run: git -C $WORK_DIR/test-repo config --get core.bare

@@ -23,7 +23,7 @@ pub fn print_plan(plan: &TransformPlan, output: &mut dyn Output) {
         for cw in &plan.skipped {
             output.result(&format!(
                 "  '{}': {} (use --include to relocate)",
-                cw.branch,
+                cw.label(),
                 cw.current_path.display()
             ));
         }

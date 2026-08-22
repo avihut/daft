@@ -19,7 +19,6 @@ use crate::{
     },
     settings::DaftSettings,
     styles::{self, bold, dim, dim_underline},
-    utils::*,
 };
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -86,9 +85,6 @@ struct ShowArgs {
 struct TransformArgs {
     /// Target layout name or template
     layout: String,
-    /// Force transform even with uncommitted changes
-    #[arg(short, long)]
-    force: bool,
     /// Show plan without executing
     #[arg(long)]
     dry_run: bool,
@@ -600,54 +596,24 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     }
 
     // Compute target state using the (possibly adjusted) project root. This is
-    // where an impossible transform is refused — before the dirty check,
-    // before --force stashing, before any mutation.
-    let target = transform::compute_target_state(&target_layout, &source)?;
+    // where an impossible transform is refused — before any mutation.
+    let target = transform::compute_target_state(
+        &target_layout,
+        &source,
+        &transform::PivotOverride::default(),
+    )?;
 
     // Classify worktrees
     let classified =
         transform::classify_worktrees(&source, &target, &args.include, args.include_all);
 
-    // Check for dirty worktrees (unless --force).
-    //
-    // Two worktrees are checked. The one holding the root role — the main
-    // working tree, whatever branch it carries, or the one about to become it
-    // — because the transform physically rewrites it. And the default branch's
-    // worktree, which used to be the *same* entry back when the root role was
-    // keyed on the branch name: now that the role follows the main working
-    // tree, a dirty linked worktree on the default branch would otherwise slip
-    // past this guard and get rejected by `ValidateIntegrity` at the very last
-    // op instead, rolling the whole transform back. An up-front refusal naming
-    // the worktree is the behaviour worth keeping.
-    //
-    // Other linked worktrees are still not checked: git relocates them intact,
-    // and `--force` preserves their dirty state via stash ops. Layout artifacts
-    // (.gitignore with auto-added patterns, worktree directories managed by the
-    // layout) are excluded from what counts as dirty.
-    if !args.force {
-        let prev_dir = get_current_directory()?;
-        for cw in &classified {
-            let checked = cw.disposition == transform::WorktreeDisposition::Root
-                || cw.branch == default_branch;
-            if !checked {
-                continue;
-            }
-            if cw.current_path.exists() {
-                change_directory(&cw.current_path)?;
-                if has_real_uncommitted_changes(&git, &source)? {
-                    change_directory(&prev_dir)?;
-                    anyhow::bail!(
-                        "Worktree '{}' has uncommitted changes. Commit, stash, or use --force.",
-                        cw.branch
-                    );
-                }
-            }
-        }
-        change_directory(&prev_dir)?;
-    }
+    // Snapshot every worktree's status: the plan line reports what is carried,
+    // and `ValidateIntegrity` holds the transform to it.
+    let artifacts = transform::Artifacts::for_transform(&source, &target);
+    let snapshots = transform::status_snapshot::capture(&classified, &artifacts)?;
 
     // Build the plan
-    let mut plan = transform::build_plan(&source, &target, &classified, args.force)?;
+    let plan = transform::build_plan(&source, &target, &classified, &snapshots)?;
 
     // The root role follows the main working tree, not the default branch. When
     // the two differ the user is about to get a layout where the default branch
@@ -660,7 +626,7 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     if let Some(cw) = classified
         .iter()
         .find(|cw| cw.disposition == transform::WorktreeDisposition::Root)
-        && cw.branch != default_branch
+        && cw.branch.as_deref() != Some(default_branch.as_str())
         && !transform::paths_equivalent(&cw.current_path, &cw.target_path)
     {
         // A bare source has no main working tree yet, so its pivot *becomes*
@@ -668,64 +634,26 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         let moving = if source.is_bare {
             format!(
                 "'{}' becomes the main working tree at {}",
-                cw.branch,
+                cw.label(),
                 cw.target_path.display()
             )
         } else {
             format!(
                 "The main working tree is on '{}' and moves to {}",
-                cw.branch,
+                cw.label(),
                 cw.target_path.display()
             )
         };
         let default_state = if source
             .worktrees
             .iter()
-            .any(|wt| wt.branch == default_branch)
+            .any(|wt| wt.branch.as_deref() == Some(default_branch.as_str()))
         {
             format!("the default branch '{default_branch}' keeps its own linked worktree")
         } else {
             format!("the default branch '{default_branch}' has no worktree")
         };
         output.notice(&format!("{moving}; {default_state}"));
-    }
-
-    // Insert stash/pop ops for dirty worktrees when --force
-    if args.force {
-        let prev_dir = get_current_directory()?;
-        let mut stash_ops = Vec::new();
-        let mut pop_ops = Vec::new();
-        for cw in &classified {
-            if cw.disposition == transform::WorktreeDisposition::NonConforming {
-                continue;
-            }
-            if cw.current_path.exists() {
-                change_directory(&cw.current_path)?;
-                if git.has_uncommitted_changes()? {
-                    stash_ops.push(transform::TransformOp::StashChanges {
-                        branch: cw.branch.clone(),
-                        worktree_path: cw.current_path.clone(),
-                    });
-                    pop_ops.push(transform::TransformOp::PopStash {
-                        branch: cw.branch.clone(),
-                        worktree_path: cw.target_path.clone(),
-                    });
-                }
-            }
-        }
-        change_directory(&prev_dir)?;
-
-        // Prepend stash ops and append pop ops (before ValidateIntegrity)
-        if !stash_ops.is_empty() {
-            let validate = plan.ops.pop(); // Remove ValidateIntegrity
-            let mut new_ops = stash_ops;
-            new_ops.append(&mut plan.ops);
-            new_ops.append(&mut pop_ops);
-            if let Some(v) = validate {
-                new_ops.push(v);
-            }
-            plan.ops = new_ops;
-        }
     }
 
     // Dry run: print plan and exit
@@ -746,6 +674,9 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         target_git_dir: target.git_dir.clone(),
         remote: settings.remote.clone(),
         source_worktree: source.project_root.clone(),
+        default_branch: default_branch.clone(),
+        status_snapshots: snapshots,
+        artifacts,
     };
     let mut hooks_config = crate::core::settings::load_hooks_config()?;
     if args.verbose {
@@ -824,61 +755,6 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     output.result(&format!("Transformed to layout '{}'.", target_layout.name));
 
     Ok(())
-}
-
-/// Check for uncommitted changes, ignoring layout artifacts.
-///
-/// Layout artifacts are: auto-generated .gitignore entries and worktree
-/// directories managed by the layout system (e.g., `.worktrees/` for nested).
-/// These would show up as untracked files but are not real user changes.
-fn has_real_uncommitted_changes(
-    _git: &GitCommand,
-    source: &transform::LayoutState,
-) -> Result<bool> {
-    let output = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()
-        .context("Failed to execute git status")?;
-
-    if !output.status.success() {
-        return Ok(false);
-    }
-
-    let status = String::from_utf8_lossy(&output.stdout);
-
-    // Compute layout artifact paths to ignore
-    let mut ignore_patterns: Vec<String> = Vec::new();
-    ignore_patterns.push(".gitignore".to_string());
-
-    // Worktree parent directories (e.g., .worktrees/ for nested)
-    for wt in &source.worktrees {
-        if wt.is_root {
-            continue;
-        }
-        if let Ok(rel) = wt.path.strip_prefix(&source.project_root)
-            && let Some(first) = rel.components().next()
-        {
-            let dir_name = first.as_os_str().to_string_lossy();
-            ignore_patterns.push(format!("{dir_name}/"));
-            ignore_patterns.push(dir_name.to_string());
-        }
-    }
-
-    for line in status.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        // Porcelain format: "XY path" where XY is 2-char status
-        let path = if line.len() > 3 { &line[3..] } else { line };
-
-        let is_artifact = ignore_patterns.iter().any(|p| path.starts_with(p));
-        if !is_artifact {
-            return Ok(true); // Real change found
-        }
-    }
-
-    Ok(false) // Only artifacts, no real changes
 }
 
 /// Revert layout-specific .gitignore entries that were auto-added by the source
