@@ -1,4 +1,16 @@
-# daft - Git Extensions Toolkit
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/public/brand/daft-donut-white.svg">
+    <img src="docs/public/brand/daft-donut.svg" alt="Donut, the daft dodo" width="130">
+  </picture>
+</p>
+
+<h1 align="center">daft</h1>
+
+<p align="center">Parallel dev, by default. Stop switching branches — give every
+branch its own directory.</p>
+
+<div align="center">
 
 [![Docs](https://img.shields.io/badge/docs-daft.avihu.dev-blue)](https://daft.avihu.dev)
 [![CI](https://github.com/avihut/daft/actions/workflows/test.yml/badge.svg)](https://github.com/avihut/daft/actions/workflows/test.yml)
@@ -10,7 +22,7 @@
 [![Linux](https://img.shields.io/badge/Linux-supported-success)](https://github.com/avihut/daft/releases)
 [![Windows](<https://img.shields.io/badge/Windows-supported%20(WSL)-success>)](https://github.com/avihut/daft/releases)
 
-> Stop switching branches. Work on multiple branches simultaneously.
+</div>
 
 ![daft demo](https://github.com/user-attachments/assets/0ea922d5-6f01-4cdb-9b15-18d8a6112499)
 

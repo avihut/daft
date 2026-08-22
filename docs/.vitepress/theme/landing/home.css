@@ -1,0 +1,415 @@
+/**
+ * Landing page (#467 / #386): a centered hero with the install line as its
+ * call to action, the replayed session, five numbered points in workflow
+ * order — each a claim, its mechanism, and a demonstration from the verb
+ * registry — and the closing band. Everything below the hero renders
+ * through the `home-hero-after` slot (landing/HomeLanding.vue); the
+ * markdown body is empty. Viewer and stage styles live in graph/viewers.css.
+ * The shape and the rules for changing it: landing/CLAUDE.md.
+ */
+
+/* --- hero: centered, no image ------------------------------------- */
+
+.VPHome .VPHero.VPHero {
+  /* Tighter than VitePress's 64px so the session shows above the fold. */
+  padding-bottom: 36px;
+}
+.VPHome .VPHero .container {
+  flex-direction: column;
+  text-align: center;
+}
+.VPHome .VPHero .main {
+  margin: 0 auto;
+  width: 100%;
+  max-width: 980px;
+}
+.VPHome .VPHero .text {
+  max-width: none;
+  font-weight: 900;
+  font-size: clamp(36px, 5.2vw, 68px);
+  line-height: 1.06;
+  letter-spacing: -0.028em;
+  text-wrap: balance;
+}
+.VPHome .VPHero .tagline {
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 62ch;
+  font-size: clamp(16px, 1.35vw, 20px);
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+.dl-eyebrow {
+  font-family: var(--vp-font-family-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--daft-gold-text);
+  margin-bottom: 12px;
+}
+
+/* --- the install line ------------------------------------------------ */
+
+.dl-install {
+  margin: 30px auto 0;
+  max-width: 680px;
+  text-align: left;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 14px;
+  background: var(--vp-code-block-bg);
+  color: #e8e2d6;
+  overflow: hidden;
+}
+.dl-install-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 10px 0;
+  border-bottom: 1px solid rgba(154, 146, 127, 0.18);
+}
+.dl-install-tab {
+  font-family: var(--vp-font-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8f8775;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 4px 10px 8px;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+.dl-install-tab:hover {
+  color: #e8e2d6;
+}
+.dl-install-tab.on {
+  color: #e8e2d6;
+  border-bottom-color: var(--daft-gold);
+}
+.dl-install-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 12px 13px 18px;
+}
+.dl-install-cmd {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--vp-font-family-mono);
+  font-size: 13.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.dl-install-copy {
+  flex: none;
+  font-family: var(--vp-font-family-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  color: #bfb7a6;
+  background: rgba(154, 146, 127, 0.12);
+  border: 1px solid rgba(154, 146, 127, 0.28);
+  border-radius: 999px;
+  padding: 5px 13px;
+  cursor: pointer;
+  min-width: 72px;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+.dl-install-copy:hover {
+  color: #ffffff;
+  border-color: rgba(232, 226, 214, 0.5);
+}
+.dl-install-copy.done {
+  color: var(--daft-gold);
+  border-color: var(--daft-gold);
+}
+.dl-install-meta {
+  margin: 14px 0 0;
+  font-size: 13.5px;
+  color: var(--vp-c-text-3);
+}
+.dl-install-meta a {
+  color: var(--daft-link);
+  font-weight: 500;
+}
+.dl-install-meta a:hover {
+  text-decoration: underline;
+}
+.dl-install-tab:focus-visible,
+.dl-install-copy:focus-visible {
+  outline: 2px solid var(--daft-gold);
+  outline-offset: 2px;
+}
+
+/* --- shared shell -------------------------------------------------- */
+
+.dl-wrap {
+  margin: 0 auto;
+  max-width: 1400px;
+  padding: 0 24px;
+}
+@media (min-width: 640px) {
+  .dl-wrap {
+    padding: 0 48px;
+  }
+}
+@media (min-width: 960px) {
+  .dl-wrap {
+    padding: 0 64px;
+  }
+}
+
+/* --- the session ---------------------------------------------------- */
+
+.dl-hero-stage {
+  margin-top: 8px;
+}
+.dl-cap {
+  text-align: center;
+  font-size: 14px;
+  color: var(--vp-c-text-3);
+  margin: 14px 0 0;
+}
+.dl-cap b {
+  color: var(--daft-gold-text);
+  font-weight: 650;
+}
+
+/* --- the five points ------------------------------------------------- */
+
+.dl-points {
+  display: grid;
+  gap: 96px;
+  padding-top: 104px;
+}
+.dl-point {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 8fr);
+  gap: 56px;
+  align-items: center;
+}
+.dl-point-text {
+  max-width: 52ch;
+}
+.dl-point-n {
+  display: block;
+  font-family: var(--vp-font-family-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--daft-gold-text);
+  margin-bottom: 10px;
+}
+.dl-point h2 {
+  font-size: clamp(24px, 2.1vw, 31px);
+  font-weight: 900;
+  line-height: 1.15;
+  letter-spacing: -0.022em;
+  color: var(--vp-c-text-1);
+  margin: 0 0 14px;
+  text-wrap: balance;
+}
+.dl-point p {
+  font-size: 15.5px;
+  line-height: 1.65;
+  color: var(--vp-c-text-2);
+  margin: 0 0 12px;
+  text-wrap: pretty;
+}
+.dl-point p code {
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.88em;
+  color: var(--daft-gold-text);
+  background: color-mix(in srgb, var(--daft-gold) 9%, transparent);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.dl-point-link {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--daft-link);
+}
+.dl-point-link:hover {
+  text-decoration: underline;
+}
+.dl-point-stage {
+  --dl-stage-h: clamp(320px, 26vw, 440px);
+}
+
+/* --- before / after --------------------------------------------------- */
+
+.dl-ba {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.dl-pane {
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 14px;
+  padding: 18px 20px;
+  background: var(--vp-c-bg-soft);
+}
+.dl-pane.is-bad {
+  box-shadow: inset 3px 0 0 var(--daft-rust);
+}
+.dl-pane.is-good {
+  box-shadow: inset 3px 0 0 var(--daft-gold);
+}
+.dl-pane h3 {
+  font-family: var(--vp-font-family-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin: 0 0 12px;
+}
+.dl-pane.is-bad h3 {
+  color: var(--daft-rust-text);
+}
+.dl-pane.is-good h3 {
+  color: var(--daft-gold-text);
+}
+.dl-pane pre {
+  font-family: var(--vp-font-family-mono);
+  font-size: 12.4px;
+  line-height: 1.85;
+  color: var(--vp-c-text-2);
+  margin: 0;
+  overflow-x: auto;
+}
+.dl-pane .x {
+  color: var(--vp-c-text-2);
+}
+.dl-pane .w {
+  color: var(--daft-rust-text);
+}
+.dl-pane .k {
+  color: var(--vp-c-text-1);
+  font-weight: 600;
+}
+.dl-pane .ok {
+  color: var(--daft-link);
+}
+
+/* --- buttons -------------------------------------------------------- */
+
+.dl-ctas {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 22px;
+}
+.dl-btn {
+  display: inline-block;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  padding: 0 20px;
+  line-height: 38px;
+  font-size: 14px;
+  font-weight: 600;
+  transition:
+    transform 0.15s ease,
+    border-color 0.25s,
+    background-color 0.25s;
+}
+.dl-btn:hover {
+  transform: translateY(-1px);
+}
+.dl-btn.is-gold {
+  background: var(--vp-button-brand-bg);
+  color: var(--vp-button-brand-text);
+  font-weight: 700;
+}
+.dl-btn.is-gold:hover {
+  background: var(--vp-button-brand-hover-bg);
+}
+.dl-btn.is-ghost {
+  border-color: var(--vp-c-border);
+  color: var(--vp-c-text-1);
+}
+.dl-btn.is-ghost:hover {
+  border-color: var(--vp-c-text-3);
+}
+
+/* --- closing band ------------------------------------------------------ */
+
+.dl-band {
+  margin-top: 112px;
+  padding: 64px 0 72px;
+  text-align: center;
+  background: var(--vp-c-bg-alt);
+  border-top: 1px solid var(--vp-c-divider);
+}
+.dl-mark {
+  display: inline-block;
+}
+.light-mark {
+  display: inline-block;
+}
+.dark-mark {
+  display: none;
+}
+.dark .light-mark {
+  display: none;
+}
+.dark .dark-mark {
+  display: inline-block;
+}
+.dl-band h2 {
+  font-size: clamp(26px, 3vw, 34px);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  color: var(--vp-c-text-1);
+  margin: 12px 0 0;
+}
+.dl-band-text {
+  max-width: 64ch;
+  margin: 14px auto 0;
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+  text-wrap: pretty;
+}
+.dl-band .dl-install {
+  margin-top: 26px;
+}
+
+/* --- responsive -------------------------------------------------------- */
+
+@media (max-width: 960px) {
+  .dl-point {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .dl-point-text {
+    max-width: 60ch;
+  }
+  .dl-points {
+    gap: 72px;
+    padding-top: 72px;
+  }
+  .dl-band {
+    margin-top: 80px;
+  }
+}
+@media (max-width: 640px) {
+  .dl-ba {
+    grid-template-columns: 1fr;
+  }
+  .dl-install-row {
+    align-items: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dl-btn:hover {
+    transform: none;
+  }
+}

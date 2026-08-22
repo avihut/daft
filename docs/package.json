@@ -1,10 +1,15 @@
 {
   "name": "daft-docs",
-  "private": true,
-  "type": "module",
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
+    "@playwright/test": "1.62.0",
     "gray-matter": "^4.0.3",
     "vitepress": "^1.6.4"
+  },
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dumbshow/core": "0.4.1",
+    "@dumbshow/vue": "0.4.1"
   }
 }

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Install the Playwright browser for docs UI tests"
+#MISE depends=["docs:site:setup"]
+#MISE dir="docs"
+set -euo pipefail
+
+bunx playwright install chromium

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { searchForWorkspaceRoot } from "vite";
 import { defineConfig } from "vitepress";
 
 const cargoToml = readFileSync(
@@ -9,11 +10,60 @@ const cargoToml = readFileSync(
 const version = cargoToml.match(/^version\s*=\s*"(.+?)"/m)?.[1] ?? "unknown";
 const GITHUB_REPO = "https://github.com/avihut/daft";
 
+/**
+ * DUMBSHOW_SRC=<path to a dumbshow checkout> links the docs to the packages'
+ * sources for local development: `@dumbshow/core` and `@dumbshow/vue` resolve
+ * to that checkout's `packages/<name>/src` (its workspace-aliases.ts is the
+ * reference map), so machinery edits hot-reload here and the UI suite
+ * exercises them (theme/graph/CLAUDE.md, "Working against dumbshow
+ * source"). Unset — the default, and always in CI — the docs use the pinned
+ * package from node_modules.
+ */
+const dumbshowSrc = process.env.DUMBSHOW_SRC
+  ? resolve(process.env.DUMBSHOW_SRC)
+  : null;
+const docsRoot = resolve(import.meta.dirname, "..");
+
 export default defineConfig({
   vite: {
     resolve: {
       preserveSymlinks: true,
+      ...(dumbshowSrc
+        ? {
+            // The style alias comes first so the bare-name pattern cannot
+            // swallow it; both packages resolve to their source entries.
+            alias: [
+              {
+                find: /^@dumbshow\/core\/style\.css$/,
+                replacement: resolve(
+                  dumbshowSrc,
+                  "packages/core/src/editor/editor.css",
+                ),
+              },
+              {
+                find: /^@dumbshow\/core$/,
+                replacement: resolve(dumbshowSrc, "packages/core/src/index.ts"),
+              },
+              {
+                find: /^@dumbshow\/vue$/,
+                replacement: resolve(dumbshowSrc, "packages/vue/src/index.ts"),
+              },
+            ],
+            // One Vue: the linked source must resolve `vue` to ours, never
+            // to the checkout's own node_modules copy.
+            dedupe: ["vue"],
+          }
+        : {}),
     },
+    ...(dumbshowSrc
+      ? {
+          // The dev server only serves files under the workspace root;
+          // the linked checkout lives outside it.
+          server: {
+            fs: { allow: [searchForWorkspaceRoot(docsRoot), dumbshowSrc] },
+          },
+        }
+      : {}),
   },
   title: "daft",
   description: "Git Extensions Toolkit",
@@ -28,7 +78,31 @@ export default defineConfig({
     hostname: "https://daft.avihu.dev",
   },
   head: [
-    ["link", { rel: "icon", type: "image/png", href: "/favicon.png" }],
+    // PNG first, SVG last: SVG-capable browsers take the later `sizes: "any"`
+    // entry (the floating dodo); Safari and legacy fall back to the PNG tile.
+    [
+      "link",
+      { rel: "icon", type: "image/png", href: "/favicon.png", sizes: "48x48" },
+    ],
+    [
+      "link",
+      {
+        rel: "icon",
+        type: "image/svg+xml",
+        href: "/brand/daft-donut-favicon.svg",
+        sizes: "any",
+      },
+    ],
+    [
+      "link",
+      {
+        rel: "preload",
+        href: "/fonts/dm-sans-latin-wght-normal.woff2",
+        as: "font",
+        type: "font/woff2",
+        crossorigin: "",
+      },
+    ],
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:site_name", content: "daft" }],
     ["meta", { property: "og:locale", content: "en_US" }],
@@ -70,6 +144,12 @@ export default defineConfig({
     );
   },
   markdown: {
+    // Terminal-flavored code blocks keep a near-black ground in both color
+    // modes, so styled code sits comfortably next to real terminal captures.
+    theme: {
+      light: "github-dark",
+      dark: "github-dark",
+    },
     config: (md) => {
       // Escape angle-bracket placeholders like <branch>, <name>, etc.
       // that appear in CLI docs, preventing Vue from parsing them as HTML elements.
@@ -211,6 +291,11 @@ export default defineConfig({
     },
   },
   themeConfig: {
+    logo: {
+      light: "/brand/daft-donut.svg",
+      dark: "/brand/daft-donut-white.svg",
+      alt: "Donut, the daft dodo",
+    },
     search: {
       provider: "local",
     },

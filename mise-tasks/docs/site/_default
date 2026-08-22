@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-#MISE description="Start docs dev server at localhost:5173"
+#MISE description="Start docs dev server at localhost:5173 (DOCS_PORT overrides; DUMBSHOW_SRC=<dumbshow checkout> serves the package from source)"
 #MISE depends=["docs:site:setup"]
 #MISE dir="docs"
 set -euo pipefail
 
-bunx vitepress dev
+bunx vitepress dev ${DOCS_PORT:+--port "$DOCS_PORT" --strictPort}

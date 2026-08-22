@@ -38,6 +38,9 @@ node_modules/
 # Docs site build artifacts
 docs/.vitepress/dist/
 docs/.vitepress/cache/
+test-results/
+playwright-report/
+docs/tests/ui/.pixel-baseline.json
 
 # Playwright MCP artifacts
 .playwright-mcp/

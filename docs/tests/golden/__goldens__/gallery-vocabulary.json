@@ -1,0 +1,116 @@
+{
+  "duration": 56.69799999999998,
+  "steps": [
+    {
+      "at": 0.6,
+      "end": 4.962,
+      "cue": 1.9620000000000002,
+      "title": "Repo"
+    },
+    {
+      "at": 4.962,
+      "end": 9.988,
+      "cue": 5.9879999999999995,
+      "title": "Worktree"
+    },
+    {
+      "at": 9.988,
+      "end": 16.388,
+      "cue": 9.988,
+      "title": "Agent joins & leaves"
+    },
+    {
+      "at": 16.388,
+      "end": 23.386000000000003,
+      "cue": 17.51,
+      "title": "Carry"
+    },
+    {
+      "at": 23.386000000000003,
+      "end": 28.846000000000004,
+      "cue": 24.796000000000003,
+      "title": "Rename"
+    },
+    {
+      "at": 28.846000000000004,
+      "end": 33.418000000000006,
+      "cue": 29.968000000000004,
+      "title": "Relations"
+    },
+    {
+      "at": 33.418000000000006,
+      "end": 41.172,
+      "cue": 34.42000000000001,
+      "title": "Push & the forge"
+    },
+    {
+      "at": 41.172,
+      "end": 49.33199999999999,
+      "cue": 42.102,
+      "title": "Unlink & repo remove"
+    },
+    {
+      "at": 49.33199999999999,
+      "end": 55.89799999999998,
+      "cue": 49.99799999999998,
+      "title": "Sync & teardown"
+    }
+  ],
+  "termCount": 27,
+  "commands": [
+    "daft clone git@github.com:acme/app.git",
+    "daft start feature/login",
+    "daft start spike/faster-cart",
+    "daft carry feature/login",
+    "daft rename spike/faster-cart perf/cache",
+    "daft start svc feature/login",
+    "daft push feature/login",
+    "daft push feature/login",
+    "daft repo unlink svc",
+    "daft repo remove svc",
+    "daft sync"
+  ],
+  "actCounts": {
+    "repo": 2,
+    "wt": 5,
+    "port": 2,
+    "boot": 2,
+    "agent": 1,
+    "agent-leave": 1,
+    "carry": 1,
+    "rename": 1,
+    "relate": 1,
+    "arc": 1,
+    "merged": 2,
+    "unrelate": 1,
+    "repo-remove": 1,
+    "sync": 1,
+    "remove": 1
+  },
+  "eventTimeline": [
+    "2.362 repo",
+    "2.362 wt",
+    "2.912 port",
+    "6.388 wt",
+    "6.388 boot",
+    "7.938 port",
+    "10.538 agent",
+    "13.488 agent-leave",
+    "17.910 wt",
+    "20.136 carry",
+    "25.196 rename",
+    "30.368 repo",
+    "30.368 wt",
+    "30.368 relate",
+    "30.918 wt",
+    "30.918 boot",
+    "30.918 arc",
+    "38.172 merged",
+    "38.472 merged",
+    "42.502 unrelate",
+    "45.482 repo-remove",
+    "50.398 sync",
+    "51.998 remove"
+  ],
+  "camCount": 9
+}

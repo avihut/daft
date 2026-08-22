@@ -45,3 +45,10 @@ cargo:crossbeam-epoch@0.9.20
 # Same security exception Dependabot PRs get automatically.
 # Safe to remove after 2026-08-28.
 cargo:h2@0.4.18
+# why: first-party packages — released from avihut/dumbshow by its own pipeline
+# with provenance and pinned exact here; the age gate guards against hijacked
+# third-party releases, which does not apply to our own (mirrors the
+# minimumReleaseAgeExcludes entries in bunfig.toml / docs/bunfig.toml). One
+# line per pinned version: every bump re-adds the new versions the day they cut.
+npm:@dumbshow/core@0.4.1
+npm:@dumbshow/vue@0.4.1

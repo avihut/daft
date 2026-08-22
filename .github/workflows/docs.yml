@@ -30,6 +30,7 @@ on:
   pull_request:
     paths:
       - "docs/**"
+      - "mise-tasks/docs/**"
       - "Cargo.toml"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
@@ -38,6 +39,37 @@ permissions:
   contents: read
 
 jobs:
+  # The diagram language's golden suite: the compiled digests of every hero,
+  # gallery, catalog, and landing script, plus the pure semantics of verbs,
+  # shell parsing, renames, and element drops. Browser-free and
+  # platform-stable, so it belongs on the same gate as the build — a registry
+  # change that silently rewrites what the docs animate must not reach master
+  # green. Mirrored by the `docs-golden` pre-merge ring in daft.yml
+  # (CLAUDE.md, "Quality Gates: CI <-> Merge-Gate Parity").
+  #
+  # The Playwright UI suite (docs/tests/ui, `mise run docs:test:ui`) is
+  # deliberately NOT here yet: its specs drive real animation timing and go
+  # flaky under load, so it needs a soak before it can gate merges. Tracked
+  # separately; until then it is a local task, wired into no surface at all
+  # rather than into a gate that would block only daft-merge users.
+  golden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        working-directory: docs
+        run: bun install --frozen-lockfile
+
+      # `mise run docs:test:golden` is the same command with the bun-install
+      # gate in front of it; the install above is that gate.
+      - name: Golden tests
+        working-directory: docs
+        run: bun test tests/golden
+
   deploy:
     runs-on: ubuntu-latest
     steps:

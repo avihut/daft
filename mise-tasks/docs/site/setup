@@ -4,3 +4,16 @@
 set -euo pipefail
 
 bun install
+
+# Vite's dependency pre-bundle (.vitepress/cache/deps) is keyed on the
+# lockfiles Vite knows, and VitePress's Vite 5.4 knows bun.lockb, not the
+# text bun.lock — so a dependency bump never invalidates it: the dev server
+# (which the UI suite runs against) keeps serving the old package while the
+# build uses the new one. Key the cache on bun.lock ourselves.
+stamp=.vitepress/cache/bun.lock.sha256
+want=$(shasum -a 256 bun.lock | cut -d' ' -f1)
+if [[ ! -f "$stamp" || "$(cat "$stamp")" != "$want" ]]; then
+  rm -rf .vitepress/cache/deps
+  mkdir -p .vitepress/cache
+  printf '%s\n' "$want" > "$stamp"
+fi

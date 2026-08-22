@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run graph golden tests (bun test, no browser)"
+#MISE depends=["docs:site:setup"]
+#MISE dir="docs"
+set -euo pipefail
+
+bun test tests/golden "$@"

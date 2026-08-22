@@ -202,9 +202,22 @@ hooks:
         # Mirrors docs.yml's own `paths:` trigger.
         glob:
           - docs/**
+          - mise-tasks/docs/**
           - Cargo.toml
           - .github/workflows/docs.yml
         run: mise run docs:site:build
+
+      - name: docs-golden
+        description: "CI: docs.yml — the diagram language's golden suite"
+        root: "{merge_source_path}"
+        # Mirrors docs.yml's own `paths:` trigger. Not `deep`: the suite is
+        # browser-free and runs in under a second once bun has installed.
+        glob:
+          - docs/**
+          - mise-tasks/docs/**
+          - Cargo.toml
+          - .github/workflows/docs.yml
+        run: mise run docs:test:golden
 
       - name: msrv-check
         description: "CI: msrv-check — cargo check at the declared MSRV"
@@ -248,3 +261,4 @@ tasks:
 
 relations:
   - url: git@github.com:avihut/web-turf
+  - url: git@github.com:avihut/dumbshow.git

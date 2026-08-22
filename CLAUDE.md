@@ -558,6 +558,18 @@ review). Spelled-out paths keep the walk-up; guesses do not.
     Repo-Aware Command Grammar section above (go-shape positional when the slot
     is free and the command is read-only; exec-shape `--repo`/ `--all-repos`
     flags otherwise).
+11. **Decide the command's diagram-language representation** — if it changes
+    what the repo graph shows (creates, removes, or reshapes worktrees, repos,
+    relations between them, agents, sync), coordinate with the docs diagram
+    engine: add or extend the op spec and its catalog demo (plus a new act kind
+    only for genuinely new meaning) in `docs/.vitepress/theme/graph/` (see its
+    CLAUDE.md), in the same change or a filed follow-up, so docs animations can
+    show the command. The `/composer` editor's palette and shell parser derive
+    from the same registry, so a new op spec reaches them for free — but the
+    shell spelling lives in `graph/shell.ts` and needs its parse arm. If the
+    command changes what one of the landing page's five points shows, update
+    `docs/.vitepress/theme/landing/points.ts` per `landing/CLAUDE.md`. Commands
+    with no graph-visible effect (config, completions, ...) skip this step.
 
 ## Adding a New DB-backed Feature
 
@@ -693,6 +705,17 @@ adding or changing user-facing features.
   template
 - `docs/about/` — meta (why-daft, glossary, FAQ, troubleshooting, comparison,
   contributing, changelog)
+- `docs/index.md` + `docs/.vitepress/theme/landing/` — the landing page: the
+  install line, the replayed session, five points in workflow order, the close.
+  Its shape and the rules for changing it (copy as mechanism, scenes from the
+  verb registry, five points — swap, never append) are in
+  `docs/.vitepress/theme/landing/CLAUDE.md`
+- `docs/composer.md` — the full-window diagram composer (unlisted): the
+  `@dumbshow/vue` editor (over `@dumbshow/core`) loaded with daft's language
+  pack. The editor's document model and hard rules are normative in the dumbshow
+  repo's CLAUDE.md; the pack side (element semantics, inspector, embed template)
+  in `docs/.vitepress/theme/graph/CLAUDE.md` ("The composer" + the daft-sandbox
+  north star)
 - Every page needs `title` and `description` YAML frontmatter
 - No emoji in docs
 - **Update `SKILL.md`** when changes affect how an agent should interact with
@@ -705,6 +728,10 @@ adding or changing user-facing features.
   shape requirements, new style rules. The skill is what guides future recipe
   authors (human or agent), and divergence between the skill and the recipes is
   the silent way the conventions rot.
+- **Coordinate the diagram language** (`docs/.vitepress/theme/graph/`, see its
+  CLAUDE.md) when a new command lands or an existing one significantly changes
+  graph-visible behavior (worktrees, repos, relations, agents, sync) — the
+  animated diagrams must keep telling the truth about daft's verbs.
 
 ### Docs Site (VitePress)
 

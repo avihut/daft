@@ -1,0 +1,116 @@
+{
+  "duration": 51.34799999999998,
+  "steps": [
+    {
+      "at": 0.6,
+      "end": 4.962,
+      "cue": 1.9620000000000002,
+      "title": "Clone"
+    },
+    {
+      "at": 4.962,
+      "end": 10.017999999999999,
+      "cue": 5.867999999999999,
+      "title": "Boot"
+    },
+    {
+      "at": 10.017999999999999,
+      "end": 17.662,
+      "cue": 11.139999999999999,
+      "title": "Parallel"
+    },
+    {
+      "at": 17.662,
+      "end": 23.628,
+      "cue": 18.328,
+      "title": "Agents"
+    },
+    {
+      "at": 23.628,
+      "end": 31.924000000000003,
+      "cue": 24.702,
+      "title": "Span repos"
+    },
+    {
+      "at": 31.924000000000003,
+      "end": 40.18599999999999,
+      "cue": 33.142,
+      "title": "Ship"
+    },
+    {
+      "at": 40.18599999999999,
+      "end": 50.54799999999998,
+      "cue": 41.331999999999994,
+      "title": "Clean up"
+    }
+  ],
+  "termCount": 32,
+  "commands": [
+    "daft clone git@github.com:acme/web.git",
+    "daft start checkout",
+    "daft start bugfix/cart-total",
+    "daft start spike/faster-cart",
+    "daft list",
+    "daft start orders checkout",
+    "daft start payments checkout",
+    "daft exec --related -- pnpm test",
+    "daft exec --related -- git push",
+    "daft remove spike/faster-cart",
+    "daft sync"
+  ],
+  "actCounts": {
+    "repo": 3,
+    "wt": 8,
+    "port": 8,
+    "boot": 4,
+    "agent": 2,
+    "relate": 3,
+    "arc": 2,
+    "merged": 3,
+    "remove": 4,
+    "sync": 3
+  },
+  "eventTimeline": [
+    "2.362 repo",
+    "2.362 wt",
+    "2.912 port",
+    "6.268 wt",
+    "6.818 boot",
+    "7.968 port",
+    "11.540 wt",
+    "11.540 boot",
+    "12.640 port",
+    "14.712 wt",
+    "15.612 port",
+    "19.278 agent",
+    "19.828 agent",
+    "25.102 repo",
+    "25.102 wt",
+    "25.102 port",
+    "25.102 relate",
+    "25.652 wt",
+    "25.652 boot",
+    "25.652 arc",
+    "26.452 port",
+    "28.524 repo",
+    "28.524 wt",
+    "28.524 port",
+    "28.524 relate",
+    "28.524 relate",
+    "29.074 wt",
+    "29.074 boot",
+    "29.074 arc",
+    "29.874 port",
+    "37.386 merged",
+    "37.636 merged",
+    "37.886 merged",
+    "41.732 remove",
+    "43.348 sync",
+    "43.348 sync",
+    "43.348 sync",
+    "45.048 remove",
+    "45.348 remove",
+    "45.648 remove"
+  ],
+  "camCount": 8
+}
