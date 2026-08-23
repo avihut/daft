@@ -1,12 +1,13 @@
 //! Adapters bridging core traits to the command layer.
 
 use super::{
-    ConflictSide, ConsolidationChoice, ConsolidationPrompter, ConsolidationRequest, HookOutcome,
-    HookRunner, ProgressSink,
+    ConflictSide, ConflictSubject, ConsolidationChoice, ConsolidationPrompter,
+    ConsolidationRequest, HookOutcome, HookRunner, ProgressSink,
 };
 use crate::executor::cli_presenter::CliPresenter;
 use crate::executor::presenter::JobPresenter;
 use crate::hooks::HookExecutor;
+use crate::hooks::visitor_seeds::ConsolidationScope;
 use crate::output::Output;
 use crate::prompt::{PromptConfig, PromptOption, PromptResult, single_key_select};
 use crate::settings::HookOutputConfig;
@@ -129,12 +130,22 @@ fn prompt_refined(output: &mut dyn Output, req: &ConsolidationRequest) -> Consol
         req.branch, req.target_display
     ));
     for file in &req.files {
-        if file.whole_file {
-            output.info(&format!(
-                "  {} — no seed provenance; consolidating overlays the whole file",
-                file.filename
-            ));
-            continue;
+        match file.scope {
+            ConsolidationScope::WholeFile => {
+                output.info(&format!(
+                    "  {} — no seed provenance; consolidating overlays the whole file",
+                    file.filename
+                ));
+                continue;
+            }
+            ConsolidationScope::NewFile => {
+                output.info(&format!(
+                    "  {} — not in the target; consolidating copies the entire file",
+                    file.filename
+                ));
+                continue;
+            }
+            ConsolidationScope::Keys => {}
         }
         if !file.adopt_keys.is_empty() {
             output.info(&format!(
@@ -186,12 +197,15 @@ fn prompt_refined(output: &mut dyn Output, req: &ConsolidationRequest) -> Consol
 
 /// Interactive conflict-side prompt, shared by both bridges (see
 /// [`prompt_refined`]).
-fn prompt_conflict_side(output: &mut dyn Output, filename: &str, keys: &[String]) -> ConflictSide {
+fn prompt_conflict_side(
+    output: &mut dyn Output,
+    filename: &str,
+    subject: &ConflictSubject,
+) -> ConflictSide {
     output.pause_spinner();
     eprint!(
-        "{}: keep the target's version or take the removed worktree's for {}? [s/t/A] ",
-        filename,
-        keys.join(", ")
+        "{filename}: keep the target's version or take the removed worktree's for {subject}? \
+         [s/t/A] "
     );
     let result = single_key_select(&PromptConfig {
         options: vec![
@@ -227,8 +241,8 @@ impl ConsolidationPrompter for CommandBridge<'_> {
         prompt_refined(self.output, req)
     }
 
-    fn on_conflicts(&mut self, filename: &str, keys: &[String]) -> ConflictSide {
-        prompt_conflict_side(self.output, filename, keys)
+    fn on_conflicts(&mut self, filename: &str, subject: &ConflictSubject) -> ConflictSide {
+        prompt_conflict_side(self.output, filename, subject)
     }
 }
 
@@ -575,13 +589,13 @@ impl ConsolidationPrompter for TimelineBridge<'_> {
         handle.suspend_for_prompt(|| prompt_refined(output, req))
     }
 
-    fn on_conflicts(&mut self, filename: &str, keys: &[String]) -> ConflictSide {
+    fn on_conflicts(&mut self, filename: &str, subject: &ConflictSubject) -> ConflictSide {
         if !self.prompts_enabled {
             return ConflictSide::Abort;
         }
         let handle = self.timeline.handle();
         let output = &mut *self.output;
-        handle.suspend_for_prompt(|| prompt_conflict_side(output, filename, keys))
+        handle.suspend_for_prompt(|| prompt_conflict_side(output, filename, subject))
     }
 }
 

@@ -286,14 +286,52 @@ pub fn blocking_files(classes: &[FileClass]) -> Vec<&FileClass> {
 /// removal flow (`branch_delete`) and the merge flow.
 pub struct ConsolidationPreview {
     pub filename: String,
-    /// Key paths a three-way merge adopts from the source.
+    /// Key paths a three-way merge adopts from the source. Key paths only —
+    /// see [`ConsolidationScope`] for why the non-per-key cases are not
+    /// spelled here.
     pub adopt_keys: Vec<String>,
-    /// Key paths both sides changed — a side must be chosen.
+    /// Key paths both sides changed — a side must be chosen. Key paths only.
     pub conflict_keys: Vec<String>,
-    /// True when there is no usable seed base: per-key reasoning is
-    /// impossible and the choice is whole-file.
-    pub whole_file: bool,
+    /// Whether the two lists above describe the consolidation at all.
+    pub scope: ConsolidationScope,
     pub resolution: PreviewResolution,
+}
+
+/// What a consolidation moves for one file.
+///
+/// Two of the three cases are not per-key at all, and both used to be
+/// encoded as a prose string inside `adopt_keys` / `conflict_keys` (#902).
+/// Every render site then formatted the sentinel as if it were a key path —
+/// counting it, joining it, and wrapping it in the parentheses the site puts
+/// around a key list — so the user read
+/// `adopted 1 key(s) ((entire file — target has none))`. Naming the case
+/// keeps the key lists honest: they hold key paths, or they are empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsolidationScope {
+    /// A three-way merge ran: `adopt_keys` / `conflict_keys` are real keys.
+    Keys,
+    /// The target has no such file — consolidating copies it verbatim, so
+    /// there is nothing to reason about per key.
+    NewFile,
+    /// No usable seed base (pre-provenance worktree, unparseable YAML):
+    /// per-key reasoning is impossible and the choice is whole-file.
+    WholeFile,
+}
+
+impl ConsolidationPreview {
+    /// What a side choice is being asked *about*: the conflicted key paths,
+    /// or the file as a whole. One mapping, so the merge flow and the
+    /// removal flow cannot phrase the same question two different ways.
+    pub fn conflict_subject(&self) -> crate::core::ConflictSubject {
+        match self.scope {
+            ConsolidationScope::WholeFile => crate::core::ConflictSubject::WholeFile,
+            // `NewFile` never needs a side (its resolution is unambiguous),
+            // and its key list is empty either way.
+            ConsolidationScope::Keys | ConsolidationScope::NewFile => {
+                crate::core::ConflictSubject::Keys(self.conflict_keys.clone())
+            }
+        }
+    }
 }
 
 pub enum PreviewResolution {
@@ -337,9 +375,9 @@ pub fn prepare_consolidation(
     if !target_path.is_file() {
         return ConsolidationPreview {
             filename: filename.clone(),
-            adopt_keys: vec!["(entire file — target has none)".to_string()],
+            adopt_keys: Vec::new(),
             conflict_keys: Vec::new(),
-            whole_file: false,
+            scope: ConsolidationScope::NewFile,
             resolution: PreviewResolution::Resolved(source_str),
         };
     }
@@ -369,7 +407,7 @@ pub fn prepare_consolidation(
                 filename: filename.clone(),
                 adopt_keys: outcome.took_from_theirs,
                 conflict_keys: Vec::new(),
-                whole_file: false,
+                scope: ConsolidationScope::Keys,
                 resolution: PreviewResolution::Resolved(content),
             };
         }
@@ -384,7 +422,7 @@ pub fn prepare_consolidation(
             filename: filename.clone(),
             adopt_keys: outcome.took_from_theirs,
             conflict_keys: outcome.conflicts,
-            whole_file: false,
+            scope: ConsolidationScope::Keys,
             resolution: PreviewResolution::NeedsSide {
                 target_priority,
                 source_priority,
@@ -406,8 +444,8 @@ pub fn prepare_consolidation(
     ConsolidationPreview {
         filename: filename.clone(),
         adopt_keys: Vec::new(),
-        conflict_keys: vec!["(entire file — no seed provenance)".to_string()],
-        whole_file: true,
+        conflict_keys: Vec::new(),
+        scope: ConsolidationScope::WholeFile,
         resolution: PreviewResolution::NeedsSide {
             target_priority: target_str,
             source_priority,
@@ -479,6 +517,112 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    /// #902: the two cases that are not per-key must say so in the scope,
+    /// not by putting prose in `adopt_keys` / `conflict_keys`. Every render
+    /// site formats those lists as key paths — counting them, joining them,
+    /// parenthesising them — so a sentinel reached the user as
+    /// `adopted 1 key(s) ((entire file — target has none))`.
+    #[test]
+    fn a_target_without_the_file_is_scoped_new_file_with_no_keys() {
+        let source = tempdir().unwrap();
+        let target = tempdir().unwrap();
+        fs::write(source.path().join("daft.yml"), "hooks: {}\n").unwrap();
+
+        let class = FileClass {
+            filename: "daft.yml".to_string(),
+            class: SeedClass::Refined,
+            subsumed_by_target: false,
+        };
+        let preview = prepare_consolidation(None, "feat/x", source.path(), target.path(), &class);
+
+        assert_eq!(preview.scope, ConsolidationScope::NewFile);
+        assert!(
+            preview.adopt_keys.is_empty() && preview.conflict_keys.is_empty(),
+            "a verbatim copy has no key paths to report, got adopt={:?} conflict={:?}",
+            preview.adopt_keys,
+            preview.conflict_keys
+        );
+        assert!(matches!(
+            preview.resolution,
+            PreviewResolution::Resolved(ref content) if content == "hooks: {}\n"
+        ));
+    }
+
+    /// The other half of #902: no usable seed base means the choice is the
+    /// whole file, and `conflict_keys` stays empty rather than holding a
+    /// prose stand-in that the abort message would parenthesise twice.
+    #[test]
+    fn no_seed_base_is_scoped_whole_file_with_no_keys() {
+        let source = tempdir().unwrap();
+        let target = tempdir().unwrap();
+        fs::write(source.path().join("daft.yml"), "hooks:\n  a: 1\n").unwrap();
+        fs::write(target.path().join("daft.yml"), "hooks:\n  a: 2\n").unwrap();
+
+        // NoSeed: no seed content is looked up at all, so there is no base.
+        let class = FileClass {
+            filename: "daft.yml".to_string(),
+            class: SeedClass::NoSeed,
+            subsumed_by_target: false,
+        };
+        let preview = prepare_consolidation(None, "feat/x", source.path(), target.path(), &class);
+
+        assert_eq!(preview.scope, ConsolidationScope::WholeFile);
+        assert!(preview.conflict_keys.is_empty(), "no key paths to report");
+        assert!(matches!(
+            preview.resolution,
+            PreviewResolution::NeedsSide { .. }
+        ));
+        assert_eq!(
+            preview.conflict_subject(),
+            crate::core::ConflictSubject::WholeFile
+        );
+    }
+
+    /// A real three-way merge keeps naming keys — the scope change must not
+    /// flatten the per-key case into prose.
+    #[test]
+    fn a_three_way_merge_is_scoped_keys_and_names_them() {
+        let common = tempdir().unwrap();
+        let state = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        let target = tempdir().unwrap();
+
+        // Real config keys: `merge3` walks YamlConfig's typed fields, so a
+        // made-up key parses away to nothing and the merge would report no
+        // adoption for the wrong reason.
+        fs::write(source.path().join("daft.yml"), "shared:\n  - .env\n").unwrap();
+        let ctx = SeedsContext::open_in(common.path(), state.path()).expect("store opens");
+        ctx.record_seed_file("feat/x", source.path(), "daft.yml");
+
+        // Source adds a key the seed lacked; the target changed a different
+        // one, so the three-way merge adopts `copy` without conflicting.
+        fs::write(
+            source.path().join("daft.yml"),
+            "shared:\n  - .env\ncopy:\n  - .venv/\n",
+        )
+        .unwrap();
+        fs::write(
+            target.path().join("daft.yml"),
+            "shared:\n  - .env\n  - .tool-versions\n",
+        )
+        .unwrap();
+
+        let class = FileClass {
+            filename: "daft.yml".to_string(),
+            class: SeedClass::Refined,
+            subsumed_by_target: false,
+        };
+        let preview =
+            prepare_consolidation(Some(&ctx), "feat/x", source.path(), target.path(), &class);
+
+        assert_eq!(preview.scope, ConsolidationScope::Keys);
+        assert_eq!(preview.adopt_keys, vec!["copy".to_string()]);
+        assert_eq!(
+            preview.conflict_subject(),
+            crate::core::ConflictSubject::Keys(Vec::new())
+        );
+    }
 
     #[test]
     fn open_in_round_trips_through_a_real_store() {
