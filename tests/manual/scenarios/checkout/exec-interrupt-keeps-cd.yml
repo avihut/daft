@@ -17,7 +17,15 @@ steps:
   - name: SIGINT during -x still writes DAFT_CD_FILE
     # `-x` runs through a `$SHELL -c` that daft spawns directly, so inside the
     # command `$PPID` is daft's own pid and `kill -INT $PPID` interrupts daft
-    # mid-exec with no timing race.
+    # mid-exec. The `sleep` after it is what makes that race-free: the signal
+    # is acted on by daft's handler thread (an ordinary `exit(130)`), while
+    # daft's main thread is parked in `wait` on this command — and if the
+    # command exited the instant the signal was sent, a loaded runner could
+    # schedule the main thread's short tail to completion (exit 0) before the
+    # handler thread ever ran. Holding the command open for a second keeps
+    # the main thread parked until the handler has fired. `&&` keeps the
+    # exact-code assertion below honest: a `kill` that fails (no `$PPID`
+    # support) still exits non-zero instead of hiding behind the sleep.
     #
     # Scope, precisely: this signals daft's *pid*, where a keyboard Ctrl-C
     # signals the whole foreground process group. That difference decides
@@ -33,7 +41,7 @@ steps:
     run: |
       cd_file=$(mktemp)
       rc=0
-      DAFT_CD_FILE="$cd_file" daft go develop -x 'kill -INT $PPID' || rc=$?
+      DAFT_CD_FILE="$cd_file" daft go develop -x 'kill -INT $PPID && sleep 1' || rc=$?
       echo "RC=$rc"
       target=$(cat "$cd_file")
       # 130 == interrupted. Asserting the exact code is what keeps this

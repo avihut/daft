@@ -123,10 +123,11 @@ pub(crate) struct PushSupervision {
 
 pub struct GitCommand {
     pub(crate) quiet: bool,
-    /// Whether dispatched ops take the gix arm. Constructed `false`: the
-    /// settings resolver (`DaftSettings::use_gitoxide`, default on since
-    /// #733) is the sole opt-in source via `with_gitoxide`, so call sites
-    /// that never thread the setting stay on the subprocess backend.
+    /// Whether dispatched ops take the gix arm. Constructed `true` (#883):
+    /// a bare `GitCommand` — the `src/core/repo.rs` wrappers, doctor, the
+    /// forge gate — answers from gix like every site that threads the
+    /// setting does by default, so the setting's remaining job is the
+    /// explicit opt-out (`with_gitoxide(false)`) until the switch goes.
     pub(crate) use_gitoxide: bool,
     /// Repository handles discovered by the gix arm, keyed by the working
     /// directory each was discovered from (#868). One `GitCommand` lives
@@ -151,7 +152,7 @@ impl GitCommand {
     pub fn new(quiet: bool) -> Self {
         Self {
             quiet,
-            use_gitoxide: false,
+            use_gitoxide: true,
             gix_repos: Mutex::new(HashMap::new()),
             cancel: None,
             push_supervision: None,
@@ -297,11 +298,11 @@ mod tests {
     fn test_git_command_new() {
         let git = GitCommand::new(true);
         assert!(git.quiet);
-        assert!(!git.use_gitoxide);
+        assert!(git.use_gitoxide, "a bare command takes the gix arm (#883)");
 
         let git = GitCommand::new(false);
         assert!(!git.quiet);
-        assert!(!git.use_gitoxide);
+        assert!(git.use_gitoxide);
     }
 
     #[test]
@@ -411,6 +412,104 @@ mod tests {
             separate, 3,
             "independent instances each discover (guards the probe)"
         );
+    }
+
+    /// #883: a bare `GitCommand` now answers from the gix arm, so the four
+    /// `src/core/repo.rs` wrappers (`is_git_repository`, `get_git_common_dir`,
+    /// `get_current_worktree_path`, `get_current_branch`) do too. Pin that
+    /// the gix answers are what `git` itself says in every state they are
+    /// asked from — a worktree root, a subdirectory, a linked worktree, a
+    /// bare repository, an unborn branch, and outside any repository.
+    #[test]
+    #[serial_test::serial]
+    fn bare_git_command_answers_match_the_git_cli() {
+        for var in GIT_ENV_VARS {
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let main_wt = base.join("main");
+        std::fs::create_dir(&main_wt).unwrap();
+        git_at(&main_wt, &["init", "-b", "main"]);
+        git_at(&main_wt, &["commit", "--allow-empty", "-m", "seed"]);
+        let sub = main_wt.join("src").join("deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        let feat_wt = base.join("feat");
+        git_at(
+            &main_wt,
+            &["worktree", "add", "-b", "feat", feat_wt.to_str().unwrap()],
+        );
+        let bare = base.join("bare.git");
+        git_at(
+            &base,
+            &[
+                "clone",
+                "--quiet",
+                "--bare",
+                main_wt.to_str().unwrap(),
+                "bare.git",
+            ],
+        );
+        let unborn = base.join("unborn");
+        std::fs::create_dir(&unborn).unwrap();
+        git_at(&unborn, &["init", "-b", "fresh"]);
+        let outside = base.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+
+        // What git says, asked at `cwd`.
+        let cli = |cwd: &std::path::Path, args: &[&str]| -> Option<String> {
+            let out = crate::utils::git_command_at(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+        let canon = |cwd: &std::path::Path, p: &str| cwd.join(p).canonicalize().unwrap();
+
+        let _cwd_guard = CwdGuard::new();
+        let git = GitCommand::new(true);
+
+        for cwd in [&main_wt, &sub, &feat_wt, &bare, &unborn] {
+            std::env::set_current_dir(cwd).unwrap();
+            let here = cwd.display();
+            reset_discover_count();
+
+            assert!(git.is_inside_git_repo().unwrap(), "{here}: inside a repo");
+            assert!(cli(cwd, &["rev-parse", "--git-dir"]).is_some());
+
+            let expected_common =
+                canon(cwd, &cli(cwd, &["rev-parse", "--git-common-dir"]).unwrap());
+            let common = git.rev_parse_git_common_dir().unwrap();
+            assert_eq!(canon(cwd, &common), expected_common, "{here}: common dir");
+
+            let expected_top = cli(cwd, &["rev-parse", "--show-toplevel"]);
+            let top = git.get_current_worktree_path().ok();
+            assert_eq!(
+                top.map(|p| p.canonicalize().unwrap()),
+                expected_top.map(|p| canon(cwd, &p)),
+                "{here}: toplevel"
+            );
+
+            let expected_branch = cli(cwd, &["symbolic-ref", "--short", "HEAD"]);
+            assert_eq!(
+                git.symbolic_ref_short_head().ok(),
+                expected_branch,
+                "{here}: current branch"
+            );
+            // The answers above came from gix — one discovery for this cwd,
+            // shared by the three handle-backed questions — not from a
+            // subprocess arm that would trivially agree with the CLI.
+            assert_eq!(discover_count(), 1, "{here}: answers came from gix");
+        }
+
+        std::env::set_current_dir(&outside).unwrap();
+        assert!(!git.is_inside_git_repo().unwrap(), "outside: not a repo");
+        assert!(cli(&outside, &["rev-parse", "--git-dir"]).is_none());
     }
 
     /// #868 regression: one `GitCommand` reused across a `chdir` must answer

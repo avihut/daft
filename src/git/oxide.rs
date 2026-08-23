@@ -1,8 +1,10 @@
 //! Gitoxide-based implementations of git operations.
 //!
 //! Each function provides a native Rust alternative to a git subprocess call.
-//! These are called from `GitCommand` methods unless `daft.gitoxide` is set
-//! to `false` (the opt-out; gitoxide is the stable default since #733).
+//! These are called from `GitCommand` methods by default (#883): a bare
+//! `GitCommand` takes the gix arm. `daft.gitoxide` only reaches sites that
+//! thread it through `with_gitoxide`, where `false` is the explicit opt-out
+//! — until the switch itself goes.
 
 use anyhow::{Context, Result};
 use gix::Repository;
@@ -64,16 +66,16 @@ pub fn get_current_worktree_path(repo: &Repository) -> Result<PathBuf> {
 // --- Group 2: References & Branches ---
 
 /// gitoxide equivalent of `git symbolic-ref --short HEAD`
+///
+/// Reads the name HEAD points at, not the reference it resolves to, so an
+/// unborn branch (a fresh `git init` / `daft init`, before the first commit)
+/// answers its name exactly as `git symbolic-ref --short HEAD` does. Only a
+/// detached HEAD is an error — the same shape as git's "ref HEAD is not a
+/// symbolic ref".
 pub fn symbolic_ref_short_head(repo: &Repository) -> Result<String> {
-    let head = repo.head_ref().context("Failed to read HEAD")?;
-    match head {
-        Some(reference) => {
-            let short = reference.name().shorten().to_string();
-            Ok(short)
-        }
-        None => {
-            anyhow::bail!("HEAD is detached or unborn");
-        }
+    match repo.head_name().context("Failed to read HEAD")? {
+        Some(name) => Ok(name.shorten().to_string()),
+        None => anyhow::bail!("HEAD is detached"),
     }
 }
 
@@ -783,6 +785,54 @@ mod tests {
         let (_dir, repo) = create_test_repo();
         let result = symbolic_ref_short_head(&repo).unwrap();
         assert_eq!(result, "main");
+    }
+
+    /// An unborn HEAD (fresh `git init`, no commit yet) names its branch,
+    /// as `git symbolic-ref --short HEAD` does; only a detached HEAD errs.
+    /// `daft init` leaves the new worktree in exactly this state, and
+    /// `daft exec` / `daft push` ask the current branch there.
+    #[test]
+    #[serial]
+    fn test_symbolic_ref_short_head_unborn_and_detached() {
+        strip_git_env();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().canonicalize().unwrap();
+        git_cmd()
+            .args(["init", "-b", "main"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        let repo = gix::discover(&path).unwrap();
+        assert_eq!(
+            symbolic_ref_short_head(&repo).unwrap(),
+            "main",
+            "an unborn branch still has a name"
+        );
+
+        git_cmd()
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "seed",
+            ])
+            .current_dir(&path)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["checkout", "--detach", "--quiet"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        let repo = gix::discover(&path).unwrap();
+        let err = symbolic_ref_short_head(&repo).unwrap_err();
+        assert!(err.to_string().contains("detached"), "got: {err}");
     }
 
     #[test]

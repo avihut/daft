@@ -1337,7 +1337,7 @@ fn git_specs() -> Vec<SettingSpec> {
         SettingSpec::git(
             keys::GITOXIDE,
             "gitoxide backend",
-            "In-process gitoxide backend; off forces git subprocesses.",
+            "In-process gitoxide backend for the operations that read this key; off opts those back to git subprocesses.",
             Update,
             Bool,
             Fixed("true"),

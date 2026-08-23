@@ -773,9 +773,11 @@ fn build_tui_rows(
         WorktreeInfo, get_branch_creation_timestamp, get_commit_metadata,
     };
 
-    // Subprocess backend is fine here: this runs once at TUI bootstrap for a
-    // typical 1-10 worktrees. Threading `use_gitoxide` through is out of
-    // scope; `get_commit_metadata` falls back cleanly when gitoxide is off.
+    // A bare command answers from gix since #883, same as every site that
+    // threads the setting — so there is nothing to thread here. This runs
+    // once at TUI bootstrap for a typical 1-10 worktrees and stays
+    // in-process; `get_commit_metadata` falls back to `git log` if the gix
+    // read fails.
     let git = crate::git::GitCommand::new(true);
 
     worktrees
