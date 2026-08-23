@@ -1046,66 +1046,22 @@ mod resolution_tests {
         )
     }
 
-    /// Which git backend `GitCommand` runs on.
+    /// Run one test body with a fresh cwd guard and fresh isolation.
     ///
-    /// `daft.gitoxide` defaults to **on** in production (#733) while
-    /// `GitCommand::new` leaves it off, so a fixture that only ever built the
-    /// default would test the configuration almost nobody runs. The probes
-    /// under resolution diverge between the two — `gix` answers from
-    /// `repo.workdir()`, the subprocess from `rev-parse --show-toplevel` — and
-    /// that single value pivots the implicit target, the default source, and
-    /// the self-copy refusal at once. Every resolution test therefore runs
-    /// twice.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Backend {
-        Subprocess,
-        Gitoxide,
+    /// Callers must be `#[serial]` — the cwd and the daft dirs are
+    /// process-global.
+    fn with_isolation(body: impl FnOnce()) {
+        let _cwd = CwdGuard::new();
+        let _iso = isolate();
+        body();
     }
 
-    impl Backend {
-        const ALL: [Backend; 2] = [Backend::Subprocess, Backend::Gitoxide];
-
-        fn git(self) -> GitCommand {
-            GitCommand::new(true).with_gitoxide(self == Backend::Gitoxide)
-        }
-    }
-
-    thread_local! {
-        /// The backend the current [`each_backend`] pass is exercising.
-        ///
-        /// Carried out-of-band rather than threaded through every call: the
-        /// backend is a property of the *environment* a test runs in, like the
-        /// isolated state dir beside it, and every one of these tests asserts
-        /// the same expectations under both. Making it an explicit argument
-        /// would put a value no assertion mentions into every signature.
-        static BACKEND: std::cell::Cell<Backend> = const { std::cell::Cell::new(Backend::Subprocess) };
-    }
-
-    /// Run one test body once per backend, with a fresh layout and fresh
-    /// isolation each time.
-    ///
-    /// A fresh fixture per pass rather than one layout run twice: `execute`
-    /// mutates the target once the copy engine lands, and a second pass over a
-    /// warmed worktree would silently start testing the idempotence path
-    /// instead of resolution.
-    ///
-    /// Callers must be `#[serial]` — the cwd, the daft dirs, and the backend
-    /// cell are all process- or thread-global.
-    fn each_backend(mut body: impl FnMut()) {
-        for backend in Backend::ALL {
-            let _cwd = CwdGuard::new();
-            let _iso = isolate();
-            BACKEND.with(|b| b.set(backend));
-            body();
-        }
-    }
-
-    /// Run `execute` from `cwd` on the backend the current [`each_backend`]
-    /// pass selected. The daft state and data dirs must already be isolated by
-    /// that caller — the default-branch probe reads the repo catalog.
+    /// Run `execute` from `cwd`. The daft state and data dirs must already be
+    /// isolated by the caller — the default-branch probe reads the repo
+    /// catalog.
     fn run(layout: &Layout, cwd: &Path, params: WarmParams) -> Result<WarmResult> {
         std::env::set_current_dir(cwd).unwrap();
-        let git = BACKEND.with(|b| b.get()).git();
+        let git = GitCommand::new(true);
         execute(&params, &git, &layout.root, &mut NullSink)
     }
 
@@ -1135,7 +1091,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_named_target_is_warmed_from_where_you_stand() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
 
             let result = run(&layout, &layout.wt("main"), params(Some("develop"), None))
@@ -1158,7 +1114,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_target_resolves_by_path_branch_or_directory_name() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&[])
                 .with_worktree("wt-feature", "feature/login")
                 .with_origin_head();
@@ -1188,7 +1144,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn from_resolves_by_the_same_spellings_as_the_target() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"])
                 .with_worktree("wt-feature", "feature/login")
                 .with_origin_head();
@@ -1216,7 +1172,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn standing_in_the_target_falls_back_to_the_default_branch_worktree() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
 
             let result = run(&layout, &layout.wt("develop"), params(None, None))
@@ -1232,7 +1188,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn naming_your_own_worktree_as_the_target_still_falls_back() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
 
             let result = run(
@@ -1251,7 +1207,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn from_wins_over_the_current_worktree() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop", "release"]).with_origin_head();
 
             let result = run(
@@ -1272,7 +1228,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_source_equal_to_the_target_is_refused() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
 
             let err = err_of(
@@ -1298,7 +1254,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn warming_the_default_branch_worktree_from_itself_is_refused() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&[]).with_origin_head();
 
             let err = err_of(
@@ -1312,7 +1268,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn an_unknown_target_names_the_word_that_failed() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
 
             let err = err_of(
@@ -1330,7 +1286,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn an_unknown_from_names_the_word_that_failed() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
 
             let err = err_of(
@@ -1351,7 +1307,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn an_identical_tip_outranks_the_default_branch_fallback() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop", "twin"]).with_origin_head();
             // `main` is the default branch and moves ahead; `twin` stays where
             // `develop` is, so the two rungs disagree and the test can tell
@@ -1378,7 +1334,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn an_identical_tip_tie_prefers_the_worktree_you_are_standing_in() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop", "twin", "triplet"]).with_origin_head();
             layout.diverge("main");
 
@@ -1400,7 +1356,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn an_undeterminable_default_branch_asks_for_from() {
-        each_backend(|| {
+        with_isolation(|| {
             // No `with_origin_head()`: nothing on disk says which branch is
             // default, and the isolated state dir has no catalog row either.
             let layout = Layout::new(&["develop"]);
@@ -1424,7 +1380,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_default_branch_without_a_worktree_asks_for_from() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]);
             layout.diverge("develop");
             let remotes = layout.root.join(".git/refs/remotes/origin");
@@ -1448,7 +1404,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn the_catalog_default_branch_beats_origin_head() {
-        each_backend(|| {
+        with_isolation(|| {
             // origin/HEAD says `main`; the catalog says `feature/login`.
             let layout = Layout::new(&["develop"])
                 .with_worktree("wt-feature", "feature/login")
@@ -1496,7 +1452,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn the_bare_container_is_refused_as_a_target() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
             let container = layout
                 .root
@@ -1530,7 +1486,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn the_bare_container_is_refused_as_a_source() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
             let container = layout
                 .root
@@ -1561,7 +1517,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_flat_layout_root_is_a_worktree_and_is_not_refused() {
-        each_backend(|| {
+        with_isolation(|| {
             let flat = Layout::flat(&["feature"]);
 
             let result = run(
@@ -1592,7 +1548,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn an_unreadable_catalog_aborts_instead_of_falling_back() {
-        each_backend(|| {
+        with_isolation(|| {
             // origin/HEAD resolves perfectly well — the fallback the broken
             // catalog must NOT be allowed to silently reach.
             let layout = Layout::new(&["develop"]).with_origin_head();
@@ -1623,7 +1579,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_removed_catalog_row_falls_back_to_the_remote_head() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
 
             let bare = layout.root.join(".git");
@@ -1660,7 +1616,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn the_default_branch_fallback_follows_the_configured_remote() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_remote_head("upstream", "main");
             layout.diverge("develop");
 
@@ -1697,7 +1653,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn an_inherited_git_dir_does_not_retarget_resolution() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
             // A second, unrelated repo for GIT_DIR to point at.
             let other = Layout::new(&[]).with_origin_head();
@@ -1746,7 +1702,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_source_whose_config_will_not_load_reports_the_error() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
             std::fs::write(
                 layout.wt("main").join("daft.yml"),
@@ -1777,7 +1733,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_source_with_a_valid_config_and_no_copy_key_reports_no_error() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
             std::fs::write(layout.wt("main").join("daft.yml"), "shared:\n  - .env\n").unwrap();
 
@@ -1795,7 +1751,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_resolvable_target_whose_directory_is_gone_is_reported_as_missing() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
             std::fs::remove_dir_all(layout.wt("develop")).unwrap();
 
@@ -1814,7 +1770,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn running_from_the_container_root_reports_no_current_worktree() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
 
             let err = err_of(
@@ -1836,7 +1792,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_fully_specified_run_from_the_container_root_needs_no_current_worktree() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
 
             let result = run(&layout, &layout.root, params(Some("develop"), Some("main")))
@@ -1856,7 +1812,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_target_only_run_from_the_container_root_falls_back_to_the_default_branch() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
             // Diverge, so no other worktree sits at develop's commit and the
             // identical-commit rung genuinely misses — a fixture where two
@@ -1881,7 +1837,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn running_outside_any_repository_is_an_error() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
             let outside = layout.base().join("outside");
             std::fs::create_dir_all(&outside).unwrap();
@@ -1902,7 +1858,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn force_with_nothing_declared_removes_nothing() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
 
             let victim = layout.wt("develop").join("node_modules");
@@ -1934,7 +1890,7 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_source_with_no_copy_section_declares_nothing() {
-        each_backend(|| {
+        with_isolation(|| {
             let layout = Layout::new(&["develop"]).with_origin_head();
 
             let result = run(&layout, &layout.wt("main"), params(Some("develop"), None)).unwrap();

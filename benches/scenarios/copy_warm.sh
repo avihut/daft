@@ -67,7 +67,7 @@ case "$(uname)" in
     *)      CP_FAST="cp -R --reflink=auto" ;;
 esac
 
-bench_compare --two-way \
+bench_compare \
     "copy-warm-${SCALE}" \
     "$PREPARE" \
     "cd $WORK && daft warm" \
@@ -77,7 +77,7 @@ bench_compare --two-way \
 # what arm 1 ran — say so rather than silently emitting one row, since a
 # summary with a missing arm otherwise reads as a measurement that was taken.
 if [[ "$(uname)" == "Darwin" ]]; then
-    bench_compare --two-way \
+    bench_compare \
         "copy-warm-walk-${SCALE}" \
         "$PREPARE" \
         "cd $WORK && DAFT_COPY_FORCE_WALK=1 daft warm" \

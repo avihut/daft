@@ -414,11 +414,10 @@ impl GitCommand {
     /// safely: git renders `[%(upstream:short)]` and `%(subject)` with no
     /// delimiter between them, so a branch with *no* upstream whose commit
     /// subject happens to start `[origin/<its own name>]` is byte-identical to
-    /// a branch that really tracks it. Config has no such ambiguity, and being
-    /// a plain subprocess read it also answers identically under both git
-    /// backends — `for_each_ref`'s gitoxide implementation substitutes only a
-    /// few specifiers literally, so `%(upstream:short)` would come back
-    /// unexpanded there.
+    /// a branch that really tracks it. Config has no such ambiguity. It is a
+    /// plain subprocess read rather than a `for_each_ref` format: daft's
+    /// `for_each_ref` is gitoxide's and substitutes only a few specifiers
+    /// literally, so `%(upstream:short)` would come back unexpanded there.
     ///
     /// Repo-local for the same reason as [`Self::branch_provenance_entries`]:
     /// the answer feeds a decision about *this* repository's branches. No

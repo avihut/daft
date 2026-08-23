@@ -55,7 +55,7 @@ All PRs must pass these checks (enforced in CI):
 - **Formatting:** `mise run fmt:check`
 - **Linting:** `mise run clippy` (zero warnings)
 - **Unit tests:** `mise run test:unit`
-- **Integration tests:** `mise run test:integration` (bash + YAML, full matrix)
+- **Integration tests:** `mise run test:integration` (bash + YAML)
 
 Run the full CI simulation locally:
 
@@ -65,8 +65,7 @@ mise run ci
 
 ## Testing
 
-daft has two test systems that run in CI for each matrix entry (default +
-subprocess):
+daft has two test systems that run in CI:
 
 ### YAML manual tests (preferred for new tests)
 
@@ -165,7 +164,7 @@ Shell-based tests in `tests/integration/`. The master runner `test_all.sh`
 executes all suites.
 
 ```bash
-mise run test:integration              # Full matrix (default + subprocess)
+mise run test:integration              # Bash + YAML suites
 cd tests/integration && bash test_clone.sh   # Run one suite directly
 ```
 

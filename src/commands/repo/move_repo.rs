@@ -95,10 +95,7 @@ pub fn run() -> Result<()> {
 pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     let mut output = CliOutput::new(OutputConfig::new(args.quiet, args.verbose));
 
-    // Local-or-global, like `repo remove`: this command commonly runs from
-    // outside any repo, where a plain `DaftSettings::load()` would fail.
-    let settings = crate::core::settings::DaftSettings::load_local_or_global()?;
-    let (target, cataloged) = resolve_target(&args.repo, settings.use_gitoxide)?;
+    let (target, cataloged) = resolve_target(&args.repo)?;
 
     let current_name = cataloged
         .as_ref()
@@ -114,8 +111,8 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     let own_uuid = cataloged.as_ref().map(|row| row.uuid.clone());
 
     let layout = resolve_repo_layout(&target);
-    let worktrees = enumerate_worktrees(&target, settings.use_gitoxide)
-        .context("could not list the repository's worktrees")?;
+    let worktrees =
+        enumerate_worktrees(&target).context("could not list the repository's worktrees")?;
 
     // Name collisions are checked against the catalog here so planning itself
     // stays free of IO. A probe failure is fatal, never "assume it's free":
@@ -182,7 +179,6 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
 /// name.
 fn resolve_target(
     needle: &str,
-    use_gitoxide: bool,
 ) -> Result<(RepoTarget, Option<crate::store::models::CatalogRepoRow>)> {
     let catalog = Catalog::open_ro().context("could not open the repo catalog")?;
 
@@ -205,7 +201,7 @@ fn resolve_target(
                 crate::daft_cmd("repo add")
             );
         }
-        let target = resolve_repo(Some(Path::new(&row.path)), use_gitoxide)?;
+        let target = resolve_repo(Some(Path::new(&row.path)))?;
         return Ok((target, Some(row)));
     }
 
@@ -218,7 +214,7 @@ fn resolve_target(
     // miss there is a miss, not an invitation to move a directory.
     let as_path = Path::new(needle);
     if crate::catalog::needle_looks_pathish(needle) && as_path.is_dir() {
-        let target = resolve_repo(Some(as_path), use_gitoxide)?;
+        let target = resolve_repo(Some(as_path))?;
         return Ok((target, None));
     }
 

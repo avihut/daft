@@ -19,8 +19,6 @@ use std::path::{Path, PathBuf};
 pub struct PruneParams {
     /// Force removal of worktrees with uncommitted changes.
     pub force: bool,
-    /// Whether to use gitoxide.
-    pub use_gitoxide: bool,
     /// Whether output is in quiet mode.
     pub is_quiet: bool,
     /// Remote name (from settings).
@@ -132,7 +130,7 @@ pub fn execute(
     params: &PruneParams,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> Result<PruneResult> {
-    let mut git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
+    let mut git = GitCommand::new(params.is_quiet);
     if let Some(cancel) = &params.cancel {
         git = git.with_cancel(std::sync::Arc::clone(cancel));
     }
@@ -140,8 +138,7 @@ pub fn execute(
     // Reclaim leftovers from a reaper that died (#200): a failed background
     // delete must be delayed, never permanent. Cheap when the trash is empty.
     crate::core::worktree::trash::sweep(&git_dir);
-    let default_branch =
-        get_default_branch_local(&git_dir, &params.remote_name, params.use_gitoxide).ok();
+    let default_branch = get_default_branch_local(&git_dir, &params.remote_name).ok();
     let ctx = PruneContext {
         git: &git,
         project_root: get_project_root()?,
@@ -563,36 +560,13 @@ pub fn identify_gone_branches(
     // below need it, and it is one subprocess for the whole repository.
     let tracking = parse_tracking_config(&git.branch_tracking_entries()?);
 
-    // Method 1: git branch -vv to find branches with gone upstream.
-    //
-    // The `: gone]` test is a substring match over the whole line, and the
-    // line ends with the commit subject — so a subject like
-    // `fix: gone] handling` matches on a branch that has no upstream at all
-    // (verified against real git). Nothing in the rendering separates the two:
-    // `[%(upstream:short)]` and `%(subject)` are printed with no delimiter.
-    // Requiring tracking configuration is what makes the match trustworthy,
-    // and it excludes nothing real — git only prints the bracket when an
-    // upstream *is* configured, so every genuine `: gone]` line has an entry
-    // here. Without this a commit message could talk a never-published branch
-    // into prune's scope, which is #858's failure class arriving by another
-    // door.
-    let branch_output = git.branch_list_verbose()?;
-    for line in branch_output.lines() {
-        if line.contains(": gone]") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            let branch_name = match parts.first() {
-                Some(&"*") | Some(&"+") => parts.get(1).copied(),
-                _ => parts.first().copied(),
-            };
-            if let Some(name) = branch_name
-                && !name.is_empty()
-                && !is_default_branch(name)
-                && tracking.contains_key(name)
-            {
-                gone_branches.push(name.to_string());
-            }
-        }
-    }
+    // Method 1: the `git branch -vv` rendering, read for `: gone]` lines.
+    gone_branches.extend(
+        gone_branches_from_verbose_listing(&git.branch_list_verbose()?, &tracking)
+            .into_iter()
+            .filter(|name| !is_default_branch(name))
+            .map(str::to_string),
+    );
 
     // Method 2: branches daft published to this remote that the remote no
     // longer has. The record is what separates them from branches that were
@@ -670,9 +644,9 @@ pub fn identify_gone_branches(
 ///
 /// Local by design: `git fetch --prune` has just reconciled these against the
 /// wire, so asking `ls-remote` again would be a second round trip per branch
-/// for an answer already on disk. (`refs/remotes/<remote>/HEAD` shortens to a
-/// bare `<remote>` on the CLI backend and `<remote>/HEAD` on gitoxide; neither
-/// survives the prefix strip as a real branch name.)
+/// for an answer already on disk. (`refs/remotes/<remote>/HEAD` shortens to
+/// `<remote>/HEAD` — git's own `for-each-ref` would render a bare `<remote>` —
+/// and neither survives the prefix strip as a real branch name.)
 fn remote_branches_after_fetch(git: &GitCommand, remote_name: &str) -> Result<HashSet<String>> {
     let refs = git.for_each_ref("%(refname:short)", &format!("refs/remotes/{remote_name}"))?;
     Ok(parse_remote_branches(&refs, remote_name))
@@ -696,6 +670,40 @@ struct TrackedUpstream {
     /// an ordinary tracking branch, but `refs/pull/<n>/head` and friends are
     /// legal too, which is why this is kept raw rather than shortened here.
     merge: String,
+}
+
+/// Branches a `git branch -vv`-shaped listing reports as tracking a gone
+/// upstream, cross-checked against tracking configuration.
+///
+/// The `: gone]` test is a substring match over the whole line, and git's
+/// own rendering ends the line with the commit subject, printed with no
+/// delimiter after the tracking bracket — so a subject like
+/// `fix: gone] handling` matches on a branch that has no upstream at all
+/// (verified against real git). Requiring tracking configuration is what
+/// makes the match trustworthy, and it excludes nothing real — the bracket
+/// is only ever rendered when an upstream *is* configured, so every genuine
+/// `: gone]` line has an entry in `tracking`. Without this a commit message
+/// could talk a never-published branch into prune's scope, which is #858's
+/// failure class arriving by another door. daft's own rendering
+/// (`oxide::branch_list_verbose`) appends no subject, so the guard cannot
+/// fire there today; it stays because the parser's contract is the line
+/// shape, not the renderer behind it.
+fn gone_branches_from_verbose_listing<'a>(
+    listing: &'a str,
+    tracking: &HashMap<String, TrackedUpstream>,
+) -> Vec<&'a str> {
+    listing
+        .lines()
+        .filter(|line| line.contains(": gone]"))
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            match parts.first() {
+                Some(&"*") | Some(&"+") => parts.get(1).copied(),
+                _ => parts.first().copied(),
+            }
+        })
+        .filter(|name| !name.is_empty() && tracking.contains_key(*name))
+        .collect()
 }
 
 /// Parse `git config --get-regexp` output into one entry per branch that has a
@@ -851,7 +859,7 @@ fn process_main_worktree_branch(
     let mut wt_removed = false;
 
     if is_current {
-        match get_default_branch_local(&ctx.git_dir, &ctx.remote_name, params.use_gitoxide) {
+        match get_default_branch_local(&ctx.git_dir, &ctx.remote_name) {
             Ok(default_branch) => {
                 sink.on_step(&format!("Checking out default branch {default_branch}..."));
                 if let Err(e) = ctx.git.checkout(&default_branch) {
@@ -1048,7 +1056,6 @@ fn process_deferred_branch(
         &ctx.project_root,
         &ctx.git_dir,
         &ctx.remote_name,
-        params.use_gitoxide,
         sink,
     );
 
@@ -1469,33 +1476,30 @@ fn resolve_prune_cd_target(
     project_root: &Path,
     git_dir: &Path,
     remote_name: &str,
-    use_gitoxide: bool,
     sink: &mut dyn ProgressSink,
 ) -> PathBuf {
     match cd_target {
         PruneCdTarget::Root => project_root.to_path_buf(),
-        PruneCdTarget::DefaultBranch => {
-            match get_default_branch_local(git_dir, remote_name, use_gitoxide) {
-                Ok(default_branch) => {
-                    let branch_dir = project_root.join(&default_branch);
-                    if branch_dir.is_dir() {
-                        branch_dir
-                    } else {
-                        sink.on_step(&format!(
+        PruneCdTarget::DefaultBranch => match get_default_branch_local(git_dir, remote_name) {
+            Ok(default_branch) => {
+                let branch_dir = project_root.join(&default_branch);
+                if branch_dir.is_dir() {
+                    branch_dir
+                } else {
+                    sink.on_step(&format!(
                             "Default branch worktree directory '{}' not found, falling back to project root",
                             branch_dir.display()
                         ));
-                        project_root.to_path_buf()
-                    }
-                }
-                Err(e) => {
-                    sink.on_warning(&format!(
-                        "Cannot determine default branch for cd target: {e}. Falling back to project root."
-                    ));
                     project_root.to_path_buf()
                 }
             }
-        }
+            Err(e) => {
+                sink.on_warning(&format!(
+                        "Cannot determine default branch for cd target: {e}. Falling back to project root."
+                    ));
+                project_root.to_path_buf()
+            }
+        },
     }
 }
 
@@ -1529,8 +1533,53 @@ fn cleanup_empty_parent_dirs(
 
 #[cfg(test)]
 mod remote_branch_tests {
-    use super::{observed_on_remote, parse_tracking_config};
+    use super::{gone_branches_from_verbose_listing, observed_on_remote, parse_tracking_config};
     use std::collections::HashSet;
+
+    // ── `branch -vv` gone-upstream reading ─────────────────────────────
+
+    /// A commit subject cannot pass for a gone upstream (#858 by another
+    /// door). Git prints `[upstream: gone]` and the subject with no delimiter
+    /// between them, so a subject containing `: gone]` on a branch with no
+    /// upstream at all is byte-identical to the real thing — only tracking
+    /// config separates them, and a never-published branch has none.
+    #[test]
+    fn subject_lookalike_without_tracking_is_not_gone() {
+        let tracking = parse_tracking_config(
+            "branch.feat/gone.remote origin\nbranch.feat/gone.merge refs/heads/feat/gone\n",
+        );
+        let listing = concat!(
+            "  feat/fresh abc1234 fix: gone] handling in the parser\n",
+            "* feat/gone  def5678 [origin/feat/gone: gone] real one\n",
+            "+ main       0123abc [origin/main] seed\n",
+        );
+        assert_eq!(
+            gone_branches_from_verbose_listing(listing, &tracking),
+            vec!["feat/gone"],
+            "only the branch whose tracking config exists is gone"
+        );
+    }
+
+    /// The marker column (`*` current, `+` checked out elsewhere) is skipped
+    /// to find the name, and a name with no `: gone]` is never reported even
+    /// when tracking exists.
+    #[test]
+    fn verbose_listing_markers_and_plain_lines() {
+        let tracking = parse_tracking_config(concat!(
+            "branch.a.remote origin\nbranch.a.merge refs/heads/a\n",
+            "branch.b.remote origin\nbranch.b.merge refs/heads/b\n",
+            "branch.c.remote origin\nbranch.c.merge refs/heads/c\n",
+        ));
+        let listing = concat!(
+            "* a 1111111 [origin/a: gone] x\n",
+            "+ b 2222222 [origin/b: gone] y\n",
+            "  c 3333333 [origin/c] still there\n",
+        );
+        assert_eq!(
+            gone_branches_from_verbose_listing(listing, &tracking),
+            vec!["a", "b"]
+        );
+    }
 
     // ── Backfill selection (#858) ───────────────────────────────────────
 
@@ -1666,9 +1715,9 @@ mod remote_branch_tests {
 
     #[test]
     fn strips_the_remote_prefix_and_drops_head() {
-        // The CLI backend shortens `refs/remotes/origin/HEAD` to a bare
-        // `origin`; gitoxide shortens it to `origin/HEAD`. Neither may survive
-        // as a branch name, or a branch would be matched against the remote's
+        // gitoxide shortens `refs/remotes/origin/HEAD` to `origin/HEAD`; git's
+        // own `for-each-ref` renders a bare `origin`. Neither may survive as a
+        // branch name, or a branch would be matched against the remote's
         // symbolic HEAD instead of itself.
         let refs = "origin\norigin/HEAD\norigin/master\norigin/feat/x\n";
 

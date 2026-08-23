@@ -44,24 +44,18 @@ pub fn execute_prune_task(
     tx: &std::sync::mpsc::Sender<DagEvent>,
     merged_witness: &Arc<dyn crate::core::worktree::ports::ForgeMergedWitness>,
 ) -> (TaskStatus, TaskMessage) {
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(false);
     let ctx = prune::PruneContext {
         git: &git,
         project_root: project_root.to_path_buf(),
         git_dir: git_dir.to_path_buf(),
         remote_name: remote_name.to_string(),
         source_worktree: source_worktree.to_path_buf(),
-        default_branch: crate::remote::get_default_branch_local(
-            git_dir,
-            remote_name,
-            settings.use_gitoxide,
-        )
-        .ok(),
+        default_branch: crate::remote::get_default_branch_local(git_dir, remote_name).ok(),
     };
 
     let params = prune::PruneParams {
         force,
-        use_gitoxide: settings.use_gitoxide,
         is_quiet: true,
         remote_name: remote_name.to_string(),
         prune_cd_target: settings.prune_cd_target,
@@ -162,13 +156,9 @@ pub fn handle_post_tui_deferred(
 ) {
     let deferred = deferred_branch.lock().unwrap().clone();
     if let Some(ref branch_name) = deferred {
-        let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
-        let default_branch = crate::remote::get_default_branch_local(
-            &git_dir,
-            &settings.remote,
-            settings.use_gitoxide,
-        )
-        .ok();
+        let git = GitCommand::new(false);
+        let default_branch =
+            crate::remote::get_default_branch_local(&git_dir, &settings.remote).ok();
         let ctx = prune::PruneContext {
             git: &git,
             project_root: project_root.to_path_buf(),
@@ -179,7 +169,6 @@ pub fn handle_post_tui_deferred(
         };
         let params = prune::PruneParams {
             force,
-            use_gitoxide: settings.use_gitoxide,
             is_quiet: true,
             remote_name: settings.remote.clone(),
             prune_cd_target: settings.prune_cd_target,
@@ -281,7 +270,6 @@ pub fn check_tui_failures_strict(rows: &[WorktreeRow]) -> anyhow::Result<()> {
 /// Returns `true` if the fetch succeeded.
 pub fn run_fetch_phase(
     tx: &std::sync::mpsc::Sender<DagEvent>,
-    use_gitoxide: bool,
     remote: &str,
     cancel: Option<&std::sync::Arc<crate::git::cancel::CancelFlag>>,
 ) -> bool {
@@ -290,7 +278,7 @@ pub fn run_fetch_phase(
         branch_name: String::new(),
     });
 
-    let mut fetch_git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+    let mut fetch_git = GitCommand::new(false);
     if let Some(cancel) = cancel {
         fetch_git = fetch_git.with_cancel(std::sync::Arc::clone(cancel));
     }
@@ -346,7 +334,6 @@ pub fn spawn_post_fetch_refresh(
         return;
     }
     let ctx = Arc::new(list_stream::CollectorContext {
-        use_gitoxide: settings.use_gitoxide,
         base_branch: base_branch.to_string(),
         remote_name: settings.remote.clone(),
         ownership_strategy: settings.ownership_strategy,

@@ -2,7 +2,7 @@
   "name": "daft-docs",
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
-    "@playwright/test": "1.62.0",
+    "@playwright/test": "1.62.1",
     "gray-matter": "^4.0.3",
     "vitepress": "^1.6.4"
   },

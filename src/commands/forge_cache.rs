@@ -1079,7 +1079,7 @@ mod tests {
         // restore from elsewhere in the process (a leaked thread, an
         // unwinding guard) landing in a github-remoted worktree once flipped
         // `capable` to true mid-gate; any such test is the bug to fix.
-        let git = GitCommand::new(true).with_gitoxide(true);
+        let git = GitCommand::new(true);
 
         let gate = forge_gate_and_lookup(&git, Some(repo.into()));
         assert!(!gate.capable, "a remoteless repo names no forge");

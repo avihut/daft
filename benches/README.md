@@ -8,8 +8,7 @@ you can pin a SHA's numbers and diff against them as work lands.
 
 For changes that affect how fast a single daft command runs (`clone`,
 `checkout`, `prune`, ...). Each scenario uses [`hyperfine`] to compare
-`daft <cmd>` against the equivalent raw-git invocation, three-way against the
-git-subprocess opt-out variant where applicable.
+`daft <cmd>` against the equivalent raw-git invocation.
 
 ```bash
 mise run bench                 # All scenarios

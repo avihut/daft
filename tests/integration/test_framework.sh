@@ -167,8 +167,8 @@ setup() {
     export GIT_COMMITTER_NAME="Test User"
     export GIT_COMMITTER_EMAIL="test@example.com"
 
-    # Isolate tests from user's global git config to prevent settings
-    # like daft.gitoxide from leaking into tests.
+    # Isolate tests from the user's global git config so their daft settings
+    # never leak into tests.
     # When invoked via xtask test-matrix, GIT_CONFIG_GLOBAL is already set.
     if [[ -z "${GIT_CONFIG_GLOBAL:-}" ]]; then
         DAFT_TEST_GLOBAL_CONFIG="$TEMP_BASE_DIR/.gitconfig-test"
@@ -204,9 +204,9 @@ setup() {
     # catalog.db) so integration runs never read or pollute the developer's
     # real ~/.local/share/daft. Without this, init/clone register their temp
     # repos into the real catalog and accumulate across runs — e.g. a second
-    # `quiet-repo` gets a `-N` suffix notice, which under the gitoxide backend
-    # tips init_quiet past its output budget. The YAML runner already isolates
-    # this per sandbox (xtask/src/manual_test/daft_executor.rs); mirror it here.
+    # `quiet-repo` gets a `-N` suffix notice, which tips init_quiet past its
+    # output budget. The YAML runner already isolates this per sandbox
+    # (xtask/src/manual_test/daft_executor.rs); mirror it here.
     export DAFT_DATA_DIR="$TEMP_BASE_DIR/ddata"
     mkdir -p "$DAFT_DATA_DIR"
 

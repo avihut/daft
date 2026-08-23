@@ -86,7 +86,7 @@ pub fn run() -> Result<()> {
         remote_name: settings.remote.clone(),
         quiet: false,
     };
-    let git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(wt_config.quiet);
     // Not `core::repo::get_project_root`: that runs a bare `git rev-parse`,
     // which an inherited GIT_DIR retargets, while every worktree lookup below
     // goes through `git_command_at`, which clears it. Inside a git-driven hook

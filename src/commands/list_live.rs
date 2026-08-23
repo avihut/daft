@@ -33,7 +33,6 @@ pub fn run_live(args: Args) -> Result<()> {
     // repo is discovered once and reused for the command body (#584).
     let git = GitCommand::new(false);
     let settings = DaftSettings::load_with(&git)?;
-    let git = git.with_gitoxide(settings.use_gitoxide);
     let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let git_common_dir = get_git_common_dir()?;
     let base_branch = resolve_base_branch(&git_common_dir, &settings);
@@ -308,7 +307,6 @@ pub fn run_live(args: Args) -> Result<()> {
     // Spawn the streaming collector. Cells stream into LiveTable as they
     // arrive.
     let collector_ctx = Arc::new(list_stream::CollectorContext {
-        use_gitoxide: settings.use_gitoxide,
         base_branch: base_branch.clone(),
         remote_name: settings.remote.clone(),
         ownership_strategy: settings.ownership_strategy,

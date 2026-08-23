@@ -26,7 +26,6 @@ pub struct BareCloneParams {
     pub multi_remote_enabled: bool,
     pub multi_remote_default: String,
     pub checkout_upstream: bool,
-    pub use_gitoxide: bool,
 }
 
 /// Result of the bare clone phase.
@@ -109,7 +108,7 @@ pub fn clone_bare_phase(
     create_directory(&parent_dir)?;
 
     let git_dir = parent_dir.join(".git");
-    let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
+    let git = GitCommand::new(false);
 
     progress.on_step(&format!(
         "Cloning bare repository into './{}'...",
@@ -171,7 +170,7 @@ fn detect_branches(
     params: &BareCloneParams,
     progress: &mut dyn ProgressSink,
 ) -> Result<(String, String, bool, bool)> {
-    match get_default_branch_remote(&params.repository_url, params.use_gitoxide) {
+    match get_default_branch_remote(&params.repository_url) {
         Ok(default_branch) => {
             progress.on_step(&format!("Default branch detected: '{default_branch}'"));
 
@@ -179,7 +178,7 @@ fn detect_branches(
                 progress.on_step(&format!(
                     "Checking if branch '{specified}' exists on remote..."
                 ));
-                let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
+                let git = GitCommand::new(false);
                 let exists = git
                     .ls_remote_branch_exists(&params.repository_url, specified)
                     .unwrap_or(false);
@@ -196,7 +195,7 @@ fn detect_branches(
             Ok((default_branch, target_branch, branch_exists, false))
         }
         Err(e) => {
-            if is_remote_empty(&params.repository_url, params.use_gitoxide).unwrap_or(false) {
+            if is_remote_empty(&params.repository_url).unwrap_or(false) {
                 let local_default = resolve_initial_branch(&params.branch);
                 progress.on_step(&format!(
                     "Empty repository detected, using branch: '{local_default}'"
@@ -270,14 +269,13 @@ fn create_all_worktrees(
     remote_name: &str,
     use_multi_remote: bool,
     remote_for_path: &str,
-    use_gitoxide: bool,
     progress: &mut dyn ProgressSink,
 ) -> Result<()> {
     progress.on_step("Fetching all remote branches...");
     git.fetch(remote_name, false)?;
 
     let remote_branches =
-        get_remote_branches(remote_name, use_gitoxide).context("Failed to get remote branches")?;
+        get_remote_branches(remote_name).context("Failed to get remote branches")?;
 
     if remote_branches.is_empty() {
         anyhow::bail!("No remote branches found");
@@ -336,7 +334,7 @@ pub fn setup_bare_worktrees(
     layout: &crate::core::layout::Layout,
     progress: &mut dyn ProgressSink,
 ) -> Result<CloneResult> {
-    let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
+    let git = GitCommand::new(false);
     let use_multi_remote = params.remote.is_some() || params.multi_remote_enabled;
     let remote_for_path = params
         .remote
@@ -367,7 +365,6 @@ pub fn setup_bare_worktrees(
                 &bare_result.remote_name,
                 use_multi_remote,
                 &remote_for_path,
-                params.use_gitoxide,
                 progress,
             )?;
         } else if bare_result.is_empty {
@@ -472,7 +469,7 @@ pub fn unbare_and_checkout(
     layout: &crate::core::layout::Layout,
     progress: &mut dyn ProgressSink,
 ) -> Result<CloneResult> {
-    let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
+    let git = GitCommand::new(false);
 
     // Store layout in repos.json
     store_layout(&bare_result.git_dir, layout, progress);
@@ -563,7 +560,7 @@ pub fn setup_wrapped_nonbare(
     layout: &crate::core::layout::Layout,
     progress: &mut dyn ProgressSink,
 ) -> Result<CloneResult> {
-    let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
+    let git = GitCommand::new(false);
 
     // After clone_bare_phase, CWD is already inside parent_dir.
     // Use the branch name directly (relative to CWD) to avoid double nesting.
@@ -671,12 +668,11 @@ pub fn create_satellite_worktree(
     worktree_path: &Path,
     remote_name: &str,
     checkout_upstream: bool,
-    use_gitoxide: bool,
     progress: &mut dyn ProgressSink,
 ) -> Result<PathBuf> {
     progress.on_step(&format!("Creating worktree for '{}'", branch));
 
-    let git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+    let git = GitCommand::new(false);
 
     ensure_parent_dir(worktree_path)?;
     git.worktree_add(worktree_path, branch)

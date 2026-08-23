@@ -12,7 +12,6 @@ use crate::git::GitCommand;
 ///
 /// # Arguments
 /// * `repo_url` - The URL of the remote Git repository to query
-/// * `use_gitoxide` - Whether to use gitoxide backend for git operations
 ///
 /// # Returns
 /// * `Ok(String)` - The name of the default branch (e.g., "main", "master", "develop")
@@ -26,8 +25,8 @@ use crate::git::GitCommand;
 /// abc123...   refs/heads/main
 /// ```
 /// We parse the first line to extract the branch name from the symbolic reference.
-pub fn get_default_branch_remote(repo_url: &str, use_gitoxide: bool) -> Result<String> {
-    let git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+pub fn get_default_branch_remote(repo_url: &str) -> Result<String> {
+    let git = GitCommand::new(false);
     let output_str = git
         .ls_remote_symref(repo_url)
         .context("Failed to query remote HEAD ref")?;
@@ -56,14 +55,13 @@ pub fn get_default_branch_remote(repo_url: &str, use_gitoxide: bool) -> Result<S
 ///
 /// # Arguments
 /// * `repo_url` - The URL of the remote Git repository to check
-/// * `use_gitoxide` - Whether to use gitoxide backend for git operations
 ///
 /// # Returns
 /// * `Ok(true)` - The repository is empty (no refs)
 /// * `Ok(false)` - The repository has at least one ref
 /// * `Err` - If the remote cannot be reached
-pub fn is_remote_empty(repo_url: &str, use_gitoxide: bool) -> Result<bool> {
-    let git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+pub fn is_remote_empty(repo_url: &str) -> Result<bool> {
+    let git = GitCommand::new(false);
     let output_str = git
         .ls_remote_symref(repo_url)
         .context("Failed to query remote")?;
@@ -115,18 +113,14 @@ pub fn local_default_branch(dir: &Path, remote_name: &str) -> Option<String> {
 /// reaches for `ls-remote` when the symref isn't set up locally.
 ///
 /// `dir` may be a worktree, container root, or bare common dir.
-pub fn get_default_branch_local(
-    dir: &Path,
-    remote_name: &str,
-    use_gitoxide: bool,
-) -> Result<String> {
+pub fn get_default_branch_local(dir: &Path, remote_name: &str) -> Result<String> {
     // Prefer the local origin/HEAD symref — no network round-trip.
     if let Some(branch) = local_default_branch(dir, remote_name) {
         return Ok(branch);
     }
 
     // Fallback: query the remote when the local HEAD symref isn't set up.
-    let git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+    let git = GitCommand::new(false);
     if let Ok(output_str) = git.ls_remote_symref(remote_name) {
         for line in output_str.lines() {
             if line.starts_with("ref:") {
@@ -151,8 +145,8 @@ pub fn get_default_branch_local(
     );
 }
 
-pub fn get_remote_branches(remote_name: &str, use_gitoxide: bool) -> Result<Vec<String>> {
-    let git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+pub fn get_remote_branches(remote_name: &str) -> Result<Vec<String>> {
+    let git = GitCommand::new(false);
     let output_str = git
         .ls_remote_heads(remote_name)
         .context("Failed to get remote branches")?;
@@ -170,8 +164,8 @@ pub fn get_remote_branches(remote_name: &str, use_gitoxide: bool) -> Result<Vec<
     Ok(branches)
 }
 
-pub fn remote_branch_exists(remote_name: &str, branch: &str, use_gitoxide: bool) -> Result<bool> {
-    let git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+pub fn remote_branch_exists(remote_name: &str, branch: &str) -> Result<bool> {
+    let git = GitCommand::new(false);
     git.ls_remote_branch_exists(remote_name, branch)
         .context("Failed to check remote branch existence")
 }
@@ -183,16 +177,12 @@ pub fn remote_branch_exists(remote_name: &str, branch: &str, use_gitoxide: bool)
 ///
 /// # Arguments
 /// * `remote_name` - The name of the remote (e.g., "origin")
-/// * `use_gitoxide` - Whether to use gitoxide backend for git operations
 ///
 /// # Returns
 /// * `Ok(String)` - The name of the default branch
 /// * `Err` - If the remote cannot be queried
-pub fn get_default_branch_from_remote_head(
-    remote_name: &str,
-    use_gitoxide: bool,
-) -> Result<String> {
-    let git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+pub fn get_default_branch_from_remote_head(remote_name: &str) -> Result<String> {
+    let git = GitCommand::new(false);
 
     // Try to query the remote for its default branch
     let output_str = git
@@ -225,14 +215,14 @@ mod tests {
     #[test]
     #[ignore] // Requires network access to origin remote
     fn test_remote_branch_exists() {
-        let result = remote_branch_exists("origin", "nonexistent-branch", false);
+        let result = remote_branch_exists("origin", "nonexistent-branch");
         assert!(result.is_ok());
     }
 
     #[test]
     #[ignore] // Requires network access to origin remote
     fn test_get_remote_branches() {
-        let result = get_remote_branches("origin", false);
+        let result = get_remote_branches("origin");
         assert!(result.is_ok());
     }
 
@@ -241,7 +231,7 @@ mod tests {
     fn test_is_remote_empty() {
         // This is a basic test - the function itself is tested more thoroughly
         // in integration tests with actual empty repositories
-        let result = is_remote_empty("origin", false);
+        let result = is_remote_empty("origin");
         assert!(result.is_ok());
         // Our own repo should not be empty
         assert!(!result.unwrap());
