@@ -10,8 +10,16 @@ impl GitCommand {
         oxide::show_ref_exists(&self.gix_repo()?, ref_name)
     }
 
-    pub fn for_each_ref(&self, format: &str, refs: &str) -> Result<String> {
-        oxide::for_each_ref(&self.gix_repo()?, format, refs)
+    /// Short names of every local branch, in ref order.
+    pub fn local_branch_names(&self) -> Result<Vec<String>> {
+        oxide::local_branch_names(&self.gix_repo()?)
+    }
+
+    /// Branch names on `remote` as the remote-tracking refs on disk record
+    /// them — the last fetch's view, not the wire — without the remote's
+    /// symbolic `HEAD`.
+    pub fn remote_branch_names(&self, remote: &str) -> Result<Vec<String>> {
+        oxide::remote_branch_names(&self.gix_repo()?, remote)
     }
 
     /// Get the short name of the current branch

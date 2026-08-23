@@ -145,23 +145,11 @@ pub fn get_default_branch_local(dir: &Path, remote_name: &str) -> Result<String>
     );
 }
 
+/// Every branch on `remote_name`, by name, from the remote itself.
 pub fn get_remote_branches(remote_name: &str) -> Result<Vec<String>> {
-    let git = GitCommand::new(false);
-    let output_str = git
-        .ls_remote_heads(remote_name)
-        .context("Failed to get remote branches")?;
-
-    let mut branches = Vec::new();
-    for line in output_str.lines() {
-        if let Some(tab_pos) = line.find('\t') {
-            let ref_name = &line[tab_pos + 1..];
-            if let Some(branch) = ref_name.strip_prefix("refs/heads/") {
-                branches.push(branch.to_string());
-            }
-        }
-    }
-
-    Ok(branches)
+    GitCommand::new(false)
+        .list_remote_branches(remote_name)
+        .context("Failed to get remote branches")
 }
 
 pub fn remote_branch_exists(remote_name: &str, branch: &str) -> Result<bool> {

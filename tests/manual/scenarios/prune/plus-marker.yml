@@ -1,6 +1,9 @@
-name: Prune plus marker branch
-description:
-  "Correctly handles branches with + marker in git branch -vv (regression #97)"
+name: Prune reclaims a branch checked out in a linked worktree
+description: >
+  A branch checked out in a linked worktree is the shape `git branch -vv` marks
+  with a leading `+`. Regression for #97, when prune parsed that listing and
+  could read the marker as the branch name; prune reads tracking typed now, and
+  the branch is reclaimed like any other whose upstream is gone.
 
 repos:
   - name: test-repo
@@ -43,7 +46,7 @@ steps:
     expect:
       exit_code: 0
 
-  - name: Prune does not confuse + marker with branch name
+  - name: Prune reclaims the linked-worktree branch
     run: git-worktree-prune 2>&1
     cwd: "$WORK_DIR/test-repo"
     expect:
