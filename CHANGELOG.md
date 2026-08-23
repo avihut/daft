@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.6](https://github.com/avihut/daft/compare/v1.27.5...v1.27.6) - 2026-08-23
+
+
+### Bug Fixes
+
+- Name the whole-file consolidation cases, and build every symlink farm from one list (#905)
+- **git**: Answer worktree-scoped gix questions for the cwd, not the first one (#886)
+
+
+### Refactoring
+
+- **git**: Typed returns replace the gix arm's porcelain-text mimicry (#884) (#899)
+- **git**: Delete the git-subprocess backend switch — gix is the only arm (#883 part 2) (#892)
+- **git**: A bare GitCommand takes the gix arm (#883 part 1) (#891)
+
+
+### Testing
+
+- Reduce the shell suite to a blessed residue, YAML primary (#901)
 ## [1.27.5](https://github.com/avihut/daft/compare/v1.27.4...v1.27.5) - 2026-08-22
 
 
