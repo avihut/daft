@@ -244,31 +244,6 @@ impl GitCommand {
         oxide::config_get_global(key)
     }
 
-    /// Every branch's `branch.<name>.merge` value in one call — raw
-    /// `git config --get-regexp` lines (`branch.<name>.merge <ref>`), for
-    /// bulk PR-tracking-ref resolution where a per-branch `config_get` would
-    /// cost a read per row. No matches is not an error (exit code 1 → empty).
-    pub fn branch_merge_refs(&self) -> Result<String> {
-        // git_command_at (not a raw `git`) scrubs any inherited GIT_DIR so the
-        // read targets the cwd's repo — not the hook-calling repo when daft runs
-        // inside a git hook (e.g. post-checkout). `daft list` calls this to
-        // resolve each branch's PR/MR tracking ref; an inherited GIT_DIR would
-        // otherwise decorate rows from the parent repo's branch config. Mirrors
-        // the `fetch_refspec` sibling scrub.
-        let cwd = std::env::current_dir().context("Failed to resolve current directory")?;
-        let output = crate::utils::git_command_at(&cwd)
-            .args(["config", "--get-regexp", r"^branch\..*\.merge$"])
-            .output()
-            .context("Failed to execute git config --get-regexp command")?;
-
-        if !output.status.success() && output.status.code() != Some(1) {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Git config --get-regexp failed: {}", stderr);
-        }
-
-        String::from_utf8(output.stdout).context("Failed to parse git config output")
-    }
-
     /// Get the tracking remote for a branch.
     pub fn get_branch_tracking_remote(&self, branch: &str) -> Result<Option<String>> {
         let key = format!("branch.{branch}.remote");
@@ -369,8 +344,7 @@ impl GitCommand {
 
     /// Every branch-provenance key in this repository, raw `key value` lines.
     ///
-    /// One pass for the whole repo rather than a read per branch, exactly like
-    /// the [`Self::branch_merge_refs`] sibling it is modelled on — prune asks
+    /// One pass for the whole repo rather than a read per branch — prune asks
     /// this once and answers every branch from the result. No matches is not an
     /// error (exit code 1 → empty output).
     pub fn branch_provenance_entries(&self) -> Result<String> {
@@ -394,45 +368,6 @@ impl GitCommand {
                 // variable names to lowercase on the way out, so the parser
                 // downstream must read `daftorigin` / `daftpublished`.
                 r"^branch\..*\.daft(origin|published)$",
-            ])
-            .output()
-            .context("Failed to execute git config --get-regexp command")?;
-
-        if !output.status.success() && output.status.code() != Some(1) {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Git config --get-regexp failed: {}", stderr);
-        }
-
-        String::from_utf8(output.stdout).context("Failed to parse git config output")
-    }
-
-    /// Every branch's tracking configuration, raw `key value` lines
-    /// (`branch.<name>.remote <remote>`, `branch.<name>.merge <ref>`).
-    ///
-    /// This is the authoritative answer to "what does this branch track".
-    /// Prune used to read it off `git branch -vv`, which cannot be parsed
-    /// safely: git renders `[%(upstream:short)]` and `%(subject)` with no
-    /// delimiter between them, so a branch with *no* upstream whose commit
-    /// subject happens to start `[origin/<its own name>]` is byte-identical to
-    /// a branch that really tracks it. Config has no such ambiguity. It is a
-    /// plain subprocess read rather than a `for_each_ref` format: daft's
-    /// `for_each_ref` is gitoxide's and substitutes only a few specifiers
-    /// literally, so `%(upstream:short)` would come back unexpanded there.
-    ///
-    /// Repo-local for the same reason as [`Self::branch_provenance_entries`]:
-    /// the answer feeds a decision about *this* repository's branches. No
-    /// matches is not an error (exit code 1 → empty output).
-    pub fn branch_tracking_entries(&self) -> Result<String> {
-        // git_command_at (not a raw `git`) scrubs any inherited GIT_DIR so the
-        // read targets the cwd's repo — daft runs inside git hooks, where the
-        // hook-calling repo would otherwise answer.
-        let cwd = std::env::current_dir().context("Failed to resolve current directory")?;
-        let output = crate::utils::git_command_at(&cwd)
-            .args([
-                "config",
-                "--local",
-                "--get-regexp",
-                r"^branch\..*\.(remote|merge)$",
             ])
             .output()
             .context("Failed to execute git config --get-regexp command")?;
@@ -475,12 +410,28 @@ mod tests {
         cmd
     }
 
+    /// A repo with one commit and a local `branch` configured to track
+    /// `merge_ref` on `origin` — the shape a forge PR checkout leaves behind.
     fn init_repo_with_merge(dir: &Path, branch: &str, merge_ref: &str) {
-        git_at(dir).args(["init", "-q"]).status().unwrap();
-        git_at(dir)
-            .args(["config", &format!("branch.{branch}.merge"), merge_ref])
-            .status()
-            .unwrap();
+        let run = |args: &[&str]| {
+            let status = git_at(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["commit", "-q", "--allow-empty", "-m", "seed"]);
+        run(&["branch", branch]);
+        run(&["remote", "add", "origin", "https://example.com/repo.git"]);
+        run(&["config", &format!("branch.{branch}.remote"), "origin"]);
+        run(&["config", &format!("branch.{branch}.merge"), merge_ref]);
     }
 
     /// Read a key from `dir`'s *local* config, scrubbed of ambient `GIT_*`.
@@ -633,12 +584,13 @@ mod tests {
     }
 
     /// Regression: inside a git hook, an inherited `GIT_DIR` must not retarget
-    /// `branch_merge_refs` at the hook-calling repo. Without the `git_command_at`
-    /// scrub this reads the `GIT_DIR` repo's config and `daft list` decorates PR
-    /// cells from the wrong repo.
+    /// the tracking read at the hook-calling repo. The subprocess read this
+    /// replaced needed the `git_command_at` scrub for it; the gix read
+    /// discovers from the cwd and ignores `GIT_DIR`, which this pins — without
+    /// it `daft list` would decorate PR cells from the wrong repo.
     #[test]
     #[serial]
-    fn branch_merge_refs_reads_cwd_repo_not_inherited_git_dir() {
+    fn branch_tracking_reads_cwd_repo_not_inherited_git_dir() {
         let this = tempdir().unwrap();
         let hook = tempdir().unwrap();
         let this_path = this.path().canonicalize().unwrap();
@@ -652,7 +604,7 @@ mod tests {
         // Simulate the hook environment: GIT_DIR points at the *other* repo.
         unsafe { std::env::set_var("GIT_DIR", hook_path.join(".git")) };
 
-        let result = GitCommand::new(true).branch_merge_refs();
+        let result = GitCommand::new(true).branch_tracking();
 
         // Restore process state before asserting so a failure can't strand
         // sibling serial tests.
@@ -661,14 +613,12 @@ mod tests {
             let _ = std::env::set_current_dir(cwd);
         }
 
-        let out = result.unwrap();
-        assert!(
-            out.contains("refs/pull/7/head"),
-            "must read this dir's repo config, got: {out:?}"
-        );
-        assert!(
-            !out.contains("refs/pull/999/head"),
-            "must not read the inherited GIT_DIR repo's config, got: {out:?}"
+        let tracking = result.unwrap();
+        let merges: Vec<&str> = tracking.iter().filter_map(|t| t.merge.as_deref()).collect();
+        assert_eq!(
+            merges,
+            ["refs/pull/7/head"],
+            "must read this dir's repo, not the inherited GIT_DIR repo: {tracking:?}"
         );
     }
 }

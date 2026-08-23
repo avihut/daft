@@ -18,6 +18,7 @@ mod stash;
 mod worktree;
 pub mod worktree_state;
 
+pub use branch::{BranchTracking, UpstreamRef};
 pub use config::{ConfigEntry, ConfigScope, daft_config_entries_global};
 pub use refs::FirstParentCommit;
 pub use remote::{PushIo, PushOptions, PushOutputTee, PushStream};

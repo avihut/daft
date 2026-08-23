@@ -7,6 +7,7 @@
 //! `worktree add`/`remove`, stash, config writes, …) stay subprocess calls
 //! on `GitCommand`; they are not a backend, they are how the op is done.
 
+use super::{BranchTracking, UpstreamRef};
 use anyhow::{Context, Result};
 use gix::Repository;
 use gix::bstr::ByteSlice;
@@ -125,79 +126,66 @@ fn ref_names_under(repo: &Repository, prefix: &str) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// gitoxide equivalent of `git branch -vv`
+/// What every local branch's configuration says it tracks, and whether the
+/// tracked ref is still here — see [`BranchTracking`].
 ///
-/// Returns output similar to `git branch -vv`, with tracking information.
-pub fn branch_list_verbose(repo: &Repository) -> Result<String> {
+/// Branches without a `branch.<name>.remote` entry are not listed. The
+/// tracking ref is the one git itself resolves: the merge ref mapped through
+/// the remote's fetch refspecs (`Repository::branch_remote_tracking_ref_name`),
+/// or the merge ref itself for the local pseudo-remote `.`. A configuration
+/// that maps to nothing — a URL remote, a narrow refspec that does not cover
+/// the branch, a `refs/pull/*` upstream — has no tracking ref and is never
+/// `gone`, exactly where `git branch -vv` shows no upstream at all. (The
+/// `branch -vv` emulation this replaces hand-built `refs/remotes/<remote>/
+/// <merge>` and called all three of those gone.)
+pub fn branch_tracking(repo: &Repository) -> Result<Vec<BranchTracking>> {
     let platform = repo.references()?;
-    let references = platform.prefixed("refs/heads/")?;
-    let mut output = String::new();
-
-    // Get current branch name for the * marker
-    let current_branch = repo
-        .head_ref()
-        .ok()
-        .flatten()
-        .map(|r| r.name().shorten().to_string());
-
-    for reference_result in references {
-        let mut reference =
-            reference_result.map_err(|e| anyhow::anyhow!("Failed to read reference: {e}"))?;
-        let branch_name = reference.name().shorten().to_string();
-        let is_current = current_branch.as_deref() == Some(&branch_name);
-        let marker = if is_current { '*' } else { ' ' };
-
-        let oid = match reference.peel_to_id() {
-            Ok(id) => id.to_hex().to_string(),
-            Err(_) => "?".repeat(7),
+    let mut out = Vec::new();
+    for reference in platform.prefixed("refs/heads/")? {
+        let reference = reference.map_err(|e| anyhow::anyhow!("Failed to read reference: {e}"))?;
+        let name = reference.name();
+        let branch = name.shorten().to_string();
+        let Some(remote) = repo.branch_remote_name(branch.as_str(), Direction::Fetch) else {
+            continue;
         };
-        let short_oid = if oid.len() > 7 { &oid[..7] } else { &oid };
-
-        // Try to get tracking info and detect gone upstreams
-        let remote_key = format!("branch.{branch_name}.remote");
-        let tracking = repo
+        let remote = remote.as_bstr().to_string();
+        // `branch.<name>.merge` exactly as configured. gix's
+        // `branch_remote_ref_name` would normalize a bare `main` to
+        // `refs/heads/main`, but git does not: a merge value without a
+        // `refs/` prefix is "not stored as a remote-tracking branch" and
+        // resolves to no upstream at all (`git branch -vv` shows nothing,
+        // `@{upstream}` fails), so it is kept raw and never mapped.
+        let merge = repo
             .config_snapshot()
-            .string(&remote_key)
-            .map(|remote| {
-                let merge_key = format!("branch.{branch_name}.merge");
-                let merge = repo
-                    .config_snapshot()
-                    .string(&merge_key)
-                    .map(|m| {
-                        let m_str = m.to_string();
-                        m_str
-                            .strip_prefix("refs/heads/")
-                            .unwrap_or(&m_str)
-                            .to_string()
-                    })
-                    .unwrap_or_default();
-
-                // Check if the remote-tracking ref still exists.
-                // If the upstream was deleted (e.g. after `git fetch --prune`),
-                // mark it as "gone" to match `git branch -vv` output.
-                if !merge.is_empty() {
-                    let remote_tracking_ref = format!("refs/remotes/{remote}/{merge}");
-                    let ref_exists = repo
-                        .try_find_reference(&*remote_tracking_ref)
-                        .ok()
-                        .flatten()
-                        .is_some();
-                    if ref_exists {
-                        format!("[{remote}/{merge}]")
-                    } else {
-                        format!("[{remote}/{merge}: gone]")
-                    }
-                } else {
-                    format!("[{remote}]")
-                }
-            })
-            .unwrap_or_default();
-
-        let line = format!("{marker} {branch_name:<20} {short_oid} {tracking}\n");
-        output.push_str(&line);
+            .string(format!("branch.{branch}.merge").as_str())
+            .map(|m| m.to_string());
+        let mappable = merge.as_deref().is_some_and(|m| m.starts_with("refs/"));
+        let tracking_ref = if !mappable {
+            None
+        } else if remote == "." {
+            merge.clone()
+        } else {
+            match repo.branch_remote_tracking_ref_name(name, Direction::Fetch) {
+                Some(Ok(tracking)) => Some(tracking.as_bstr().to_string()),
+                _ => None,
+            }
+        };
+        // A ref-read error is not "absent": only a clean miss is gone.
+        let upstream = match tracking_ref {
+            None => UpstreamRef::Unmapped,
+            Some(tracking) => match repo.try_find_reference(tracking.as_str()) {
+                Ok(None) => UpstreamRef::Gone(tracking),
+                _ => UpstreamRef::Present(tracking),
+            },
+        };
+        out.push(BranchTracking {
+            branch,
+            remote,
+            merge,
+            upstream,
+        });
     }
-
-    Ok(output)
+    Ok(out)
 }
 
 // --- Group 3: Config Reading ---
@@ -1326,120 +1314,222 @@ mod tests {
         assert_eq!(count, 0, "feature should be 0 commits ahead of main");
     }
 
-    #[test]
-    #[serial]
-    fn test_branch_list_verbose_gone_upstream() {
-        // Simulate a branch whose upstream tracking ref has been pruned:
-        // branch.feature.remote = origin and branch.feature.merge = refs/heads/feature
-        // but refs/remotes/origin/feature does NOT exist.
-        let (dir, _repo) = create_test_repo();
-        let path = dir.path().canonicalize().unwrap();
-
-        // Create a feature branch
+    /// Set a key in the temp repo's local config.
+    fn cfg(path: &std::path::Path, key: &str, value: &str) {
         git_cmd()
-            .args(["branch", "feature"])
-            .current_dir(&path)
+            .args(["config", key, value])
+            .current_dir(path)
             .output()
             .unwrap();
+    }
 
-        // Add a remote and create a remote-tracking ref
-        git_cmd()
-            .args(["remote", "add", "origin", "https://example.com/repo.git"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        // Set up tracking config for the feature branch
-        git_cmd()
-            .args(["config", "branch.feature.remote", "origin"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-        git_cmd()
-            .args(["config", "branch.feature.merge", "refs/heads/feature"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        // Create a remote-tracking ref, then delete it to simulate fetch --prune
-        git_cmd()
-            .args([
-                "update-ref",
-                "refs/remotes/origin/feature",
-                "refs/heads/feature",
-            ])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        // Re-open repo and verify tracking shows normally (not gone)
-        let saved_cwd = std::env::current_dir().ok();
-        std::env::set_current_dir(&path).unwrap();
-        let repo = gix::open(&path).unwrap();
-        if let Some(cwd) = saved_cwd.clone() {
-            let _ = std::env::set_current_dir(cwd);
-        }
-
-        let output = branch_list_verbose(&repo).unwrap();
+    /// Run a git command in the temp repo, asserting success.
+    fn git_ok(path: &std::path::Path, args: &[&str]) {
+        let out = git_cmd().args(args).current_dir(path).output().unwrap();
         assert!(
-            output.contains("[origin/feature]"),
-            "Should show tracking info without gone when ref exists. Got: {output}"
-        );
-        assert!(
-            !output.contains(": gone]"),
-            "Should NOT show gone when remote-tracking ref exists. Got: {output}"
-        );
-
-        // Now delete the remote-tracking ref to simulate `git fetch --prune`
-        git_cmd()
-            .args(["update-ref", "-d", "refs/remotes/origin/feature"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        // Re-open repo to pick up ref changes
-        std::env::set_current_dir(&path).unwrap();
-        let repo = gix::open(&path).unwrap();
-        if let Some(cwd) = saved_cwd {
-            let _ = std::env::set_current_dir(cwd);
-        }
-
-        let output = branch_list_verbose(&repo).unwrap();
-        assert!(
-            output.contains("[origin/feature: gone]"),
-            "Should show ': gone]' when remote-tracking ref is deleted. Got: {output}"
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
         );
     }
 
+    /// `branch_tracking` against every upstream shape git distinguishes,
+    /// cross-checked against what `git branch -vv` / `%(upstream:track)` say
+    /// for the same repository:
+    ///
+    /// * a present upstream is not gone; the same upstream after
+    ///   `fetch --prune` took its ref is (`[origin/feature: gone]`);
+    /// * `branch.<n>.remote = .` resolves to the local ref (`[main]`), and is
+    ///   gone only once that local branch is deleted;
+    /// * a URL remote and a `refs/pull/<n>/head` upstream map to no tracking
+    ///   ref — git shows no upstream for them — so they are never gone;
+    /// * a remote without a merge ref is listed with `merge: None`;
+    /// * a bare merge value (`merge = nothere`) is kept raw and maps to
+    ///   nothing — git resolves no upstream from it, so it is not gone
+    ///   although no such remote branch exists;
+    /// * a dotted branch name keys its own config (`branch.release.2.x.*`);
+    /// * a branch with no tracking config is not listed at all.
     #[test]
     #[serial]
-    fn test_branch_list_verbose_no_tracking() {
-        // A branch without any tracking config should not show tracking info
+    fn branch_tracking_reads_every_upstream_shape() {
         let (dir, _repo) = create_test_repo();
         let path = dir.path().canonicalize().unwrap();
-
-        git_cmd()
-            .args(["branch", "local-only"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        let saved_cwd = std::env::current_dir().ok();
-        std::env::set_current_dir(&path).unwrap();
-        let repo = gix::open(&path).unwrap();
-        if let Some(cwd) = saved_cwd {
-            let _ = std::env::set_current_dir(cwd);
+        git_ok(
+            &path,
+            &["remote", "add", "origin", "https://example.com/repo.git"],
+        );
+        for branch in [
+            "feature",
+            "local",
+            "local-gone",
+            "pr-7",
+            "url",
+            "half",
+            "bare",
+            "release.2.x",
+            "untracked",
+            "doomed",
+        ] {
+            git_ok(&path, &["branch", branch]);
         }
+        cfg(&path, "branch.feature.remote", "origin");
+        cfg(&path, "branch.feature.merge", "refs/heads/feature");
+        git_ok(
+            &path,
+            &["update-ref", "refs/remotes/origin/feature", "HEAD"],
+        );
+        cfg(&path, "branch.local.remote", ".");
+        cfg(&path, "branch.local.merge", "refs/heads/main");
+        cfg(&path, "branch.local-gone.remote", ".");
+        cfg(&path, "branch.local-gone.merge", "refs/heads/doomed");
+        git_ok(&path, &["branch", "-D", "doomed"]);
+        cfg(&path, "branch.pr-7.remote", "origin");
+        cfg(&path, "branch.pr-7.merge", "refs/pull/7/head");
+        cfg(&path, "branch.url.remote", "https://example.com/other.git");
+        cfg(&path, "branch.url.merge", "refs/heads/main");
+        cfg(&path, "branch.half.remote", "origin");
+        // A bare merge value: git resolves no upstream from it, even though
+        // a branch of that name is absent on the remote.
+        cfg(&path, "branch.bare.remote", "origin");
+        cfg(&path, "branch.bare.merge", "nothere");
+        cfg(&path, "branch.release.2.x.remote", "origin");
+        cfg(&path, "branch.release.2.x.merge", "refs/heads/release.2.x");
+        git_ok(
+            &path,
+            &["update-ref", "refs/remotes/origin/release.2.x", "HEAD"],
+        );
 
-        let output = branch_list_verbose(&repo).unwrap();
-        // Find the local-only line
-        let local_line = output
-            .lines()
-            .find(|l| l.contains("local-only"))
-            .expect("Should have a line for local-only branch");
+        let repo = reopen(&path);
+        let tracking = branch_tracking(&repo).unwrap();
+        let by_name = |name: &str| {
+            tracking
+                .iter()
+                .find(|t| t.branch == name)
+                .unwrap_or_else(|| panic!("{name} missing from {tracking:?}"))
+        };
+
+        let feature = by_name("feature");
+        assert_eq!(feature.remote, "origin");
+        assert_eq!(feature.merge.as_deref(), Some("refs/heads/feature"));
+        assert_eq!(
+            feature.upstream,
+            UpstreamRef::Present("refs/remotes/origin/feature".into()),
+            "the remote-tracking ref is present"
+        );
+
+        let local = by_name("local");
+        assert_eq!(local.remote, ".");
+        assert_eq!(
+            local.upstream,
+            UpstreamRef::Present("refs/heads/main".into()),
+            "the local upstream branch exists: git shows [main]"
+        );
+
+        let local_gone = by_name("local-gone");
+        assert_eq!(
+            local_gone.upstream,
+            UpstreamRef::Gone("refs/heads/doomed".into()),
+            "the local upstream branch was deleted"
+        );
+
+        let pr = by_name("pr-7");
+        assert_eq!(pr.merge.as_deref(), Some("refs/pull/7/head"));
+        assert_eq!(
+            pr.upstream,
+            UpstreamRef::Unmapped,
+            "a head ref maps to no tracking ref"
+        );
+
+        let url = by_name("url");
+        assert_eq!(url.remote, "https://example.com/other.git");
+        assert_eq!(
+            url.upstream,
+            UpstreamRef::Unmapped,
+            "no refspecs to map through"
+        );
+
+        let half = by_name("half");
+        assert_eq!(half.merge, None);
+        assert_eq!(half.upstream, UpstreamRef::Unmapped);
+
+        let bare = by_name("bare");
+        assert_eq!(bare.merge.as_deref(), Some("nothere"), "kept as configured");
+        assert_eq!(
+            bare.upstream,
+            UpstreamRef::Unmapped,
+            "git: not stored as a remote-tracking branch — so not gone, though \
+             refs/remotes/origin/nothere is absent"
+        );
+
+        let dotted = by_name("release.2.x");
+        assert_eq!(dotted.merge.as_deref(), Some("refs/heads/release.2.x"));
+        assert!(!dotted.gone());
+
         assert!(
-            !local_line.contains('['),
-            "Branch without tracking should not have tracking info. Got: {local_line}"
+            !tracking
+                .iter()
+                .any(|t| t.branch == "untracked" || t.branch == "main"),
+            "branches without tracking config are not listed: {tracking:?}"
+        );
+        // Ref order, like every other listing.
+        let names: Vec<&str> = tracking.iter().map(|t| t.branch.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
+
+        // Now `git fetch --prune` takes the remote-tracking ref away.
+        git_ok(&path, &["update-ref", "-d", "refs/remotes/origin/feature"]);
+        let repo = reopen(&path);
+        let tracking = branch_tracking(&repo).unwrap();
+        let feature = tracking.iter().find(|t| t.branch == "feature").unwrap();
+        assert_eq!(
+            feature.upstream,
+            UpstreamRef::Gone("refs/remotes/origin/feature".into()),
+            "the tracked ref is known and absent: [origin/feature: gone]"
+        );
+    }
+
+    /// The tracking ref follows the remote's fetch refspec, not a
+    /// `refs/remotes/<remote>/<branch>` convention: a narrow refspec (what
+    /// `git clone --single-branch` leaves behind) maps the one branch it
+    /// names and nothing else, so a second branch has no tracking ref and is
+    /// not gone — the mimic this replaces looked for
+    /// `refs/remotes/origin/feature`, found nothing, and called it gone.
+    #[test]
+    #[serial]
+    fn branch_tracking_follows_the_fetch_refspec() {
+        let (dir, _repo) = create_test_repo();
+        let path = dir.path().canonicalize().unwrap();
+        git_ok(
+            &path,
+            &["remote", "add", "origin", "https://example.com/repo.git"],
+        );
+        cfg(
+            &path,
+            "remote.origin.fetch",
+            "+refs/heads/main:refs/remotes/origin/main",
+        );
+        git_ok(&path, &["branch", "feature"]);
+        cfg(&path, "branch.main.remote", "origin");
+        cfg(&path, "branch.main.merge", "refs/heads/main");
+        cfg(&path, "branch.feature.remote", "origin");
+        cfg(&path, "branch.feature.merge", "refs/heads/feature");
+
+        let repo = reopen(&path);
+        let tracking = branch_tracking(&repo).unwrap();
+        let by_name = |name: &str| tracking.iter().find(|t| t.branch == name).unwrap();
+
+        let main = by_name("main");
+        assert_eq!(
+            main.upstream,
+            UpstreamRef::Gone("refs/remotes/origin/main".into()),
+            "mapped, and not fetched yet"
+        );
+        let feature = by_name("feature");
+        assert_eq!(
+            feature.upstream,
+            UpstreamRef::Unmapped,
+            "outside the refspec"
         );
     }
 }

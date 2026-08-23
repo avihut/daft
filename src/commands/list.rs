@@ -384,8 +384,8 @@ pub(crate) fn pr_row_context(git: &GitCommand) -> PrRowContext {
         .unwrap_or_default()
         .into_iter()
         .collect();
-    let branch_refs = crate::core::worktree::pr_rows::parse_branch_forge_refs(
-        &git.branch_merge_refs().unwrap_or_default(),
+    let branch_refs = crate::core::worktree::pr_rows::branch_forge_refs(
+        &git.branch_tracking().unwrap_or_default(),
     );
     PrRowContext {
         local_branches,

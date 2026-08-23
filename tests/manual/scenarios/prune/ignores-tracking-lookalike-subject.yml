@@ -7,8 +7,8 @@ description: >
   commit subject begins `[origin/<its own name>]`, was byte-identical to one
   that really tracked it, and got stamped as published. That record is what
   authorizes deleting a branch later, so a commit message could talk prune into
-  #858's failure class one run in advance. The backfill now reads git config,
-  which a commit message has no way into.
+  #858's failure class one run in advance. The backfill now reads tracking typed
+  from git config and the refs, which a commit message has no way into.
 
   The branch here deliberately has no worktree. For a branch checked out in
   another worktree git inserts the worktree path between the object name and the
@@ -18,8 +18,8 @@ description: >
   fixture's own `develop` is one.
 
   The impersonation is staged in git's own `branch -vv` output (the check below
-  greps it there) to prove the backfill no longer reads that rendering at all:
-  its observation is a config read, so the spoof has nowhere to land.
+  greps it there) to prove nothing in prune reads that rendering any more: its
+  observation is a typed config read, so the spoof has nowhere to land.
 
 repos:
   - name: test-repo

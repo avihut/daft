@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use super::forge_ref::{ForgeBranchRef, ForgePrLookup, OpenPr};
 use super::list::{EntryKind, WorktreeInfo};
 use crate::core::ownership::BranchOwner;
+use crate::git::BranchTracking;
 
 /// How each open PR not already represented by a visible row becomes one.
 #[derive(Debug, Default)]
@@ -219,8 +220,28 @@ pub fn reconcile_pr_rows(
     }
 }
 
+/// Each local branch's forge tracking ref, from the typed tracking read
+/// (`GitCommand::branch_tracking`). Non-forge upstreams (`refs/heads/...`)
+/// drop out. Same ref-shape parser as [`parse_branch_forge_refs`]
+/// (`ForgeBranchRef::parse_merge_ref`), so `daft list` and completion never
+/// disagree about what a forge ref looks like — but not the same selection:
+/// the typed read lists only branches that exist and have a configured
+/// `branch.<name>.remote`, which is git's own upstream rule and what daft's
+/// forge checkout always writes, while completion's `git config` read keys
+/// off `branch.<name>.merge` alone.
+pub fn branch_forge_refs(tracking: &[BranchTracking]) -> HashMap<String, ForgeBranchRef> {
+    tracking
+        .iter()
+        .filter_map(|t| {
+            let r = ForgeBranchRef::parse_merge_ref(t.merge.as_deref()?)?;
+            Some((t.branch.clone(), r))
+        })
+        .collect()
+}
+
 /// Parse the output of `git config --get-regexp '^branch\..*\.merge$'` into
-/// each branch's forge tracking ref. Non-forge merge refs (`refs/heads/...`)
+/// each branch's forge tracking ref — the completion path's read, which runs
+/// its own `git config` at a directory. Non-forge merge refs (`refs/heads/...`)
 /// drop out; branch names containing dots survive (the key is everything
 /// between `branch.` and the final `.merge`).
 pub fn parse_branch_forge_refs(config_lines: &str) -> HashMap<String, ForgeBranchRef> {
@@ -239,6 +260,7 @@ pub fn parse_branch_forge_refs(config_lines: &str) -> HashMap<String, ForgeBranc
 mod tests {
     use super::*;
     use crate::core::worktree::forge_ref::{ForgeRefKind, PrDecoration, PrStatus};
+    use crate::git::UpstreamRef;
 
     fn open_pr(number: u32, head: &str, fork: bool) -> OpenPr {
         let r = ForgeBranchRef::new(ForgeRefKind::GithubPr, number);
@@ -519,6 +541,36 @@ mod tests {
         assert!(
             !remote_row_subsumed("feat-x", EntryKind::LocalBranch, &synthesized),
             "only remote rows are ever subsumed"
+        );
+    }
+
+    #[test]
+    fn branch_forge_refs_keep_forge_upstreams_only() {
+        let tracked = |branch: &str, merge: Option<&str>| BranchTracking {
+            branch: branch.to_string(),
+            remote: "origin".to_string(),
+            merge: merge.map(str::to_string),
+            upstream: UpstreamRef::Unmapped,
+        };
+        let tracking = vec![
+            tracked("main", Some("refs/heads/main")),
+            tracked("pr.test", Some("refs/pull/7/head")),
+            tracked("mr-branch", Some("refs/merge-requests/45/head")),
+            tracked("half", None),
+        ];
+        let refs = branch_forge_refs(&tracking);
+        assert_eq!(
+            refs.len(),
+            2,
+            "plain refs/heads entries and remote-only ones drop out"
+        );
+        assert_eq!(
+            refs["pr.test"],
+            ForgeBranchRef::new(ForgeRefKind::GithubPr, 7)
+        );
+        assert_eq!(
+            refs["mr-branch"],
+            ForgeBranchRef::new(ForgeRefKind::GitlabMr, 45)
         );
     }
 
