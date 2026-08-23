@@ -477,6 +477,7 @@ mod tests {
         for cwd in [&main_wt, &sub, &feat_wt, &bare, &unborn] {
             std::env::set_current_dir(cwd).unwrap();
             let here = cwd.display();
+            reset_discover_count();
 
             assert!(git.is_inside_git_repo().unwrap(), "{here}: inside a repo");
             assert!(cli(cwd, &["rev-parse", "--git-dir"]).is_some());
@@ -500,6 +501,10 @@ mod tests {
                 expected_branch,
                 "{here}: current branch"
             );
+            // The answers above came from gix — one discovery for this cwd,
+            // shared by the three handle-backed questions — not from a
+            // subprocess arm that would trivially agree with the CLI.
+            assert_eq!(discover_count(), 1, "{here}: answers came from gix");
         }
 
         std::env::set_current_dir(&outside).unwrap();

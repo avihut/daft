@@ -173,7 +173,7 @@ which is the answer to what a partial layer actually holds.
 | `daft.autocd`           | `true`     | CD into new worktrees when using shell wrappers                                                                                |
 | `daft.remote`           | `"origin"` | Default remote name for all operations                                                                                         |
 | `daft.updateCheck`      | `true`     | Show notifications when a new daft version is available                                                                        |
-| `daft.gitoxide`         | `true`     | Use gitoxide for supported Git operations; `false` opts out to the git-subprocess backend                                      |
+| `daft.gitoxide`         | `true`     | Use gitoxide for the Git operations that read this key; `false` opts those back to git subprocesses (discovery stays gitoxide) |
 | `daft.go.autoStart`     | `false`    | Auto-create worktree when branch not found in `daft go`                                                                        |
 | `daft.start.forkNaming` | `derived`  | How `daft start --fork` names its sandboxes: `derived` (`<source>-fork`, `-fork-2`, …) or `memorable` (adjective-noun handles) |
 
