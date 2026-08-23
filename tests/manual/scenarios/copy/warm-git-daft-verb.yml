@@ -1,11 +1,12 @@
-name: git-daft worktree-warm dispatches to warm with its flags intact
+name: Both git-style spellings reach warm with their flags intact
 description: >
-  The git-style spelling `git daft worktree-warm` reaches the same command as
-  `daft warm`: the git-daft arm rewrites argv to the warm verb and `--from` must
-  survive that rewrite. The receipt names both ends of the copy, so the source
-  being the one `--from` chose is visible in the output. Ported from
-  test_warm.sh (warm_git_daft_verb_dispatches); only the `git-daft` symlink is
-  used because CI's binary setup does not create `git-worktree-warm`.
+  `git daft worktree-warm` reaches the same command as `daft warm`: the git-daft
+  arm rewrites argv to the warm verb and `--from` must survive that rewrite. The
+  receipt names both ends of the copy, so the source being the one `--from`
+  chose is visible in the output. The `git-worktree-warm` argv[0] arm is
+  exercised through a symlink the scenario makes itself — the multicall dispatch
+  keys on the basename, so it need not live in CI's binary farm (which does not
+  create that name). Ported from test_warm.sh (warm_git_daft_verb_dispatches).
 
 repos:
   - name: test-repo
@@ -63,3 +64,33 @@ steps:
     cwd: "$WORK_DIR/test-repo/develop"
     expect:
       exit_code: 0
+
+  # The other git-style spelling is the symlink itself. argv[0]'s basename
+  # picks the arm (src/main.rs), so a symlink anywhere exercises it — without
+  # depending on CI's hand-maintained symlink list.
+  - name: Make a git-worktree-warm symlink to the binary under test
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/bin"
+      ln -s "$(command -v daft)" "$WORK_DIR/bin/git-worktree-warm"
+      test -x "$WORK_DIR/bin/git-worktree-warm"
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-warm answers --help for itself
+    run: '"$WORK_DIR/bin/git-worktree-warm" --help 2>&1'
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Usage: git-worktree-warm"
+
+  - name: git-worktree-warm --force --from main re-copies through the symlink
+    run: '"$WORK_DIR/bin/git-worktree-warm" --force --from main 2>&1'
+    cwd: "$WORK_DIR/test-repo/develop"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Copied 1 of 1 declared path"
+        - "from 'main'"
+      output_not_contains:
+        - "already present"

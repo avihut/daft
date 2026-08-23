@@ -1,5 +1,12 @@
 name: "Exec failing command"
-description: "Failing -x command stops execution and propagates error"
+description:
+  "A failing -x command stops the sequence AND makes the creating command exit
+  non-zero — on init and on clone, whose off-rail propagation is hand-written in
+  each command (`exec_result?` after the shell hint)."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
 
 steps:
   - name: "Init repo with failing -x command"
@@ -7,8 +14,21 @@ steps:
       "git-worktree-init --layout contained -x 'echo before > marker.txt' -x
       'false' -x 'echo after >> marker.txt' exec-fail-repo 2>/dev/null"
     expect:
+      exit_code: 1
       files_exist:
         - "$WORK_DIR/exec-fail-repo/master/marker.txt"
       file_not_contains:
         - path: "$WORK_DIR/exec-fail-repo/master/marker.txt"
+          content: "after"
+
+  - name: "Clone with failing -x command"
+    run:
+      "git-worktree-clone --layout contained $REMOTE_TEST_REPO -x 'echo before >
+      marker.txt' -x 'false' -x 'echo after >> marker.txt' 2>/dev/null"
+    expect:
+      exit_code: 1
+      files_exist:
+        - "$WORK_DIR/test-repo/main/marker.txt"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/marker.txt"
           content: "after"

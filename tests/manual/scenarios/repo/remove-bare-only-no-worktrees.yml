@@ -1,11 +1,11 @@
-name: Repo remove of a bare-only repo skips the TUI and names the git dir
+name: Repo remove of a bare-only repo names the git dir it removed
 description: >
   A repo cloned with --no-checkout is just the bare git dir, no worktrees. The
-  TUI is overkill for a single bare-removal task and used to render an empty
-  table with headers that looked like a glitch; the command takes the sequential
-  path when the worktree list is empty and reports the git dir removal
-  explicitly. Ported from test_repo_remove.sh
-  (repo_remove_bare_only_no_worktrees).
+  removal must still report what it did — the git dir removal is the whole job
+  here, so it is named explicitly — and take nothing else with it. (The
+  empty-worktree-list TUI skip the command also performs cannot be observed
+  here: the runner's stderr is a pipe, which already selects the sequential
+  path.) Ported from test_repo_remove.sh (repo_remove_bare_only_no_worktrees).
 
 repos:
   - name: test-repo
@@ -28,15 +28,13 @@ steps:
       output_contains:
         - "0"
 
-  - name: Remove it — sequential output, no table header, git dir named
+  - name: Remove it — the git dir removal is named, the container survives
     run: daft repo remove --purge --force "$WORK_DIR/test-repo" 2>&1
     cwd: "$WORK_DIR"
     expect:
       exit_code: 0
       output_contains:
         - "(git dir): removed"
-      output_not_contains:
-        - "Status"
       files_not_exist:
         - "$WORK_DIR/test-repo"
       dirs_exist:

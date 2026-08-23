@@ -2726,7 +2726,8 @@ mod tests {
     /// #813: multi-target keeps the count form, and it is reachable without
     /// touching a repo — the seed only resolves when there is exactly one
     /// argument to resolve. The single-target spellings are covered where
-    /// they actually render, in `tests/integration/test_branch_delete.sh`.
+    /// they actually render, by the `remove_dot_header_*` PTY tests in
+    /// `tests/integration/test_rail_pty.sh`.
     #[test]
     fn header_seed_keeps_the_count_form_for_multiple_targets() {
         let params = |branches: Vec<String>| BranchDeleteParams {
