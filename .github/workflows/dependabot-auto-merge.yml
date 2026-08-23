@@ -1,0 +1,122 @@
+name: Dependabot auto-merge
+
+# Lets Dependabot's pull requests land without a human once — and only once —
+# the `master` ruleset is satisfied. This workflow merges nothing itself: it
+# turns on GitHub's auto-merge (squash) for the PR, and GitHub performs the
+# merge when the rules hold, i.e. when `ci-gate` is green on a branch that is
+# up to date with master. The ruleset is the gate; this is the button.
+#
+# What it will and will not touch:
+#   - Only PRs opened by dependabot[bot], only for events dependabot[bot]
+#     itself triggered, only against master. A human pushing to a Dependabot
+#     branch does not re-arm anything.
+#   - Only semver-patch and semver-minor updates (for grouped PRs: the highest
+#     bump in the group). Major bumps are left for a human — they are the ones
+#     where green CI is necessary but not sufficient (tera 2.0 gutted its
+#     built-in filters behind a green build; shlex 2.0 changed its API).
+#   - dependabot/fetch-metadata refuses PRs whose commits are not all
+#     Dependabot-authored and -signed, so a PR that merely *looks* like
+#     Dependabot's gets nothing.
+#   - It fails closed: if `ci-gate` is not a required status check on the
+#     target branch (someone loosened the ruleset), it refuses to arm
+#     auto-merge rather than let a PR merge on no checks at all.
+#
+# Why `pull_request` and not `pull_request_target`: nothing here checks out
+# code or needs a secret beyond GITHUB_TOKEN, and `pull_request` keeps the
+# run in the PR's own (fork-safe, read-only-by-default) context. The job-level
+# `permissions:` grant is the documented way for a Dependabot-triggered run to
+# get the two scopes that enabling auto-merge needs. This is the shape GitHub's
+# own "Automating Dependabot with GitHub Actions" guide uses.
+#
+# Squash-only, linear history, the up-to-date rule, and `ci-gate` itself are
+# all the ruleset's business — see .github/rulesets/master.json and CLAUDE.md
+# "Repository policy".
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+# Nothing at the workflow level; the one job asks for exactly what it uses.
+permissions: {}
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  enable:
+    # github.actor is the account whose action triggered the event; for a
+    # Dependabot-opened PR that Dependabot itself (re)pushes, both are
+    # dependabot[bot]. All four conditions are GitHub-controlled values.
+    if: >-
+      github.repository == 'avihut/daft' && github.event.pull_request.user.login
+      == 'dependabot[bot]' && github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.base.ref == 'master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # enablePullRequestAutoMerge / merge
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+    steps:
+      # Fail closed. Auto-merge is only safe because the ruleset refuses to
+      # merge until `ci-gate` passes; if that rule is ever removed, arming
+      # auto-merge would merge a PR on no checks at all. The branch-rules
+      # endpoint reports the rules in force for the target branch.
+      - name: Require ci-gate to be a required status check on the base branch
+        run: |
+          set -euo pipefail
+          rules=$(gh api "repos/${GH_REPO}/rules/branches/${BASE_REF}")
+          if ! echo "$rules" | jq -e '
+              [ .[] | select(.type == "required_status_checks")
+                    | .parameters.required_status_checks[]? | .context ]
+              | index("ci-gate") != null' >/dev/null; then
+            echo "::error::ci-gate is not a required status check on ${BASE_REF}; refusing to enable auto-merge. Restore the master ruleset (.github/rulesets/master.json)."
+            exit 1
+          fi
+          echo "ci-gate is required on ${BASE_REF}"
+
+      - name: Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Leave major bumps for a human
+        if: >-
+          steps.metadata.outputs.update-type != 'version-update:semver-patch' &&
+          steps.metadata.outputs.update-type != 'version-update:semver-minor'
+        env:
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          DEPS: ${{ steps.metadata.outputs.dependency-names }}
+        run: |
+          echo "::notice::Not auto-merging: ${UPDATE_TYPE:-unknown update type} (${DEPS}). A human reviews major bumps."
+
+      - name: Enable auto-merge (squash)
+        if: >-
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        run: |
+          set -euo pipefail
+          # Idempotent across re-runs (Dependabot rebases push `synchronize`):
+          # auto-merge already armed -> nothing to do. Already mergeable (every
+          # rule satisfied — only possible when CI finished before this job) ->
+          # a plain squash merge; GitHub still enforces the ruleset on it, and
+          # github-actions[bot] holds no bypass. Otherwise arm auto-merge and
+          # let GitHub merge when the rules hold.
+          state=$(gh pr view "$PR_URL" --json autoMergeRequest,mergeStateStatus)
+          if [ "$(echo "$state" | jq -r '.autoMergeRequest != null')" = "true" ]; then
+            echo "auto-merge already enabled"
+            exit 0
+          fi
+          if [ "$(echo "$state" | jq -r '.mergeStateStatus')" = "CLEAN" ]; then
+            echo "PR is already mergeable; merging (squash)"
+            gh pr merge --squash "$PR_URL"
+            exit 0
+          fi
+          gh pr merge --auto --squash "$PR_URL"
+          echo "auto-merge enabled (squash); GitHub merges when ci-gate is green on an up-to-date branch"
