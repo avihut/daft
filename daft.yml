@@ -235,7 +235,9 @@ hooks:
         run: mise run validate:msrv
 
       - name: integration-tests
-        description: "CI: integration-tests — the full bash + YAML matrix"
+        description:
+          "CI: integration-tests — the YAML scenario suite + the blessed shell
+          suite"
         root: "{merge_source_path}"
         tags: [deep]
         needs: [build]

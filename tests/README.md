@@ -26,13 +26,13 @@ tests/
 ## Running Tests
 
 ```bash
-# All tests (unit + integration matrix)
+# All tests (unit + integration suites + completions)
 mise run test
 
 # Unit tests only
 mise run test:unit
 
-# Bash integration tests
+# Integration suites: YAML scenarios, then the blessed shell suite
 mise run test:integration
 
 # YAML manual tests (all 252 scenarios, automatic — default)
@@ -224,9 +224,14 @@ dirs_exist:
 
 ## CI Integration
 
-The GitHub Actions workflow runs both test systems:
+The GitHub Actions workflow runs both test systems in one job
+(`integration-tests` in `.github/workflows/test.yml`), no matrix:
 
-1. Bash: `test_all.sh` with `GIT_CONFIG_GLOBAL`
-2. YAML: `xtask manual-test` with same config
+1. YAML: `xtask manual-test --jobs $(nproc)`
+2. Shell: `test_all.sh` (the blessed shell suite)
 3. Shell completions: `test_completions.sh`
-4. Help commands: verify all binaries respond to `--help`
+
+Each suite provisions its own isolation (`GIT_CONFIG_GLOBAL`, `DAFT_*_DIR`,
+`DAFT_TESTING`); the job sets none of it. `mise run test:integration` runs the
+same two suites in the same order, and `mise run completions:test` the third;
+the help smoke lives in `tests/manual/scenarios/simple/help.yml`.

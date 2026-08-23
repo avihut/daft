@@ -31,7 +31,3 @@ shlex = "2"
 tempfile = "3.8"
 term-styles = { workspace = true }
 walkdir = "2.5"
-
-[target.'cfg(unix)'.dependencies]
-# Used by `xtask test-matrix` to detect parent-process death and self-terminate.
-nix = { version = "0.31", features = ["process"] }
