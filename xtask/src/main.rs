@@ -1997,6 +1997,16 @@ mod multicall_farm_drift {
     const MAIN: &str = "src/main.rs";
     const WORKFLOW: &str = ".github/workflows/test.yml";
 
+    /// The install paths that cannot source a bash list and therefore keep
+    /// their own copy: the window in each file that holds the names, as
+    /// (file, opening marker, closing marker).
+    const INSTALLERS: &[(&str, &str, &str)] = &[
+        // cargo-dist generates the Homebrew formula and every installer
+        // from this — it is what real installs actually ship.
+        ("dist-workspace.toml", "[dist.bin-aliases]", "\n["),
+        ("flake.nix", "for cmd in", "; do"),
+    ];
+
     /// Farm entries that deliberately have no dispatch arm, and why. An
     /// entry here is a bug someone decided not to fix yet — not a blessing.
     const ORPHANS: &[(&str, &str)] = &[(
@@ -2127,6 +2137,66 @@ mod multicall_farm_drift {
             assert!(
                 !arms.contains(*name),
                 "{name} now has a dispatch arm in {MAIN} — drop the ORPHANS entry ({why})"
+            );
+        }
+    }
+
+    /// Multicall names inside one installer's window. Tokenised rather than
+    /// parsed so the same reader works on TOML strings and bare Nix words.
+    fn installer_names(file: &str, open: &str, close: &str) -> BTreeSet<String> {
+        let text = read(file);
+        let body = text
+            .split_once(open)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{file} still contains `{open}` — this gate reads the \
+                 symlink list from that window and cannot find it"
+                )
+            })
+            .1;
+        let body = body
+            .split_once(close)
+            .unwrap_or_else(|| panic!("{file}'s symlink list is no longer closed by `{close}`"))
+            .0;
+
+        let names: BTreeSet<String> = body
+            .split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+            .filter(|token| is_multicall_name(token))
+            .map(str::to_string)
+            .collect();
+        assert!(
+            names.len() > 10,
+            "found only {} multicall names in {file} — the window moved and this gate went \
+             vacuous",
+            names.len()
+        );
+        names
+    }
+
+    /// The farm list is bash, so CI and the shell suite can source it; the
+    /// installers cannot, so they are gated instead of unified. A command
+    /// missing here is one a real `brew install` / `nix build` never ships.
+    #[test]
+    fn every_dispatch_arm_ships_in_every_installer() {
+        let arms = dispatch_arms();
+        let exempt: BTreeSet<String> = ORPHANS.iter().map(|(n, _)| n.to_string()).collect();
+        for (file, open, close) in INSTALLERS {
+            let shipped = installer_names(file, open, close);
+            let missing: Vec<_> = arms.difference(&shipped).cloned().collect();
+            assert!(
+                missing.is_empty(),
+                "{file} does not install {missing:?}, so users of that install path get \
+                 \"command not found\" for a command {MAIN} answers to."
+            );
+            let unknown: Vec<_> = shipped
+                .difference(&arms)
+                .filter(|name| !exempt.contains(*name))
+                .cloned()
+                .collect();
+            assert!(
+                unknown.is_empty(),
+                "{file} installs {unknown:?}, which {MAIN} has no arm for — those symlinks \
+                 print \"Unknown command\" and exit 1."
             );
         }
     }

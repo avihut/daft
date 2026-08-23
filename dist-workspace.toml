@@ -27,7 +27,10 @@ install-path = "CARGO_HOME"
 install-updater = false
 
 # Symlinks to create for the multicall binary
-# These enable git-worktree-* commands to work via symlinks to daft
+# These enable git-worktree-* commands to work via symlinks to daft.
+# Every name here must have an argv[0] arm in src/main.rs, and every arm must
+# appear here — this is what real installs ship. `multicall_farm_drift` in
+# xtask fails on either gap (#903).
 [dist.bin-aliases]
 daft = [
     "git-worktree-clone",
@@ -39,6 +42,8 @@ daft = [
     "git-worktree-carry",
     "git-worktree-fetch",
     "git-worktree-list",
+    "git-worktree-merge",
+    "git-worktree-exec",
     "git-worktree-sync",
     "git-worktree-push",
     "git-worktree-warm",

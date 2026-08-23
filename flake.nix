@@ -57,16 +57,24 @@
               cargoTestExtraArgs = "--lib";
 
               postInstall = ''
-                # Create symlinks for the multicall binary
+                # Create symlinks for the multicall binary. Must stay in step
+                # with src/main.rs's argv[0] table — xtask's
+                # `multicall_farm_drift` gates it (#903).
                 cd $out/bin
                 for cmd in \
                   git-worktree-clone \
                   git-worktree-init \
                   git-worktree-checkout \
                   git-worktree-checkout-branch \
+                  git-worktree-branch \
+                  git-worktree-branch-delete \
                   git-worktree-prune \
                   git-worktree-carry \
                   git-worktree-fetch \
+                  git-worktree-list \
+                  git-worktree-merge \
+                  git-worktree-exec \
+                  git-worktree-sync \
                   git-worktree-push \
                   git-worktree-warm \
                   git-daft \
