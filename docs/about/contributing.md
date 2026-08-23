@@ -55,7 +55,8 @@ All PRs must pass these checks (enforced in CI):
 - **Formatting:** `mise run fmt:check`
 - **Linting:** `mise run clippy` (zero warnings)
 - **Unit tests:** `mise run test:unit`
-- **Integration tests:** `mise run test:integration` (bash + YAML)
+- **Integration tests:** `mise run test:integration` (YAML scenarios + the
+  blessed shell suite)
 
 Run the full CI simulation locally:
 
@@ -164,7 +165,7 @@ Shell-based tests in `tests/integration/`. The master runner `test_all.sh`
 executes all suites.
 
 ```bash
-mise run test:integration              # Bash + YAML suites
+mise run test:integration              # YAML scenarios, then the shell suite
 cd tests/integration && bash test_clone.sh   # Run one suite directly
 ```
 

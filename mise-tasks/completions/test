@@ -4,7 +4,7 @@
 set -euo pipefail
 
 # Real-state tripwire (#697/#667): this suite execs the release binary outside
-# the integration matrix, so it needs the same preflight + guard wrapping.
+# `test:integration`, so it needs the same preflight + guard wrapping.
 source "$(dirname "$0")/../test/_state_guard_lib.sh"
 assert_binary_honors_overrides "target/release/daft"
 

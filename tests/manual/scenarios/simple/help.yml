@@ -1,15 +1,70 @@
-name: Help commands work
-description: "Help flag works for init and clone commands"
+name: Multicall help smoke
+description:
+  "Every multicall entry point the CI binary setup symlinks answers --help with
+  exit 0 — the smoke CI ran as its own step before #885 folded it in here"
+
+# The binary dispatches on argv[0] (src/main.rs); each symlink below is one
+# arm of that table. The no-args form (`daft`, `git-daft`) is covered by
+# unknown-command/no-args.yml. Only names CI's "Set up binary" step creates
+# appear here — a symlink it does not create would pass locally (the dev farm
+# has them all) and in CI exit 127 or, worse, flake: a `doctor --fix`
+# scenario that happens to run first backfills the whole farm into the
+# shared bin dir.
 
 repos: []
 
 steps:
+  - name: git-worktree-clone --help exits successfully
+    run: git-worktree-clone --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-checkout --help exits successfully
+    run: git-worktree-checkout --help 2>&1
+    expect:
+      exit_code: 0
+
   - name: git-worktree-init --help exits successfully
     run: git-worktree-init --help 2>&1
     expect:
       exit_code: 0
 
-  - name: git-worktree-clone --help exits successfully
-    run: git-worktree-clone --help 2>&1
+  - name: git-worktree-prune --help exits successfully
+    run: git-worktree-prune --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-carry --help exits successfully
+    run: git-worktree-carry --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-fetch --help exits successfully
+    run: git-worktree-fetch --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-sync --help exits successfully
+    run: git-worktree-sync --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: daft-go --help exits successfully
+    run: daft-go --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: daft-start --help exits successfully
+    run: daft-start --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: daft-remove --help exits successfully
+    run: daft-remove --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: daft-rename --help exits successfully
+    run: daft-rename --help 2>&1
     expect:
       exit_code: 0

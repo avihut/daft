@@ -12,8 +12,9 @@ DAFT_BIN="$PROJECT_ROOT/target/release/daft"
 # throwaway sandbox, never the developer's real dirs. Mirrors the DAFT_*_DIR
 # block in test_framework.sh setup(); kept bespoke because this script runs
 # standalone (own mise task + CI step) and must not share — or trap-delete —
-# the matrix's /tmp sandbox. The completions:test task wraps this script in
-# the real-state guard, which catches any drift between the twin blocks.
+# the shell suite's /tmp sandbox (test_framework.sh's TEMP_BASE_DIR). The
+# completions:test task wraps this script in the real-state guard, which
+# catches any drift between the twin blocks.
 # Short /tmp names on purpose: coordinator sockets cap sun_path at ~104 bytes
 # on macOS.
 COMPLETIONS_SANDBOX="$(mktemp -d /tmp/daft-completions.XXXXXX)"
