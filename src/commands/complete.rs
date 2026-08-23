@@ -2355,8 +2355,11 @@ fn complete_forge_targets(word: &str, repo_root: Option<&std::path::Path>) -> Ve
             .output()
         && output.status.success()
     {
-        // One shared parser with the list PR-rows path (pr_rows), so completion
-        // and `daft list` never disagree about which local branches track a PR.
+        // The same forge-ref shape parser as the list PR-rows path (pr_rows),
+        // so completion and `daft list` never disagree about what a forge ref
+        // looks like. (The selection differs slightly: list reads typed
+        // tracking, which needs a configured `branch.<name>.remote` as well;
+        // this read keys off `branch.<name>.merge` alone.)
         // HashMap iteration order is unstable — sort for deterministic
         // completion output (by kind, then number).
         let mut checked_out: Vec<_> = crate::core::worktree::pr_rows::parse_branch_forge_refs(

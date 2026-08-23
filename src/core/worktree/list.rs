@@ -990,13 +990,12 @@ pub fn collect_branch_info(
 
     // Collect local branches without worktrees
     if include_local {
-        let output = git
-            .for_each_ref("%(refname:short)", "refs/heads/")
-            .context("Failed to list local branches")?;
-
-        for branch in output.lines() {
-            let branch = branch.trim();
-            if branch.is_empty() || worktree_branches.contains(branch) {
+        for branch in git
+            .local_branch_names()
+            .context("Failed to list local branches")?
+        {
+            let branch = branch.as_str();
+            if worktree_branches.contains(branch) {
                 continue;
             }
             if let Some(only) = only_local
@@ -1092,29 +1091,17 @@ pub fn collect_branch_info(
 
     // Collect remote branches without local branches or worktrees
     if include_remote {
-        let output = git
-            .for_each_ref("%(refname:short)", "refs/remotes/origin/")
-            .context("Failed to list remote branches")?;
-
-        for remote_branch in output.lines() {
-            let remote_branch = remote_branch.trim();
-            // %(refname:short) renders origin/HEAD as just "origin"
-            if remote_branch.is_empty()
-                || remote_branch == "origin/HEAD"
-                || remote_branch == "origin"
-            {
-                continue;
-            }
-
-            // Strip origin/ prefix for deduplication check
-            let short_name = remote_branch
-                .strip_prefix("origin/")
-                .unwrap_or(remote_branch);
-
+        for short_name in git
+            .remote_branch_names("origin")
+            .context("Failed to list remote branches")?
+        {
+            let short_name = short_name.as_str();
             // Skip if already represented by a worktree or local branch
             if worktree_branches.contains(short_name) || local_branch_names.contains(short_name) {
                 continue;
             }
+            // Rows name the remote branch the way git does: `origin/<branch>`.
+            let remote_branch = &format!("origin/{short_name}");
 
             let (ahead, behind) = match get_ahead_behind(base_branch, remote_branch, cwd) {
                 Some((a, b)) => (Some(a), Some(b)),

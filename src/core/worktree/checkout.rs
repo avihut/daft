@@ -1183,30 +1183,15 @@ pub fn collect_branch_names(git: &GitCommand, remote_name: &str) -> Vec<String> 
     let mut seen = std::collections::HashSet::new();
     let mut names = Vec::new();
 
-    // Local branches
-    if let Ok(output) = git.for_each_ref("%(refname:short)", "refs/heads/") {
-        for line in output.lines() {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
-                names.push(trimmed.to_string());
-            }
+    // Local branches first, then the remote's, each name once.
+    for branch in git.local_branch_names().unwrap_or_default() {
+        if seen.insert(branch.clone()) {
+            names.push(branch);
         }
     }
-
-    // Remote branches (strip remote prefix)
-    let remote_refs = format!("refs/remotes/{remote_name}/");
-    if let Ok(output) = git.for_each_ref("%(refname:short)", &remote_refs) {
-        for line in output.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.ends_with("/HEAD") {
-                continue;
-            }
-            // Strip the remote prefix to get just the branch name
-            if let Some(branch) = trimmed.strip_prefix(&format!("{remote_name}/"))
-                && seen.insert(branch.to_string())
-            {
-                names.push(branch.to_string());
-            }
+    for branch in git.remote_branch_names(remote_name).unwrap_or_default() {
+        if seen.insert(branch.clone()) {
+            names.push(branch);
         }
     }
 

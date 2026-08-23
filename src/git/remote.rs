@@ -524,34 +524,6 @@ impl GitCommand {
         covers_all_heads.then_some(repo)
     }
 
-    /// Every head on a remote, in `<oid>\t<ref>` lines.
-    ///
-    /// Bulk listing is where the gix arm pays off: one connection, the whole
-    /// advertisement, no subprocess. Single-ref existence deliberately does
-    /// *not* route here — see `ls_remote_branch_exists`.
-    pub fn ls_remote_heads(&self, remote: &str) -> Result<String> {
-        if let Some(repo) = self.gix_repo_for_remote(remote) {
-            return oxide::ls_remote_heads(&repo, remote);
-        }
-        // URL-shaped remote or no usable repo (e.g. during clone) — git CLI.
-        // Routed through output_with_cancel so a supervised caller (sync's
-        // gone-branch identification) can tear a stalled network ls-remote
-        // down on the first Ctrl+C; unsupervised callers (clone) pass no
-        // flag and get a classic blocking run.
-        let mut cmd = Command::new("git");
-        cmd.args(["ls-remote", "--heads", remote]);
-
-        let output = cancel::output_with_cancel(&mut cmd, self.cancel_flag())
-            .context("Failed to execute git ls-remote command")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Git ls-remote failed: {}", stderr);
-        }
-
-        String::from_utf8(output.stdout).context("Failed to parse git ls-remote output")
-    }
-
     /// Execute git ls-remote with symref to get remote HEAD.
     ///
     /// `remote` may be a URL or a configured remote name — the git CLI
@@ -585,7 +557,7 @@ impl GitCommand {
     /// ask this in a loop — `prune` probes every branch that has a worktree
     /// — so on a large monorepo that turns N cheap single-ref queries into
     /// N full ref advertisements. Bulk listing still uses gix via
-    /// `ls_remote_heads`, where fetching every head is the point.
+    /// `list_remote_branches`, where fetching every head is the point.
     pub fn ls_remote_branch_exists(&self, remote_name: &str, branch: &str) -> Result<bool> {
         // output_with_cancel so a supervised caller (sync gone-branch check)
         // can cancel a stalled network probe; unsupervised callers block.
@@ -802,30 +774,70 @@ impl GitCommand {
 
     /// List all branches on a remote.
     ///
-    /// Always a network listing. Its one caller (`daft clone`) probes from
-    /// the bare repo it just created, where `refs/remotes/<remote>/` is
-    /// still empty — a fresh clone's remote heads land on `refs/heads/*`
-    /// until the first fetch — so a local-ref shortcut could only ever
-    /// answer "no branches" there. Reading local refs is precisely what
-    /// made multi-branch clone create no worktrees (#733 graduation
-    /// regression).
-    pub fn list_remote_branches(&self, remote_name: &str) -> Result<Vec<String>> {
-        let output = self.ls_remote_heads(remote_name)?;
-        Ok(output
-            .lines()
-            .filter_map(|line| {
-                line.split('\t')
-                    .nth(1)
-                    .and_then(|r| r.strip_prefix("refs/heads/"))
-                    .map(|s| s.to_string())
-            })
-            .collect())
+    /// Every branch on `remote`, by name, straight from the remote.
+    ///
+    /// Always a network listing. Its callers (`daft clone`, the multi-branch
+    /// probe) ask from a bare repo they just created, where
+    /// `refs/remotes/<remote>/` is still empty — a fresh clone's remote heads
+    /// land on `refs/heads/*` until the first fetch — so a local-ref shortcut
+    /// could only ever answer "no branches" there. Reading local refs is
+    /// precisely what made multi-branch clone create no worktrees (#733
+    /// graduation regression); `remote_branch_names` is the on-disk view.
+    ///
+    /// Bulk listing is where the gix arm pays off: one connection, the whole
+    /// advertisement, no subprocess. Single-ref existence deliberately does
+    /// *not* route here — see `ls_remote_branch_exists`.
+    pub fn list_remote_branches(&self, remote: &str) -> Result<Vec<String>> {
+        if let Some(repo) = self.gix_repo_for_remote(remote) {
+            return oxide::remote_branch_heads(&repo, remote);
+        }
+        // URL-shaped remote or no usable repo (e.g. during clone) — git CLI.
+        // Routed through output_with_cancel so a supervised caller (sync's
+        // gone-branch identification) can tear a stalled network ls-remote
+        // down on the first Ctrl+C; unsupervised callers (clone) pass no
+        // flag and get a classic blocking run.
+        let mut cmd = Command::new("git");
+        cmd.args(["ls-remote", "--heads", remote]);
+
+        let output = cancel::output_with_cancel(&mut cmd, self.cancel_flag())
+            .context("Failed to execute git ls-remote command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git ls-remote failed: {}", stderr);
+        }
+
+        let stdout =
+            String::from_utf8(output.stdout).context("Failed to parse git ls-remote output")?;
+        Ok(parse_ls_remote_heads(&stdout))
     }
+}
+
+/// Branch names out of `git ls-remote --heads` output (`<oid>\t<ref>` lines).
+fn parse_ls_remote_heads(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            line.split('\t')
+                .nth(1)
+                .and_then(|r| r.strip_prefix("refs/heads/"))
+                .map(str::to_string)
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    #[test]
+    fn ls_remote_heads_parse_keeps_branch_names_only() {
+        let output = "0123456789abcdef0123456789abcdef01234567\trefs/heads/main\n\
+                      89abcdef0123456789abcdef0123456789abcdef\trefs/heads/feat/x\n\
+                      fedcba9876543210fedcba9876543210fedcba98\trefs/tags/v1\n\
+                      not a ls-remote line\n";
+        assert_eq!(super::parse_ls_remote_heads(output), ["main", "feat/x"]);
+    }
 
     fn rs_files_under(dir: &Path, acc: &mut Vec<std::path::PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {

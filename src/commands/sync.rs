@@ -452,11 +452,11 @@ fn run_sequential(args: Args, settings: DaftSettings, cancel: &Arc<CancelFlag>) 
             }
         }
         // Also check local-only branches
-        if let Ok(ref_output) = git_for_email.for_each_ref("%(refname:short)", "refs/heads") {
+        if let Ok(local_branches) = git_for_email.local_branch_names() {
             let worktree_set: HashSet<&str> = worktrees.iter().map(|(_, b)| b.as_str()).collect();
-            for branch in ref_output.lines() {
-                let branch = branch.trim();
-                if branch.is_empty() || worktree_set.contains(branch) {
+            for branch in &local_branches {
+                let branch = branch.as_str();
+                if worktree_set.contains(branch) {
                     continue;
                 }
                 let owner = crate::core::ownership::resolve_owner_with_fallbacks(
