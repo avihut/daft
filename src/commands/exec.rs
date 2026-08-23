@@ -3,7 +3,6 @@ use crate::{
     git::GitCommand,
     is_git_repository,
     output::{CliOutput, Output, OutputConfig},
-    settings::DaftSettings,
     utils::{change_directory, get_current_directory},
 };
 use anyhow::Result;
@@ -206,8 +205,7 @@ pub fn run() -> Result<()> {
     } else if args.related {
         (collect_related_targets(&mut output)?, Vec::new())
     } else {
-        let settings = DaftSettings::load()?;
-        let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+        let git = GitCommand::new(false);
         let snaps = core::collect_snapshot(&git)?;
 
         if args.repo.is_some() && args.targets.is_empty() && !args.all {
@@ -739,8 +737,7 @@ fn repo_branch_target(
     branch: Option<&str>,
 ) -> Result<Option<crate::core::worktree::exec::ResolvedTarget>> {
     use crate::core::worktree::exec as core;
-    let settings = DaftSettings::load()?;
-    let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(true);
     let snaps = core::collect_snapshot(&git)?;
     let branch = match branch {
         Some(b) => b.to_string(),

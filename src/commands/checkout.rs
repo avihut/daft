@@ -827,7 +827,6 @@ fn run_start_fork(args: StartArgs, base: Option<String>, count: u32) -> Result<(
 
     let git = GitCommand::new(args.quiet);
     let settings = DaftSettings::load_with(&git)?;
-    let git = git.with_gitoxide(settings.use_gitoxide);
 
     // Bulk minting has no single destination — autocd only for one fork.
     let autocd = settings.autocd && !args.no_cd && count == 1;
@@ -1697,7 +1696,6 @@ fn run_in_repo(
     // discovers the repo exactly once instead of per throwaway instance (#584).
     let git = GitCommand::new(args.quiet);
     let settings = DaftSettings::load_with(&git)?;
-    let git = git.with_gitoxide(settings.use_gitoxide);
 
     let autocd = settings.autocd && !args.no_cd;
     let config = OutputConfig::with_autocd(args.quiet, args.verbose, autocd);
@@ -1836,7 +1834,7 @@ fn run_in_repo(
                              when branch '{branch}' does not exist"
                             );
                         }
-                        render_branch_not_found_error(branch, remote, fetch_failed, &settings);
+                        render_branch_not_found_error(branch, remote, fetch_failed);
                         std::process::exit(1);
                     }
                 }
@@ -2807,7 +2805,6 @@ fn run_start_with_related(
     //    fan-out reach — and the command exits non-zero at the end instead.
     let git = GitCommand::new(args.quiet);
     let settings = DaftSettings::load_with(&git)?;
-    let git = git.with_gitoxide(settings.use_gitoxide);
     let autocd = settings.autocd && !args.no_cd;
     let mut output = CliOutput::new(OutputConfig::with_autocd(args.quiet, args.verbose, autocd));
 
@@ -2929,7 +2926,6 @@ fn create_branch_in_related_repo(
     let result = (|| {
         let git = GitCommand::new(args.quiet);
         let settings = DaftSettings::load_with(&git)?;
-        let git = git.with_gitoxide(settings.use_gitoxide);
 
         let mut repo_args = args.clone();
         // Base the new branch on the related repo's own default branch (its
@@ -2964,12 +2960,7 @@ fn create_branch_in_related_repo(
     result
 }
 
-fn render_branch_not_found_error(
-    branch: &str,
-    remote: &str,
-    fetch_failed: bool,
-    settings: &DaftSettings,
-) {
+fn render_branch_not_found_error(branch: &str, remote: &str, fetch_failed: bool) {
     // Section 1: Diagnosis
     if fetch_failed {
         eprintln!(
@@ -2988,7 +2979,7 @@ fn render_branch_not_found_error(
     }
 
     // Section 3: Fuzzy matches
-    let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(true);
     let all_branches = checkout::collect_branch_names(&git, remote);
     let suggestions = crate::suggest::find_similar(branch, &all_branches, 5);
     if !suggestions.is_empty() {

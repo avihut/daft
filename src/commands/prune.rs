@@ -215,10 +215,9 @@ fn run_prune(args: Args, settings: DaftSettings) -> Result<()> {
 }
 
 fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> Result<()> {
-    let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(true);
     let params = prune::PruneParams {
         force,
-        use_gitoxide: settings.use_gitoxide,
         is_quiet: output.is_quiet(),
         remote_name: settings.remote.clone(),
         prune_cd_target: settings.prune_cd_target,
@@ -260,16 +259,15 @@ fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool
 
 /// Interactive TUI execution path — parallel DAG executor with inline ratatui display.
 fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(false);
     let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let project_root = get_project_root()?;
     let stat = args.stat.unwrap_or(settings.prune_stat);
 
     // ── Pre-TUI: collect worktree info (no fetch needed) ───────────────
     let git_common_dir = get_git_common_dir()?;
-    let base_branch =
-        get_default_branch_local(&git_common_dir, &settings.remote, settings.use_gitoxide)
-            .unwrap_or_else(|_| "master".to_string());
+    let base_branch = get_default_branch_local(&git_common_dir, &settings.remote)
+        .unwrap_or_else(|_| "master".to_string());
 
     let current_path = crate::core::repo::get_current_worktree_path()
         .ok()
@@ -462,9 +460,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let shared_hooks_config = Arc::new(hooks_config.clone());
     // One witness for the whole run: the workers share its single fetch, and
     // the post-TUI deferred pass must judge on the same data the table showed.
-    let shared_merged_witness = crate::commands::forge_cache::merged_witness(
-        &GitCommand::new(true).with_gitoxide(settings.use_gitoxide),
-    );
+    let shared_merged_witness =
+        crate::commands::forge_cache::merged_witness(&GitCommand::new(true));
     let orch_merged_witness = Arc::clone(&shared_merged_witness);
 
     // Captures for the post-fetch refresh inside the orchestrator thread.
@@ -474,12 +471,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     let orchestrator_handle = std::thread::spawn(move || {
         // ── Phase 1: Fetch ─────────────────────────────────────────────
-        if !sync_shared::run_fetch_phase(
-            &tx,
-            orch_settings.use_gitoxide,
-            &orch_settings.remote,
-            None,
-        ) {
+        if !sync_shared::run_fetch_phase(&tx, &orch_settings.remote, None) {
             return;
         }
 
@@ -496,7 +488,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
         // ── Phase 2: Identify gone branches + build DAG ────────────────
         let gone_branches = {
-            let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
+            let git = GitCommand::new(false);
             let mut sink = NullBridge;
             prune::identify_gone_branches(
                 &git,
@@ -599,7 +591,6 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             )
             .collect();
         let ctx = Arc::new(list_stream::CollectorContext {
-            use_gitoxide: settings.use_gitoxide,
             base_branch: base_branch.clone(),
             remote_name: settings.remote.clone(),
             ownership_strategy: settings.ownership_strategy,

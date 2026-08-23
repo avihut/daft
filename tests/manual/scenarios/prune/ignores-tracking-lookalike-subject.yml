@@ -17,10 +17,9 @@ description: >
   a branch whose worktree was removed, is the shape that reaches it; the
   fixture's own `develop` is one.
 
-  Pinned to the git-subprocess backend on purpose. Only `git branch -vv` itself
-  prints the subject; daft's gitoxide rendering builds the line from config and
-  appends none, so under the default backend the impersonation is not
-  expressible and this scenario would pass against the bug it is here to catch.
+  The impersonation is staged in git's own `branch -vv` output (the check below
+  greps it there) to prove the backfill no longer reads that rendering at all:
+  its observation is a config read, so the spoof has nowhere to land.
 
 repos:
   - name: test-repo
@@ -33,12 +32,6 @@ steps:
       exit_code: 0
       dirs_exist:
         - "$WORK_DIR/test-repo/main"
-
-  - name: Read branch state through git itself, where the subject is rendered
-    run: git config daft.gitoxide false
-    cwd: "$WORK_DIR/test-repo/main"
-    expect:
-      exit_code: 0
 
   - name: Leave a worktree-less branch whose subject impersonates tracking info
     run: |

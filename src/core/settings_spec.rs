@@ -1334,14 +1334,6 @@ fn git_specs() -> Vec<SettingSpec> {
             Fixed("--ff-only"),
         )
         .alias(keys::FETCH_ARGS_DEPRECATED),
-        SettingSpec::git(
-            keys::GITOXIDE,
-            "gitoxide backend",
-            "In-process gitoxide backend for the operations that read this key; off opts those back to git subprocesses.",
-            Update,
-            Bool,
-            Fixed("true"),
-        ),
     ]
 }
 
@@ -1754,7 +1746,7 @@ mod tests {
             .iter()
             .filter(|s| s.backend == Backend::GitConfig)
             .count();
-        assert_eq!(git, 78, "64 fixed git keys + 14 per-hook");
+        assert_eq!(git, 77, "63 fixed git keys + 14 per-hook");
         assert_eq!(
             specs.iter().filter(|s| s.form == KeyForm::Layout).count(),
             1

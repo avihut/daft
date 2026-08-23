@@ -43,20 +43,7 @@ impl GitCommand {
     }
 
     pub fn branch_list_verbose(&self) -> Result<String> {
-        if self.use_gitoxide {
-            return oxide::branch_list_verbose(&self.gix_repo()?);
-        }
-        let output = Command::new("git")
-            .args(["branch", "-vv"])
-            .output()
-            .context("Failed to execute git branch command")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Git branch list failed: {}", stderr);
-        }
-
-        String::from_utf8(output.stdout).context("Failed to parse git branch output")
+        oxide::branch_list_verbose(&self.gix_repo()?)
     }
 
     /// Checkout a branch in the current working directory.

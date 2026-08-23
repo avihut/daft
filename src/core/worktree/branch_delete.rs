@@ -28,8 +28,6 @@ pub struct BranchDeleteParams {
     pub branches: Vec<String>,
     /// Force deletion even if not fully merged.
     pub force: bool,
-    /// Whether to use gitoxide.
-    pub use_gitoxide: bool,
     /// Whether output is in quiet mode.
     pub is_quiet: bool,
     /// Remote name (from settings).
@@ -248,16 +246,15 @@ pub fn execute(
     witness: &dyn ForgeMergedWitness,
     sink: &mut (impl ProgressSink + HookRunner + ConsolidationPrompter),
 ) -> Result<BranchDeleteResult> {
-    let git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
+    let git = GitCommand::new(params.is_quiet);
     let git_dir = get_git_common_dir()?;
     // Reclaim anything a previous reaper failed to finish (#200). This is what
     // makes a failed background delete *delayed* rather than permanent, so
     // deferring the delete is not a way to lose track of disk space. Cheap when
     // the trash is empty, which is the ordinary case.
     trash::sweep(&git_dir);
-    let default_branch =
-        get_default_branch_local(&git_dir, &params.remote_name, params.use_gitoxide)
-            .context("Cannot determine default branch")?;
+    let default_branch = get_default_branch_local(&git_dir, &params.remote_name)
+        .context("Cannot determine default branch")?;
 
     let ctx = BranchDeleteContext {
         git: &git,
@@ -555,10 +552,7 @@ pub(crate) fn display_path(path: &Path) -> String {
 /// the resolution costs and keeps the raw spelling nobody will read.
 pub fn header_seed(params: &BranchDeleteParams, resolve: bool) -> String {
     match params.branches.as_slice() {
-        [only] if resolve => format!(
-            "Removing {}",
-            display_identity(only, params.use_gitoxide, params.is_quiet)
-        ),
+        [only] if resolve => format!("Removing {}", display_identity(only, params.is_quiet)),
         [only] => format!("Removing {only}"),
         rest => format!("Removing {} branches", rest.len()),
     }
@@ -572,12 +566,12 @@ pub fn header_seed(params: &BranchDeleteParams, resolve: bool) -> String {
 /// resolve comes back as the user's own spelling, which is what the
 /// validation error will echo too: replacing an unresolvable `../typo` with
 /// a guess is worse than showing a path.
-fn display_identity(arg: &str, use_gitoxide: bool, quiet: bool) -> String {
+fn display_identity(arg: &str, quiet: bool) -> String {
     let verbatim = || arg.to_string();
     let (Ok(project_root), Ok(git_dir)) = (get_project_root(), get_git_common_dir()) else {
         return verbatim();
     };
-    let git = GitCommand::new(quiet).with_gitoxide(use_gitoxide);
+    let git = GitCommand::new(quiet);
     let Ok(entries) = parse_worktree_list(&git) else {
         return verbatim();
     };
@@ -2093,7 +2087,6 @@ fn execute_deletions(
                 &ctx.project_root,
                 &ctx.git_dir,
                 &ctx.remote_name,
-                params.use_gitoxide,
                 sink,
             );
 
@@ -2626,33 +2619,30 @@ fn resolve_prune_cd_target(
     project_root: &Path,
     git_dir: &Path,
     remote_name: &str,
-    use_gitoxide: bool,
     sink: &mut dyn ProgressSink,
 ) -> PathBuf {
     match cd_target {
         PruneCdTarget::Root => project_root.to_path_buf(),
-        PruneCdTarget::DefaultBranch => {
-            match get_default_branch_local(git_dir, remote_name, use_gitoxide) {
-                Ok(default_branch) => {
-                    let branch_dir = project_root.join(&default_branch);
-                    if branch_dir.is_dir() {
-                        branch_dir
-                    } else {
-                        sink.on_step(&format!(
+        PruneCdTarget::DefaultBranch => match get_default_branch_local(git_dir, remote_name) {
+            Ok(default_branch) => {
+                let branch_dir = project_root.join(&default_branch);
+                if branch_dir.is_dir() {
+                    branch_dir
+                } else {
+                    sink.on_step(&format!(
                             "Default branch worktree directory '{}' not found, falling back to project root",
                             branch_dir.display()
                         ));
-                        project_root.to_path_buf()
-                    }
-                }
-                Err(e) => {
-                    sink.on_warning(&format!(
-                        "Cannot determine default branch for cd target: {e}. Falling back to project root."
-                    ));
                     project_root.to_path_buf()
                 }
             }
-        }
+            Err(e) => {
+                sink.on_warning(&format!(
+                        "Cannot determine default branch for cd target: {e}. Falling back to project root."
+                    ));
+                project_root.to_path_buf()
+            }
+        },
     }
 }
 
@@ -2710,7 +2700,6 @@ mod tests {
         let params = BranchDeleteParams {
             branches: vec![".".to_string()],
             force: false,
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote: false,
@@ -2743,7 +2732,6 @@ mod tests {
         let params = |branches: Vec<String>| BranchDeleteParams {
             branches,
             force: false,
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote: false,
@@ -2814,7 +2802,6 @@ mod tests {
         let params = |delete_remote: bool| BranchDeleteParams {
             branches: vec!["feat-x".to_string()],
             force: false,
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote,
@@ -3102,7 +3089,6 @@ mod tests {
         BranchDeleteParams {
             branches: vec![branch.to_string()],
             force: false,
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote: false,
@@ -3475,7 +3461,6 @@ mod tests {
         let params = BranchDeleteParams {
             branches: vec!["feature".to_string()],
             force: false,
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote: false,
@@ -3856,7 +3841,6 @@ mod tests {
         let params = BranchDeleteParams {
             branches: vec!["feature".to_string()],
             force: false,
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote: false,
@@ -3901,7 +3885,6 @@ mod tests {
         let params = BranchDeleteParams {
             branches: vec!["feature".to_string()],
             force: true, // skip merged/sync checks (no real remote here)
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote: false,
@@ -3986,7 +3969,6 @@ mod tests {
         let params = BranchDeleteParams {
             branches: vec!["feat-x".to_string()],
             force: false,
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote: false,
@@ -4093,7 +4075,6 @@ mod tests {
         let params = BranchDeleteParams {
             branches: vec!["feature".to_string()],
             force: true,
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote: false,
@@ -4182,7 +4163,6 @@ mod tests {
             // force=true bypasses uncommitted-changes / merged / sync checks
             // so writing daft.yml into the worktree after add doesn't abort.
             force: true,
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote: false,
@@ -4338,7 +4318,6 @@ mod tests {
         let params = BranchDeleteParams {
             branches: vec!["feature".to_string()],
             force: false,
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote: false,
@@ -4429,7 +4408,6 @@ mod tests {
         let params = BranchDeleteParams {
             branches: vec!["feature".to_string()],
             force: true, // --force bypasses divergence guard
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote: false,
@@ -4532,7 +4510,6 @@ mod tests {
         let params = BranchDeleteParams {
             branches: vec!["feature".to_string()],
             force: false,
-            use_gitoxide: false,
             is_quiet: true,
             remote_name: "origin".to_string(),
             delete_remote: false,

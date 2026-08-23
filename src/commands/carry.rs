@@ -66,7 +66,7 @@ pub fn run() -> Result<()> {
         remote_name: settings.remote.clone(),
         quiet: false,
     };
-    let git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(wt_config.quiet);
     let project_root = get_project_root()?;
 
     let params = carry::CarryParams {

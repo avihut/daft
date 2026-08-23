@@ -95,7 +95,7 @@ pub fn run() -> Result<()> {
     }
 
     let settings = DaftSettings::load()?;
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(false);
     let mut output = CliOutput::new(OutputConfig::new(args.quiet, args.verbose));
 
     run_push(&args, &settings, &git, &mut output)

@@ -32,8 +32,6 @@ pub struct RenameParams {
     pub no_remote: bool,
     /// Preview changes without executing.
     pub dry_run: bool,
-    /// Whether to use gitoxide.
-    pub use_gitoxide: bool,
     /// Whether output is in quiet mode.
     pub is_quiet: bool,
     /// Remote name (from settings).
@@ -89,7 +87,7 @@ pub fn execute(
     presenter: Option<&Arc<dyn JobPresenter>>,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> Result<RenameResult> {
-    let git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
+    let git = GitCommand::new(params.is_quiet);
     let project_root = get_project_root()?;
     let git_dir = get_git_common_dir()?;
 

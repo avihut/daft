@@ -506,9 +506,6 @@ impl GitCommand {
     /// remotes, patterns with no Git-compatible prefix) takes the git CLI
     /// arm, which handles them uniformly.
     fn gix_repo_for_remote(&self, remote: &str) -> Option<gix::Repository> {
-        if !self.use_gitoxide {
-            return None;
-        }
         let repo = self.gix_repo().ok()?;
         let covers_all_heads = match repo.try_find_remote(remote) {
             Some(Ok(remote_obj)) => remote_obj
@@ -721,27 +718,7 @@ impl GitCommand {
 
     /// List all configured remotes.
     pub fn remote_list(&self) -> Result<Vec<String>> {
-        if self.use_gitoxide {
-            return oxide::remote_list(&self.gix_repo()?);
-        }
-        let output = Command::new("git")
-            .args(["remote"])
-            .output()
-            .context("Failed to execute git remote command")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Git remote failed: {}", stderr);
-        }
-
-        let stdout =
-            String::from_utf8(output.stdout).context("Failed to parse git remote output")?;
-
-        Ok(stdout
-            .lines()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect())
+        oxide::remote_list(&self.gix_repo()?)
     }
 
     /// Check if a remote exists.
@@ -820,22 +797,7 @@ impl GitCommand {
     }
 
     pub fn remote_get_url(&self, remote: &str) -> Result<String> {
-        if self.use_gitoxide {
-            return oxide::remote_get_url(&self.gix_repo()?, remote);
-        }
-        let output = Command::new("git")
-            .args(["remote", "get-url", remote])
-            .output()
-            .context("Failed to execute git remote get-url command")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Git remote get-url failed: {}", stderr);
-        }
-
-        String::from_utf8(output.stdout)
-            .context("Failed to parse git remote get-url output")
-            .map(|s| s.trim().to_string())
+        oxide::remote_get_url(&self.gix_repo()?, remote)
     }
 
     /// List all branches on a remote.

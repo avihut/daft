@@ -182,7 +182,7 @@ fn suggest_skipped_replays(git_dir: &Path, project_root: &Path, output: &mut dyn
         bare_git_dir: git_dir.to_path_buf(),
         project_root: project_root.to_path_buf(),
     };
-    let Ok(entries) = enumerate_worktrees(&target, false) else {
+    let Ok(entries) = enumerate_worktrees(&target) else {
         return;
     };
     let live: std::collections::HashSet<String> =

@@ -548,7 +548,7 @@ pub fn run() -> Result<()> {
     }
 
     let settings = DaftSettings::load()?;
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(false);
     let project_root = get_project_root()?;
 
     // Finish mode: --abort / --continue / --quit dispatch to execute_finish.
@@ -1425,7 +1425,6 @@ pub fn run() -> Result<()> {
                             // (content equivalence was proven by the stability
                             // check).
                             force: item.force_delete,
-                            use_gitoxide: settings.use_gitoxide,
                             is_quiet: false,
                             remote_name: settings.remote.clone(),
                             delete_remote: settings.branch_delete_remote,

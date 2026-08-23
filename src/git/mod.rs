@@ -123,12 +123,6 @@ pub(crate) struct PushSupervision {
 
 pub struct GitCommand {
     pub(crate) quiet: bool,
-    /// Whether dispatched ops take the gix arm. Constructed `true` (#883):
-    /// a bare `GitCommand` — the `src/core/repo.rs` wrappers, doctor, the
-    /// forge gate — answers from gix like every site that threads the
-    /// setting does by default, so the setting's remaining job is the
-    /// explicit opt-out (`with_gitoxide(false)`) until the switch goes.
-    pub(crate) use_gitoxide: bool,
     /// Repository handles discovered by the gix arm, keyed by the working
     /// directory each was discovered from (#868). One `GitCommand` lives
     /// across the `chdir`s a worktree walk makes, and a worktree-scoped
@@ -152,7 +146,6 @@ impl GitCommand {
     pub fn new(quiet: bool) -> Self {
         Self {
             quiet,
-            use_gitoxide: true,
             gix_repos: Mutex::new(HashMap::new()),
             cancel: None,
             push_supervision: None,
@@ -163,11 +156,6 @@ impl GitCommand {
     /// them; other subprocess seams ignore the field entirely.
     pub(crate) fn with_push_supervision(mut self, supervision: PushSupervision) -> Self {
         self.push_supervision = Some(supervision);
-        self
-    }
-
-    pub fn with_gitoxide(mut self, enabled: bool) -> Self {
-        self.use_gitoxide = enabled;
         self
     }
 
@@ -205,9 +193,8 @@ impl GitCommand {
     /// Asks `current_dir()` on every call on purpose: a cached handle is
     /// only reused for the directory it was discovered from, so a command
     /// that `chdir`s between worktrees gets each worktree's own answer rather
-    /// than the first one's (#868). The subprocess arm has this property
-    /// because every `git` child discovers from its cwd; this is the gix
-    /// arm's equivalent.
+    /// than the first one's (#868) — the property every `git` child process
+    /// has for free, since each discovers from its own cwd.
     pub(crate) fn gix_repo(&self) -> Result<gix::Repository> {
         let cwd = std::env::current_dir().context("Failed to get current working directory")?;
         self.gix_repo_at(&cwd)
@@ -298,22 +285,9 @@ mod tests {
     fn test_git_command_new() {
         let git = GitCommand::new(true);
         assert!(git.quiet);
-        assert!(git.use_gitoxide, "a bare command takes the gix arm (#883)");
 
         let git = GitCommand::new(false);
         assert!(!git.quiet);
-        assert!(git.use_gitoxide);
-    }
-
-    #[test]
-    fn test_git_command_with_gitoxide() {
-        let git = GitCommand::new(false).with_gitoxide(true);
-        assert!(!git.quiet);
-        assert!(git.use_gitoxide);
-
-        let git = GitCommand::new(true).with_gitoxide(false);
-        assert!(git.quiet);
-        assert!(!git.use_gitoxide);
     }
 
     #[test]
@@ -542,7 +516,7 @@ mod tests {
         std::fs::write(feat_wt.join("wip.txt"), "wip").unwrap();
 
         let _cwd_guard = CwdGuard::new();
-        let git = GitCommand::new(true).with_gitoxide(true);
+        let git = GitCommand::new(true);
 
         // Discover from the main worktree first…
         std::env::set_current_dir(&main_wt).unwrap();
@@ -586,49 +560,6 @@ mod tests {
         );
     }
 
-    /// #733 opt-out: a command with `use_gitoxide` false must take the
-    /// subprocess arm for every dispatched op. Every gix arm goes through
-    /// `gix_repo()`, so the discover counter doubles as a "was any gix path
-    /// taken" probe: zero discoveries ⇒ zero gix paths.
-    #[test]
-    #[serial_test::serial]
-    fn gitoxide_opt_out_takes_no_gix_path() {
-        for var in GIT_ENV_VARS {
-            unsafe {
-                std::env::remove_var(var);
-            }
-        }
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().canonicalize().unwrap();
-        git_at(&path, &["init", "-b", "main"]);
-        git_at(&path, &["commit", "--allow-empty", "-m", "seed"]);
-
-        let _cwd_guard = CwdGuard::new();
-        std::env::set_current_dir(&path).unwrap();
-
-        // Opt-out: dispatched ops must never reach gix.
-        reset_discover_count();
-        let git = GitCommand::new(true).with_gitoxide(false);
-        assert!(git.show_ref_exists("refs/heads/main").unwrap());
-        assert_eq!(git.symbolic_ref_short_head().unwrap(), "main");
-        assert!(git.rev_parse_is_inside_work_tree().unwrap());
-        assert_eq!(discover_count(), 0, "opt-out command must take no gix path");
-
-        // Control: the same ops with gitoxide on discover exactly once —
-        // proves the probe observes these ops and the arms actually differ.
-        reset_discover_count();
-        let git = GitCommand::new(true).with_gitoxide(true);
-        assert!(git.show_ref_exists("refs/heads/main").unwrap());
-        assert_eq!(git.symbolic_ref_short_head().unwrap(), "main");
-        assert!(git.rev_parse_is_inside_work_tree().unwrap());
-        assert_eq!(
-            discover_count(),
-            1,
-            "gix-backed command shares one discovery"
-        );
-    }
-
     /// #733 remote-probe routing, pinned from a fresh bare clone (the state
     /// daft's clone flow probes from). Each probe must reach the right
     /// backend:
@@ -637,9 +568,9 @@ mod tests {
     ///    it hands `refs/heads/<branch>` to the server for a one-ref answer,
     ///    which gix can't express (its ref prefixes come from the remote's
     ///    refspecs), so even a configured remote name takes no gix path.
-    /// 2. URL-shaped probes and `ls_remote_symref` are CLI too — the gix arm
-    ///    derives its ref-prefix filter from configured fetch refspecs, and
-    ///    an ad-hoc URL remote has none.
+    /// 2. URL-shaped probes — single-ref, symref, and bulk listing alike —
+    ///    are CLI too: the gix arm derives its ref-prefix filter from
+    ///    configured fetch refspecs, and an ad-hoc URL remote has none.
     /// 3. Bulk listing (`list_remote_branches`) of a configured remote whose
     ///    refspec covers `refs/heads/*` takes the gix network arm — a fresh
     ///    bare clone has no local remote-tracking refs, so it must reach the
@@ -685,7 +616,7 @@ mod tests {
         let _cwd_guard = CwdGuard::new();
         std::env::set_current_dir(&probe).unwrap();
 
-        let git = GitCommand::new(true).with_gitoxide(true);
+        let git = GitCommand::new(true);
 
         // Existence probe is CLI even for a configured name: it must find the
         // branch and take no gix path.
@@ -724,6 +655,16 @@ mod tests {
             discover_count(),
             1,
             "bulk listing of a covering-refspec remote uses the gix arm"
+        );
+
+        // Bulk listing of a URL-shaped remote: no configured refspecs to
+        // derive a ref prefix from, so `gix_repo_for_remote` declines and the
+        // CLI arm answers — from the server, finding the same branch. This is
+        // the capability fallback that outlived the backend switch (#883).
+        let listed = git.list_remote_branches(&src_url).unwrap();
+        assert!(
+            listed.contains(&"develop".to_string()),
+            "URL-shaped bulk listing must still reach the server via the CLI arm, got {listed:?}"
         );
     }
 
@@ -777,7 +718,6 @@ mod tests {
         // `main`, hiding `develop` behind a "not found on remote".
         reset_discover_count();
         let listed = GitCommand::new(true)
-            .with_gitoxide(true)
             .list_remote_branches("origin")
             .unwrap();
         assert!(
@@ -790,7 +730,6 @@ mod tests {
         set_refspec("+refs/heads/*:refs/remotes/origin/*");
         reset_discover_count();
         let listed = GitCommand::new(true)
-            .with_gitoxide(true)
             .list_remote_branches("origin")
             .unwrap();
         assert!(
