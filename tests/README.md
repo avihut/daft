@@ -35,7 +35,7 @@ mise run test:unit
 # Integration suites: YAML scenarios, then the blessed shell suite
 mise run test:integration
 
-# YAML manual tests (all 252 scenarios, automatic — default)
+# YAML manual tests (every scenario, automatic — default)
 mise run test:manual
 
 # YAML tests for a specific command (automatic)

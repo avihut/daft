@@ -1,0 +1,28 @@
+name: Activate detects the shell from $SHELL and names its rc file
+description: >
+  The shell comes from $SHELL and decides which rc file the plan targets —
+  .bashrc for bash, config.fish for fish (zsh is the dry-run scenario's case).
+  Ported from test_activate.sh (activate_bash_detection,
+  activate_fish_detection).
+
+steps:
+  - name: A bash $SHELL is detected and targets .bashrc
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/home"
+      HOME="$WORK_DIR/home" SHELL=/bin/bash daft activate --dry-run 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Detected shell: bash"
+        - ".bashrc"
+
+  - name: A fish $SHELL is detected and targets config.fish
+    run:
+      HOME="$WORK_DIR/home" SHELL=/usr/local/bin/fish daft activate --dry-run
+      2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Detected shell: fish"
+        - "config.fish"

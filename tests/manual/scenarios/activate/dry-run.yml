@@ -1,12 +1,22 @@
 name: Activate dry-run
-description: --dry-run previews changes without modifying anything
+description: >
+  --dry-run previews the whole plan — the detected shell, the config file it
+  would touch, the line it would append — and confirms it changed nothing. A
+  fake HOME keeps the preview off the "already configured" short-circuit a
+  developer's real rc file would trigger.
 
 steps:
-  - name: Run activate with --dry-run
+  - name: Run activate with --dry-run against an empty HOME
     run: |
-      export HOME=$(mktemp -d)
-      daft activate --dry-run 2>&1
+      set -e
+      mkdir -p "$WORK_DIR/home"
+      HOME="$WORK_DIR/home" SHELL=/bin/zsh daft activate --dry-run 2>&1
     expect:
       exit_code: 0
       output_contains:
-        - "[dry-run]"
+        - "Detected shell:"
+        - "Config file:"
+        - "Will append"
+        - "[dry-run] No changes made"
+      files_not_exist:
+        - "$WORK_DIR/home/.zshrc"
