@@ -30,6 +30,25 @@ IMPORTANT: These rules must NEVER be violated:
    When picking dependencies, prefer those with a fully safe public API — SQLite
    via `rusqlite` was chosen over LMDB via `heed` partly because
    `heed::Env::open` is `unsafe fn`.
+5. **Don't weaken the merge gate or the Dependabot auto-merge path** — what lets
+   a Dependabot PR land unattended is that nothing can merge to `master` until
+   `ci-gate` (`.github/workflows/test.yml`) is green on an up-to-date branch;
+   the `master` ruleset (`.github/rulesets/master.json`) requires only that one
+   check, and `ci-gate` must `need:` every other job and run on `if: always()`
+   (a skipped required check is a passing one — `cargo test --package xtask`
+   enforces both). `test.yml` must never regain a workflow-level `paths:`
+   filter: a run that never starts leaves `ci-gate` "Expected" forever.
+   `.github/workflows/dependabot-auto-merge.yml` stays on `pull_request` (never
+   `pull_request_target`), gates on
+   `pull_request.user.login == 'dependabot[bot]'` **and**
+   `github.actor == 'dependabot[bot]'`, keeps `dependabot/fetch-metadata`'s
+   commit verification on, auto-merges only `semver-patch`/`semver-minor`, and
+   refuses to arm auto-merge unless `ci-gate` is a required check on the target
+   branch (fail closed). Every `uses:` in every workflow is pinned to a full
+   commit SHA (`scripts/check-actions-pinned.sh`; Dependabot moves the pins).
+   Never add a path-filtered workflow's job as a required check — fold it into
+   `test.yml` behind the `changes` job instead, which is why the docs build and
+   golden suite live there and `docs.yml` only deploys.
 
 ## Safe Local Testing with Git
 
@@ -101,6 +120,22 @@ needs its `mise run` task — add the task in the same PR as the job. Four check
 are deliberately CI-only and say so in `daft.yml`: `windows-check`,
 `release-env-guard`, `homebrew-simulation`, and `bench.yml`.
 `claude-pr-review.yml` is out of the parity set: Critical Rule #3 governs it.
+
+On the GitHub side all of `test.yml` fans into one job, `ci-gate`, and that is
+the only status check the `master` ruleset requires (Critical Rule #5). Adding
+or renaming a CI job therefore never touches the ruleset — but the new job
+**must** be added to `ci-gate`'s `needs:` list, or its failure blocks nothing;
+`cargo test --package xtask` (`ci_gate_drift`) fails until it is. `test.yml`
+runs on every PR: path gating is per job, through the `changes` job's outputs
+and each job's `if:`, never through a workflow-level `paths:` filter (a
+filtered-out run never starts, so `ci-gate` never reports and the PR can never
+merge). That is also why the docs build and the diagram golden suite are
+`test.yml` jobs (`docs-build`, `docs-golden`, gated on the `docs` class) rather
+than `docs.yml` jobs — `docs.yml` only deploys, on release tags.
+`actions-pinned` (`mise run validate:actions-pinned`) is the one check that runs
+unconditionally alongside `release-env-guard`, and for the same reason: the
+dangerous PR — `dist generate` rewriting `release.yml` with tag refs — touches
+no path the filters watch.
 
 ## Profiling
 
@@ -425,9 +460,46 @@ navigation must also support Vim-style `hjkl` keys.
 ## Branch Naming & PRs
 
 - Branch names: `daft-<issue number>/<shortened issue name>`
-- PRs target `master` and are always **squash merged** (linear history required)
-- PR titles use conventional commit format: `feat: add dark mode toggle`
+- PRs target `master` and are always **squash merged** (linear history required;
+  the repository allows no other merge method, and the `master` ruleset enforces
+  squash + linear history on top of that)
+- PR titles use conventional commit format: `feat: add dark mode toggle` — the
+  PR title becomes the squash commit's subject
+  (`squash_merge_commit_title: PR_TITLE`), so `git-cliff` reads the version bump
+  from it; the body is the PR's commit messages (`COMMIT_MESSAGES`)
 - Issue references go in PR body, not title: `Fixes #42`
+- A PR merges only when `ci-gate` is green **and the branch is up to date with
+  `master`** (strict status checks — the tested tree is the landed tree, the
+  same rule `daft merge`'s `ff: only` enforces locally). When master moves,
+  rebase and force-push (`--force-with-lease`) or use the Update branch button;
+  Dependabot rebases its own PRs.
+
+### Repository policy (GitHub side)
+
+The intent lives in the repo; GitHub enforces the live copy:
+
+- `.github/rulesets/master.json` and `release-tags.json` are the rulesets, in
+  the shape the API accepts (`README.md` there has the apply commands).
+  `mise run validate:rulesets` diffs the live rulesets against them. Change
+  policy by editing the file in a PR, then applying it.
+- Required approvals are deliberately **0**: one maintainer, so a required
+  review would mean bypassing on every own PR and a bot approving Dependabot.
+  The admin role can bypass the ruleset (that is what keeps `daft merge`'s
+  fast-forward push to master working); the Wheatley App bypasses only the tag
+  ruleset, which reserves `v*` tags — the release trigger — for the maintainer
+  and `release-flow.yml`.
+- `.github/workflows/dependabot-auto-merge.yml` arms GitHub auto-merge (squash)
+  on Dependabot's patch/minor PRs; majors wait for a human. The workflow merges
+  nothing itself and fails closed if `ci-gate` stops being required. A fresh
+  security update still has to pass `dep-age-check`, so the 7-day gate holds
+  even for auto-merge — `.dep-age-allowlist` is the way through, on purpose.
+  `mise-tool-updates.yml` opens its PR with the Wheatley App token so CI runs on
+  it; it is reviewed and merged by hand.
+- Repository settings that pair with this (applied, not in a file): squash-only
+  merges, auto-merge enabled, delete branch on merge, always suggest updating PR
+  branches, Dependabot alerts + security updates, private vulnerability
+  reporting, CodeQL default setup, secret scanning + push protection, and
+  "Require actions to be pinned to a full-length commit SHA".
 
 ### PR Tagging
 

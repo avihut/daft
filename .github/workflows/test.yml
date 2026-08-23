@@ -1,26 +1,26 @@
 name: Test Git Worktree Workflow
 
+# This workflow is what "green" means for a pull request: its `ci-gate` job is
+# the one status check the `master` ruleset requires, and it fans in every
+# other job here. Two things follow from that:
+#
+#  - There is deliberately NO workflow-level `paths:` filter. A filtered-out
+#    workflow never starts, so its checks stay "Expected" forever and the PR
+#    can never merge (a docs-only PR, say). Path gating happens per job
+#    through the `changes` job below: a job skipped by `if:` is reported as
+#    skipped, which a required check treats as passing. Keep it that way —
+#    `changes` plus `if:` is the only form of path gating this file may use.
+#
+#  - Every job must be listed in `ci-gate`'s `needs:`. A job left out is a
+#    job that can fail without blocking the merge. `cargo test --package xtask`
+#    (the `ci_gate_needs_every_job` test) fails when the two drift apart.
+#
+# CLAUDE.md "Quality Gates: CI <-> Merge-Gate Parity" owns the rest: every job
+# here mirrors a `mise run` task and a `pre-merge` ring in daft.yml.
+
 on:
   pull_request:
     branches: [main, master]
-    # Default to running on any change, then negate the things that don't
-    # affect the Rust build/test surface. New files default to triggering
-    # this workflow -- safer than allowlisting and forgetting to update.
-    # Note: .github/workflows/test.yml is intentionally NOT negated, so
-    # changes to this workflow re-run the suite to validate them.
-    paths:
-      - "**"
-      - "!*.md"
-      - "!docs/**"
-      - "!.github/CODEOWNERS"
-      - "!.github/dependabot.yml"
-      - "!.github/workflows/bench.yml"
-      - "!.github/workflows/claude-pr-review.yml"
-      - "!.github/workflows/docs.yml"
-      - "!.github/workflows/mise-tool-updates.yml"
-      - "!.github/workflows/release-flow.yml"
-      - "!.github/workflows/release.yml"
-      - "!.github/workflows/test-homebrew.yml"
 
 permissions:
   contents: read
@@ -41,6 +41,7 @@ jobs:
       xtask: ${{ steps.detect.outputs.xtask }}
       man: ${{ steps.detect.outputs.man }}
       lockfile: ${{ steps.detect.outputs.lockfile }}
+      docs: ${{ steps.detect.outputs.docs }}
     steps:
       - id: detect
         env:
@@ -60,6 +61,7 @@ jobs:
           xtask=false
           man=false
           lockfile=false
+          docs=false
 
           if echo "$files" | grep -qxE '\.github/workflows/test\.yml'; then
             self=true
@@ -76,11 +78,16 @@ jobs:
           if echo "$files" | grep -qE '^(man/|docs/cli/)'; then
             man=true
           fi
-          if echo "$files" | grep -qxE '(Cargo\.lock|bun\.lock|\.dep-age-allowlist|cooldown\.toml|bunfig\.toml|deny\.toml)'; then
+          if echo "$files" | grep -qxE '(Cargo\.lock|bun\.lock|docs/bun\.lock|\.dep-age-allowlist|cooldown\.toml|bunfig\.toml|deny\.toml)'; then
             lockfile=true
           fi
+          # The docs site: its sources, the mise tasks that build it, and
+          # Cargo.toml (the nav's version indicator is parsed from it).
+          if echo "$files" | grep -qE '^(docs/|mise-tasks/docs/|Cargo\.toml$)'; then
+            docs=true
+          fi
 
-          for k in self rust tests xtask man lockfile; do
+          for k in self rust tests xtask man lockfile docs; do
             echo "$k=${!k}" | tee -a "$GITHUB_OUTPUT"
           done
 
@@ -95,7 +102,7 @@ jobs:
       'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -115,10 +122,27 @@ jobs:
   release-env-guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check release workflow builds with DAFT_BUILD_RELEASE
         run: scripts/check-release-build-env.sh
+
+  # Supply-chain gate: every `uses:` in .github/workflows/ is pinned to a full
+  # commit SHA (tags are mutable; Dependabot keeps SHA pins current, which is
+  # what makes auto-merging its actions bumps reasonable). Unconditional, like
+  # release-env-guard, and for the same reason: the PR that regenerates
+  # release.yml with tag refs touches no path the filters watch. The
+  # repository setting "Require actions to be pinned to a full-length commit
+  # SHA" is the second line — it refuses to *run* an unpinned workflow, which
+  # would otherwise surface as a silently broken release. Mirrored by
+  # `mise run validate:actions-pinned` and the `actions-pinned` ring.
+  actions-pinned:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check every action is pinned to a commit SHA
+        run: scripts/check-actions-pinned.sh
 
   # Supply-chain gate: enforce the dependency license/advisory/source policy
   # in deny.toml. Fails the PR if a transitive crate carries an unapproved
@@ -131,16 +155,18 @@ jobs:
       'true' || needs.changes.outputs.lockfile == 'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install mise
-        uses: jdx/mise-action@v4.2.5
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
 
       - name: Run cargo-deny
         run: mise run deny
@@ -168,18 +194,19 @@ jobs:
       # full short name and bare `cargo-cooldown` silently no-ops.
       MISE_DISABLE_TOOLS: cargo:cargo-cooldown
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install mise
-        uses: jdx/mise-action@v4.2.5
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
 
       # mise installs the toolchain pinned in mise.toml (rust = "1.95") and
       # exports RUSTUP_TOOLCHAIN, overriding the dtolnay-installed `stable`.
@@ -217,16 +244,18 @@ jobs:
       # identical override on `lint` for the full rationale.
       MISE_DISABLE_TOOLS: cargo:cargo-cooldown
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install mise
-        uses: jdx/mise-action@v4.2.5
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
 
       - name: Run Rust unit tests
         run: mise run test:unit
@@ -244,13 +273,15 @@ jobs:
       'true' || needs.changes.outputs.xtask == 'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust 1.95 (MSRV)
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.95.0
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: msrv-1.95
 
@@ -275,13 +306,15 @@ jobs:
       'true' || needs.changes.outputs.xtask == 'true')
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Cargo check (Windows)
         run: cargo check --all-targets --locked
@@ -295,13 +328,15 @@ jobs:
       needs.changes.outputs.man == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Test xtask gen-man
         run: |
@@ -393,13 +428,15 @@ jobs:
       needs.changes.outputs.xtask == 'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Build Rust binaries
         run: |
@@ -453,7 +490,7 @@ jobs:
           ls -lh target/release/daft target/release/xtask
 
       - name: Upload binary
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: daft-binary
           path: |
@@ -481,7 +518,7 @@ jobs:
         suite: [bash, yaml]
 
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Git
         run: |
@@ -489,7 +526,7 @@ jobs:
           git config --global user.email "test@example.com"
 
       - name: Download binary
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: daft-binary
           path: target/release
@@ -568,7 +605,7 @@ jobs:
           ./target/release/git-daft | head -20
 
       - name: Upload test results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: test-results-${{ matrix.entry }}-${{ matrix.suite }}
@@ -586,13 +623,15 @@ jobs:
       'true' || needs.changes.outputs.man == 'true')
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Build Rust binaries
         run: cargo build --release
@@ -681,3 +720,110 @@ jobs:
 
           echo "Git command discovery verified!"
           echo "Homebrew simulation test PASSED!"
+
+  # The diagram language's golden suite: the compiled digests of every hero,
+  # gallery, catalog, and landing script, plus the pure semantics of verbs,
+  # shell parsing, renames, and element drops. Browser-free and
+  # platform-stable, so it belongs on the merge gate — a registry change that
+  # silently rewrites what the docs animate must not reach master green.
+  # Mirrored by the `docs-golden` pre-merge ring in daft.yml.
+  #
+  # The Playwright UI suite (docs/tests/ui, `mise run docs:test:ui`) is
+  # deliberately NOT here yet: its specs drive real animation timing and go
+  # flaky under load, so it needs a soak before it can gate merges. Tracked
+  # separately; until then it is a local task, wired into no surface at all
+  # rather than into a gate that would block only daft-merge users.
+  docs-golden:
+    needs: changes
+    if:
+      needs.changes.outputs.self == 'true' || needs.changes.outputs.docs ==
+      'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install dependencies
+        working-directory: docs
+        run: bun install --frozen-lockfile
+
+      # `mise run docs:test:golden` is the same command with the bun-install
+      # gate in front of it; the install above is that gate.
+      - name: Golden tests
+        working-directory: docs
+        run: bun test tests/golden
+
+  # The VitePress site builds. Lived in docs.yml as a PR-time job until the
+  # merge gate needed it: a broken build (unclosed angle-bracket placeholders
+  # parsed as Vue elements, a Dependabot VitePress bump) must not auto-merge,
+  # and a workflow-level path filter cannot be a required check. docs.yml now
+  # only deploys, on release tags. Mirrored by the `docs-build` ring.
+  docs-build:
+    needs: changes
+    if:
+      needs.changes.outputs.self == 'true' || needs.changes.outputs.docs ==
+      'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      # Same Node as the deploy job in docs.yml: ubuntu-latest still ships
+      # Node 20.x by default, and this is the combination the PR-time build
+      # ran on there. Kept identical so "builds here" keeps meaning "deploys
+      # there".
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        working-directory: docs
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        working-directory: docs
+        run: bunx vitepress build
+
+  # The one required status check. Fans in every job above and fails if any
+  # of them failed or was cancelled; skipped jobs (path-gated, or the
+  # `release` label) pass. `if: always()` is load-bearing — with
+  # `!cancelled()` a cancelled run would leave this job skipped, and a skipped
+  # required check is a green one. Nothing here runs the code under test; it
+  # only reads `needs`. `cargo test --package xtask` keeps `needs:` complete.
+  ci-gate:
+    needs:
+      - changes
+      - dep-age-check
+      - release-env-guard
+      - actions-pinned
+      - dep-license-check
+      - lint
+      - unit-tests
+      - msrv-check
+      - windows-check
+      - xtask-test
+      - build
+      - integration-tests
+      - homebrew-simulation
+      - docs-golden
+      - docs-build
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every needed job succeeded or was skipped
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad=$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key')
+          if [ -n "$bad" ]; then
+            echo "::error::ci-gate: jobs not green: $(echo "$bad" | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "ci-gate: green"

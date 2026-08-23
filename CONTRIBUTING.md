@@ -82,10 +82,10 @@ Issue references should be in the PR body, not the title.
 
 1. **Fork the repository** (external contributors)
 
-2. **Create a feature branch**:
+2. **Create a feature branch** (a worktree, with daft):
 
    ```bash
-   git worktree-checkout-branch daft-XX/feature-name
+   daft start daft-XX/feature-name
    ```
 
 3. **Make changes** following the commit conventions above
@@ -99,6 +99,35 @@ Issue references should be in the PR body, not the title.
    ```
 
 5. **Submit a pull request** with a conventional commit title
+
+## Merging
+
+`master` is protected by a ruleset (the intent is in
+[`.github/rulesets/`](.github/rulesets/)); these are the rules you will meet:
+
+- **Squash only.** Every PR lands as one commit whose subject is the PR title
+  (so keep the title in conventional-commit form — it drives the changelog and
+  the version bump) and whose body is the PR's commit messages. No merge
+  commits, no rebase merges; history stays linear.
+- **One required check, `ci-gate`.** It fans in every job of
+  `.github/workflows/test.yml`; jobs that do not apply to your change are
+  skipped, and skipped counts as green. If your PR touches only docs, expect
+  only the docs jobs to run.
+- **Up to date with `master`.** When `master` moves under you, rebase and
+  force-push (`git push --force-with-lease`) or press **Update branch**; CI
+  re-runs on the result. The tree CI tested is the tree that lands — the same
+  rule `daft merge` enforces locally with `ff: only`.
+- **Review threads resolved.** Every conversation on the PR must be resolved
+  before merging.
+- **Dependabot PRs merge themselves.** Patch and minor dependency updates are
+  auto-merged once `ci-gate` is green; major bumps wait for a maintainer. Every
+  GitHub Action in the workflows is pinned to a commit SHA
+  (`scripts/check-actions-pinned.sh`), so a Dependabot bump is a reviewed,
+  immutable commit and not a moving tag. If you add an action, pin it —
+  `scripts/pin-actions.sh` does it for you.
+
+There are no required approvals: daft has one maintainer, and the gate that does
+the work is the CI check. That will change when there is a second pair of hands.
 
 ## Code Quality Requirements
 

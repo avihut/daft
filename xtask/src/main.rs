@@ -2160,3 +2160,126 @@ mod config_registry_drift {
         assert!(!is_key_shaped("daft.9lives"));
     }
 }
+
+/// Drift gate for the merge gate itself.
+///
+/// `.github/workflows/test.yml` ends in a `ci-gate` job that fans in every
+/// other job and is the one status check the `master` ruleset requires. A job
+/// that is not in its `needs:` is a job whose failure does not block a merge —
+/// and nothing else would notice: the workflow still runs, the gate still goes
+/// green. These tests parse the workflow and hold the two invariants that make
+/// the gate mean something: `needs:` names every other job, and the gate runs
+/// unconditionally (`if: always()`), because a skipped required check is a
+/// passing one.
+///
+/// Same home as `config_registry_drift`, for the same reason: the `xtask-test`
+/// CI job, the `xtask-tests` pre-merge ring, and `mise run test:xtask` already
+/// run it — one check, three surfaces, no new wiring.
+#[cfg(test)]
+mod ci_gate_drift {
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+
+    const WORKFLOW: &str = ".github/workflows/test.yml";
+    const GATE: &str = "ci-gate";
+
+    fn workflow() -> serde_yaml::Mapping {
+        let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask/ sits directly under the repo root")
+            .join(WORKFLOW);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
+        let doc: serde_yaml::Value = serde_yaml::from_str(&text)
+            .unwrap_or_else(|e| panic!("{} parses as YAML: {e}", path.display()));
+        doc.get("jobs")
+            .and_then(serde_yaml::Value::as_mapping)
+            .cloned()
+            .expect("test.yml has a `jobs:` mapping")
+    }
+
+    fn job_ids(jobs: &serde_yaml::Mapping) -> BTreeSet<String> {
+        jobs.keys()
+            .map(|k| k.as_str().expect("job ids are strings").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn ci_gate_needs_every_job() {
+        let jobs = workflow();
+        let gate = jobs
+            .get(GATE)
+            .unwrap_or_else(|| panic!("{WORKFLOW} has a `{GATE}` job"));
+        let needs: BTreeSet<String> = gate
+            .get("needs")
+            .and_then(serde_yaml::Value::as_sequence)
+            .unwrap_or_else(|| panic!("`{GATE}` has a `needs:` list"))
+            .iter()
+            .map(|v| v.as_str().expect("needs entries are job ids").to_string())
+            .collect();
+
+        let mut expected = job_ids(&jobs);
+        expected.remove(GATE);
+
+        let missing: Vec<_> = expected.difference(&needs).cloned().collect();
+        let unknown: Vec<_> = needs.difference(&expected).cloned().collect();
+        assert!(
+            missing.is_empty() && unknown.is_empty(),
+            "`{GATE}` in {WORKFLOW} must need every other job, exactly.\n\
+             missing from needs: {missing:?}\n\
+             in needs but not a job: {unknown:?}\n\
+             A job the gate does not need can fail without blocking the merge; \
+             add it to `{GATE}.needs` (or remove the stale entry)."
+        );
+    }
+
+    #[test]
+    fn ci_gate_always_runs() {
+        let jobs = workflow();
+        let cond = jobs
+            .get(GATE)
+            .and_then(|g| g.get("if"))
+            .and_then(serde_yaml::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .trim_start_matches("${{")
+            .trim_end_matches("}}")
+            .trim()
+            .to_string();
+        assert_eq!(
+            cond, "always()",
+            "`{GATE}` must run on `if: always()`: with `!cancelled()` (or no `if:` at \
+             all) a cancelled or failed upstream job leaves the gate skipped, and a \
+             skipped required status check counts as passing."
+        );
+    }
+
+    #[test]
+    fn no_workflow_level_path_filter() {
+        // A workflow-level `paths:` filter means the workflow does not start
+        // at all for a non-matching PR — so `ci-gate` never reports and the
+        // PR can never merge. Path gating belongs to the `changes` job.
+        let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask/ sits directly under the repo root")
+            .join(WORKFLOW);
+        let text = std::fs::read_to_string(&path).expect("test.yml is readable");
+        let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect("test.yml parses");
+        // `on:` parses as the YAML 1.1 boolean `true` under serde_yaml.
+        let on = doc
+            .get("on")
+            .or_else(|| doc.get(serde_yaml::Value::Bool(true)))
+            .expect("test.yml has an `on:` trigger block");
+        let pr = on
+            .get("pull_request")
+            .expect("test.yml triggers on pull_request");
+        for key in ["paths", "paths-ignore"] {
+            assert!(
+                pr.get(key).is_none(),
+                "test.yml must not use a workflow-level `pull_request.{key}` filter: a \
+                 filtered-out run never starts, so the required `{GATE}` check stays \
+                 Expected forever. Gate per job through the `changes` job instead."
+            );
+        }
+    }
+}
