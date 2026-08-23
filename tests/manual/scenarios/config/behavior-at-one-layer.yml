@@ -1,0 +1,50 @@
+name: A behavior is readable at a layer only when that layer names a whole state
+description:
+  "`set <behavior> --local` writes every member, so 'what state is set here' has
+  an answer. A layer holding only some members has none, and reporting the
+  nearest preset there is the single-scope claim `get --local` exists to avoid.
+  Ported from test_config.sh (config_cli_behavior_at_one_layer): the rule is
+  unit-tested in config/resolve.rs and document.rs; this pins the CLI arm —
+  `get_behavior`'s scope threading and its exit(1) for 'no state here'."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: One member of three set locally — the effective read is custom
+    run: |
+      set -e
+      daft config set --local daft.checkout.push true
+      test "$(daft config get remote-sync)" = "custom"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: A layer with one of three members names no state
+    run: daft config get remote-sync --local 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+
+  - name: A behavior write makes the layer whole, and then it names the state
+    run: |
+      set -e
+      daft config set remote-sync on --local >/dev/null
+      test "$(daft config get remote-sync --local)" = "on"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Global sets no member, so it names no state
+    run: daft config get remote-sync --global 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1

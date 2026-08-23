@@ -1,0 +1,41 @@
+name: Repo remove of a bare-only repo names the git dir it removed
+description: >
+  A repo cloned with --no-checkout is just the bare git dir, no worktrees. The
+  removal must still report what it did — the git dir removal is the whole job
+  here, so it is named explicitly — and take nothing else with it. (The
+  empty-worktree-list TUI skip the command also performs cannot be observed
+  here: the runner's stderr is a pipe, which already selects the sequential
+  path.) Ported from test_repo_remove.sh (repo_remove_bare_only_no_worktrees).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone without checking anything out
+    run: git-worktree-clone --layout contained --no-checkout $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/.git"
+
+  - name: Sanity — nothing but the git dir lives in the project root
+    run:
+      find "$WORK_DIR/test-repo" -mindepth 1 -maxdepth 1 -not -name .git | wc -l
+      | tr -d ' '
+    expect:
+      exit_code: 0
+      output_contains:
+        - "0"
+
+  - name: Remove it — the git dir removal is named, the container survives
+    run: daft repo remove --purge --force "$WORK_DIR/test-repo" 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "(git dir): removed"
+      files_not_exist:
+        - "$WORK_DIR/test-repo"
+      dirs_exist:
+        - "$WORK_DIR"

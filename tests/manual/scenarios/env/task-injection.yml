@@ -64,3 +64,16 @@ steps:
       file_contains:
         - path: "$WORK_DIR/env-inject/main/.marker"
           content: "port=1111"
+
+  # `daft exec -x` has its own injection seam (inject_derived_env in
+  # src/commands/exec.rs, per target — the repo identity comes from the
+  # target's path, not the ambient cwd), separate from the one `daft run`
+  # goes through. Assert through a marker file for the same reason as above.
+  - name: An exec'd command sees the derived port of its target worktree
+    run: daft exec main -x 'printf "port=%s" "$WEBAPP_PORT" > .exec-marker' 2>&1
+    cwd: "$WORK_DIR/env-inject/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/env-inject/main/.exec-marker"
+          content: "port=20960"

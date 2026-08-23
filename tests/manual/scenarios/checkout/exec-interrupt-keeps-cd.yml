@@ -33,7 +33,7 @@ steps:
     # reproduced here without killing the test runner. The group-wide case,
     # and the exit-cleanly-vs-die-from-the-signal distinction it turns on, is
     # covered under a real pty by `go_exec_interrupt_keeps_cd` in
-    # tests/integration/test_checkout.sh.
+    # tests/integration/test_rail_pty.sh.
     #
     # Before #811 the cd target was written *after* the exec sequence, so a
     # signal killed daft first and the file stayed empty: the worktree existed

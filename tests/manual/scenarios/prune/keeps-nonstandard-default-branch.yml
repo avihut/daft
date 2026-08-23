@@ -1,0 +1,81 @@
+name: Prune never reclaims the default branch, whatever it is called
+description: >
+  Regression for the #628 review follow-up. Before the fix, gone-upstream
+  detection name-excluded only master/main, while the gone-but-unmerged guard's
+  `default_branch == branch` arm proceeds (a branch is trivially merged into
+  itself) — so a repo whose default branch is `trunk` with a deleted upstream
+  had its default-branch worktree AND local branch silently pruned. The fix
+  excludes the resolved default branch by identity. Ported from test_prune.sh
+  (prune_keeps_default_branch_with_nonstandard_name).
+
+repos:
+  - name: test-repo
+    default_branch: trunk
+    branches:
+      - name: trunk
+        files:
+          - path: README.md
+            content: "# trunk is the default here"
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: trunk
+        files:
+          - path: README.md
+            content: "# develop"
+        commits:
+          - message: "Add development branch"
+
+steps:
+  - name: Clone the repository (trunk is the default worktree)
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/trunk"
+
+  - name: Check out develop alongside it
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo/trunk"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  # Re-point the remote's HEAD and delete trunk there, then prune-fetch, so
+  # the local default branch's upstream is genuinely gone. The local
+  # origin/HEAD stays pinned at trunk so default resolution is deterministic
+  # across git versions.
+  - name: Make trunk's upstream disappear on the remote
+    run: |
+      set -e
+      git -C "$REMOTE_TEST_REPO" symbolic-ref HEAD refs/heads/develop
+      git -C "$REMOTE_TEST_REPO" branch -D trunk
+      git -C "$WORK_DIR/test-repo/trunk" fetch origin --prune
+      git -C "$WORK_DIR/test-repo/trunk" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+    expect:
+      exit_code: 0
+
+  - name: Sanity — git itself reports trunk's upstream as gone
+    run:
+      git -C "$WORK_DIR/test-repo/trunk" for-each-ref
+      --format='%(upstream:track)' refs/heads/trunk
+    expect:
+      exit_code: 0
+      output_contains:
+        - "[gone]"
+
+  - name: Prune leaves the default branch and its worktree alone
+    run: git-worktree-prune 2>&1
+    cwd: "$WORK_DIR/test-repo/trunk"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/trunk"
+        - "$WORK_DIR/test-repo/develop"
+      branch_exists:
+        - repo: "$WORK_DIR/test-repo/develop"
+          branch: "trunk"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/trunk"
+          branch: "trunk"

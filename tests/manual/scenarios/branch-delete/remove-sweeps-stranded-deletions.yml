@@ -10,7 +10,7 @@ description: >
   its removal committed, and only the delete was left. An entry that *does* have
   one is an interrupted removal and must survive every sweep — covered by
   test_remove_sweep_spares_an_interrupted_removal in
-  tests/integration/test_branch_delete.sh.
+  tests/integration/test_remove_reaper.sh.
 
 repos:
   - name: test-repo

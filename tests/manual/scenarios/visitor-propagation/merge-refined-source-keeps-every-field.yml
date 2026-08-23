@@ -1,0 +1,99 @@
+name: Consolidating a refined daft.yml keeps every field of both sides
+description: >
+  main's visitor daft.yml (a post-clone job plus a top-level `shared:` list) is
+  seeded into feat/add at branch-out. feat/add refines its copy with a second
+  hook section, an overlay-only top-level field (`extends:` — the historical
+  drop site) and a hook-level scalar (`background: true`). Those are one-sided
+  changes against the seed, so `daft merge feat/add` three-way-merges them into
+  main without conflict and re-serializes the file: a field drop in
+  merge3/merge3_hook_defs or `null` litter from a sparse serialize surfaces
+  here. Ported from test_daft_merge_visitor_rollback.sh
+  (merges_into_existing_target_daft_yml).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Ignore daft files and push so new worktrees inherit the ignore
+    run: |
+      set -e
+      cd $WORK_DIR/test-repo/main
+      printf 'daft.yml\ndaft.local.yml\n' > .gitignore
+      git add .gitignore
+      git commit -m "ignore untracked daft files"
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: main's visitor daft.yml has a post-clone job and a shared list
+    run: >
+      printf 'shared:\n  - .env\nhooks:\n  post-clone:\n    jobs:\n      - name:
+      from-main\n        run: echo from-main\n' >
+      $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Create feature worktree (seeds main's copy as the merge base)
+    run: git-worktree-checkout -b feat/add
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/feat/add/daft.yml"
+          content: "from-main"
+
+  - name: feat/add commits a file and refines the seeded copy
+    run: |
+      set -e
+      cd $WORK_DIR/test-repo/feat/add
+      printf 'feature content\n' > feature.txt
+      git add feature.txt
+      git commit -m "feat/add: add feature.txt"
+      printf 'shared:\n  - .env\nextends:\n  - base.yml\nhooks:\n  post-clone:\n    jobs:\n      - name: from-main\n        run: echo from-main\n  worktree-post-create:\n    background: true\n    jobs:\n      - name: from-feat\n        run: echo from-feat\n' \
+        > daft.yml
+    expect:
+      exit_code: 0
+
+  - name: The merge consolidates without conflict
+    run: daft merge --no-edit feat/add 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Consolidated daft.yml from feat/add"
+
+  - name: main's daft.yml keeps both sides' sections, fields and scalars
+    run: cat $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "post-clone"
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "from-main"
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "worktree-post-create"
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "from-feat"
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "shared"
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "extends"
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "background"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "null"
+
+  - name: The merge itself landed
+    run: git -C $WORK_DIR/test-repo/main merge-base --is-ancestor feat/add main
+    expect:
+      exit_code: 0

@@ -1,194 +1,28 @@
 #!/bin/bash
 
-# Integration tests for daft shell-init command
-# Tests shell wrapper generation and cd-into-worktree functionality
-
-set -eo pipefail
+# Blessed shell tests for the shell wrapper's cd contract (#447 Tier B).
+#
+# `daft shell-init` emits a wrapper the user evals; when a command changes the
+# layout their cwd lives in, the binary writes DAFT_CD_FILE and the WRAPPER
+# does the `cd` — the binary cannot move the parent shell on its own. CLAUDE.md
+# ("Shell integration") makes every such command cover this here: source the
+# wrapper, run the command, assert `builtin pwd` lands where it should.
+#
+# This is a choice, not a wall: a YAML step is a `bash -c` and can eval the
+# wrapper too (shell-init/binary-resolution-live.yml does). The contract is
+# one behaviour across many verbs, and keeping its tests in one shell file —
+# beside the framework's DAFT_CD_FILE plumbing, in the same shell that ran the
+# command — keeps it legible in one place. Until #447 this file ran in no CI
+# job; test_all.sh sources it now.
+#
+# What shell-init *prints* (wrapper functions, completion registrations,
+# aliases, syntax validity, help) is tests/manual/scenarios/shell-init/.
 
 # Source the test framework
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test_framework.sh"
 
 # --- Test Functions ---
-
-test_shell_init_bash_output() {
-    log "Testing: daft shell-init bash generates valid output"
-
-    local output
-    output=$(daft shell-init bash)
-
-    # Check that it contains the wrapper function
-    if grep -q "__daft_wrapper()" <<< "$output"; then
-        log_success "Output contains __daft_wrapper function"
-    else
-        log_error "Output missing __daft_wrapper function"
-        return 1
-    fi
-
-    # Check that it contains wrapper functions for each command
-    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-carry")
-    for cmd in "${commands[@]}"; do
-        if grep -q "^${cmd}()" <<< "$output"; then
-            log_success "Output contains ${cmd} function"
-        else
-            log_error "Output missing ${cmd} function"
-            return 1
-        fi
-    done
-
-    return 0
-}
-
-test_shell_init_bash_syntax() {
-    log "Testing: daft shell-init bash generates valid bash syntax"
-
-    local output
-    output=$(daft shell-init bash)
-
-    # Validate bash syntax using bash -n
-    if bash -n <<< "$output" 2>&1; then
-        log_success "Generated bash code has valid syntax"
-        return 0
-    else
-        log_error "Generated bash code has syntax errors"
-        return 1
-    fi
-}
-
-test_shell_init_zsh_syntax() {
-    log "Testing: daft shell-init zsh generates valid zsh syntax"
-
-    # Skip if zsh is not available
-    if ! command -v zsh >/dev/null 2>&1; then
-        log_warning "zsh not available, skipping syntax validation"
-        return 0
-    fi
-
-    local output
-    output=$(daft shell-init zsh)
-
-    # Validate zsh syntax using zsh -n
-    if zsh -n <<< "$output" 2>&1; then
-        log_success "Generated zsh code has valid syntax"
-        return 0
-    else
-        log_error "Generated zsh code has syntax errors"
-        return 1
-    fi
-}
-
-test_shell_init_fish_output() {
-    log "Testing: daft shell-init fish generates valid output"
-
-    local output
-    output=$(daft shell-init fish)
-
-    # Check that it contains the wrapper function
-    if grep -q "function __daft_wrapper" <<< "$output"; then
-        log_success "Output contains __daft_wrapper function"
-    else
-        log_error "Output missing __daft_wrapper function"
-        return 1
-    fi
-
-    # Check that it contains wrapper functions for each command
-    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-carry")
-    for cmd in "${commands[@]}"; do
-        if grep -q "function ${cmd}" <<< "$output"; then
-            log_success "Output contains ${cmd} function"
-        else
-            log_error "Output missing ${cmd} function"
-            return 1
-        fi
-    done
-
-    return 0
-}
-
-test_shell_init_fish_syntax() {
-    log "Testing: daft shell-init fish generates valid fish syntax"
-
-    # Skip if fish is not available
-    if ! command -v fish >/dev/null 2>&1; then
-        log_warning "fish not available, skipping syntax validation"
-        return 0
-    fi
-
-    local output
-    output=$(daft shell-init fish)
-
-    # Validate fish syntax using fish -n
-    if fish -n <<< "$output" 2>&1; then
-        log_success "Generated fish code has valid syntax"
-        return 0
-    else
-        log_error "Generated fish code has syntax errors"
-        return 1
-    fi
-}
-
-test_shell_init_bash_aliases() {
-    log "Testing: daft shell-init bash --aliases includes short aliases"
-
-    local output
-    output=$(daft shell-init bash --aliases)
-
-    # Check for short aliases
-    local aliases=("gwclone" "gwinit" "gwco" "gwcob" "gwcarry" "gwprune")
-    for alias_name in "${aliases[@]}"; do
-        if grep -q "alias ${alias_name}=" <<< "$output"; then
-            log_success "Output contains ${alias_name} alias"
-        else
-            log_error "Output missing ${alias_name} alias"
-            return 1
-        fi
-    done
-
-    return 0
-}
-
-test_shell_init_fish_aliases() {
-    log "Testing: daft shell-init fish --aliases includes short aliases"
-
-    local output
-    output=$(daft shell-init fish --aliases)
-
-    # Check for short aliases
-    local aliases=("gwclone" "gwinit" "gwco" "gwcob" "gwcarry" "gwprune")
-    for alias_name in "${aliases[@]}"; do
-        if grep -q "alias ${alias_name}=" <<< "$output"; then
-            log_success "Output contains ${alias_name} alias"
-        else
-            log_error "Output missing ${alias_name} alias"
-            return 1
-        fi
-    done
-
-    return 0
-}
-
-test_shell_init_help() {
-    log "Testing: daft shell-init --help shows usage"
-
-    local output
-    output=$(daft shell-init --help 2>&1)
-
-    if grep -qi "shell wrapper" <<< "$output"; then
-        log_success "Help text mentions shell wrapper"
-    else
-        log_error "Help text missing shell wrapper description"
-        return 1
-    fi
-
-    if grep -q "bash" <<< "$output"; then
-        log_success "Help text mentions bash"
-    else
-        log_error "Help text missing bash"
-        return 1
-    fi
-
-    return 0
-}
 
 test_cd_file_output() {
     log "Testing: Commands write CD path to temp file when DAFT_CD_FILE is set"
@@ -1019,23 +853,10 @@ test_go_exec_cd_through_wrapper() {
     return 0
 }
 
-main() {
-    setup
+# Run all shell-init wrapper tests
+run_shell_init_tests() {
+    log "Running daft shell-init wrapper integration tests..."
 
-    echo
-    echo "========================================================="
-    echo "Running daft shell-init Integration Tests"
-    echo "========================================================="
-    echo
-
-    run_test "shell_init_bash_output" test_shell_init_bash_output
-    run_test "shell_init_bash_syntax" test_shell_init_bash_syntax
-    run_test "shell_init_zsh_syntax" test_shell_init_zsh_syntax
-    run_test "shell_init_fish_output" test_shell_init_fish_output
-    run_test "shell_init_fish_syntax" test_shell_init_fish_syntax
-    run_test "shell_init_bash_aliases" test_shell_init_bash_aliases
-    run_test "shell_init_fish_aliases" test_shell_init_fish_aliases
-    run_test "shell_init_help" test_shell_init_help
     run_test "cd_file_output" test_cd_file_output
     run_test "no_cd_file_without_env" test_no_cd_file_without_env
     run_test "wrapper_cd_integration" test_wrapper_cd_integration
@@ -1058,8 +879,12 @@ main() {
     run_test "go_tag_sandbox_cd_through_wrapper" test_go_tag_sandbox_cd_through_wrapper
     run_test "go_exec_cd_through_wrapper" test_go_exec_cd_through_wrapper
     run_test "warm_force_rescues_shell_from_a_replaced_cache" test_warm_force_rescues_shell_from_a_replaced_cache
-
-    print_summary
 }
 
-main "$@"
+# Main execution
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    setup
+    run_shell_init_tests
+    print_summary
+    exit $?
+fi

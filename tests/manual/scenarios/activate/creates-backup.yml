@@ -1,0 +1,28 @@
+name: Activate backs up an existing rc file before appending
+description: >
+  When the rc file already exists, `daft activate --force` writes a `.bak` copy
+  holding the original content before it appends the shell-init line. Ported
+  from test_activate.sh (activate_creates_backup).
+
+steps:
+  - name: Seed an rc file with unrelated content
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/home"
+      printf '# existing config\nexport FOO=bar\n' > "$WORK_DIR/home/.zshrc"
+    expect:
+      exit_code: 0
+
+  - name: Activate with --force
+    run: HOME="$WORK_DIR/home" SHELL=/bin/zsh daft activate --force 2>&1
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/home/.zshrc.bak"
+      file_contains:
+        - path: "$WORK_DIR/home/.zshrc.bak"
+          content: "export FOO=bar"
+        - path: "$WORK_DIR/home/.zshrc"
+          content: "export FOO=bar"
+        - path: "$WORK_DIR/home/.zshrc"
+          content: "daft shell-init zsh"

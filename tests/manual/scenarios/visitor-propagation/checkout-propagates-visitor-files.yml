@@ -1,0 +1,47 @@
+name: Creating a worktree propagates the visitor daft.yml and daft.local.yml
+description: >
+  The source worktree's untracked (visitor) daft files are carried into the
+  worktree `-b` creates. `--no-carry` keeps carry/stash out of it, so
+  propagation is the only mechanism that can deliver the files; daft.local.yml
+  is always propagated when present. Ported from test_visitor_propagation.sh
+  (basic, local_yml). The third shell test there — a TRACKED daft.yml arrives
+  via git checkout — asserted only what git itself guarantees and was dropped
+  rather than ported.
+
+steps:
+  - name: Init a repo with one commit
+    run: |
+      set -e
+      git-worktree-init --layout contained prop-test-repo
+      cd "$WORK_DIR/prop-test-repo/master"
+      printf '# prop-test-repo\n' > README.md
+      git add README.md
+      git commit -q -m "Initial commit"
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/prop-test-repo/master"
+
+  - name: Seed a visitor daft.yml and a daft.local.yml (both untracked)
+    run: |
+      set -e
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name: marker\n        run: echo from-visitor\n' > daft.yml
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name: local-marker\n        run: echo local-overlay\n' > daft.local.yml
+    cwd: "$WORK_DIR/prop-test-repo/master"
+    expect:
+      exit_code: 0
+
+  - name: Create a worktree with --no-carry so only propagation can deliver them
+    run: git-worktree-checkout --no-carry -b feat/foo 2>&1
+    cwd: "$WORK_DIR/prop-test-repo/master"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/prop-test-repo/feat/foo/daft.yml"
+        - "$WORK_DIR/prop-test-repo/feat/foo/daft.local.yml"
+      file_contains:
+        - path: "$WORK_DIR/prop-test-repo/feat/foo/daft.yml"
+          content: "from-visitor"
+        - path: "$WORK_DIR/prop-test-repo/feat/foo/daft.local.yml"
+          content: "local-overlay"

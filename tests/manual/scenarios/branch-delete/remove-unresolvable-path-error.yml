@@ -1,0 +1,32 @@
+name: Remove of an unresolvable path explains the miss, in the user's spelling
+description: >
+  A path argument that matches no worktree used to reach git as
+  `refs/heads/../feature/nope`, and git's refname complaint surfaced verbatim
+  behind "failed to check if branch exists" — a diagnosis of the wrong failure.
+  The error must say there is no worktree at that path and it is not a valid
+  branch name, keep the argument exactly as typed, and not leak the refname
+  complaint (#813 do-not-regress). Ported from test_branch_delete.sh
+  (remove_unresolvable_path_error_explains_the_miss).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Removing a path that is neither a worktree nor a branch
+    run: daft remove ../feature/nope 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no worktree at that path, and not a valid branch name"
+        - "../feature/nope"
+      output_not_contains:
+        - "failed to check if branch exists"

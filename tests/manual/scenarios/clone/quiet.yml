@@ -1,7 +1,9 @@
 name: "Clone with --quiet flag"
 description:
-  "The --quiet flag produces minimal output while still creating the expected
-  structure."
+  "The --quiet flag suppresses clone's own output — the completion line and the
+  shell-integration hint — while still creating the expected structure. (The
+  live region is already hidden under DAFT_TESTING, so those two lines are what
+  a non-quiet clone prints here.)"
 
 repos:
   - name: test-repo-quiet
@@ -17,3 +19,6 @@ steps:
       dirs_exist:
         - "test-repo-quiet"
         - "test-repo-quiet/main"
+      output_not_contains:
+        - "Cloned into"
+        - "hint:"
