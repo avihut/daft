@@ -48,6 +48,13 @@ steps:
       output_contains:
         - "Consolidated daft.yml from feat/add"
         - "entire file — target has none"
+      # #902: the whole-file case is a scope, not a one-element key list.
+      # While it was smuggled through `adopt_keys` as prose, this line read
+      # `adopted 1 key(s) ((entire file — target has none))` — the count is
+      # the symptom a future sentinel would resurrect silently.
+      output_not_contains:
+        - "(("
+        - "key(s)"
 
   - name: main now holds the propagated daft.yml
     run: cat $WORK_DIR/test-repo/main/daft.yml

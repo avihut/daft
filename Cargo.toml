@@ -57,7 +57,8 @@ post_install_script = """\
 for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
            git-worktree-branch git-worktree-branch-delete \
            git-worktree-prune git-worktree-carry git-worktree-fetch \
-           git-worktree-list git-worktree-sync git-worktree-push \
+           git-worktree-list git-worktree-merge git-worktree-exec \
+           git-worktree-sync git-worktree-push \
            git-worktree-warm git-daft \
            daft-go daft-start daft-remove daft-rename; do
     ln -sf daft "/usr/bin/$cmd"
@@ -67,7 +68,8 @@ pre_uninstall_script = """\
 for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
            git-worktree-branch git-worktree-branch-delete \
            git-worktree-prune git-worktree-carry git-worktree-fetch \
-           git-worktree-list git-worktree-sync git-worktree-push \
+           git-worktree-list git-worktree-merge git-worktree-exec \
+           git-worktree-sync git-worktree-push \
            git-worktree-warm git-daft \
            daft-go daft-start daft-remove daft-rename; do
     rm -f "/usr/bin/$cmd"

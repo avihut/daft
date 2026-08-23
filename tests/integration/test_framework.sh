@@ -72,13 +72,14 @@ ensure_rust_binaries() {
         log "Rust binaries are up to date"
     fi
 
-    # Create symlinks for the multicall binary (ensures tests use locally built binary)
-    local symlink_names=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-branch-delete" "git-worktree-prune" "git-worktree-carry" "git-worktree-exec" "git-worktree-fetch" "git-worktree-list" "git-worktree-push" "git-worktree-warm" "git-daft" "daft-remove" "daft-rename" "gwtclone" "gwtinit" "gwtco" "gwtcb" "gwtprune" "gwtcarry" "gwtfetch" "gwtbd" "gwtls")
-    for name in "${symlink_names[@]}"; do
-        if [[ ! -L "$RUST_BINARY_DIR/$name" ]]; then
-            ln -sf daft "$RUST_BINARY_DIR/$name"
-        fi
-    done
+    # Create symlinks for the multicall binary (ensures tests use locally built
+    # binary). One list for every farm — the same helper the dev setup and CI
+    # source, so a new argv[0] arm cannot reach one of them and miss another
+    # (#903). The hand-copied list this replaced was missing git-worktree-
+    # {branch,merge,sync}, daft-go and daft-start.
+    # shellcheck source=../../mise-tasks/setup/_rust_symlink_lib.sh
+    source "$PROJECT_ROOT/mise-tasks/setup/_rust_symlink_lib.sh"
+    create_daft_symlinks "$RUST_BINARY_DIR"
 }
 
 # Clean up function
