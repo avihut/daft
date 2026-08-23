@@ -1985,3 +1985,184 @@ mod ci_gate_drift {
         }
     }
 }
+
+/// The multicall symlink farm must match the binary's argv[0] table, and
+/// every install path must build it from the one list (#903).
+#[cfg(test)]
+mod multicall_farm_drift {
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+
+    const LIB: &str = "mise-tasks/setup/_rust_symlink_lib.sh";
+    const MAIN: &str = "src/main.rs";
+    const WORKFLOW: &str = ".github/workflows/test.yml";
+
+    /// Farm entries that deliberately have no dispatch arm, and why. An
+    /// entry here is a bug someone decided not to fix yet — not a blessing.
+    const ORPHANS: &[(&str, &str)] = &[(
+        "git-worktree-checkout-branch",
+        "#904 — installed by the Homebrew formula and flake.nix too; \
+         restoring the arm or retiring the name is a deliberate call",
+    )];
+
+    fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask/ sits directly under the repo root")
+            .to_path_buf()
+    }
+
+    fn read(rel: &str) -> String {
+        let path = repo_root().join(rel);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()))
+    }
+
+    /// Is this a name the multicall table dispatches on (as opposed to a
+    /// shortcut alias, which `src/shortcuts.rs` resolves to one of these)?
+    fn is_multicall_name(name: &str) -> bool {
+        name.starts_with("git-worktree-") || name.starts_with("daft-") || name == "git-daft"
+    }
+
+    /// The `daft_multicall_symlinks=( … )` array, multicall names only.
+    fn farm() -> BTreeSet<String> {
+        let text = read(LIB);
+        let body = text
+            .split_once("daft_multicall_symlinks=(")
+            .unwrap_or_else(|| panic!("{LIB} declares `daft_multicall_symlinks=(`"))
+            .1;
+        let body = body
+            .split_once("\n)")
+            .unwrap_or_else(|| panic!("{LIB}'s symlink array is closed by a `)` on its own line"))
+            .0;
+        body.lines()
+            .map(|line| line.split('#').next().unwrap_or("").trim())
+            .filter(|name| !name.is_empty())
+            .filter(|name| is_multicall_name(name))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The names `src/main.rs` dispatches on, read from the top-level arms
+    /// of `match resolved { … }` only — the nested subcommand match inside
+    /// the `git-daft` arm is indented deeper and is not a symlink table.
+    fn dispatch_arms() -> BTreeSet<String> {
+        let text = read(MAIN);
+        let body = text
+            .split_once("let result = match resolved {")
+            .unwrap_or_else(|| panic!("{MAIN} dispatches through `match resolved`"))
+            .1;
+        let body = body
+            .split_once("\n        _ =>")
+            .unwrap_or_else(|| panic!("{MAIN}'s multicall match ends in a catch-all arm"))
+            .0;
+
+        let mut arms = BTreeSet::new();
+        for line in body.lines() {
+            // Top-level arms sit at exactly eight spaces; anything deeper
+            // belongs to a nested match.
+            let Some(rest) = line.strip_prefix("        ") else {
+                continue;
+            };
+            if rest.starts_with(' ') || !rest.starts_with('"') {
+                continue;
+            }
+            let Some((patterns, _)) = rest.split_once("=>") else {
+                continue;
+            };
+            for name in patterns.split('|') {
+                let name = name.trim().trim_matches('"');
+                if is_multicall_name(name) {
+                    arms.insert(name.to_string());
+                }
+            }
+        }
+        assert!(
+            arms.len() > 10,
+            "the {MAIN} arm scanner found only {} names — it stopped matching the source \
+             shape, so this whole gate is vacuous",
+            arms.len()
+        );
+        arms
+    }
+
+    #[test]
+    fn every_dispatch_arm_has_a_symlink() {
+        let missing: Vec<_> = dispatch_arms().difference(&farm()).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "{MAIN} answers to {missing:?}, but {LIB} does not create the symlink(s), so no \
+             install path ships the command. Add them to `daft_multicall_symlinks`."
+        );
+    }
+
+    #[test]
+    fn every_symlink_has_a_dispatch_arm() {
+        let arms = dispatch_arms();
+        let exempt: BTreeSet<String> = ORPHANS.iter().map(|(n, _)| n.to_string()).collect();
+        let orphaned: Vec<_> = farm()
+            .difference(&arms)
+            .filter(|name| !exempt.contains(*name))
+            .cloned()
+            .collect();
+        assert!(
+            orphaned.is_empty(),
+            "{LIB} creates {orphaned:?}, which {MAIN} has no arm for — invoking one prints \
+             \"Unknown command\" and exits 1. Add the arm, or drop the name from the farm."
+        );
+    }
+
+    /// Same spirit as the settings registry's exemption check: a documented
+    /// orphan that stopped being one must lose its exemption, or the next
+    /// real orphan hides behind it.
+    #[test]
+    fn every_orphan_exemption_is_still_needed() {
+        let (arms, farm) = (dispatch_arms(), farm());
+        for (name, why) in ORPHANS {
+            assert!(
+                farm.contains(*name),
+                "{name} is exempted here but {LIB} no longer creates it — drop the \
+                 ORPHANS entry ({why})"
+            );
+            assert!(
+                !arms.contains(*name),
+                "{name} now has a dispatch arm in {MAIN} — drop the ORPHANS entry ({why})"
+            );
+        }
+    }
+
+    /// CI must build the farm from the same list, not from a copy of it.
+    #[test]
+    fn ci_sources_the_shared_symlink_list() {
+        let text = read(WORKFLOW);
+        let doc: serde_yaml::Value = serde_yaml::from_str(&text)
+            .unwrap_or_else(|e| panic!("{WORKFLOW} parses as YAML: {e}"));
+        let steps = doc
+            .get("jobs")
+            .and_then(|j| j.get("integration-tests"))
+            .and_then(|j| j.get("steps"))
+            .and_then(serde_yaml::Value::as_sequence)
+            .unwrap_or_else(|| panic!("{WORKFLOW} has an `integration-tests` job with steps"));
+        let setup = steps
+            .iter()
+            .find(|s| s.get("name").and_then(serde_yaml::Value::as_str) == Some("Set up binary"))
+            .unwrap_or_else(|| {
+                panic!("{WORKFLOW}'s integration-tests job has a `Set up binary` step")
+            });
+        let run = setup
+            .get("run")
+            .and_then(serde_yaml::Value::as_str)
+            .expect("`Set up binary` is a run: step");
+
+        assert!(
+            run.contains("_rust_symlink_lib.sh") && run.contains("create_daft_symlinks"),
+            "`Set up binary` must source {LIB} and call create_daft_symlinks, so CI's farm \
+             cannot drift from the dev one (#903). Step body:\n{run}"
+        );
+        assert!(
+            !run.contains("for cmd in git-worktree-"),
+            "`Set up binary` hand-copies the symlink list again — that is the drift {LIB} \
+             exists to prevent (#903). Step body:\n{run}"
+        );
+    }
+}

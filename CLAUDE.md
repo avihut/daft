@@ -652,7 +652,14 @@ review). Spelled-out paths keep the walk-up; guesses do not.
 1. Create `src/commands/<name>.rs` with clap `Args` struct (include `about`,
    `long_about`, `arg(help)` attributes for man pages)
 2. Add module to `src/commands/mod.rs`
-3. Add routing in `src/main.rs`
+3. Add routing in `src/main.rs`. If the command gets a `git-worktree-*` /
+   `daft-*` spelling, add that name to `daft_multicall_symlinks` in
+   `mise-tasks/setup/_rust_symlink_lib.sh` — the **one** farm list every install
+   path builds from (dev setup, the shared bin dir, CI's "Set up binary" step,
+   the shell suite's `test_framework.sh`). Never hand-copy the list into a new
+   place; `cargo test --package xtask` (`multicall_farm_drift`) fails on a name
+   in one and not the other, in either direction, and on a workflow step that
+   spells its own list.
 4. Add to `COMMANDS` array and `get_command_for_name()` in `xtask/src/main.rs`
 5. Add to help output in `src/commands/docs.rs` (`get_command_categories()`)
 6. Run `mise run man:gen` and commit the generated man page
