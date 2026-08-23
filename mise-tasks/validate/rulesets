@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Live GitHub rulesets match .github/rulesets/*.json (read-only, needs gh auth)"
+set -euo pipefail
+
+# A maintainer's check, not a CI job: it reads the repository's live rulesets
+# through the GitHub API. Not wired into `mise run ci` or the pre-merge rings.
+exec scripts/check-rulesets.sh "$@"

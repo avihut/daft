@@ -6,9 +6,13 @@
 # auto-requests reviews -- it does not block merges.
 #
 # Scope is intentionally narrow: only paths whose modification could weaken
-# repository security posture (workflow YAML, this file, Dependabot config)
-# are owner-gated. Day-to-day source changes follow the normal PR flow.
+# repository security posture (workflow YAML, this file, Dependabot config,
+# the ruleset intent, and the supply-chain guard scripts) are owner-gated.
+# Day-to-day source changes follow the normal PR flow.
 
-/.github/workflows/    @avihut
-/.github/CODEOWNERS    @avihut
+/.github/workflows/     @avihut
+/.github/rulesets/      @avihut
+/.github/CODEOWNERS     @avihut
 /.github/dependabot.yml @avihut
+/scripts/check-*.sh     @avihut
+/scripts/pin-actions.sh @avihut

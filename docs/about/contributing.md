@@ -255,9 +255,24 @@ docs: update installation instructions
 
 ## Pull Request Guidelines
 
-- PR titles use conventional commit format: `feat: add dark mode toggle`
+- PR titles use conventional commit format: `feat: add dark mode toggle` — the
+  title becomes the squash commit's subject, which drives the changelog and the
+  version bump
 - Issue references go in the PR body, not the title: `Fixes #42`
-- All PRs target `master` and are squash-merged
+- All PRs target `master` and are squash-merged; `master` allows no other merge
+  method and keeps a linear history
+- One status check is required, `ci-gate`, which fans in every CI job; jobs that
+  do not apply to a change are skipped, and skipped counts as green
+- The branch must be up to date with `master` when it merges — rebase and
+  force-push (`--force-with-lease`), or press **Update branch**, and CI re-runs
+  on the result
+- Every review thread must be resolved before merging
+- Dependabot's patch and minor updates auto-merge once `ci-gate` is green; major
+  bumps wait for a maintainer
+
+The intent behind these rules is checked into the repo as
+[`.github/rulesets/`](https://github.com/avihut/daft/tree/master/.github/rulesets);
+GitHub enforces the live copy.
 
 ## Labels
 
