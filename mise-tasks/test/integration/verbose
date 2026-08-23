@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-#MISE description="Run integration tests with verbose output"
-#MISE depends=["build"]
-#MISE env={VERBOSE = "1"}
+#MISE description="Run the integration suites with the YAML runner at -v"
+#MISE depends=["dev:setup"]
 set -euo pipefail
 
-echo "Running integration tests with verbose output..."
+# The same two suites as `test:integration`, with the YAML runner showing
+# per-check icons and captured output on pass (`-v`; `-vv` expands commands
+# and stops truncating). The shell suite has no verbosity switch — it always
+# prints its per-assertion lines — so it runs as-is.
+source "$(dirname "$0")/_release_bin_lib.sh"
+ensure_release_binaries
 
-# Real-state tripwire (#697/#738): the framework self-guards in setup(), but
-# mirror the guarded default (_default) here too so the verbose path gets the
-# same snapshot/verify fingerprint — a leak that slips past the __dirs preflight
-# (e.g. a hard-coded real path) still fails the run.
+# Real-state tripwire (#697/#738): same preflight + guard as the default task,
+# so the verbose path gets the same snapshot/verify fingerprint.
 source "$(dirname "$0")/../_state_guard_lib.sh"
 assert_binary_honors_overrides "target/release/daft"
-with_state_guard bash tests/integration/test_all.sh
+
+source "$(dirname "$0")/_suites_lib.sh"
+with_state_guard run_integration_suites -v "$@"

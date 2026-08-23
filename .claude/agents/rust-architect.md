@@ -103,8 +103,9 @@ mise run clippy
 # 3. Run unit tests
 mise run test:unit
 
-# 4. Run relevant integration tests
-mise run test:integration:[command]
+# 4. Run the relevant YAML scenarios (or both integration suites)
+mise run test:manual tests/manual/scenarios/<command>/
+mise run test:integration
 
 # 5. Update documentation if behavior changed
 # 6. Verify CI will pass (locally run the same checks CI runs)

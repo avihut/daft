@@ -76,7 +76,7 @@ scratch directories:
 mise run dev                # Build + create symlinks (quick dev setup)
 mise run test               # Run all tests (unit + integration)
 mise run test:unit          # Rust unit tests only
-mise run test:integration   # Integration tests (bash + YAML, full matrix)
+mise run test:integration   # Integration suites (YAML scenarios + blessed shell)
 mise run test:manual                       # YAML manual tests (all scenarios, automatic)
 mise run test:manual checkout              # YAML tests for one command (automatic)
 mise run test:manual -- -i checkout:basic  # Step through one scenario interactively
@@ -108,7 +108,7 @@ Rings invoke the same `mise run` task as the CI job they mirror, so a local
 refusal names the check that would have failed on GitHub;
 `merge: { ff: only, source_worktree: clean }` is what makes that mean anything —
 the tree the rings tested is the tree that lands. Slow rings (integration
-matrix, MSRV, licence audit, completions, docs build) get `tags: [deep]` and are
+suites, MSRV, licence audit, completions, docs build) get `tags: [deep]` and are
 dropped per invocation with `--skip-tag deep`, never trimmed from the gate to
 make it feel fast; `--skip-hooks` / `--skip-tag` skip _rings_, never _policy_.
 Never weaken a gate to make a merge pass — fix the check or the code.

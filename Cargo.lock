@@ -5746,7 +5746,6 @@ dependencies = [
  "daft",
  "dirs 6.0.0",
  "indicatif",
- "nix",
  "rayon",
  "reflink-copy",
  "serde",
