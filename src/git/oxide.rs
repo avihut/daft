@@ -544,12 +544,8 @@ pub fn remote_get_url(repo: &Repository, remote_name: &str) -> Result<String> {
 // When no local repo exists (e.g. during clone), the callers in git.rs fall
 // through to the git CLI subprocess path instead.
 
-/// gitoxide equivalent of `git ls-remote --heads <remote>`
-///
-/// Returns output formatted like git's ls-remote output:
-/// ```text
-/// <oid>\trefs/heads/branch-name
-/// ```
+/// Every branch on `remote`, by name, straight from the remote's
+/// advertisement — what `git ls-remote --heads <remote>` lists, typed.
 ///
 /// Lists every head — there is no single-branch variant on purpose. gix
 /// takes its protocol-v2 ref prefixes from the remote's configured
@@ -563,7 +559,7 @@ pub fn remote_get_url(repo: &Repository, remote_name: &str) -> Result<String> {
 /// guarantees it. An ad-hoc URL remote would produce an empty ref map (no
 /// refspecs → no ref prefixes) and a narrow refspec a partial one, which is
 /// exactly the trap that routes those probes to the CLI.
-pub fn ls_remote_heads(repo: &Repository, remote: &str) -> Result<String> {
+pub fn remote_branch_heads(repo: &Repository, remote: &str) -> Result<Vec<String>> {
     let remote_obj = match repo.try_find_remote(remote) {
         Some(Ok(r)) => r,
         _ => anyhow::bail!("remote '{remote}' is not configured (URL remotes take the CLI path)"),
@@ -577,36 +573,23 @@ pub fn ls_remote_heads(repo: &Repository, remote: &str) -> Result<String> {
         .ref_map(gix::progress::Discard, Default::default())
         .context("Failed to get ref map from remote")?;
 
-    let mut output = String::new();
-
-    for remote_ref in &ref_map.remote_refs {
-        let (name, oid) = match remote_ref {
-            gix::protocol::handshake::Ref::Direct {
-                full_ref_name,
-                object,
-            } => (full_ref_name.to_string(), object.to_string()),
-            gix::protocol::handshake::Ref::Symbolic {
-                full_ref_name,
-                object,
-                ..
-            } => (full_ref_name.to_string(), object.to_string()),
-            gix::protocol::handshake::Ref::Peeled {
-                full_ref_name, tag, ..
-            } => (full_ref_name.to_string(), tag.to_string()),
-            gix::protocol::handshake::Ref::Unborn {
-                full_ref_name,
-                target,
-            } => (full_ref_name.to_string(), target.to_string()),
-        };
-
-        if !name.starts_with("refs/heads/") {
-            continue;
-        }
-
-        output.push_str(&format!("{oid}\t{name}\n"));
-    }
-
-    Ok(output)
+    Ok(ref_map
+        .remote_refs
+        .iter()
+        .filter_map(|remote_ref| {
+            let full_ref_name = match remote_ref {
+                gix::protocol::handshake::Ref::Direct { full_ref_name, .. }
+                | gix::protocol::handshake::Ref::Symbolic { full_ref_name, .. }
+                | gix::protocol::handshake::Ref::Peeled { full_ref_name, .. }
+                | gix::protocol::handshake::Ref::Unborn { full_ref_name, .. } => full_ref_name,
+            };
+            full_ref_name
+                .to_str()
+                .ok()?
+                .strip_prefix("refs/heads/")
+                .map(str::to_string)
+        })
+        .collect())
 }
 
 #[cfg(test)]
