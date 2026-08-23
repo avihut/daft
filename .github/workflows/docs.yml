@@ -17,65 +17,30 @@ on:
   #
   # No paths: filter here on purpose. A release republishes regardless of its
   # diff shape (CHANGELOG.md is @include'd into docs/about/changelog.md but
-  # would not match the filter list below), and path filters are unreliable
-  # against tag pushes.
+  # would not match a docs/** filter), and path filters are unreliable against
+  # tag pushes.
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
-  # Build (without deploying) on PRs that touch the docs, so a broken VitePress
-  # build is caught before merge. This workflow previously only ran on push to
-  # master, so bad Markdown (e.g. unclosed angle-bracket placeholders parsed as
-  # Vue elements) reached master undetected and broke every deploy. The Deploy
-  # step below is gated to non-PR events.
-  pull_request:
-    paths:
-      - "docs/**"
-      - "mise-tasks/docs/**"
-      - "Cargo.toml"
-      - ".github/workflows/docs.yml"
   workflow_dispatch:
+
+# Pull requests are NOT a trigger here. The PR-time checks — the VitePress
+# build and the diagram language's golden suite — live in test.yml as the
+# `docs-build` and `docs-golden` jobs, gated per job by its `changes` filter,
+# so they feed the `ci-gate` required check. A path-filtered workflow cannot
+# be a required check: when the filter does not match, its checks never report
+# and the PR can never merge. Keep this file deploy-only.
 
 permissions:
   contents: read
 
 jobs:
-  # The diagram language's golden suite: the compiled digests of every hero,
-  # gallery, catalog, and landing script, plus the pure semantics of verbs,
-  # shell parsing, renames, and element drops. Browser-free and
-  # platform-stable, so it belongs on the same gate as the build — a registry
-  # change that silently rewrites what the docs animate must not reach master
-  # green. Mirrored by the `docs-golden` pre-merge ring in daft.yml
-  # (CLAUDE.md, "Quality Gates: CI <-> Merge-Gate Parity").
-  #
-  # The Playwright UI suite (docs/tests/ui, `mise run docs:test:ui`) is
-  # deliberately NOT here yet: its specs drive real animation timing and go
-  # flaky under load, so it needs a soak before it can gate merges. Tracked
-  # separately; until then it is a local task, wired into no surface at all
-  # rather than into a gate that would block only daft-merge users.
-  golden:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7.0.1
-
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Install dependencies
-        working-directory: docs
-        run: bun install --frozen-lockfile
-
-      # `mise run docs:test:golden` is the same command with the bun-install
-      # gate in front of it; the install above is that gate.
-      - name: Golden tests
-        working-directory: docs
-        run: bun test tests/golden
-
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       # wrangler-action installs `wrangler@4` via bun and then verifies it with
       # `bun run wrangler --version`. That verification shells out to system
@@ -83,7 +48,7 @@ jobs:
       # Node 20.x as the default. Without this step the deploy fails with
       # "Wrangler requires at least Node.js v22.0.0". Pinning to the current
       # Active LTS (24, EOL April 2028) buys the longest runway.
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
 
@@ -95,14 +60,13 @@ jobs:
         working-directory: docs
         run: bunx vitepress build
 
-      # Deploy only on release-tag pushes and manual dispatch — never on PR
-      # builds, which validate the VitePress build without publishing. Those are
-      # the only three triggers above, so excluding pull_request covers it.
-      # github.event_name is a trusted, GitHub-controlled value (no
-      # untrusted-input injection).
+      # Release-tag pushes and manual dispatch are the only triggers, so this
+      # always deploys; the guard is belt and braces against a PR trigger being
+      # re-added above without a second look. github.event_name is a trusted,
+      # GitHub-controlled value (no untrusted-input injection).
       - name: Deploy to Cloudflare Pages
         if: github.event_name != 'pull_request'
-        uses: cloudflare/wrangler-action@v4.0.0
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

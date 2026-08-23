@@ -690,8 +690,9 @@ mod tests {
     /// tty job-stops itself (SIGTTIN foreground dance) before printing
     /// anything, so without the detached-session trampoline this times
     /// out at the capture deadline. Terminal-less runs (CI, pipes)
-    /// cannot reproduce that arm — the pty-wrapped integration test in
-    /// `tests/integration/test_worktree_exec.sh` covers it durably.
+    /// cannot reproduce that arm — the pty-wrapped
+    /// `test_exec_alias_capture_under_tty` in
+    /// `tests/integration/test_rail_pty.sh` covers it durably.
     #[cfg(unix)]
     #[test]
     fn capture_survives_rc_file_stdout_pollution() {

@@ -56,3 +56,13 @@ steps:
         - "alias gwco="
         - "alias gwcarry="
         - "alias gwprune="
+
+  # shell-init also registers the completions: `complete -c <command>` is
+  # fish's registration verb, here for the checkout command (#447 stage 2
+  # gap).
+  - name: Output registers the fish completions
+    run: daft shell-init fish 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "complete -c git-worktree-checkout"

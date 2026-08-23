@@ -129,13 +129,12 @@ pub fn execute(
     }
 
     // Rebase local-only branches (no persistent worktree) via temp worktrees.
-    let all_local_branches = git.for_each_ref("%(refname:short)", "refs/heads")?;
-    for branch in all_local_branches.lines() {
+    for branch in git.local_branch_names()? {
         if git.is_cancelled() {
             break;
         }
-        let branch = branch.trim();
-        if branch.is_empty() || branch == params.base_branch {
+        let branch = branch.as_str();
+        if branch == params.base_branch {
             continue;
         }
         // Skip branches that have a worktree (already handled above)

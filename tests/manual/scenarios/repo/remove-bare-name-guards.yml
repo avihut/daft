@@ -1,0 +1,113 @@
+name: Repo remove bare-name resolution guards
+description: >
+  A bare word that misses the catalog is retried as a path — but only as a
+  repository ROOT. `Catalog::resolve`, then git discovery, walks UP from a path
+  to the repository that encloses it, which is right for a path the user spelled
+  out and catastrophic for a name daft merely guessed at: every repo has
+  ordinary subdirectories, so `daft repo remove --purge docs` would otherwise
+  delete the repo you are standing in (#836 review). Ported from
+  tests/integration/test_repo_remove.sh (8b/8c) so the data-loss guard has a
+  home in the primary suite.
+
+steps:
+  # --- 8b: an uncataloged bare name falls back to a directory of that name ---
+  - name: Make a vanilla repo daft has never cataloged
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/never-cataloged-repo"
+      cd "$WORK_DIR/never-cataloged-repo"
+      git init -q
+      echo hi > README.md
+      git add README.md
+      git commit -q -m "init"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/never-cataloged-repo/.git"
+
+  # A dry run IS the cautious way to check a guess, so the plan must announce
+  # the fallback route too — a preview that omits the note fails the one user
+  # who went looking for it.
+  - name: The dry run announces the fallback route and deletes nothing
+    run: daft repo remove --purge --dry-run never-cataloged-repo 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "is not in the catalog — resolved as a directory"
+      dirs_exist:
+        - "$WORK_DIR/never-cataloged-repo/.git"
+
+  - name: The real run announces the route and removes the repo root only
+    run: daft repo remove --purge --force never-cataloged-repo 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "is not in the catalog — resolved as a directory"
+      files_not_exist:
+        - "$WORK_DIR/never-cataloged-repo"
+      dirs_exist:
+        - "$WORK_DIR"
+
+  # --- 8c: the guess must not ESCALATE to the enclosing repo ---
+  - name: Make an enclosing repo with an ordinary docs/ subdirectory
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/enclosing-repo/docs"
+      cd "$WORK_DIR/enclosing-repo"
+      git init -q
+      echo hi > docs/README.md
+      git add docs/README.md
+      git commit -q -m "init"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/enclosing-repo/.git"
+        - "$WORK_DIR/enclosing-repo/docs"
+
+  # `docs` is a plain subdirectory: not a repo, not a catalog name. The
+  # refusal must explain the subdirectory/root distinction, and NOTHING may
+  # be deleted — neither the enclosing repo nor the directory named.
+  - name: A bare name naming a mere subdirectory is refused, nothing deleted
+    run: daft repo remove --purge --force docs 2>&1
+    cwd: "$WORK_DIR/enclosing-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "rather than a repository root"
+      dirs_exist:
+        - "$WORK_DIR/enclosing-repo/.git"
+        - "$WORK_DIR/enclosing-repo/docs"
+
+  # A detached bare clone keeps its project root one level UP, so the
+  # directory the user named IS the git dir, not the root. Matching only the
+  # root would refuse the very thing they pointed at, so both spellings of
+  # "the repo itself" pass — neither is reachable from a subdirectory.
+  - name: Make a bare clone of the enclosing repo
+    run:
+      git clone --bare -q "$WORK_DIR/enclosing-repo" "$WORK_DIR/bare-clone.git"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/bare-clone.git"
+
+  - name: A bare word naming a bare repo's own git dir is accepted
+    run: daft repo remove --purge --force bare-clone.git 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/bare-clone.git"
+      dirs_exist:
+        - "$WORK_DIR/enclosing-repo/.git"
+
+  # The spelled-out path keeps the documented walk-up: `./docs` DOES mean
+  # "the repo this path belongs to". Only the guess is refused.
+  - name: An explicit path still resolves through the enclosing repo
+    run: daft repo remove --purge --force ./docs 2>&1
+    cwd: "$WORK_DIR/enclosing-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/enclosing-repo/.git"

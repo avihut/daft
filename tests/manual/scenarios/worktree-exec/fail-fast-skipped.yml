@@ -1,10 +1,9 @@
 name: "Exec fail-fast emits skipped row"
 description:
   "when the first -x command fails the pipeline stops; the second command never
-  runs (verifiable via file absence) and the overall exit code is 1. Note:
-  compact finalization rows (✗ / ○ sigils) are suppressed in the YAML test
-  environment (DAFT_TESTING=1); row-format assertions live in the bash
-  integration tests (test_worktree_exec.sh)."
+  runs (verifiable via file absence) and the overall exit code is 1. The compact
+  finalization rows (✗ / ○ sigils) are hidden under DAFT_TESTING=1;
+  compact-rows-without-testing-env.yml unsets it and asserts on them."
 
 repos:
   - name: exec-ffskip

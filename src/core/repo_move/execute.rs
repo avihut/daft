@@ -152,8 +152,8 @@ fn rollback(done: &[(&Path, &Path)], created: &[PathBuf]) {
 /// longer exist. Left-in-place worktrees are in the list too — they did not
 /// move, but their `.git` gitlink points into the old git dir.
 ///
-/// Subprocess `git` on both backends: gitoxide has no equivalent, and this is
-/// a deliberate single-arm decision rather than an accidental one.
+/// Subprocess `git`: gitoxide has no equivalent, and this is a deliberate
+/// decision rather than an accidental one.
 fn repair_worktrees(plan: &MovePlan, outcome: &mut MoveOutcome) {
     let paths = plan.repair_paths();
     if paths.is_empty() {

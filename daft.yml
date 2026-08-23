@@ -120,17 +120,26 @@ hooks:
   #   release-env-guard    packaging/release concern, not a correctness gate
   #   homebrew-simulation  same
   #   bench.yml            benchmarks measure, they do not gate
+  #   ci-gate              not a check — the job that fans every other job into
+  #                        the one status the master ruleset requires; here the
+  #                        gate is `daft merge` itself
   #
   # CI's `changes` path filters are mirrored only where the saving is large and
-  # the pattern has a single upstream source (docs-build, dep-age-check).
-  # Everything else runs on every merge: locally the safe direction is to run
-  # more checks, not fewer.
+  # the pattern has a single upstream source (docs-build, docs-golden,
+  # dep-age-check). Everything else runs on every merge: locally the safe
+  # direction is to run more checks, not fewer.
   pre-merge:
     jobs:
       - name: fmt-check
         description: "CI: lint — cargo fmt --check + prettier over md/yml"
         root: "{merge_source_path}"
         run: mise run fmt:check
+
+      - name: actions-pinned
+        description:
+          "CI: actions-pinned — every workflow `uses:` pinned to a commit SHA"
+        root: "{merge_source_path}"
+        run: mise run validate:actions-pinned
 
       - name: dep-age-check
         description: "CI: dep-age-check — no dep entries younger than 7 days"
@@ -139,6 +148,7 @@ hooks:
         glob:
           - Cargo.lock
           - bun.lock
+          - docs/bun.lock
           - .dep-age-allowlist
           - cooldown.toml
           - bunfig.toml
@@ -196,27 +206,26 @@ hooks:
         run: mise run completions:test
 
       - name: docs-build
-        description: "CI: docs.yml — the VitePress site builds"
+        description: "CI: docs-build — the VitePress site builds"
         root: "{merge_source_path}"
         tags: [deep]
-        # Mirrors docs.yml's own `paths:` trigger.
+        # Mirrors the `docs` class of the workflow's `changes` filter.
         glob:
           - docs/**
           - mise-tasks/docs/**
           - Cargo.toml
-          - .github/workflows/docs.yml
         run: mise run docs:site:build
 
       - name: docs-golden
-        description: "CI: docs.yml — the diagram language's golden suite"
+        description: "CI: docs-golden — the diagram language's golden suite"
         root: "{merge_source_path}"
-        # Mirrors docs.yml's own `paths:` trigger. Not `deep`: the suite is
-        # browser-free and runs in under a second once bun has installed.
+        # Mirrors the `docs` class of the workflow's `changes` filter. Not
+        # `deep`: the suite is browser-free and runs in under a second once bun
+        # has installed.
         glob:
           - docs/**
           - mise-tasks/docs/**
           - Cargo.toml
-          - .github/workflows/docs.yml
         run: mise run docs:test:golden
 
       - name: msrv-check
@@ -226,7 +235,9 @@ hooks:
         run: mise run validate:msrv
 
       - name: integration-tests
-        description: "CI: integration-tests — the full bash + YAML matrix"
+        description:
+          "CI: integration-tests — the YAML scenario suite + the blessed shell
+          suite"
         root: "{merge_source_path}"
         tags: [deep]
         needs: [build]

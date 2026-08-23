@@ -1,0 +1,96 @@
+name: Both git-style spellings reach warm with their flags intact
+description: >
+  `git daft worktree-warm` reaches the same command as `daft warm`: the git-daft
+  arm rewrites argv to the warm verb and `--from` must survive that rewrite. The
+  receipt names both ends of the copy, so the source being the one `--from`
+  chose is visible in the output. The `git-worktree-warm` argv[0] arm is
+  exercised through a symlink the scenario makes itself — the multicall dispatch
+  keys on the basename, so it need not live in CI's binary farm (which does not
+  create that name). Ported from test_warm.sh (warm_git_daft_verb_dispatches).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Create a second worktree while no copy paths are declared
+    run: daft go develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Build a gitignored cache in main and declare it there
+    run: |
+      set -e
+      printf 'node_modules/\n' > .gitignore
+      printf 'copy:\n  - node_modules/\n' > daft.yml
+      mkdir -p node_modules/pkg
+      printf 'built-in-main\n' > node_modules/pkg/index.js
+      # The engine only copies gitignored entries; fail here, not later, if
+      # the fixture ever stops satisfying that.
+      git check-ignore node_modules
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: git-daft worktree-warm --from main warms develop from main
+    run: git-daft worktree-warm --from main 2>&1
+    cwd: "$WORK_DIR/test-repo/develop"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Copied 1 of 1 declared path"
+        - "from 'main'"
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
+          content: "built-in-main"
+
+  # The replica is an independent directory, not a symlink back into main —
+  # that is `shared:`'s job. `test ! -L` alone passes on a missing path, so
+  # both halves are asserted.
+  - name: The copied cache is a real directory, not a symlink
+    run: test -d node_modules && test ! -L node_modules
+    cwd: "$WORK_DIR/test-repo/develop"
+    expect:
+      exit_code: 0
+
+  # The other git-style spelling is the symlink itself. argv[0]'s basename
+  # picks the arm (src/main.rs), so a symlink anywhere exercises it — without
+  # depending on CI's hand-maintained symlink list.
+  - name: Make a git-worktree-warm symlink to the binary under test
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/bin"
+      ln -s "$(command -v daft)" "$WORK_DIR/bin/git-worktree-warm"
+      test -x "$WORK_DIR/bin/git-worktree-warm"
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-warm answers --help for itself
+    run: '"$WORK_DIR/bin/git-worktree-warm" --help 2>&1'
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Usage: git-worktree-warm"
+
+  - name: git-worktree-warm --force --from main re-copies through the symlink
+    run: '"$WORK_DIR/bin/git-worktree-warm" --force --from main 2>&1'
+    cwd: "$WORK_DIR/test-repo/develop"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Copied 1 of 1 declared path"
+        - "from 'main'"
+      output_not_contains:
+        - "already present"

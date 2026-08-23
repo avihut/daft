@@ -55,7 +55,8 @@ All PRs must pass these checks (enforced in CI):
 - **Formatting:** `mise run fmt:check`
 - **Linting:** `mise run clippy` (zero warnings)
 - **Unit tests:** `mise run test:unit`
-- **Integration tests:** `mise run test:integration` (bash + YAML, full matrix)
+- **Integration tests:** `mise run test:integration` (YAML scenarios + the
+  blessed shell suite)
 
 Run the full CI simulation locally:
 
@@ -65,8 +66,7 @@ mise run ci
 
 ## Testing
 
-daft has two test systems that run in CI for each matrix entry (default +
-subprocess):
+daft has two test systems that run in CI:
 
 ### YAML manual tests (preferred for new tests)
 
@@ -159,14 +159,18 @@ steps:
 See `tests/README.md` for the full schema reference (assertions, variables,
 fixtures, path conventions).
 
-### Bash integration tests
+### Blessed shell tests
 
-Shell-based tests in `tests/integration/`. The master runner `test_all.sh`
-executes all suites.
+Shell-based tests in `tests/integration/` cover only what the YAML runner cannot
+express: behaviour that needs a real terminal (the live rail, the TUIs, alias
+capture under a controlling tty), signal and timing contracts, and the shell
+wrapper's cd contract (`test_shell_init.sh`). The runner `test_all.sh` sources
+exactly those files — its list is the blessed list. New tests go to YAML
+scenarios unless they need one of those three things.
 
 ```bash
-mise run test:integration              # Full matrix (default + subprocess)
-cd tests/integration && bash test_clone.sh   # Run one suite directly
+mise run test:integration                        # YAML scenarios, then the shell suite
+cd tests/integration && bash test_rail_pty.sh    # Run one blessed suite directly
 ```
 
 ### Dev sandbox
@@ -219,11 +223,11 @@ every post-release window).
 
 ### Benchmarks
 
-Compare bash and YAML test performance with a live TUI table:
+Time the YAML test runner itself (`benches/README.md`, Family 2):
 
 ```bash
-mise run bench:tests:integration               # Sequential (default)
-mise run bench:tests:integration -- --parallel  # Parallel bash+YAML per suite
+mise run bench:tests:manual          # Single-trial wall-clock check
+mise run bench:tests:manual:scale    # Scaling sweep across --jobs values
 ```
 
 ## Commit Messages
@@ -255,9 +259,24 @@ docs: update installation instructions
 
 ## Pull Request Guidelines
 
-- PR titles use conventional commit format: `feat: add dark mode toggle`
+- PR titles use conventional commit format: `feat: add dark mode toggle` — the
+  title becomes the squash commit's subject, which drives the changelog and the
+  version bump
 - Issue references go in the PR body, not the title: `Fixes #42`
-- All PRs target `master` and are squash-merged
+- All PRs target `master` and are squash-merged; `master` allows no other merge
+  method and keeps a linear history
+- One status check is required, `ci-gate`, which fans in every CI job; jobs that
+  do not apply to a change are skipped, and skipped counts as green
+- The branch must be up to date with `master` when it merges — rebase and
+  force-push (`--force-with-lease`), or press **Update branch**, and CI re-runs
+  on the result
+- Every review thread must be resolved before merging
+- Dependabot's patch and minor updates auto-merge once `ci-gate` is green; major
+  bumps wait for a maintainer
+
+The intent behind these rules is checked into the repo as
+[`.github/rulesets/`](https://github.com/avihut/daft/tree/master/.github/rulesets);
+GitHub enforces the live copy.
 
 ## Labels
 
@@ -297,7 +316,8 @@ daft-15/branch-search
 6. Run `mise run man:gen` and `mise run docs:cli:gen` and commit the generated
    files
 7. Add YAML test scenarios in `tests/manual/scenarios/<name>/`
-8. Add bash integration tests in `tests/integration/`
+8. Add a shell test only if the behaviour needs a PTY, a signal, or the shell
+   wrapper (see `tests/README.md`)
 
 ## License
 

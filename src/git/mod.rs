@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 mod branch;
 pub mod cancel;
@@ -16,6 +18,7 @@ mod stash;
 mod worktree;
 pub mod worktree_state;
 
+pub use branch::{BranchTracking, UpstreamRef};
 pub use config::{ConfigEntry, ConfigScope, daft_config_entries_global};
 pub use refs::FirstParentCommit;
 pub use remote::{PushIo, PushOptions, PushOutputTee, PushStream};
@@ -121,12 +124,15 @@ pub(crate) struct PushSupervision {
 
 pub struct GitCommand {
     pub(crate) quiet: bool,
-    /// Whether dispatched ops take the gix arm. Constructed `false`: the
-    /// settings resolver (`DaftSettings::use_gitoxide`, default on since
-    /// #733) is the sole opt-in source via `with_gitoxide`, so call sites
-    /// that never thread the setting stay on the subprocess backend.
-    pub(crate) use_gitoxide: bool,
-    pub(crate) gix_repo: OnceLock<gix::ThreadSafeRepository>,
+    /// Repository handles discovered by the gix arm, keyed by the working
+    /// directory each was discovered from (#868). One `GitCommand` lives
+    /// across the `chdir`s a worktree walk makes, and a worktree-scoped
+    /// question (current branch, toplevel, git dir) must be answered for
+    /// the worktree the process is standing in — exactly what the subprocess
+    /// arm gets for free from `git`'s own cwd discovery. Keying by cwd keeps
+    /// the discover-once property a command relies on (#584) while a walk
+    /// that returns to a worktree reuses its handle.
+    gix_repos: Mutex<HashMap<PathBuf, gix::ThreadSafeRepository>>,
     /// Shared cancellation flag observed by the long-running subprocess
     /// seams (fetch/pull/rebase/push). `None` keeps those seams
     /// cancel-unaware; commands that own a Ctrl+C handler (sync) inject
@@ -141,8 +147,7 @@ impl GitCommand {
     pub fn new(quiet: bool) -> Self {
         Self {
             quiet,
-            use_gitoxide: false,
-            gix_repo: OnceLock::new(),
+            gix_repos: Mutex::new(HashMap::new()),
             cancel: None,
             push_supervision: None,
         }
@@ -152,11 +157,6 @@ impl GitCommand {
     /// them; other subprocess seams ignore the field entirely.
     pub(crate) fn with_push_supervision(mut self, supervision: PushSupervision) -> Self {
         self.push_supervision = Some(supervision);
-        self
-    }
-
-    pub fn with_gitoxide(mut self, enabled: bool) -> Self {
-        self.use_gitoxide = enabled;
         self
     }
 
@@ -187,24 +187,49 @@ impl GitCommand {
             .is_some_and(cancel::CancelFlag::is_cancelled)
     }
 
-    /// Lazily discover and open the git repository via gitoxide.
+    /// The gitoxide repository the process working directory is inside,
+    /// discovered lazily and cached per working directory (see `gix_repos`).
     /// Returns a thread-local Repository handle.
+    ///
+    /// Asks `current_dir()` on every call on purpose: a cached handle is
+    /// only reused for the directory it was discovered from, so a command
+    /// that `chdir`s between worktrees gets each worktree's own answer rather
+    /// than the first one's (#868) — the property every `git` child process
+    /// has for free, since each discovers from its own cwd.
     pub(crate) fn gix_repo(&self) -> Result<gix::Repository> {
-        if let Some(ts) = self.gix_repo.get() {
-            return Ok(ts.to_thread_local());
-        }
         let cwd = std::env::current_dir().context("Failed to get current working directory")?;
-        let ts = gix::ThreadSafeRepository::discover(&cwd)
-            .context("Failed to discover git repository via gitoxide")?;
-        #[cfg(test)]
-        DISCOVER_COUNT.with(|c| c.set(c.get() + 1));
-        // If another thread raced us via set(), that's fine - use whichever won
-        let _ = self.gix_repo.set(ts);
-        Ok(self
-            .gix_repo
-            .get()
-            .expect("OnceLock should be set")
-            .to_thread_local())
+        self.gix_repo_at(&cwd)
+    }
+
+    /// The cached handle for `dir`, discovering on first use.
+    ///
+    /// The mutex is interior mutability behind `&self`, not contention:
+    /// gix is built without its `parallel` feature, so `ThreadSafeRepository`
+    /// holds `Rc`s and `GitCommand` is `!Sync` — no two threads ever share
+    /// one (`list_stream.rs` builds a command per worker for exactly that
+    /// reason). Holding it across `discover` is therefore deadlock-free by
+    /// construction.
+    fn gix_repo_at(&self, dir: &Path) -> Result<gix::Repository> {
+        let shared = {
+            let mut repos = self
+                .gix_repos
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match repos.get(dir) {
+                // `ThreadSafeRepository` is a bundle of `Arc`s: cloning it out
+                // keeps the lock scoped to the lookup.
+                Some(ts) => ts.clone(),
+                None => {
+                    let ts = gix::ThreadSafeRepository::discover(dir)
+                        .context("Failed to discover git repository via gitoxide")?;
+                    #[cfg(test)]
+                    DISCOVER_COUNT.with(|c| c.set(c.get() + 1));
+                    repos.insert(dir.to_path_buf(), ts.clone());
+                    ts
+                }
+            }
+        };
+        Ok(shared.to_thread_local())
     }
 }
 
@@ -261,22 +286,9 @@ mod tests {
     fn test_git_command_new() {
         let git = GitCommand::new(true);
         assert!(git.quiet);
-        assert!(!git.use_gitoxide);
 
         let git = GitCommand::new(false);
         assert!(!git.quiet);
-        assert!(!git.use_gitoxide);
-    }
-
-    #[test]
-    fn test_git_command_with_gitoxide() {
-        let git = GitCommand::new(false).with_gitoxide(true);
-        assert!(!git.quiet);
-        assert!(git.use_gitoxide);
-
-        let git = GitCommand::new(true).with_gitoxide(false);
-        assert!(git.quiet);
-        assert!(!git.use_gitoxide);
     }
 
     #[test]
@@ -377,13 +389,15 @@ mod tests {
         );
     }
 
-    /// #733 opt-out: a command with `use_gitoxide` false must take the
-    /// subprocess arm for every dispatched op. Every gix arm goes through
-    /// `gix_repo()`, so the discover counter doubles as a "was any gix path
-    /// taken" probe: zero discoveries ⇒ zero gix paths.
+    /// #883: a bare `GitCommand` now answers from the gix arm, so the four
+    /// `src/core/repo.rs` wrappers (`is_git_repository`, `get_git_common_dir`,
+    /// `get_current_worktree_path`, `get_current_branch`) do too. Pin that
+    /// the gix answers are what `git` itself says in every state they are
+    /// asked from — a worktree root, a subdirectory, a linked worktree, a
+    /// bare repository, an unborn branch, and outside any repository.
     #[test]
     #[serial_test::serial]
-    fn gitoxide_opt_out_takes_no_gix_path() {
+    fn bare_git_command_answers_match_the_git_cli() {
         for var in GIT_ENV_VARS {
             unsafe {
                 std::env::remove_var(var);
@@ -391,32 +405,159 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().canonicalize().unwrap();
-        git_at(&path, &["init", "-b", "main"]);
-        git_at(&path, &["commit", "--allow-empty", "-m", "seed"]);
+        let base = dir.path().canonicalize().unwrap();
+        let main_wt = base.join("main");
+        std::fs::create_dir(&main_wt).unwrap();
+        git_at(&main_wt, &["init", "-b", "main"]);
+        git_at(&main_wt, &["commit", "--allow-empty", "-m", "seed"]);
+        let sub = main_wt.join("src").join("deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        let feat_wt = base.join("feat");
+        git_at(
+            &main_wt,
+            &["worktree", "add", "-b", "feat", feat_wt.to_str().unwrap()],
+        );
+        let bare = base.join("bare.git");
+        git_at(
+            &base,
+            &[
+                "clone",
+                "--quiet",
+                "--bare",
+                main_wt.to_str().unwrap(),
+                "bare.git",
+            ],
+        );
+        let unborn = base.join("unborn");
+        std::fs::create_dir(&unborn).unwrap();
+        git_at(&unborn, &["init", "-b", "fresh"]);
+        let outside = base.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+
+        // What git says, asked at `cwd`.
+        let cli = |cwd: &std::path::Path, args: &[&str]| -> Option<String> {
+            let out = crate::utils::git_command_at(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+        let canon = |cwd: &std::path::Path, p: &str| cwd.join(p).canonicalize().unwrap();
 
         let _cwd_guard = CwdGuard::new();
-        std::env::set_current_dir(&path).unwrap();
+        let git = GitCommand::new(true);
 
-        // Opt-out: dispatched ops must never reach gix.
-        reset_discover_count();
-        let git = GitCommand::new(true).with_gitoxide(false);
-        assert!(git.show_ref_exists("refs/heads/main").unwrap());
-        assert_eq!(git.symbolic_ref_short_head().unwrap(), "main");
-        assert!(git.rev_parse_is_inside_work_tree().unwrap());
-        assert_eq!(discover_count(), 0, "opt-out command must take no gix path");
+        for cwd in [&main_wt, &sub, &feat_wt, &bare, &unborn] {
+            std::env::set_current_dir(cwd).unwrap();
+            let here = cwd.display();
+            reset_discover_count();
 
-        // Control: the same ops with gitoxide on discover exactly once —
-        // proves the probe observes these ops and the arms actually differ.
+            assert!(git.is_inside_git_repo().unwrap(), "{here}: inside a repo");
+            assert!(cli(cwd, &["rev-parse", "--git-dir"]).is_some());
+
+            let expected_common =
+                canon(cwd, &cli(cwd, &["rev-parse", "--git-common-dir"]).unwrap());
+            let common = git.rev_parse_git_common_dir().unwrap();
+            assert_eq!(canon(cwd, &common), expected_common, "{here}: common dir");
+
+            let expected_top = cli(cwd, &["rev-parse", "--show-toplevel"]);
+            let top = git.get_current_worktree_path().ok();
+            assert_eq!(
+                top.map(|p| p.canonicalize().unwrap()),
+                expected_top.map(|p| canon(cwd, &p)),
+                "{here}: toplevel"
+            );
+
+            let expected_branch = cli(cwd, &["symbolic-ref", "--short", "HEAD"]);
+            assert_eq!(
+                git.symbolic_ref_short_head().ok(),
+                expected_branch,
+                "{here}: current branch"
+            );
+            // The answers above came from gix — one discovery for this cwd,
+            // shared by the three handle-backed questions — not from a
+            // subprocess arm that would trivially agree with the CLI.
+            assert_eq!(discover_count(), 1, "{here}: answers came from gix");
+        }
+
+        std::env::set_current_dir(&outside).unwrap();
+        assert!(!git.is_inside_git_repo().unwrap(), "outside: not a repo");
+        assert!(cli(&outside, &["rev-parse", "--git-dir"]).is_none());
+    }
+
+    /// #868 regression: one `GitCommand` reused across a `chdir` must answer
+    /// worktree-scoped questions for the worktree the process is standing
+    /// in. The predecessor cached a single discovery per process, so every
+    /// later worktree inherited the first one's branch, toplevel, git dir,
+    /// and dirtiness — silently, and only on the gix arm.
+    #[test]
+    #[serial_test::serial]
+    fn gix_arm_answers_for_the_worktree_the_process_stands_in() {
+        for var in GIT_ENV_VARS {
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let main_wt = base.join("main");
+        std::fs::create_dir(&main_wt).unwrap();
+        git_at(&main_wt, &["init", "-b", "main"]);
+        git_at(&main_wt, &["commit", "--allow-empty", "-m", "seed"]);
+        let feat_wt = base.join("feat");
+        git_at(
+            &main_wt,
+            &["worktree", "add", "-b", "feat", feat_wt.to_str().unwrap()],
+        );
+        // Only the linked worktree is dirty, so a stale handle is caught by
+        // the status question too, not just by ref/path questions.
+        std::fs::write(feat_wt.join("wip.txt"), "wip").unwrap();
+
+        let _cwd_guard = CwdGuard::new();
+        let git = GitCommand::new(true);
+
+        // Discover from the main worktree first…
+        std::env::set_current_dir(&main_wt).unwrap();
         reset_discover_count();
-        let git = GitCommand::new(true).with_gitoxide(true);
-        assert!(git.show_ref_exists("refs/heads/main").unwrap());
         assert_eq!(git.symbolic_ref_short_head().unwrap(), "main");
+        assert_eq!(git.get_current_worktree_path().unwrap(), main_wt);
+        assert!(!git.has_uncommitted_changes().unwrap());
+        let main_git_dir = git.get_git_dir().unwrap();
+        assert_eq!(discover_count(), 1);
+
+        // …then walk into the linked one with the same command: every
+        // worktree-scoped answer must follow the cwd.
+        std::env::set_current_dir(&feat_wt).unwrap();
+        assert_eq!(
+            git.symbolic_ref_short_head().unwrap(),
+            "feat",
+            "current branch must be the worktree's own, not the first one's"
+        );
+        assert_eq!(git.get_current_worktree_path().unwrap(), feat_wt);
+        assert!(
+            git.has_uncommitted_changes().unwrap(),
+            "dirtiness must be read from the worktree the process stands in"
+        );
+        assert_ne!(
+            git.get_git_dir().unwrap(),
+            main_git_dir,
+            "a linked worktree has its own git dir"
+        );
         assert!(git.rev_parse_is_inside_work_tree().unwrap());
+        assert!(!git.rev_parse_is_bare_repository().unwrap());
+        assert_eq!(discover_count(), 2, "a new cwd is a new discovery");
+
+        // Returning to a worktree reuses its handle rather than discovering
+        // again — the cache is keyed by cwd, not dropped.
+        std::env::set_current_dir(&main_wt).unwrap();
+        assert_eq!(git.symbolic_ref_short_head().unwrap(), "main");
         assert_eq!(
             discover_count(),
-            1,
-            "gix-backed command shares one discovery"
+            2,
+            "revisiting a worktree must reuse its cached handle"
         );
     }
 
@@ -428,9 +569,9 @@ mod tests {
     ///    it hands `refs/heads/<branch>` to the server for a one-ref answer,
     ///    which gix can't express (its ref prefixes come from the remote's
     ///    refspecs), so even a configured remote name takes no gix path.
-    /// 2. URL-shaped probes and `ls_remote_symref` are CLI too — the gix arm
-    ///    derives its ref-prefix filter from configured fetch refspecs, and
-    ///    an ad-hoc URL remote has none.
+    /// 2. URL-shaped probes — single-ref, symref, and bulk listing alike —
+    ///    are CLI too: the gix arm derives its ref-prefix filter from
+    ///    configured fetch refspecs, and an ad-hoc URL remote has none.
     /// 3. Bulk listing (`list_remote_branches`) of a configured remote whose
     ///    refspec covers `refs/heads/*` takes the gix network arm — a fresh
     ///    bare clone has no local remote-tracking refs, so it must reach the
@@ -476,7 +617,7 @@ mod tests {
         let _cwd_guard = CwdGuard::new();
         std::env::set_current_dir(&probe).unwrap();
 
-        let git = GitCommand::new(true).with_gitoxide(true);
+        let git = GitCommand::new(true);
 
         // Existence probe is CLI even for a configured name: it must find the
         // branch and take no gix path.
@@ -515,6 +656,16 @@ mod tests {
             discover_count(),
             1,
             "bulk listing of a covering-refspec remote uses the gix arm"
+        );
+
+        // Bulk listing of a URL-shaped remote: no configured refspecs to
+        // derive a ref prefix from, so `gix_repo_for_remote` declines and the
+        // CLI arm answers — from the server, finding the same branch. This is
+        // the capability fallback that outlived the backend switch (#883).
+        let listed = git.list_remote_branches(&src_url).unwrap();
+        assert!(
+            listed.contains(&"develop".to_string()),
+            "URL-shaped bulk listing must still reach the server via the CLI arm, got {listed:?}"
         );
     }
 
@@ -568,7 +719,6 @@ mod tests {
         // `main`, hiding `develop` behind a "not found on remote".
         reset_discover_count();
         let listed = GitCommand::new(true)
-            .with_gitoxide(true)
             .list_remote_branches("origin")
             .unwrap();
         assert!(
@@ -581,7 +731,6 @@ mod tests {
         set_refspec("+refs/heads/*:refs/remotes/origin/*");
         reset_discover_count();
         let listed = GitCommand::new(true)
-            .with_gitoxide(true)
             .list_remote_branches("origin")
             .unwrap();
         assert!(

@@ -1,0 +1,76 @@
+name: "The repo:VAR address resolves another cataloged repo's value"
+description:
+  "`daft env <repo>:VAR` answers for the matching-name worktree of another repo
+  in the catalog, and `--repo <repo>` is the same resolution spelled the
+  canonical way. The two repos carry DIFFERENT salts, so the cross-repo answer
+  is a number the local repo cannot produce — resolution, not a local fallback,
+  is what the literal proves (salt 'alpha' → 23280, 'myapp' → 20960, both at
+  slug 'main')."
+
+repos:
+  - name: env-a
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# a"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      env:
+        salt: alpha
+        ports:
+          - WEBAPP_PORT
+  - name: env-b
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# b"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      env:
+        salt: myapp
+        ports:
+          - WEBAPP_PORT
+
+steps:
+  - name: Clone both repositories (both land in the sandbox catalog)
+    run: |
+      set -e
+      git-worktree-clone --layout contained $REMOTE_ENV_A
+      git-worktree-clone --layout contained $REMOTE_ENV_B
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/env-a/main"
+        - "$WORK_DIR/env-b/main"
+
+  - name: The local answer in env-b
+    run: daft env WEBAPP_PORT 2>&1
+    cwd: "$WORK_DIR/env-b/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "20960"
+
+  - name: The repo:VAR address answers with env-a's value from inside env-b
+    run: daft env env-a:WEBAPP_PORT 2>&1
+    cwd: "$WORK_DIR/env-b/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "23280"
+      output_not_contains:
+        - "20960"
+
+  - name: --repo is the canonical spelling of the same resolution
+    run: daft env WEBAPP_PORT --repo env-a 2>&1
+    cwd: "$WORK_DIR/env-b/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "23280"

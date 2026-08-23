@@ -15,7 +15,7 @@ suite — and how to A/B-validate a fix. Read before any perf/optimization work.
 >
 > Existing benchmarking infra (for validation):
 > - `mise run bench:<cmd>` — per-command vs competition/baseline (`benches/`).
-> - `mise run bench:tests:integration` — TUI bash-vs-YAML; `bench:tests:manual` — YAML timing.
+> - `mise run bench:tests:manual` — YAML-runner timing (`bench:tests:manual:scale` sweeps `--jobs`).
 > - `benches/scenarios/test_manual_scale.sh` — percentiles over the manual suite.
 > - `DAFT_MANUAL_TEST_EMIT_TIMING=1` — per-scenario `[bench]` lines (see below).
 

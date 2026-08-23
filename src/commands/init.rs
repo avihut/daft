@@ -160,7 +160,7 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
         detection: None,
     });
 
-    let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(output.is_quiet());
 
     let params = init::InitParams {
         repository_name: args.repository_name.clone(),

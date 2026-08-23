@@ -1,0 +1,116 @@
+name: A git conflict rolls the consolidated daft.yml back to the target's copy
+description: >
+  feat/x refined its visitor daft.yml, so `daft merge feat/x` consolidates the
+  refinement into main's copy BEFORE the git merge runs (hooks must see the
+  resolved file). The git merge then conflicts on shared.txt. The consolidation
+  is written inside `write_files_atomic`, so the failed merge must restore
+  main's daft.yml to its pre-merge content — the target keeps exactly what it
+  had, the refinement stays in feat/x, and the conflicted git merge is left for
+  --continue/--abort. Ported non-vacuously from
+  test_daft_merge_visitor_rollback.sh: the shell version left main's daft.yml
+  un-excluded, so the clean-target check refused the merge before git ran and
+  "daft.yml unchanged" held for the wrong reason.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  # The ignore keeps daft.yml a visitor file: the clean-target pre-flight reads
+  # `git status --porcelain`, which lists untracked files, so an un-ignored
+  # daft.yml would refuse the merge before anything interesting happens.
+  - name: Ignore daft files, seed the file both sides will fight over, push
+    run: |
+      set -e
+      cd $WORK_DIR/test-repo/main
+      printf 'daft.yml\ndaft.local.yml\n' > .gitignore
+      printf 'v1\n' > shared.txt
+      git add .gitignore shared.txt
+      git commit -m "ignore daft files; seed shared.txt"
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Write visitor daft.yml version A in main
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      setup\n        run: echo setup-v1\n' > $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Create feature worktree (seeds a copy of A)
+    run: git-worktree-checkout -b feat/x
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/feat/x/daft.yml"
+          content: "setup-v1"
+
+  - name: feat/x changes shared.txt and refines its daft.yml
+    run: |
+      set -e
+      cd $WORK_DIR/test-repo/feat/x
+      printf 'v2-from-feat\n' > shared.txt
+      git commit -am "feat/x: shared v2"
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name: setup\n        run: echo setup-v1\n      - name: extra\n        run: echo extra-job\n' \
+        > daft.yml
+    expect:
+      exit_code: 0
+
+  - name: main changes shared.txt the other way
+    run: |
+      set -e
+      cd $WORK_DIR/test-repo/main
+      printf 'v2-from-main\n' > shared.txt
+      git commit -am "main: shared v2"
+    expect:
+      exit_code: 0
+
+  # The daft.yml consolidation resolves cleanly (a one-sided refinement), so
+  # the merge reaches git — and git conflicts on shared.txt.
+  - name: The merge reaches git and conflicts on shared.txt
+    run: daft merge --no-edit feat/x 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "merge conflicted in"
+        - "shared.txt"
+
+  - name: The git merge really ran — it is in progress, awaiting resolution
+    run: git -C $WORK_DIR/test-repo/main rev-parse -q --verify MERGE_HEAD
+    expect:
+      exit_code: 0
+
+  - name: main's daft.yml is back to version A — the refinement was rolled back
+    run: cat $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "setup-v1"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "extra-job"
+
+  - name: feat/x still holds its refinement
+    run: cat $WORK_DIR/test-repo/feat/x/daft.yml
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/feat/x/daft.yml"
+          content: "extra-job"
+
+  - name: Abort leaves the worktree usable
+    run: daft merge --abort 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0

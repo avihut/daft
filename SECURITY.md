@@ -1,11 +1,21 @@
 # Security Policy
 
+## Supported Versions
+
+Security fixes ship in a new release on the latest minor line; there are no
+long-term-support branches. Upgrade to the
+[latest release](https://github.com/avihut/daft/releases/latest) to receive
+them.
+
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in daft, please report it privately by
-emailing:
+If you discover a security vulnerability in daft, please report it privately —
+not in a public issue — through either channel:
 
-**security@avihu.dev**
+- **GitHub private vulnerability reporting** (preferred):
+  [Report a vulnerability](https://github.com/avihut/daft/security/advisories/new).
+  It keeps the report, the discussion, and the eventual advisory in one place.
+- **Email**: **security@avihu.dev**
 
 Please include:
 

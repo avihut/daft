@@ -1,0 +1,55 @@
+name: "Exec's compact finalization rows name the command and the skipped state"
+description:
+  "Multi-target pipelines print one compact row per command to stderr: the
+  command inline after `❯` (not `[N/M]`), `✗` on the one that failed, `○ …
+  skipped` on every step after it. DAFT_TESTING hides that renderer, so these
+  steps unset it for the command under test (and switch off the background
+  spawns it was suppressing one by one, as the rail tests do). Ported from
+  test_worktree_exec.sh (multi_command_shows_inline_command_names,
+  fail_fast_emits_skipped_row)."
+
+repos:
+  - name: exec-rows
+    use_fixture: standard-remote
+
+steps:
+  - name:
+      Clone the repository and add a second worktree (single targets use
+      pass-through, no rows)
+    run: |
+      set -e
+      git-worktree-clone --layout contained $REMOTE_EXEC_ROWS
+      cd "$WORK_DIR/exec-rows/main"
+      git-worktree-checkout -b feat-a
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-rows/feat-a"
+
+  - name: Each finalization row names its command inline
+    run: >
+      env -u DAFT_TESTING DAFT_NO_UPDATE_CHECK=1 DAFT_NO_TRUST_PRUNE=1
+      DAFT_NO_LOG_CLEAN=1 DAFT_NO_HINTS=1 git-worktree-exec --all -x 'true' -x
+      'echo second' 2>&1 >/dev/null
+    cwd: "$WORK_DIR/exec-rows/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "❯ true"
+        - "❯ echo second"
+
+  - name:
+      A failing step shows ✗, every later step shows ○ … skipped, and the exit
+      is 1
+    run: >
+      env -u DAFT_TESTING DAFT_NO_UPDATE_CHECK=1 DAFT_NO_TRUST_PRUNE=1
+      DAFT_NO_LOG_CLEAN=1 DAFT_NO_HINTS=1 git-worktree-exec --all -x 'false' -x
+      'echo never' 2>&1 >/dev/null
+    cwd: "$WORK_DIR/exec-rows/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "✗"
+        - "○"
+        - "echo never"
+        - "skipped"

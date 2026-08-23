@@ -20,18 +20,30 @@ on:
         type: boolean
         default: false
 
+# The branch push and the PR are made with the Wheatley App token, not
+# GITHUB_TOKEN: PRs opened by GITHUB_TOKEN trigger no workflows, so the PR
+# would sit with no CI and could never satisfy the `ci-gate` required check
+# without someone closing and reopening it. With the App token the PR gets the
+# same CI run as any other. GITHUB_TOKEN therefore needs nothing beyond the
+# checkout.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   upgrade:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.WHEATLEY_BOT_APP_ID }}
+          private-key: ${{ secrets.WHEATLEY_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install mise
-        uses: jdx/mise-action@v4.2.5
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
 
       - name: Run mise upgrade
         # `--bump` advances the pin in mise.toml itself, keeping whatever
@@ -62,8 +74,9 @@ jobs:
         run: mise upgrade --bump --exclude rust --exclude neovim
 
       - name: Open PR
-        uses: peter-evans/create-pull-request@v8
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
+          token: ${{ steps.app-token.outputs.token }}
           commit-message: "deps: bump mise tools"
           title:
             "${{ inputs.bypass_cooldown && 'deps: bump mise tools (cooldown
@@ -79,10 +92,9 @@ jobs:
             `msrv-staleness-check.yml`), and `neovim` deliberately tracks the
             `stable` tag.
 
-            Note: PRs opened by the default GITHUB_TOKEN do not trigger other
-            workflows. To run CI on this PR, push an empty commit or close
-            and reopen it. Alternatively, set the action's `token:` input to
-            a PAT with workflow permissions.
+            Opened with the Wheatley App token so CI runs on it like any other
+            PR. Not auto-merged: that is reserved for Dependabot's PRs — review,
+            then squash-merge once `ci-gate` is green.
           branch: deps/mise-auto-upgrade
           delete-branch: true
           labels: |

@@ -81,3 +81,25 @@ steps:
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
+
+  # `list --modified` is its own filter (the settings and behaviors filters in
+  # commands/config/mod.rs), not the scope arm `list --global` exercises.
+  - name: list --modified shows a set value and names the layer that set it
+    run: |
+      set -e
+      daft config set daft.merge.style rebase
+      daft config list --modified
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "daft.merge.style"
+        - "local"
+
+  - name: list --modified --format json carries the same key
+    run: daft config list --modified --format json
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"daft.merge.style"'

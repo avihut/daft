@@ -4,9 +4,10 @@
 //! "deleted" means git or daft can evidence that the branch was on the remote
 //! and no longer is. A branch nothing attests to is left alone.
 
+use crate::core::worktree::forge_ref::ForgeBranchRef;
 use crate::core::worktree::provenance;
 use crate::core::{HookRunner, ProgressSink};
-use crate::git::GitCommand;
+use crate::git::{BranchTracking, GitCommand};
 use crate::hooks::{HookContext, HookType, RemovalReason};
 use crate::remote::get_default_branch_local;
 use crate::settings::PruneCdTarget;
@@ -19,8 +20,6 @@ use std::path::{Path, PathBuf};
 pub struct PruneParams {
     /// Force removal of worktrees with uncommitted changes.
     pub force: bool,
-    /// Whether to use gitoxide.
-    pub use_gitoxide: bool,
     /// Whether output is in quiet mode.
     pub is_quiet: bool,
     /// Remote name (from settings).
@@ -132,7 +131,7 @@ pub fn execute(
     params: &PruneParams,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> Result<PruneResult> {
-    let mut git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
+    let mut git = GitCommand::new(params.is_quiet);
     if let Some(cancel) = &params.cancel {
         git = git.with_cancel(std::sync::Arc::clone(cancel));
     }
@@ -140,8 +139,7 @@ pub fn execute(
     // Reclaim leftovers from a reaper that died (#200): a failed background
     // delete must be delayed, never permanent. Cheap when the trash is empty.
     crate::core::worktree::trash::sweep(&git_dir);
-    let default_branch =
-        get_default_branch_local(&git_dir, &params.remote_name, params.use_gitoxide).ok();
+    let default_branch = get_default_branch_local(&git_dir, &params.remote_name).ok();
     let ctx = PruneContext {
         git: &git,
         project_root: get_project_root()?,
@@ -501,11 +499,11 @@ pub fn handle_deferred_prune(
 ///
 /// Two arms, and nothing else is a candidate:
 ///
-/// 1. **Git's own evidence** — `git branch -vv` reports `: gone]`, which needs
-///    a configured upstream whose remote-tracking ref is missing. Only a branch
-///    that was published (or explicitly tracked) ever gets one. Cross-checked
-///    against `branch.<name>.remote`, because that report is read as a
-///    substring of a line that ends in the commit subject.
+/// 1. **Git's own evidence** — the upstream is gone (what `git branch -vv`
+///    renders as `: gone]`, read typed through [`GitCommand::branch_tracking`]):
+///    a configured upstream whose tracking ref is missing. Only a branch that
+///    was published (or explicitly tracked) ever gets one. Forge PR/MR
+///    checkouts ride along — see [`upstream_gone_candidates`].
 /// 2. **Daft's own record** — daft pushed the branch to this remote
 ///    ([`provenance`]) and the remote no longer has it.
 ///
@@ -532,10 +530,13 @@ pub fn handle_deferred_prune(
 /// **Refspec coverage:** reading `refs/remotes/<remote>/*` also means "still on
 /// the remote" is only as wide as `remote.<name>.fetch`. In a repository whose
 /// refspec is narrowed — a single-branch clone, a hand-edited refspec — a
-/// branch that is alive upstream has no tracking ref here, so both arms read it
-/// as gone. Arm 1 has always had this dependency (git computes `: gone]` the
-/// same way); arm 2 now shares it. The gone-but-unmerged guard downstream is
-/// what keeps the consequence to reclaiming merged work.
+/// branch that is alive upstream has no tracking ref here, so arm 2 reads it
+/// as absent from the remote. Arm 1 does not share that: its `gone` comes from
+/// git's own refspec mapping (#884), under which a branch the refspec does not
+/// cover has no tracking ref and is never gone — what `git branch -vv` reports
+/// too (no bracket at all). It was the pre-#884 `branch -vv` emulation, not
+/// git, that called those gone. The gone-but-unmerged guard downstream is what
+/// keeps arm 2's consequence to reclaiming merged work.
 pub fn identify_gone_branches(
     git: &GitCommand,
     worktree_map: &HashMap<String, (PathBuf, bool)>,
@@ -559,40 +560,19 @@ pub fn identify_gone_branches(
         None => name == "master" || name == "main",
     };
 
-    // What each branch actually tracks, straight out of config. Both arms
-    // below need it, and it is one subprocess for the whole repository.
-    let tracking = parse_tracking_config(&git.branch_tracking_entries()?);
+    // What each branch actually tracks, straight out of config, with git's
+    // own answer to whether the tracked ref is still here. One in-process read
+    // serves both arms below.
+    let tracking = git.branch_tracking()?;
 
-    // Method 1: git branch -vv to find branches with gone upstream.
-    //
-    // The `: gone]` test is a substring match over the whole line, and the
-    // line ends with the commit subject — so a subject like
-    // `fix: gone] handling` matches on a branch that has no upstream at all
-    // (verified against real git). Nothing in the rendering separates the two:
-    // `[%(upstream:short)]` and `%(subject)` are printed with no delimiter.
-    // Requiring tracking configuration is what makes the match trustworthy,
-    // and it excludes nothing real — git only prints the bracket when an
-    // upstream *is* configured, so every genuine `: gone]` line has an entry
-    // here. Without this a commit message could talk a never-published branch
-    // into prune's scope, which is #858's failure class arriving by another
-    // door.
-    let branch_output = git.branch_list_verbose()?;
-    for line in branch_output.lines() {
-        if line.contains(": gone]") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            let branch_name = match parts.first() {
-                Some(&"*") | Some(&"+") => parts.get(1).copied(),
-                _ => parts.first().copied(),
-            };
-            if let Some(name) = branch_name
-                && !name.is_empty()
-                && !is_default_branch(name)
-                && tracking.contains_key(name)
-            {
-                gone_branches.push(name.to_string());
-            }
-        }
-    }
+    // Method 1: the upstream is gone — what `git branch -vv` renders as
+    // `: gone]`, typed — plus forge PR/MR checkouts (see
+    // `upstream_gone_candidates`).
+    gone_branches.extend(
+        upstream_gone_candidates(&tracking)
+            .filter(|name| !is_default_branch(name))
+            .map(str::to_string),
+    );
 
     // Method 2: branches daft published to this remote that the remote no
     // longer has. The record is what separates them from branches that were
@@ -627,11 +607,9 @@ pub fn identify_gone_branches(
         &mut provenance,
         sink,
     );
-    let ref_output = git.for_each_ref("%(refname:short)", "refs/heads")?;
-
-    for line in ref_output.lines() {
-        let branch_name = line.trim();
-        if branch_name.is_empty() || is_default_branch(branch_name) {
+    for branch_name in git.local_branch_names()? {
+        let branch_name = branch_name.as_str();
+        if is_default_branch(branch_name) {
             continue;
         }
 
@@ -670,70 +648,36 @@ pub fn identify_gone_branches(
 ///
 /// Local by design: `git fetch --prune` has just reconciled these against the
 /// wire, so asking `ls-remote` again would be a second round trip per branch
-/// for an answer already on disk. (`refs/remotes/<remote>/HEAD` shortens to a
-/// bare `<remote>` on the CLI backend and `<remote>/HEAD` on gitoxide; neither
-/// survives the prefix strip as a real branch name.)
+/// for an answer already on disk.
 fn remote_branches_after_fetch(git: &GitCommand, remote_name: &str) -> Result<HashSet<String>> {
-    let refs = git.for_each_ref("%(refname:short)", &format!("refs/remotes/{remote_name}"))?;
-    Ok(parse_remote_branches(&refs, remote_name))
+    Ok(git.remote_branch_names(remote_name)?.into_iter().collect())
 }
 
-/// Strip `<remote>/` off each shortened ref, dropping the remote's HEAD.
-fn parse_remote_branches(refs: &str, remote_name: &str) -> HashSet<String> {
-    let prefix = format!("{remote_name}/");
-    refs.lines()
-        .filter_map(|line| line.trim().strip_prefix(&prefix))
-        .filter(|name| *name != "HEAD")
-        .map(str::to_string)
-        .collect()
-}
-
-/// What a branch's configuration says it tracks.
-struct TrackedUpstream {
-    /// `branch.<name>.remote` — a named remote, or a bare URL.
-    remote: String,
-    /// `branch.<name>.merge` exactly as configured: `refs/heads/<branch>` for
-    /// an ordinary tracking branch, but `refs/pull/<n>/head` and friends are
-    /// legal too, which is why this is kept raw rather than shortened here.
-    merge: String,
-}
-
-/// Parse `git config --get-regexp` output into one entry per branch that has a
-/// tracking remote configured.
+/// Method 1's candidates: branches whose tracked ref is gone, plus forge PR/MR
+/// checkouts.
 ///
-/// Keyed on `branch.<name>.remote`: a branch with a remote but no merge ref is
-/// still a branch someone pointed at a remote, and callers that need the
-/// upstream ref check `merge` themselves.
-///
-/// The branch name is recovered by stripping the known suffix rather than by
-/// splitting on dots — `branch.release.2.x.remote` is a branch called
-/// `release.2.x`, and a dot-splitting parser would file it under `release`.
-/// Same hazard, same handling as [`provenance::Provenance::parse`].
-fn parse_tracking_config(entries: &str) -> HashMap<String, TrackedUpstream> {
-    let mut remotes: HashMap<String, String> = HashMap::new();
-    let mut merges: HashMap<String, String> = HashMap::new();
+/// A forge checkout (`branch.<name>.merge = refs/pull/<n>/head`, see
+/// `forge_ref`) tracks a head ref that maps to no remote-tracking ref, so git
+/// never calls it gone — and a fork PR's head ref outlives the merge on the
+/// forge anyway. It is a candidate regardless: prune is how a merged PR checkout
+/// gets reclaimed, and the gone-but-unmerged guard asks the forge whether the
+/// PR merged before anything is deleted, skipping it while the PR is open.
+/// (Before #884 this fell out of the `branch -vv` emulation by accident — it
+/// hand-built `refs/remotes/<remote>/refs/pull/<n>/head`, found nothing, and
+/// said gone; now it is a rule.)
+fn upstream_gone_candidates(tracking: &[BranchTracking]) -> impl Iterator<Item = &str> {
+    tracking
+        .iter()
+        .filter(|t| t.gone() || tracks_forge_head(t))
+        .map(|t| t.branch.as_str())
+}
 
-    for line in entries.lines() {
-        let Some((key, value)) = line.trim_end().split_once(' ') else {
-            continue;
-        };
-        let Some(rest) = key.strip_prefix("branch.") else {
-            continue;
-        };
-        if let Some(branch) = rest.strip_suffix(".remote") {
-            remotes.insert(branch.to_string(), value.trim().to_string());
-        } else if let Some(branch) = rest.strip_suffix(".merge") {
-            merges.insert(branch.to_string(), value.trim().to_string());
-        }
-    }
-
-    remotes
-        .into_iter()
-        .map(|(branch, remote)| {
-            let merge = merges.remove(&branch).unwrap_or_default();
-            (branch, TrackedUpstream { remote, merge })
-        })
-        .collect()
+/// Whether a branch's upstream is a forge PR/MR head ref.
+fn tracks_forge_head(tracking: &BranchTracking) -> bool {
+    tracking
+        .merge
+        .as_deref()
+        .is_some_and(|merge| ForgeBranchRef::parse_merge_ref(merge).is_some())
 }
 
 /// Branches whose configuration says they track `<remote>/<same name>`, and
@@ -753,18 +697,18 @@ fn parse_tracking_config(entries: &str) -> HashMap<String, TrackedUpstream> {
 ///
 /// Sorted so the records are written, and reported, in a stable order.
 fn observed_on_remote<'a>(
-    tracking: &'a HashMap<String, TrackedUpstream>,
+    tracking: &'a [BranchTracking],
     remote_name: &str,
     remaining: &HashSet<String>,
 ) -> Vec<&'a str> {
     let mut observed: Vec<&str> = tracking
         .iter()
-        .filter(|(name, upstream)| {
-            upstream.remote == remote_name
-                && upstream.merge == format!("refs/heads/{name}")
-                && remaining.contains(name.as_str())
+        .filter(|t| {
+            t.remote == remote_name
+                && t.merge.as_deref() == Some(format!("refs/heads/{}", t.branch).as_str())
+                && remaining.contains(&t.branch)
         })
-        .map(|(name, _)| name.as_str())
+        .map(|t| t.branch.as_str())
         .collect();
     observed.sort_unstable();
     observed
@@ -785,7 +729,7 @@ fn observed_on_remote<'a>(
 /// rewrite config for every tracking branch it has.
 fn backfill_observed_publications(
     git: &GitCommand,
-    tracking: &HashMap<String, TrackedUpstream>,
+    tracking: &[BranchTracking],
     remote_name: &str,
     remaining: &HashSet<String>,
     provenance: &mut provenance::Provenance,
@@ -851,7 +795,7 @@ fn process_main_worktree_branch(
     let mut wt_removed = false;
 
     if is_current {
-        match get_default_branch_local(&ctx.git_dir, &ctx.remote_name, params.use_gitoxide) {
+        match get_default_branch_local(&ctx.git_dir, &ctx.remote_name) {
             Ok(default_branch) => {
                 sink.on_step(&format!("Checking out default branch {default_branch}..."));
                 if let Err(e) = ctx.git.checkout(&default_branch) {
@@ -1048,7 +992,6 @@ fn process_deferred_branch(
         &ctx.project_root,
         &ctx.git_dir,
         &ctx.remote_name,
-        params.use_gitoxide,
         sink,
     );
 
@@ -1469,33 +1412,30 @@ fn resolve_prune_cd_target(
     project_root: &Path,
     git_dir: &Path,
     remote_name: &str,
-    use_gitoxide: bool,
     sink: &mut dyn ProgressSink,
 ) -> PathBuf {
     match cd_target {
         PruneCdTarget::Root => project_root.to_path_buf(),
-        PruneCdTarget::DefaultBranch => {
-            match get_default_branch_local(git_dir, remote_name, use_gitoxide) {
-                Ok(default_branch) => {
-                    let branch_dir = project_root.join(&default_branch);
-                    if branch_dir.is_dir() {
-                        branch_dir
-                    } else {
-                        sink.on_step(&format!(
+        PruneCdTarget::DefaultBranch => match get_default_branch_local(git_dir, remote_name) {
+            Ok(default_branch) => {
+                let branch_dir = project_root.join(&default_branch);
+                if branch_dir.is_dir() {
+                    branch_dir
+                } else {
+                    sink.on_step(&format!(
                             "Default branch worktree directory '{}' not found, falling back to project root",
                             branch_dir.display()
                         ));
-                        project_root.to_path_buf()
-                    }
-                }
-                Err(e) => {
-                    sink.on_warning(&format!(
-                        "Cannot determine default branch for cd target: {e}. Falling back to project root."
-                    ));
                     project_root.to_path_buf()
                 }
             }
-        }
+            Err(e) => {
+                sink.on_warning(&format!(
+                        "Cannot determine default branch for cd target: {e}. Falling back to project root."
+                    ));
+                project_root.to_path_buf()
+            }
+        },
     }
 }
 
@@ -1529,28 +1469,66 @@ fn cleanup_empty_parent_dirs(
 
 #[cfg(test)]
 mod remote_branch_tests {
-    use super::{observed_on_remote, parse_tracking_config};
+    use super::{observed_on_remote, upstream_gone_candidates};
+    use crate::git::{BranchTracking, UpstreamRef};
     use std::collections::HashSet;
+
+    fn tracked(branch: &str, remote: &str, merge: Option<&str>) -> BranchTracking {
+        BranchTracking {
+            branch: branch.to_string(),
+            remote: remote.to_string(),
+            merge: merge.map(str::to_string),
+            upstream: UpstreamRef::Unmapped,
+        }
+    }
+
+    fn gone(branch: &str, remote: &str) -> BranchTracking {
+        BranchTracking {
+            upstream: UpstreamRef::Gone(format!("refs/remotes/{remote}/{branch}")),
+            ..tracked(branch, remote, Some(&format!("refs/heads/{branch}")))
+        }
+    }
+
+    // ── Method 1 candidates ────────────────────────────────────────────
+
+    /// `gone` is git's own verdict and is taken as is; a forge PR/MR checkout
+    /// is a candidate even though git never calls its head-ref upstream gone;
+    /// an ordinary live upstream and a remote-only configuration are not.
+    #[test]
+    fn gone_upstreams_and_forge_checkouts_are_candidates() {
+        let tracking = vec![
+            gone("feat/gone", "origin"),
+            tracked("feat/live", "origin", Some("refs/heads/feat/live")),
+            tracked("pr-7", "origin", Some("refs/pull/7/head")),
+            tracked("mr-45", "origin", Some("refs/merge-requests/45/head")),
+            tracked("half", "origin", None),
+            // Tracks a local branch that is still there: git shows `[main]`.
+            BranchTracking {
+                upstream: UpstreamRef::Present("refs/heads/main".into()),
+                ..tracked("local", ".", Some("refs/heads/main"))
+            },
+        ];
+
+        let candidates: Vec<&str> = upstream_gone_candidates(&tracking).collect();
+
+        assert_eq!(candidates, vec!["feat/gone", "pr-7", "mr-45"]);
+    }
 
     // ── Backfill selection (#858) ───────────────────────────────────────
 
-    /// `git config --local --get-regexp` output for a repo with one branch of
-    /// each interesting shape.
-    const TRACKING: &str = concat!(
-        "branch.feat/x.remote origin\n",
-        "branch.feat/x.merge refs/heads/feat/x\n",
-        "branch.main.remote origin\n",
-        "branch.main.merge refs/heads/main\n",
-        // Upstream set to a *different* name: `git branch --set-upstream-to`.
-        "branch.aliased.remote origin\n",
-        "branch.aliased.merge refs/heads/main\n",
-        // A second remote.
-        "branch.forked.remote upstream\n",
-        "branch.forked.merge refs/heads/forked\n",
-        // Tracked, but the remote branch is gone.
-        "branch.feat/gone.remote origin\n",
-        "branch.feat/gone.merge refs/heads/feat/gone\n",
-    );
+    /// One branch of each interesting shape.
+    fn fixture() -> Vec<BranchTracking> {
+        vec![
+            tracked("feat/x", "origin", Some("refs/heads/feat/x")),
+            tracked("main", "origin", Some("refs/heads/main")),
+            // Upstream set to a *different* name: `git branch --set-upstream-to`.
+            tracked("aliased", "origin", Some("refs/heads/main")),
+            // A second remote.
+            tracked("forked", "upstream", Some("refs/heads/forked")),
+            // Tracked, but the remote branch is gone.
+            gone("feat/gone", "origin"),
+        ]
+    }
 
     fn remaining(names: &[&str]) -> HashSet<String> {
         names.iter().map(|n| (*n).to_string()).collect()
@@ -1558,7 +1536,7 @@ mod remote_branch_tests {
 
     #[test]
     fn only_same_name_tracking_with_a_live_ref_is_observed() {
-        let tracking = parse_tracking_config(TRACKING);
+        let tracking = fixture();
         let present = remaining(&["feat/x", "main", "forked"]);
 
         let observed = observed_on_remote(&tracking, "origin", &present);
@@ -1566,7 +1544,8 @@ mod remote_branch_tests {
         assert_eq!(observed, vec!["feat/x", "main"]);
         assert!(
             !observed.contains(&"aliased"),
-            "tracking origin/main says nothing about a remote branch named `aliased` -              which is the question prune asks later"
+            "tracking origin/main says nothing about a remote branch named `aliased` - \
+             which is the question prune asks later"
         );
         assert!(
             !observed.contains(&"forked"),
@@ -1580,7 +1559,7 @@ mod remote_branch_tests {
 
     #[test]
     fn another_remote_is_observed_when_it_is_the_one_being_pruned() {
-        let tracking = parse_tracking_config(TRACKING);
+        let tracking = fixture();
 
         let observed = observed_on_remote(&tracking, "upstream", &remaining(&["forked"]));
 
@@ -1591,8 +1570,7 @@ mod remote_branch_tests {
     fn a_branch_named_gone_is_still_observed() {
         // Nothing here parses a status word, so a branch may be called
         // anything at all.
-        let tracking =
-            parse_tracking_config("branch.gone.remote origin\nbranch.gone.merge refs/heads/gone\n");
+        let tracking = vec![tracked("gone", "origin", Some("refs/heads/gone"))];
 
         let observed = observed_on_remote(&tracking, "origin", &remaining(&["gone"]));
 
@@ -1604,15 +1582,14 @@ mod remote_branch_tests {
     /// The predecessor read `git branch -vv`, where `[%(upstream:short)]` and
     /// `%(subject)` are printed with no delimiter — a branch with no upstream
     /// whose subject began `[origin/<its own name>]` was byte-identical to one
-    /// that really tracked it, and got stamped as published. Config is the
-    /// authoritative statement instead, and a subject has no way into it.
+    /// that really tracked it, and got stamped as published. Tracking is read
+    /// typed from config and refs now, and a subject has no way into it.
     /// End-to-end coverage lives in
     /// `tests/manual/scenarios/prune/ignores-tracking-lookalike-subject.yml`,
     /// which is the only place the whole path is observable.
     #[test]
     fn a_branch_with_no_tracking_config_is_never_observed() {
-        let tracking = parse_tracking_config("");
-        assert!(tracking.is_empty());
+        let tracking: Vec<BranchTracking> = Vec::new();
 
         let observed = observed_on_remote(&tracking, "origin", &remaining(&["feat/x"]));
 
@@ -1623,26 +1600,11 @@ mod remote_branch_tests {
     }
 
     #[test]
-    fn a_dotted_branch_name_survives_the_key_split() {
-        // `branch.release.2.x.remote` is a branch called `release.2.x`; a
-        // dot-splitting parser files it under `release` and the record lands
-        // on the wrong branch.
-        let tracking = parse_tracking_config(
-            "branch.release.2.x.remote origin\nbranch.release.2.x.merge refs/heads/release.2.x\n",
-        );
-
-        let observed = observed_on_remote(&tracking, "origin", &remaining(&["release.2.x"]));
-
-        assert_eq!(observed, vec!["release.2.x"]);
-    }
-
-    #[test]
     fn a_remote_without_a_merge_ref_is_tracked_but_never_observed() {
-        // Method 1 gates on presence here, so a half-configured branch must
-        // still appear; the backfill needs the merge ref and must not.
-        let tracking = parse_tracking_config("branch.half.remote origin\n");
+        // Method 1 sees the entry (git's `gone` decides there); the backfill
+        // needs the merge ref and must not.
+        let tracking = vec![tracked("half", "origin", None)];
 
-        assert!(tracking.contains_key("half"));
         assert!(
             observed_on_remote(&tracking, "origin", &remaining(&["half"])).is_empty(),
             "no upstream ref configured means nothing states what it tracks"
@@ -1650,48 +1612,13 @@ mod remote_branch_tests {
     }
 
     #[test]
-    fn a_pull_request_upstream_is_tracked_but_never_observed() {
+    fn a_pull_request_upstream_is_never_observed() {
         // `branch.pr-7.merge = refs/pull/7/head` is a real shape (forge PR
-        // checkout). It must keep gating Method 1 - git will report `: gone]`
-        // for it - while staying out of the backfill, which is about branches.
-        let tracking = parse_tracking_config(
-            "branch.pr-7.remote origin\nbranch.pr-7.merge refs/pull/7/head\n",
-        );
+        // checkout). It is Method 1's business (a forge candidate) and stays
+        // out of the backfill, which is about branches.
+        let tracking = vec![tracked("pr-7", "origin", Some("refs/pull/7/head"))];
 
-        assert!(tracking.contains_key("pr-7"));
         assert!(observed_on_remote(&tracking, "origin", &remaining(&["pr-7"])).is_empty());
-    }
-
-    use super::parse_remote_branches;
-
-    #[test]
-    fn strips_the_remote_prefix_and_drops_head() {
-        // The CLI backend shortens `refs/remotes/origin/HEAD` to a bare
-        // `origin`; gitoxide shortens it to `origin/HEAD`. Neither may survive
-        // as a branch name, or a branch would be matched against the remote's
-        // symbolic HEAD instead of itself.
-        let refs = "origin\norigin/HEAD\norigin/master\norigin/feat/x\n";
-
-        let branches = parse_remote_branches(refs, "origin");
-
-        assert!(branches.contains("master"));
-        assert!(
-            branches.contains("feat/x"),
-            "slashes must survive the strip"
-        );
-        assert!(!branches.contains("HEAD"));
-        assert!(!branches.contains("origin"));
-        assert_eq!(branches.len(), 2);
-    }
-
-    #[test]
-    fn another_remotes_refs_do_not_leak_in() {
-        let refs = "upstream/master\norigin/master\n";
-
-        let branches = parse_remote_branches(refs, "origin");
-
-        assert_eq!(branches.len(), 1);
-        assert!(branches.contains("master"));
     }
 }
 

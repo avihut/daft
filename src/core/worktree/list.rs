@@ -240,7 +240,7 @@ impl WorktreeInfo {
     /// last-commit) from the working tree on disk.  Static fields (kind, name,
     /// path, is_current, is_default_branch, branch_creation_timestamp) are
     /// left untouched.
-    pub fn refresh_dynamic_fields(&mut self, base_branch: &str, stat: Stat, git: &GitCommand) {
+    pub fn refresh_dynamic_fields(&mut self, base_branch: &str, stat: Stat) {
         let Some(path) = self.path.as_deref() else {
             return;
         };
@@ -265,7 +265,7 @@ impl WorktreeInfo {
         self.remote_behind = rab.map(|(_, b)| b);
 
         // Last commit
-        let (ts, hash, subj) = get_commit_metadata(path, git);
+        let (ts, hash, subj) = get_commit_metadata(path);
         self.last_commit_timestamp = ts;
         self.last_commit_hash = hash;
         self.last_commit_subject = subj;
@@ -419,114 +419,43 @@ pub(crate) fn get_ahead_behind(
     }
 }
 
-/// Dispatch commit metadata retrieval for a worktree HEAD, using gitoxide when
-/// enabled with a fallback to the git subprocess.
-pub(crate) fn get_commit_metadata(
-    worktree_path: &Path,
+/// Last commit (`timestamp, abbreviated hash, subject`) at a worktree's HEAD.
+///
+/// An unreadable repository or an unborn HEAD answers the empty triple the
+/// renderers already treat as "no commit" — there is deliberately no
+/// `git log` fallback behind the gix read (#883): the two read the same
+/// object, so a second arm could only hide a gix failure worth seeing.
+pub(crate) fn get_commit_metadata(worktree_path: &Path) -> (Option<i64>, Option<String>, String) {
+    match crate::git::oxide::get_commit_metadata_for_head(worktree_path) {
+        Ok((ts, hash, subj)) => (Some(ts), Some(hash), subj),
+        Err(_) => (None, None, String::new()),
+    }
+}
+
+/// Last commit (`timestamp, abbreviated hash, subject`) at a fully qualified
+/// ref — `refs/heads/<branch>` or `refs/remotes/<remote>/<branch>`. A missing
+/// ref answers the empty triple like [`get_commit_metadata`].
+///
+/// Callers spell the namespace because a short name cannot: `feature/x` is a
+/// local branch exactly as often as `origin/x` is a remote one. This used to
+/// guess from the presence of a `/`, sending every slash-named local branch
+/// to `refs/remotes/` — a miss the since-deleted `git log` fallback silently
+/// repaired, which is how the wrong guess survived until #883 removed the
+/// fallback and the Commit column went blank for those branches.
+fn get_commit_metadata_for_ref(
+    full_ref: &str,
     git: &GitCommand,
 ) -> (Option<i64>, Option<String>, String) {
-    if git.use_gitoxide
-        && let Ok((ts, hash, subj)) = crate::git::oxide::get_commit_metadata_for_head(worktree_path)
-    {
-        return (Some(ts), Some(hash), subj);
-    }
-    get_last_commit_info(worktree_path)
-}
-
-/// Dispatch commit metadata retrieval for a named ref, using gitoxide when
-/// enabled with a fallback to the git subprocess.
-fn get_commit_metadata_for_ref_dispatched(
-    branch_ref: &str,
-    cwd: &Path,
-    git: &GitCommand,
-) -> (Option<i64>, Option<String>, String) {
-    if git.use_gitoxide
-        && let Ok(repo) = git.gix_repo()
-    {
-        let full_ref = if branch_ref.starts_with("refs/") {
-            branch_ref.to_string()
-        } else if branch_ref.contains('/') {
-            // Remote branch like "origin/feature-x"
-            format!("refs/remotes/{branch_ref}")
-        } else {
-            format!("refs/heads/{branch_ref}")
-        };
-        if let Ok((ts, hash, subj)) =
-            crate::git::oxide::get_commit_metadata_for_ref(&repo, &full_ref)
-        {
-            return (Some(ts), Some(hash), subj);
-        }
-    }
-    get_last_commit_info_for_ref(branch_ref, cwd)
-}
-
-/// Get the last commit's Unix timestamp, abbreviated hash, and subject for a worktree.
-///
-/// Returns `(timestamp, hash, subject)` where timestamp is seconds since epoch.
-fn get_last_commit_info(worktree_path: &Path) -> (Option<i64>, Option<String>, String) {
-    let output = Command::new("git")
-        .args(["log", "-1", "--format=%ct\x1f%h\x1f%s"])
-        .current_dir(worktree_path)
-        .output();
-
-    match output {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let trimmed = stdout.trim();
-            let mut parts = trimmed.splitn(3, '\x1f');
-            let ts_str = parts.next().unwrap_or("");
-            let hash_str = parts.next().unwrap_or("");
-            let subject = parts.next().unwrap_or("");
-            if ts_str.is_empty() {
-                (None, None, String::new())
-            } else {
-                let timestamp = ts_str.parse::<i64>().ok();
-                let hash = if hash_str.is_empty() {
-                    None
-                } else {
-                    Some(hash_str.to_string())
-                };
-                (timestamp, hash, subject.to_string())
-            }
-        }
-        _ => (None, None, String::new()),
-    }
-}
-
-/// Get the last commit's Unix timestamp, abbreviated hash, and subject for a specific branch ref.
-///
-/// Unlike `get_last_commit_info`, this targets a named ref rather than HEAD,
-/// so it can be called from any directory in the repository.
-fn get_last_commit_info_for_ref(
-    branch_ref: &str,
-    cwd: &Path,
-) -> (Option<i64>, Option<String>, String) {
-    let output = Command::new("git")
-        .args(["log", "-1", "--format=%ct\x1f%h\x1f%s", branch_ref])
-        .current_dir(cwd)
-        .output();
-
-    match output {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let trimmed = stdout.trim();
-            let mut parts = trimmed.splitn(3, '\x1f');
-            let ts_str = parts.next().unwrap_or("");
-            let hash_str = parts.next().unwrap_or("");
-            let subject = parts.next().unwrap_or("");
-            if ts_str.is_empty() {
-                (None, None, String::new())
-            } else {
-                let timestamp = ts_str.parse::<i64>().ok();
-                let hash = if hash_str.is_empty() {
-                    None
-                } else {
-                    Some(hash_str.to_string())
-                };
-                (timestamp, hash, subject.to_string())
-            }
-        }
-        _ => (None, None, String::new()),
+    debug_assert!(
+        full_ref.starts_with("refs/"),
+        "get_commit_metadata_for_ref wants a fully qualified ref, got {full_ref:?}"
+    );
+    let Ok(repo) = git.gix_repo() else {
+        return (None, None, String::new());
+    };
+    match crate::git::oxide::get_commit_metadata_for_ref(&repo, full_ref) {
+        Ok((ts, hash, subj)) => (Some(ts), Some(hash), subj),
+        Err(_) => (None, None, String::new()),
     }
 }
 
@@ -912,7 +841,7 @@ pub fn collect_worktree_info(
 
         // Last commit info
         let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
-            get_commit_metadata(&entry.path, git);
+            get_commit_metadata(&entry.path);
 
         let owner = branch.as_deref().and_then(|b| {
             ownership::resolve_owner_with_fallbacks(
@@ -1061,13 +990,12 @@ pub fn collect_branch_info(
 
     // Collect local branches without worktrees
     if include_local {
-        let output = git
-            .for_each_ref("%(refname:short)", "refs/heads/")
-            .context("Failed to list local branches")?;
-
-        for branch in output.lines() {
-            let branch = branch.trim();
-            if branch.is_empty() || worktree_branches.contains(branch) {
+        for branch in git
+            .local_branch_names()
+            .context("Failed to list local branches")?
+        {
+            let branch = branch.as_str();
+            if worktree_branches.contains(branch) {
                 continue;
             }
             if let Some(only) = only_local
@@ -1088,7 +1016,7 @@ pub fn collect_branch_info(
             };
 
             let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
-                get_commit_metadata_for_ref_dispatched(branch, cwd, git);
+                get_commit_metadata_for_ref(&format!("refs/heads/{branch}"), git);
 
             let owner = ownership::resolve_owner_with_fallbacks(
                 base_branch,
@@ -1163,29 +1091,17 @@ pub fn collect_branch_info(
 
     // Collect remote branches without local branches or worktrees
     if include_remote {
-        let output = git
-            .for_each_ref("%(refname:short)", "refs/remotes/origin/")
-            .context("Failed to list remote branches")?;
-
-        for remote_branch in output.lines() {
-            let remote_branch = remote_branch.trim();
-            // %(refname:short) renders origin/HEAD as just "origin"
-            if remote_branch.is_empty()
-                || remote_branch == "origin/HEAD"
-                || remote_branch == "origin"
-            {
-                continue;
-            }
-
-            // Strip origin/ prefix for deduplication check
-            let short_name = remote_branch
-                .strip_prefix("origin/")
-                .unwrap_or(remote_branch);
-
+        for short_name in git
+            .remote_branch_names("origin")
+            .context("Failed to list remote branches")?
+        {
+            let short_name = short_name.as_str();
             // Skip if already represented by a worktree or local branch
             if worktree_branches.contains(short_name) || local_branch_names.contains(short_name) {
                 continue;
             }
+            // Rows name the remote branch the way git does: `origin/<branch>`.
+            let remote_branch = &format!("origin/{short_name}");
 
             let (ahead, behind) = match get_ahead_behind(base_branch, remote_branch, cwd) {
                 Some((a, b)) => (Some(a), Some(b)),
@@ -1193,7 +1109,7 @@ pub fn collect_branch_info(
             };
 
             let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
-                get_commit_metadata_for_ref_dispatched(remote_branch, cwd, git);
+                get_commit_metadata_for_ref(&format!("refs/remotes/{remote_branch}"), git);
 
             let owner = ownership::resolve_owner(
                 base_branch,
@@ -1387,6 +1303,120 @@ mod tests {
         assert_eq!(counts.conflicted, 1);
         assert_eq!(counts.staged, 0, "a conflict is not a staged change");
         assert_eq!(counts.unstaged, 0, "nor an unstaged one");
+    }
+}
+
+#[cfg(test)]
+mod commit_metadata_tests {
+    use super::*;
+    use crate::test_support::CwdGuard;
+    use serial_test::serial;
+
+    fn git(path: &Path, args: &[&str]) {
+        let out = crate::utils::git_command_at(path)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A worktree-less local branch whose name contains a `/` is looked up
+    /// under `refs/heads/`, not guessed into `refs/remotes/` — and a real
+    /// remote-tracking branch still lands under `refs/remotes/`. The
+    /// `GitCommand` discovers from the process cwd, hence serial + guard.
+    #[test]
+    #[serial]
+    fn slash_named_local_branch_keeps_its_last_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        std::fs::write(path.join("f.txt"), "base\n").unwrap();
+        git(path, &["add", "f.txt"]);
+        git(path, &["commit", "-qm", "base commit"]);
+        git(path, &["branch", "feature/login"]);
+        // A remote-tracking ref with a nested name, so the remote spelling is
+        // pinned by the same test: refs/remotes/origin/team/x.
+        git(path, &["update-ref", "refs/remotes/origin/team/x", "HEAD"]);
+
+        let _cwd = CwdGuard::enter(path);
+        let cmd = GitCommand::new(true);
+
+        let (ts, hash, subject) = get_commit_metadata_for_ref("refs/heads/feature/login", &cmd);
+        assert!(
+            ts.is_some(),
+            "slash-named local branch must resolve under refs/heads/"
+        );
+        assert!(hash.is_some());
+        assert_eq!(subject, "base commit");
+
+        let (ts, _, subject) = get_commit_metadata_for_ref("refs/remotes/origin/team/x", &cmd);
+        assert!(
+            ts.is_some(),
+            "remote-tracking ref must resolve under refs/remotes/"
+        );
+        assert_eq!(subject, "base commit");
+
+        // The wrong namespace answers the empty triple rather than guessing.
+        let (ts, hash, subject) = get_commit_metadata_for_ref("refs/remotes/feature/login", &cmd);
+        assert_eq!((ts, hash, subject.as_str()), (None, None, ""));
+    }
+
+    /// The same property through the caller that used to get the spelling
+    /// wrong: `daft list -b` rows for a slash-named local branch and a nested
+    /// remote-tracking branch both carry their last commit.
+    #[test]
+    #[serial]
+    fn branch_rows_carry_last_commit_for_nested_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        std::fs::write(path.join("f.txt"), "base\n").unwrap();
+        git(path, &["add", "f.txt"]);
+        git(path, &["commit", "-qm", "base commit"]);
+        git(path, &["branch", "feature/login"]);
+        git(path, &["update-ref", "refs/remotes/origin/team/x", "HEAD"]);
+
+        let _cwd = CwdGuard::enter(path);
+        let cmd = GitCommand::new(true);
+        let worktree_branches: HashSet<String> = ["main".to_string()].into_iter().collect();
+        let infos = collect_branch_info(
+            &cmd,
+            "main",
+            Stat::Summary,
+            true,
+            true,
+            &worktree_branches,
+            None,
+            path,
+            OwnershipStrategy::Tip,
+            None,
+            "origin",
+        )
+        .unwrap();
+
+        let subject_of = |branch: &str| {
+            infos
+                .iter()
+                .find(|i| i.name == branch)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no row for {branch}: {:?}",
+                        infos.iter().map(|i| &i.name).collect::<Vec<_>>()
+                    )
+                })
+                .last_commit_subject
+                .clone()
+        };
+        assert_eq!(subject_of("feature/login"), "base commit");
+        assert_eq!(subject_of("origin/team/x"), "base commit");
     }
 }
 

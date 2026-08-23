@@ -98,8 +98,8 @@ cleanup() {
 # check, git-worktree-clone registers its temp repos into the developer's real
 # repo catalog (the #738 leak). Mirrors the built-in preflight in
 # test_completions.sh and assert_binary_honors_overrides in the mise state-guard
-# lib; the framework needs its own copy because test:integration:{verbose,matrix}
-# and direct ./test_all.sh runs invoke it outside `with_state_guard`.
+# lib; the framework needs its own copy because direct ./test_all.sh and
+# ./test_<name>.sh runs invoke it outside `with_state_guard`.
 #
 # Checked per key, not as one substring match over the whole output: a build
 # that honored DAFT_CONFIG_DIR but resolved data/state to the real dirs would
@@ -167,9 +167,10 @@ setup() {
     export GIT_COMMITTER_NAME="Test User"
     export GIT_COMMITTER_EMAIL="test@example.com"
 
-    # Isolate tests from user's global git config to prevent settings
-    # like daft.gitoxide from leaking into tests.
-    # When invoked via xtask test-matrix, GIT_CONFIG_GLOBAL is already set.
+    # Isolate tests from the user's global git config so their daft settings
+    # never leak into tests. The suite owns this: neither CI's
+    # `integration-tests` job nor `mise run test:integration` sets it; a
+    # caller that does (to pin a setting for the whole run) wins.
     if [[ -z "${GIT_CONFIG_GLOBAL:-}" ]]; then
         DAFT_TEST_GLOBAL_CONFIG="$TEMP_BASE_DIR/.gitconfig-test"
         touch "$DAFT_TEST_GLOBAL_CONFIG"
@@ -181,11 +182,11 @@ setup() {
     # it out entirely (#667).
     export GIT_CONFIG_NOSYSTEM=1
 
-    # Mirror the matrix/CI env (xtask test-matrix and test.yml both set this
-    # for test_all.sh): suppresses the update-check/trust-prune/log-clean
-    # daemons every daft invocation would otherwise spawn — they orphan under
-    # PID 1 across the suite, and the update check hits the network (#667).
-    # Direct `./test_<name>.sh` runs get the same env as matrix runs.
+    # Suppress the update-check/trust-prune/log-clean daemons every daft
+    # invocation would otherwise spawn — they orphan under PID 1 across the
+    # suite, and the update check hits the network (#667). Set here rather
+    # than by CI or the mise task so a direct `./test_<name>.sh` run gets the
+    # same env as `test_all.sh` under `mise run test:integration`.
     export DAFT_TESTING=1
 
     # Isolate daft config to prevent global config leakage
@@ -204,9 +205,9 @@ setup() {
     # catalog.db) so integration runs never read or pollute the developer's
     # real ~/.local/share/daft. Without this, init/clone register their temp
     # repos into the real catalog and accumulate across runs — e.g. a second
-    # `quiet-repo` gets a `-N` suffix notice, which under the gitoxide backend
-    # tips init_quiet past its output budget. The YAML runner already isolates
-    # this per sandbox (xtask/src/manual_test/daft_executor.rs); mirror it here.
+    # `quiet-repo` gets a `-N` suffix notice, which tips init_quiet past its
+    # output budget. The YAML runner already isolates this per sandbox
+    # (xtask/src/manual_test/daft_executor.rs); mirror it here.
     export DAFT_DATA_DIR="$TEMP_BASE_DIR/ddata"
     mkdir -p "$DAFT_DATA_DIR"
 
@@ -220,8 +221,8 @@ setup() {
     # Fail closed if the binary under test ignores the DAFT_*_DIR overrides just
     # exported — otherwise clone/init would leak temp repos into the real
     # catalog (#738). Belt to the `with_state_guard` suspenders: this fires even
-    # on the unguarded launch paths (test:integration:{verbose,matrix}, a direct
-    # ./test_all.sh) that never see the mise-level guard.
+    # on the unguarded launch paths (a direct ./test_all.sh or ./test_<name>.sh)
+    # that never see the mise-level guard.
     assert_binary_honors_overrides "$RUST_BINARY_DIR/daft" "$TEMP_BASE_DIR" || exit 1
 
     # Verify all binaries are available

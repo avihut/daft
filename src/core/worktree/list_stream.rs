@@ -37,11 +37,6 @@ pub struct CollectorTarget {
 }
 
 pub struct CollectorContext {
-    /// Whether worker threads should construct their `GitCommand` with
-    /// gitoxide enabled. `GitCommand` itself is not `Sync` (it holds a
-    /// `OnceLock<gix::ThreadSafeRepository>` whose internals contain
-    /// non-thread-safe `Rc`s), so each worker constructs its own.
-    pub use_gitoxide: bool,
     pub base_branch: String,
     pub remote_name: String,
     pub ownership_strategy: OwnershipStrategy,
@@ -240,12 +235,6 @@ fn run_worker(
         get_remote_line_counts, get_upstream_ahead_behind, max_mtime_of_files,
     };
     use crate::core::worktree::sync_dag::WorktreeInfoPatch as P;
-    use crate::git::GitCommand;
-
-    // Workers construct their own GitCommand: gix::ThreadSafeRepository is
-    // !Sync, so wrapping GitCommand in Arc<CollectorContext> would block the
-    // closure's Send bound. ctx.use_gitoxide carries the choice through.
-    let git = GitCommand::new(true).with_gitoxide(ctx.use_gitoxide);
 
     macro_rules! emit {
         ($patch:expr) => {{
@@ -314,9 +303,9 @@ fn run_worker(
             Some(h) => crate::core::worktree::cell_cache::cached_last_commit(
                 &ctx.git_common_dir,
                 &h,
-                || get_commit_metadata(p, &git),
+                || get_commit_metadata(p),
             ),
-            None => get_commit_metadata(p, &git),
+            None => get_commit_metadata(p),
         };
         emit!(P::LastCommit {
             timestamp,
@@ -450,7 +439,6 @@ mod tests {
     fn empty_request_emits_only_completion_sentinel() {
         let (tx, rx) = mpsc::channel();
         let ctx = Arc::new(CollectorContext {
-            use_gitoxide: false,
             base_branch: "master".into(),
             remote_name: "origin".into(),
             ownership_strategy: OwnershipStrategy::RecencyPlurality,
@@ -480,7 +468,6 @@ mod tests {
     fn flag_probe_handle() -> (CollectorHandle, mpsc::Receiver<DagEvent>) {
         let (tx, rx) = mpsc::channel();
         let ctx = Arc::new(CollectorContext {
-            use_gitoxide: false,
             base_branch: "master".into(),
             remote_name: "origin".into(),
             ownership_strategy: OwnershipStrategy::RecencyPlurality,
@@ -531,7 +518,6 @@ mod tests {
     fn post_fetch_run_does_not_emit_completion_sentinel() {
         let (tx, rx) = mpsc::channel();
         let ctx = Arc::new(CollectorContext {
-            use_gitoxide: false,
             base_branch: "master".into(),
             remote_name: "origin".into(),
             ownership_strategy: OwnershipStrategy::RecencyPlurality,
@@ -618,7 +604,6 @@ mod fixture_tests {
         let dir = init_temp_repo();
         let (tx, rx) = mpsc::channel();
         let ctx = Arc::new(CollectorContext {
-            use_gitoxide: false,
             base_branch: "master".into(),
             remote_name: "origin".into(),
             ownership_strategy: OwnershipStrategy::RecencyPlurality,

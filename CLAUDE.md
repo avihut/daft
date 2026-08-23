@@ -30,6 +30,25 @@ IMPORTANT: These rules must NEVER be violated:
    When picking dependencies, prefer those with a fully safe public API — SQLite
    via `rusqlite` was chosen over LMDB via `heed` partly because
    `heed::Env::open` is `unsafe fn`.
+5. **Don't weaken the merge gate or the Dependabot auto-merge path** — what lets
+   a Dependabot PR land unattended is that nothing can merge to `master` until
+   `ci-gate` (`.github/workflows/test.yml`) is green on an up-to-date branch;
+   the `master` ruleset (`.github/rulesets/master.json`) requires only that one
+   check, and `ci-gate` must `need:` every other job and run on `if: always()`
+   (a skipped required check is a passing one — `cargo test --package xtask`
+   enforces both). `test.yml` must never regain a workflow-level `paths:`
+   filter: a run that never starts leaves `ci-gate` "Expected" forever.
+   `.github/workflows/dependabot-auto-merge.yml` stays on `pull_request` (never
+   `pull_request_target`), gates on
+   `pull_request.user.login == 'dependabot[bot]'` **and**
+   `github.actor == 'dependabot[bot]'`, keeps `dependabot/fetch-metadata`'s
+   commit verification on, auto-merges only `semver-patch`/`semver-minor`, and
+   refuses to arm auto-merge unless `ci-gate` is a required check on the target
+   branch (fail closed). Every `uses:` in every workflow is pinned to a full
+   commit SHA (`scripts/check-actions-pinned.sh`; Dependabot moves the pins).
+   Never add a path-filtered workflow's job as a required check — fold it into
+   `test.yml` behind the `changes` job instead, which is why the docs build and
+   golden suite live there and `docs.yml` only deploys.
 
 ## Safe Local Testing with Git
 
@@ -57,7 +76,7 @@ scratch directories:
 mise run dev                # Build + create symlinks (quick dev setup)
 mise run test               # Run all tests (unit + integration)
 mise run test:unit          # Rust unit tests only
-mise run test:integration   # Integration tests (bash + YAML, full matrix)
+mise run test:integration   # Integration suites (YAML scenarios + blessed shell)
 mise run test:manual                       # YAML manual tests (all scenarios, automatic)
 mise run test:manual checkout              # YAML tests for one command (automatic)
 mise run test:manual -- -i checkout:basic  # Step through one scenario interactively
@@ -65,7 +84,7 @@ mise run clippy             # Lint (must pass with zero warnings)
 mise run fmt                # Auto-format code
 mise run fmt:check          # Verify formatting
 mise run ci                 # Simulate full CI locally
-mise run bench:tests:integration       # Benchmark bash vs YAML (TUI)
+mise run bench:tests:manual            # Benchmark the YAML runner itself
 ```
 
 IMPORTANT: Before committing, always run `mise run fmt`, `mise run clippy`, and
@@ -89,7 +108,7 @@ Rings invoke the same `mise run` task as the CI job they mirror, so a local
 refusal names the check that would have failed on GitHub;
 `merge: { ff: only, source_worktree: clean }` is what makes that mean anything —
 the tree the rings tested is the tree that lands. Slow rings (integration
-matrix, MSRV, licence audit, completions, docs build) get `tags: [deep]` and are
+suites, MSRV, licence audit, completions, docs build) get `tags: [deep]` and are
 dropped per invocation with `--skip-tag deep`, never trimmed from the gate to
 make it feel fast; `--skip-hooks` / `--skip-tag` skip _rings_, never _policy_.
 Never weaken a gate to make a merge pass — fix the check or the code.
@@ -101,6 +120,22 @@ needs its `mise run` task — add the task in the same PR as the job. Four check
 are deliberately CI-only and say so in `daft.yml`: `windows-check`,
 `release-env-guard`, `homebrew-simulation`, and `bench.yml`.
 `claude-pr-review.yml` is out of the parity set: Critical Rule #3 governs it.
+
+On the GitHub side all of `test.yml` fans into one job, `ci-gate`, and that is
+the only status check the `master` ruleset requires (Critical Rule #5). Adding
+or renaming a CI job therefore never touches the ruleset — but the new job
+**must** be added to `ci-gate`'s `needs:` list, or its failure blocks nothing;
+`cargo test --package xtask` (`ci_gate_drift`) fails until it is. `test.yml`
+runs on every PR: path gating is per job, through the `changes` job's outputs
+and each job's `if:`, never through a workflow-level `paths:` filter (a
+filtered-out run never starts, so `ci-gate` never reports and the PR can never
+merge). That is also why the docs build and the diagram golden suite are
+`test.yml` jobs (`docs-build`, `docs-golden`, gated on the `docs` class) rather
+than `docs.yml` jobs — `docs.yml` only deploys, on release tags.
+`actions-pinned` (`mise run validate:actions-pinned`) is the one check that runs
+unconditionally alongside `release-env-guard`, and for the same reason: the
+dangerous PR — `dist generate` rewriting `release.yml` with tag refs — touches
+no path the filters watch.
 
 ## Profiling
 
@@ -261,10 +296,13 @@ only the parent shell can `cd`. Concretely, when adding such a command:
    (symlinks like `git-worktree-*`) route through `__daft_wrapper`
    automatically; new daft _subcommands_ do not, and must be added by name.
 3. Cover the wrapper integration with a regression test in
-   `tests/integration/test_shell_init.sh` that sources the wrapper, runs the
-   command, and asserts `builtin pwd` lands in the expected place. The YAML
-   scenarios under `tests/manual/scenarios/` only exercise the binary directly —
-   they cannot catch a missing wrapper case.
+   `tests/integration/test_shell_init.sh` — the blessed home of the wrapper's cd
+   contract — that sources the wrapper, runs the command, and asserts
+   `builtin pwd` lands in the expected place. A YAML step _can_ eval the wrapper
+   (`shell-init/binary-resolution-live.yml` does), so this is a convention, not
+   a capability gap: the contract is one behaviour across many verbs, and one
+   shell file keeps it legible in one place. A scenario that only runs the
+   binary catches nothing here — the wrapper is the thing under test.
 
 The `daft repo remove` field-test bug (binary wrote DAFT_CD_FILE correctly but
 the wrapper had no `repo)` case) is the canonical example.
@@ -425,9 +463,46 @@ navigation must also support Vim-style `hjkl` keys.
 ## Branch Naming & PRs
 
 - Branch names: `daft-<issue number>/<shortened issue name>`
-- PRs target `master` and are always **squash merged** (linear history required)
-- PR titles use conventional commit format: `feat: add dark mode toggle`
+- PRs target `master` and are always **squash merged** (linear history required;
+  the repository allows no other merge method, and the `master` ruleset enforces
+  squash + linear history on top of that)
+- PR titles use conventional commit format: `feat: add dark mode toggle` — the
+  PR title becomes the squash commit's subject
+  (`squash_merge_commit_title: PR_TITLE`), so `git-cliff` reads the version bump
+  from it; the body is the PR's commit messages (`COMMIT_MESSAGES`)
 - Issue references go in PR body, not title: `Fixes #42`
+- A PR merges only when `ci-gate` is green **and the branch is up to date with
+  `master`** (strict status checks — the tested tree is the landed tree, the
+  same rule `daft merge`'s `ff: only` enforces locally). When master moves,
+  rebase and force-push (`--force-with-lease`) or use the Update branch button;
+  Dependabot rebases its own PRs.
+
+### Repository policy (GitHub side)
+
+The intent lives in the repo; GitHub enforces the live copy:
+
+- `.github/rulesets/master.json` and `release-tags.json` are the rulesets, in
+  the shape the API accepts (`README.md` there has the apply commands).
+  `mise run validate:rulesets` diffs the live rulesets against them. Change
+  policy by editing the file in a PR, then applying it.
+- Required approvals are deliberately **0**: one maintainer, so a required
+  review would mean bypassing on every own PR and a bot approving Dependabot.
+  The admin role can bypass the ruleset (that is what keeps `daft merge`'s
+  fast-forward push to master working); the Wheatley App bypasses only the tag
+  ruleset, which reserves `v*` tags — the release trigger — for the maintainer
+  and `release-flow.yml`.
+- `.github/workflows/dependabot-auto-merge.yml` arms GitHub auto-merge (squash)
+  on Dependabot's patch/minor PRs; majors wait for a human. The workflow merges
+  nothing itself and fails closed if `ci-gate` stops being required. A fresh
+  security update still has to pass `dep-age-check`, so the 7-day gate holds
+  even for auto-merge — `.dep-age-allowlist` is the way through, on purpose.
+  `mise-tool-updates.yml` opens its PR with the Wheatley App token so CI runs on
+  it; it is reviewed and merged by hand.
+- Repository settings that pair with this (applied, not in a file): squash-only
+  merges, auto-merge enabled, delete branch on merge, always suggest updating PR
+  branches, Dependabot alerts + security updates, private vulnerability
+  reporting, CodeQL default setup, secret scanning + push protection, and
+  "Require actions to be pinned to a full-length commit SHA".
 
 ### PR Tagging
 
@@ -583,8 +658,10 @@ review). Spelled-out paths keep the walk-up; guesses do not.
 6. Run `mise run man:gen` and commit the generated man page
 7. Add YAML test scenarios in `tests/manual/scenarios/<name>/` (see
    `tests/README.md` for schema reference)
-8. Add bash integration tests in `tests/integration/` following existing
-   patterns
+8. Shell tests only for what the YAML runner cannot express — a real PTY
+   (`tests/integration/test_rail_pty.sh` and the other TUI suites), a signal or
+   timing contract, or the wrapper's cd contract (step 9). `test_all.sh`'s
+   sourced list is the blessed list; everything else is a scenario (step 7)
 9. **If the command can change the layout the user's cwd lives inside** (creates
    / removes / moves / renames worktrees or repos), wire it into the shell
    wrapper: write `DAFT_CD_FILE` from the binary AND add the verb to the

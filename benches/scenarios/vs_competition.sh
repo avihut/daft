@@ -34,9 +34,8 @@ SHELL_ALIAS_CMD="git clone --bare file://$REPO $DEST/alias-repo/.git 2>/dev/null
 && git -C $DEST/alias-repo/.git worktree add -b feature-b $DEST/alias-repo/feature-b 2>/dev/null \
 && git -C $DEST/alias-repo/.git worktree add -b feature-c $DEST/alias-repo/feature-c 2>/dev/null"
 
-# Always run: daft vs shell aliases (two-way — the backend variant is
-# irrelevant for competition)
-bench_compare --two-way \
+# Always run: daft vs shell aliases
+bench_compare \
     "vs-shell-alias" \
     "rm -rf $DEST" \
     "$DAFT_CMD" \
@@ -66,7 +65,7 @@ if command -v git-town >/dev/null 2>&1; then
 && git-town config setup --auto 2>/dev/null; \
 git-town hack feature-x 2>/dev/null"
 
-    bench_compare --two-way \
+    bench_compare \
         "vs-git-town" \
         "$PREPARE_TOWN" \
         "$DAFT_TOWN_CMD" \

@@ -111,7 +111,6 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
     let params = branch_delete::BranchDeleteParams {
         branches: args.branches.clone(),
         force: args.force,
-        use_gitoxide: settings.use_gitoxide,
         is_quiet: args.quiet,
         remote_name: settings.remote.clone(),
         delete_remote: if args.local {
@@ -137,9 +136,7 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
     output.start_spinner("Deleting branches...");
     let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        let witness = crate::commands::forge_cache::merged_witness(
-            &GitCommand::new(true).with_gitoxide(settings.use_gitoxide),
-        );
+        let witness = crate::commands::forge_cache::merged_witness(&GitCommand::new(true));
         branch_delete::execute(&params, None, witness.as_ref(), &mut bridge)
     };
     output.finish_spinner();

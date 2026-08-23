@@ -1,5 +1,5 @@
 name: Activate help
-description: Help shows usage information
+description: Help names the mechanism (shell-init) and both flags
 
 steps:
   - name: Show help
@@ -8,3 +8,5 @@ steps:
       exit_code: 0
       output_contains:
         - "shell-init"
+        - "--dry-run"
+        - "--force"

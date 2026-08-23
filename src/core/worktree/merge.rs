@@ -988,7 +988,7 @@ pub fn resolve_target(
     match target {
         Some(t) => match git.resolve_worktree_path(t, project_root) {
             Ok(path) => {
-                let branch = branch_at_path(git, &path)?;
+                let branch = branch_at_path(&path)?;
                 Ok(ResolvedTarget {
                     branch,
                     path: Some(path),
@@ -1020,7 +1020,7 @@ pub fn resolve_target(
         },
         None => {
             let path = git.get_current_worktree_path()?;
-            let branch = branch_at_path(git, &path)?;
+            let branch = branch_at_path(&path)?;
             Ok(ResolvedTarget {
                 branch,
                 path: Some(path),
@@ -1031,59 +1031,23 @@ pub fn resolve_target(
 
 /// Read the short branch name at `path`.
 ///
-/// Respects [`GitCommand::use_gitoxide`]: when enabled, opens a
-/// `gix::ThreadSafeRepository` at `path` and reads `HEAD` through gitoxide;
-/// otherwise shells out `git -C <path> symbolic-ref --short HEAD`.
-///
-/// Both paths emit the same error message on detached HEAD ("detached HEAD")
-/// so [`resolve_target`]'s two arms are indistinguishable from the user's
-/// point of view for that failure mode.
-fn branch_at_path(git: &GitCommand, path: &Path) -> Result<String> {
-    if git.use_gitoxide {
-        let ts = gix::ThreadSafeRepository::discover(path)
-            .with_context(|| format!("failed to open git repo at '{}'", path.display()))?;
-        let repo = ts.to_thread_local();
-        let head = repo
-            .head_ref()
-            .with_context(|| format!("failed to read HEAD at '{}'", path.display()))?;
-        return match head {
-            Some(reference) => Ok(reference.name().shorten().to_string()),
-            None => anyhow::bail!(
-                "target worktree at '{}' has detached HEAD; checkout a branch first",
-                path.display()
-            ),
-        };
+/// Opens the repository at `path` (not the process cwd) and reads the name
+/// HEAD points at, so an unborn branch answers its name the way
+/// `git symbolic-ref --short HEAD` does; only a detached HEAD is an error.
+fn branch_at_path(path: &Path) -> Result<String> {
+    let ts = gix::ThreadSafeRepository::discover(path)
+        .with_context(|| format!("failed to open git repo at '{}'", path.display()))?;
+    let repo = ts.to_thread_local();
+    let head = repo
+        .head_name()
+        .with_context(|| format!("failed to read HEAD at '{}'", path.display()))?;
+    match head {
+        Some(name) => Ok(name.shorten().to_string()),
+        None => anyhow::bail!(
+            "target worktree at '{}' has detached HEAD; checkout a branch first",
+            path.display()
+        ),
     }
-
-    let output = Command::new("git")
-        .args([
-            "-C",
-            &path.display().to_string(),
-            "symbolic-ref",
-            "--short",
-            "HEAD",
-        ])
-        .output()
-        .with_context(|| format!("failed to read branch at '{}'", path.display()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("not a symbolic ref") {
-            anyhow::bail!(
-                "target worktree at '{}' has detached HEAD; checkout a branch first",
-                path.display()
-            );
-        }
-        anyhow::bail!(
-            "failed to read branch at '{}': {}",
-            path.display(),
-            stderr.trim()
-        );
-    }
-
-    String::from_utf8(output.stdout)
-        .context("invalid UTF-8 in branch name")
-        .map(|s| s.trim().to_string())
 }
 
 /// An in-progress git operation detected on a worktree.
@@ -3206,7 +3170,7 @@ pub fn execute_finish(
                 // Best-effort branch resolution: if we can read the current
                 // branch at the candidate path, show it alongside the path
                 // so the user can paste it straight into the retry hint.
-                match branch_at_path(git, c) {
+                match branch_at_path(c) {
                     Ok(branch) => {
                         msg.push_str(&format!("\n  {} (branch: {})", c.display(), branch))
                     }
@@ -3221,7 +3185,7 @@ pub fn execute_finish(
             // Single candidate → concrete retry command; multiple
             // candidates or resolution failure → placeholder.
             let retry_target = if candidates.len() == 1 {
-                branch_at_path(git, &candidates[0]).ok()
+                branch_at_path(&candidates[0]).ok()
             } else {
                 None
             };
@@ -3518,7 +3482,7 @@ fn finish_squash_staged(
                     println!(
                         "Squash merged {} into {} as {}.",
                         intent.sources.join(", "),
-                        resolved_branch_or_unknown(path, git),
+                        resolved_branch_or_unknown(path),
                         &sha[..12.min(sha.len())]
                     );
                 }
@@ -3535,8 +3499,8 @@ fn finish_squash_staged(
 
 /// Best-effort: read the current branch of the worktree at `path`. Falls back
 /// to `"<unknown>"` if reading fails.
-fn resolved_branch_or_unknown(path: &Path, git: &GitCommand) -> String {
-    branch_at_path(git, path).unwrap_or_else(|_| "<unknown>".to_string())
+fn resolved_branch_or_unknown(path: &Path) -> String {
+    branch_at_path(path).unwrap_or_else(|_| "<unknown>".to_string())
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -3601,7 +3565,7 @@ pub enum SourceClass {
 /// work is possible and no error is raised here; the caller silently skips.
 pub fn classify_source(source: &str, git: &GitCommand, project_root: &Path) -> SourceClass {
     if let Ok(worktree_path) = git.resolve_worktree_path(source, project_root) {
-        let branch = branch_at_path(git, &worktree_path).unwrap_or_else(|_| source.to_string());
+        let branch = branch_at_path(&worktree_path).unwrap_or_else(|_| source.to_string());
         return SourceClass::BranchWithWorktree {
             worktree_path,
             branch,
@@ -3919,18 +3883,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
 
-        let git = GitCommand::new(true);
-        let branch = branch_at_path(&git, tmp.path()).unwrap();
-        assert_eq!(branch, "main");
-    }
-
-    #[test]
-    fn branch_at_path_reads_via_gitoxide() {
-        let tmp = tempfile::tempdir().unwrap();
-        init_repo(tmp.path());
-
-        let git = GitCommand::new(true).with_gitoxide(true);
-        let branch = branch_at_path(&git, tmp.path()).unwrap();
+        let branch = branch_at_path(tmp.path()).unwrap();
         assert_eq!(branch, "main");
     }
 
@@ -3941,10 +3894,22 @@ mod tests {
         // Detach HEAD at the current commit.
         git_quiet(tmp.path(), &["checkout", "--detach", "-q"]);
 
-        let git = GitCommand::new(true);
-        let err = branch_at_path(&git, tmp.path()).unwrap_err();
+        let err = branch_at_path(tmp.path()).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("detached HEAD"), "unexpected error: {msg}");
+    }
+
+    /// An unborn branch (`git init -b fresh`, no commit yet) answers its name
+    /// like `git symbolic-ref --short HEAD` — the one input on which
+    /// `head_name()` and `head_ref()` disagree, so this is what pins the
+    /// choice (#883): `head_ref()` reports "detached" here.
+    #[test]
+    fn branch_at_path_names_an_unborn_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        git_quiet(tmp.path(), &["init", "-q", "-b", "fresh"]);
+
+        let branch = branch_at_path(tmp.path()).unwrap();
+        assert_eq!(branch, "fresh");
     }
 
     #[test]

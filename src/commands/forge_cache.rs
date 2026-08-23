@@ -1072,15 +1072,14 @@ mod tests {
         assert!(init.status.success());
         let _cwd = crate::test_support::CwdGuard::enter(tmp.path());
 
-        // Pin the capability probes to THIS repo. The shell-out arms of
-        // remote_list/remote_get_url re-sample the process cwd on every call,
-        // so a stray cwd restore from elsewhere in the process (a leaked
-        // thread, an unwinding guard — #[serial] can't exclude those) landing
-        // in a github-remoted worktree flipped `capable` to true mid-gate and
-        // flaked this test. The gitoxide arms instead read the gix_repo()
-        // snapshot; warming it here makes every probe below cwd-independent.
-        let git = GitCommand::new(true).with_gitoxide(true);
-        git.gix_repo().expect("gix discovery pins the tempdir repo");
+        // The capability probes (remote_list / remote_get_url / config_get)
+        // answer for the process cwd on every call — both arms, since the
+        // gix handle follows the cwd (#868) — so `#[serial]` plus the guard
+        // above are what keep them on THIS remoteless repo. A stray cwd
+        // restore from elsewhere in the process (a leaked thread, an
+        // unwinding guard) landing in a github-remoted worktree once flipped
+        // `capable` to true mid-gate; any such test is the bug to fix.
+        let git = GitCommand::new(true);
 
         let gate = forge_gate_and_lookup(&git, Some(repo.into()));
         assert!(!gate.capable, "a remoteless repo names no forge");

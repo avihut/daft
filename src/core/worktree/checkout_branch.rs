@@ -611,7 +611,7 @@ pub(crate) fn resolve_source_worktree(
 
             // Then the default branch's worktree.
             if let Ok(default_branch) =
-                crate::core::remote::get_default_branch_local(git_dir, remote_name, false)
+                crate::core::remote::get_default_branch_local(git_dir, remote_name)
                 && let Ok(Some(wt)) = git.find_worktree_for_branch(&default_branch)
             {
                 return Ok(wt);

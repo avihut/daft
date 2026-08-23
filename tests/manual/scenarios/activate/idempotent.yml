@@ -1,0 +1,33 @@
+name: Activate is idempotent
+description: >
+  An rc file that already evals shell-init is detected and left alone — the line
+  must not be appended twice. Without --force the existing-config check runs and
+  activate returns early. Ported from test_activate.sh (activate_idempotent).
+
+steps:
+  - name: Seed an rc file that already activates daft
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/home"
+      printf '# existing config\neval "$(daft shell-init zsh)"\n' > "$WORK_DIR/home/.zshrc"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/home/.zshrc"
+
+  - name: Activate reports the existing configuration
+    run: HOME="$WORK_DIR/home" SHELL=/bin/zsh daft activate 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "already configured"
+
+  - name: The shell-init line appears exactly once
+    run: grep -c "daft shell-init" "$WORK_DIR/home/.zshrc"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "1"
+      file_contains:
+        - path: "$WORK_DIR/home/.zshrc"
+          content: "# existing config"
