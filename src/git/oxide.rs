@@ -85,45 +85,44 @@ pub fn show_ref_exists(repo: &Repository, ref_name: &str) -> Result<bool> {
     Ok(repo.try_find_reference(ref_name)?.is_some())
 }
 
-/// gitoxide equivalent of `git for-each-ref --format=<format> <refs>`
+/// Short names of every local branch — `refs/heads/*` with the prefix
+/// removed — in ref order.
+pub fn local_branch_names(repo: &Repository) -> Result<Vec<String>> {
+    ref_names_under(repo, "refs/heads/")
+}
+
+/// Branch names on `remote` as the remote-tracking refs on disk record them
+/// — `refs/remotes/<remote>/*` with the prefix removed — without the
+/// remote's symbolic `HEAD`, which is a pointer at one of the others, not a
+/// branch.
+pub fn remote_branch_names(repo: &Repository, remote: &str) -> Result<Vec<String>> {
+    Ok(ref_names_under(repo, &format!("refs/remotes/{remote}/"))?
+        .into_iter()
+        .filter(|name| name != "HEAD")
+        .collect())
+}
+
+/// Every reference under `prefix` (which ends in `/`), named relative to it.
 ///
-/// Supports format strings containing:
-/// - `%(refname:short)` - short reference name
-/// - `%(refname)` - full reference name
-/// - `%(objectname)` - object hash
-///
-/// Other format specifiers are passed through literally.
-pub fn for_each_ref(repo: &Repository, format: &str, refs_prefix: &str) -> Result<String> {
+/// Typed where `git for-each-ref --format='%(refname:short)'` was text: the
+/// callers only ever wanted the names, and the format mini-language the gix
+/// arm used to emulate for them is gone with #884.
+fn ref_names_under(repo: &Repository, prefix: &str) -> Result<Vec<String>> {
+    debug_assert!(
+        prefix.ends_with('/'),
+        "ref prefix must end in '/', got {prefix:?}"
+    );
     let platform = repo.references()?;
-    let references = platform.prefixed(refs_prefix)?;
-    let mut output = String::new();
-
-    for reference_result in references {
-        let reference =
-            reference_result.map_err(|e| anyhow::anyhow!("Failed to read reference: {e}"))?;
-        let full_name = reference.name().as_bstr().to_string();
-        let short_name = reference.name().shorten().to_string();
-        let oid = match reference.try_id() {
-            Some(id) => id.to_string(),
-            None => {
-                // Symbolic ref - try to peel
-                let mut peelable = reference;
-                match peelable.peel_to_id() {
-                    Ok(id) => id.to_string(),
-                    Err(_) => String::new(),
-                }
-            }
-        };
-
-        let line = format
-            .replace("%(refname:short)", &short_name)
-            .replace("%(refname)", &full_name)
-            .replace("%(objectname)", &oid);
-        output.push_str(&line);
-        output.push('\n');
+    let references = platform.prefixed(prefix)?;
+    let mut names = Vec::new();
+    for reference in references {
+        let reference = reference.map_err(|e| anyhow::anyhow!("Failed to read reference: {e}"))?;
+        let full = reference.name().as_bstr().to_string();
+        if let Some(name) = full.strip_prefix(prefix) {
+            names.push(name.to_string());
+        }
     }
-
-    Ok(output)
+    Ok(names)
 }
 
 /// gitoxide equivalent of `git branch -vv`
@@ -725,6 +724,19 @@ mod tests {
         (dir, repo)
     }
 
+    /// Re-open the repo at `path` after the git CLI changed refs or config.
+    /// `gix::open` resolves `current_dir()` internally, so the cwd is moved
+    /// there for the call and restored right after (callers are `#[serial]`).
+    fn reopen(path: &std::path::Path) -> Repository {
+        let saved = std::env::current_dir().ok();
+        std::env::set_current_dir(path).unwrap();
+        let repo = gix::open(path).unwrap();
+        if let Some(cwd) = saved {
+            let _ = std::env::set_current_dir(cwd);
+        }
+        repo
+    }
+
     #[test]
     #[serial]
     fn test_rev_parse_git_common_dir() {
@@ -846,10 +858,59 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_for_each_ref() {
-        let (_dir, repo) = create_test_repo();
-        let result = for_each_ref(&repo, "%(refname:short)", "refs/heads/").unwrap();
-        assert!(result.contains("main"));
+    fn local_branch_names_are_short_and_complete() {
+        let (dir, _repo) = create_test_repo();
+        let path = dir.path().canonicalize().unwrap();
+        for branch in ["feature/login", "release.2.x"] {
+            git_cmd()
+                .args(["branch", branch])
+                .current_dir(&path)
+                .output()
+                .unwrap();
+        }
+        let repo = reopen(&path);
+
+        let names = local_branch_names(&repo).unwrap();
+        assert_eq!(names, ["feature/login", "main", "release.2.x"]);
+    }
+
+    /// Remote names come back relative to the remote, nested names intact,
+    /// and the remote's symbolic `HEAD` is not a branch.
+    #[test]
+    #[serial]
+    fn remote_branch_names_strip_the_remote_and_drop_head() {
+        let (dir, _repo) = create_test_repo();
+        let path = dir.path().canonicalize().unwrap();
+        for r in [
+            "refs/remotes/origin/main",
+            "refs/remotes/origin/team/x",
+            "refs/remotes/other/main",
+        ] {
+            git_cmd()
+                .args(["update-ref", r, "HEAD"])
+                .current_dir(&path)
+                .output()
+                .unwrap();
+        }
+        git_cmd()
+            .args([
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        let repo = reopen(&path);
+
+        assert_eq!(
+            remote_branch_names(&repo, "origin").unwrap(),
+            ["main", "team/x"]
+        );
+        assert_eq!(remote_branch_names(&repo, "other").unwrap(), ["main"]);
+        assert!(remote_branch_names(&repo, "nowhere").unwrap().is_empty());
+        // Local branches are not remote branches.
+        assert_eq!(local_branch_names(&repo).unwrap(), ["main"]);
     }
 
     #[test]

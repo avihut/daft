@@ -601,11 +601,9 @@ pub fn identify_gone_branches(
         &mut provenance,
         sink,
     );
-    let ref_output = git.for_each_ref("%(refname:short)", "refs/heads")?;
-
-    for line in ref_output.lines() {
-        let branch_name = line.trim();
-        if branch_name.is_empty() || is_default_branch(branch_name) {
+    for branch_name in git.local_branch_names()? {
+        let branch_name = branch_name.as_str();
+        if is_default_branch(branch_name) {
             continue;
         }
 
@@ -644,22 +642,9 @@ pub fn identify_gone_branches(
 ///
 /// Local by design: `git fetch --prune` has just reconciled these against the
 /// wire, so asking `ls-remote` again would be a second round trip per branch
-/// for an answer already on disk. (`refs/remotes/<remote>/HEAD` shortens to
-/// `<remote>/HEAD` — git's own `for-each-ref` would render a bare `<remote>` —
-/// and neither survives the prefix strip as a real branch name.)
+/// for an answer already on disk.
 fn remote_branches_after_fetch(git: &GitCommand, remote_name: &str) -> Result<HashSet<String>> {
-    let refs = git.for_each_ref("%(refname:short)", &format!("refs/remotes/{remote_name}"))?;
-    Ok(parse_remote_branches(&refs, remote_name))
-}
-
-/// Strip `<remote>/` off each shortened ref, dropping the remote's HEAD.
-fn parse_remote_branches(refs: &str, remote_name: &str) -> HashSet<String> {
-    let prefix = format!("{remote_name}/");
-    refs.lines()
-        .filter_map(|line| line.trim().strip_prefix(&prefix))
-        .filter(|name| *name != "HEAD")
-        .map(str::to_string)
-        .collect()
+    Ok(git.remote_branch_names(remote_name)?.into_iter().collect())
 }
 
 /// What a branch's configuration says it tracks.
@@ -1709,38 +1694,6 @@ mod remote_branch_tests {
 
         assert!(tracking.contains_key("pr-7"));
         assert!(observed_on_remote(&tracking, "origin", &remaining(&["pr-7"])).is_empty());
-    }
-
-    use super::parse_remote_branches;
-
-    #[test]
-    fn strips_the_remote_prefix_and_drops_head() {
-        // gitoxide shortens `refs/remotes/origin/HEAD` to `origin/HEAD`; git's
-        // own `for-each-ref` renders a bare `origin`. Neither may survive as a
-        // branch name, or a branch would be matched against the remote's
-        // symbolic HEAD instead of itself.
-        let refs = "origin\norigin/HEAD\norigin/master\norigin/feat/x\n";
-
-        let branches = parse_remote_branches(refs, "origin");
-
-        assert!(branches.contains("master"));
-        assert!(
-            branches.contains("feat/x"),
-            "slashes must survive the strip"
-        );
-        assert!(!branches.contains("HEAD"));
-        assert!(!branches.contains("origin"));
-        assert_eq!(branches.len(), 2);
-    }
-
-    #[test]
-    fn another_remotes_refs_do_not_leak_in() {
-        let refs = "upstream/master\norigin/master\n";
-
-        let branches = parse_remote_branches(refs, "origin");
-
-        assert_eq!(branches.len(), 1);
-        assert!(branches.contains("master"));
     }
 }
 

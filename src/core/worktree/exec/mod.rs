@@ -484,18 +484,11 @@ pub fn collect_snapshot(git: &crate::git::GitCommand) -> anyhow::Result<Vec<Work
     // Orphan branches: local branches that have no worktree. These are
     // only included for glob-expansion reporting; they carry the
     // "::orphan::" sentinel so `has_worktree()` returns false.
-    let branch_output = git
-        .for_each_ref("%(refname:short)", "refs/heads/")
-        .unwrap_or_default();
-    for line in branch_output.lines() {
-        let branch = line.trim();
-        if branch.is_empty() {
-            continue;
-        }
-        if !branches_with_worktrees.contains(branch) {
+    for branch in git.local_branch_names().unwrap_or_default() {
+        if !branches_with_worktrees.contains(branch.as_str()) {
             snaps.push(WorktreeSnapshot {
                 path: std::path::PathBuf::from("::orphan::"),
-                branch: Some(branch.to_string()),
+                branch: Some(branch),
             });
         }
     }

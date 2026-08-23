@@ -380,12 +380,9 @@ pub(crate) struct PrRowContext {
 
 pub(crate) fn pr_row_context(git: &GitCommand) -> PrRowContext {
     let local_branches: HashSet<String> = git
-        .for_each_ref("%(refname:short)", "refs/heads/")
+        .local_branch_names()
         .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|b| !b.is_empty())
-        .map(str::to_string)
+        .into_iter()
         .collect();
     let branch_refs = crate::core::worktree::pr_rows::parse_branch_forge_refs(
         &git.branch_merge_refs().unwrap_or_default(),
