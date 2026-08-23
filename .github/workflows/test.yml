@@ -569,9 +569,9 @@ jobs:
         run: ./target/release/xtask manual-test --jobs "$(nproc)"
 
       - name: Run shell integration suite
-        # The blessed shell residue (#447): what the YAML runner cannot
-        # express — PTY, signal, and wrapper-cwd tests — plus whatever
-        # test_all.sh still sources while Track B shrinks it.
+        # The blessed shell suite (#447): only what the YAML runner cannot
+        # express — a real PTY, signal/timing contracts, the shell wrapper's
+        # cd contract. test_all.sh's sourced list is the blessed list.
         run: bash tests/integration/test_all.sh
 
       - name: Test shell completions

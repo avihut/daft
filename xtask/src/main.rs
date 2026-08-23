@@ -3,7 +3,6 @@
 //! This binary provides development-time tasks that don't need to be
 //! included in the distributed binary.
 
-mod bench;
 mod manual_test;
 mod real_state_guard;
 
@@ -344,13 +343,6 @@ enum Commands {
         command: Option<String>,
     },
 
-    /// Run integration test benchmarks with a live TUI table
-    Bench {
-        /// Run bash and YAML tests for each suite in parallel
-        #[arg(long)]
-        parallel: bool,
-    },
-
     /// Run manual test scenarios (automatic by default; use -i to step through)
     ManualTest {
         /// Scenario file(s) to run (default: all in tests/manual/scenarios/)
@@ -451,7 +443,6 @@ fn main() -> Result<()> {
             output_dir,
             command,
         } => generate_cli_docs(&output_dir, command.as_deref()),
-        Commands::Bench { parallel } => bench::run(parallel),
         Commands::StampSkill { version, file } => stamp_skill(&file, &version),
         Commands::ManualTest {
             scenarios,

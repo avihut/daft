@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-#MISE description="Benchmark all integration tests: bash vs YAML (TUI)"
-#MISE depends=["dev"]
-set -euo pipefail
-
-# Pass through --parallel if given
-cargo run --package xtask -- bench "$@"

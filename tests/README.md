@@ -1,22 +1,30 @@
 # Test Suite
 
-Two test systems: **bash integration tests** (legacy) and **YAML manual tests**
-(declarative, preferred for new tests).
+Two test systems: **YAML manual tests** (declarative — the primary suite, and
+where new tests go) and a **blessed shell suite** for the behaviour YAML cannot
+express: a real terminal, signals and timing, the shell wrapper's cd contract.
 
 ## Structure
 
 ```
 tests/
-├── integration/              # Bash integration tests
-│   ├── test_all.sh           # Master runner (all suites)
-│   ├── test_framework.sh     # Shared assertions and helpers
-│   └── test_*.sh             # Per-command test suites
+├── integration/              # The blessed shell suite
+│   ├── test_all.sh           # Runner — its sourced list IS the blessed list
+│   ├── test_framework.sh     # Shared assertions, isolation, state-guard preflight
+│   ├── pty_run.py            # DSR-answering PTY driver for the rail/TUI tests
+│   ├── test_rail_pty.sh      # PTY: rail faces/receipts, TUI PR column, alias capture
+│   ├── test_config_tui.sh, test_exec_verbose_toggle.sh, test_list_esc.sh,
+│   │   test_sync_governor.sh # PTY: the TUIs and process-group reaping
+│   ├── test_sync_cancel.sh, test_merge_gate_lane.sh, test_remove_reaper.sh
+│   │                         # signals / timing / a detached process
+│   ├── test_shell_init.sh    # the wrapper's cd contract (eval, run, builtin pwd)
+│   └── test_completions.sh   # drives the generated completion functions (own CI step)
 ├── manual/
 │   ├── scenarios/            # YAML test scenarios
 │   │   ├── checkout/         # One directory per command
 │   │   ├── clone/
 │   │   ├── init/
-│   │   └── ...               # 18 command directories
+│   │   └── ...
 │   └── fixtures/
 │       └── repos/            # Shared repo templates
 │           └── standard-remote.yml
@@ -114,14 +122,11 @@ scrollback at `-q` (fail footer + cleanup line) so the contract holds.
 ## Benchmarks
 
 ```bash
-# TUI benchmark: bash vs YAML side-by-side (live table with spinners)
-mise run bench:tests:integration
-
-# Parallel mode (bash + YAML for same suite run concurrently)
-mise run bench:tests:integration -- --parallel
-
-# YAML-only benchmark with timing
+# Time the YAML runner itself (single trial; see benches/README.md Family 2)
 mise run bench:tests:manual
+
+# Scaling sweep across --jobs values
+mise run bench:tests:manual:scale
 ```
 
 ## YAML Manual Test Framework
@@ -216,11 +221,17 @@ dirs_exist:
 2. Use `standard-remote` fixture or define inline repos
 3. Run: `mise run test:manual <command>:<test-name>`
 
-### Bash integration test
+### Blessed shell test (only when YAML cannot express it)
 
-1. Add test function to `tests/integration/test_<command>.sh`
-2. Register in `run_<command>_tests()` function
-3. Run: `cd tests/integration && bash ./test_<command>.sh`
+Reach for shell only when the behaviour needs a real PTY (the live rail, a TUI,
+a controlling tty), a signal / timing contract, or the shell wrapper's cd
+(`builtin pwd` in the same shell that ran the command). Then:
+
+1. Add the test function to the blessed file it belongs in (`test_rail_pty.sh`
+   for rail/TUI behaviour, `test_shell_init.sh` for the wrapper's cd contract,
+   …) — or a new file, sourced from `test_all.sh`
+2. Register it in that file's `run_<suite>_tests()` function
+3. Run: `cd tests/integration && bash ./test_<suite>.sh`
 
 ## CI Integration
 

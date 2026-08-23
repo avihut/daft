@@ -8,7 +8,7 @@ description: >
   Scope: the runner injects DAFT_TESTING=1, which makes the reap run inline, so
   this proves the contract but not the deferral. The detached spawn itself is
   covered by test_remove_defers_reclamation_to_a_detached_reaper in
-  tests/integration/test_branch_delete.sh, which runs with DAFT_TESTING off.
+  tests/integration/test_remove_reaper.sh, which runs with DAFT_TESTING off.
 
 repos:
   - name: test-repo

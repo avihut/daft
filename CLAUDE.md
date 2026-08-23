@@ -84,7 +84,7 @@ mise run clippy             # Lint (must pass with zero warnings)
 mise run fmt                # Auto-format code
 mise run fmt:check          # Verify formatting
 mise run ci                 # Simulate full CI locally
-mise run bench:tests:integration       # Benchmark bash vs YAML (TUI)
+mise run bench:tests:manual            # Benchmark the YAML runner itself
 ```
 
 IMPORTANT: Before committing, always run `mise run fmt`, `mise run clippy`, and
@@ -296,10 +296,13 @@ only the parent shell can `cd`. Concretely, when adding such a command:
    (symlinks like `git-worktree-*`) route through `__daft_wrapper`
    automatically; new daft _subcommands_ do not, and must be added by name.
 3. Cover the wrapper integration with a regression test in
-   `tests/integration/test_shell_init.sh` that sources the wrapper, runs the
-   command, and asserts `builtin pwd` lands in the expected place. The YAML
-   scenarios under `tests/manual/scenarios/` only exercise the binary directly —
-   they cannot catch a missing wrapper case.
+   `tests/integration/test_shell_init.sh` — the blessed home of the wrapper's cd
+   contract — that sources the wrapper, runs the command, and asserts
+   `builtin pwd` lands in the expected place. A YAML step _can_ eval the wrapper
+   (`shell-init/binary-resolution-live.yml` does), so this is a convention, not
+   a capability gap: the contract is one behaviour across many verbs, and one
+   shell file keeps it legible in one place. A scenario that only runs the
+   binary catches nothing here — the wrapper is the thing under test.
 
 The `daft repo remove` field-test bug (binary wrote DAFT_CD_FILE correctly but
 the wrapper had no `repo)` case) is the canonical example.
@@ -655,8 +658,10 @@ review). Spelled-out paths keep the walk-up; guesses do not.
 6. Run `mise run man:gen` and commit the generated man page
 7. Add YAML test scenarios in `tests/manual/scenarios/<name>/` (see
    `tests/README.md` for schema reference)
-8. Add bash integration tests in `tests/integration/` following existing
-   patterns
+8. Shell tests only for what the YAML runner cannot express — a real PTY
+   (`tests/integration/test_rail_pty.sh` and the other TUI suites), a signal or
+   timing contract, or the wrapper's cd contract (step 9). `test_all.sh`'s
+   sourced list is the blessed list; everything else is a scenario (step 7)
 9. **If the command can change the layout the user's cwd lives inside** (creates
    / removes / moves / renames worktrees or repos), wire it into the shell
    wrapper: write `DAFT_CD_FILE` from the binary AND add the verb to the
