@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Every GitHub Actions `uses:` is pinned to a full commit SHA"
+set -euo pipefail
+
+# Mirrors the `actions-pinned` job in .github/workflows/test.yml and the
+# `actions-pinned` pre-merge ring in daft.yml (CLAUDE.md, "Quality Gates:
+# CI <-> Merge-Gate Parity"). Re-pin with scripts/pin-actions.sh.
+exec scripts/check-actions-pinned.sh

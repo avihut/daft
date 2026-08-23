@@ -4,6 +4,13 @@
 # Cooldown policy: every ecosystem waits 7 days before opening a version-update
 # PR. Security updates bypass cooldown automatically (Dependabot behavior, not
 # configurable). To exempt a specific package, add it under cooldown.exclude.
+#
+# Merge policy: Dependabot's semver-patch/minor PRs auto-merge once `ci-gate`
+# is green on an up-to-date branch (.github/workflows/dependabot-auto-merge.yml
+# arms GitHub auto-merge; the `master` ruleset does the gating). Major bumps
+# wait for a human. A security update that is younger than the 7-day gate fails
+# `dep-age-check` and therefore also waits for a human — the allowlist in
+# .dep-age-allowlist is the deliberate way through.
 
 version: 2
 updates:
@@ -64,12 +71,14 @@ updates:
       github-actions:
         patterns:
           - "*"
-    # dtolnay/rust-toolchain tags name the Rust toolchain version they install
-    # (e.g. @1.95.0 installs Rust 1.95.0), not a version of the action itself.
-    # Dependabot can't see this — bumping the tag would request a non-existent
-    # toolchain. The MSRV value is owned by Cargo.toml's rust-version field.
-    ignore:
-      - dependency-name: "dtolnay/rust-toolchain"
+    # Every `uses:` is pinned to a full commit SHA with the version tag as a
+    # trailing comment (scripts/check-actions-pinned.sh enforces it); Dependabot
+    # moves the SHA and the comment together. dtolnay/rust-toolchain is pinned
+    # to its `v1` tag with an explicit `toolchain:` input — its `stable` /
+    # `1.xx.0` refs are branches that name a Rust toolchain, not versions of
+    # the action — so there is nothing for Dependabot to misread and no ignore
+    # rule is needed. The MSRV value itself is owned by Cargo.toml's
+    # rust-version field.
     labels:
       - "dependencies"
       - "github-actions"
