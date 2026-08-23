@@ -1690,8 +1690,8 @@ mod tests {
             .lines()
             .count();
 
-        // One `GitCommand` per leg: its gitoxide handle is discovered from
-        // the CWD once and cached, exactly as a fresh process would see it.
+        // One `GitCommand` per leg, exactly as a fresh process would see
+        // it — each `daft layout transform` starts from its own CWD.
         {
             let _cwd = CwdGuard::enter(&repo);
             let git = GitCommand::new(false);

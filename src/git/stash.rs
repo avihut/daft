@@ -27,10 +27,11 @@ impl GitCommand {
     pub fn has_uncommitted_changes(&self) -> Result<bool> {
         if self.use_gitoxide {
             let repo = self.gix_repo()?;
-            // Fall back to subprocess if the cached repo is bare (no workdir).
-            // This happens when the repo was discovered from the project root in
-            // a bare-repo worktree layout (e.g., layout transform changes CWD to
-            // the project root, then later CDs into individual worktrees).
+            // Capability check, not preference: standing in a bare repository
+            // (or inside a git dir) there is no worktree for gix to diff, so
+            // the question falls through to `git status`, which reports git's
+            // own error for that state. The handle follows the cwd (#868), so
+            // this is the only way a bare handle is seen here.
             if repo.workdir().is_some() {
                 return oxide::has_uncommitted_changes(&repo);
             }

@@ -1,0 +1,63 @@
+name: Update --all answers each worktree for itself
+description: |
+  The update walk asks each worktree's tracking question at that worktree's
+  path, never of the process cwd (the path-scoped `has_upstream_at` from
+  #872). Untracked worktrees sort on both sides of `main`, so whichever is
+  enumerated first, `main` must still be pulled and each untracked one
+  skipped by name — not the whole run skipped (exit 0, nothing updated),
+  and not a `git pull` death on "no tracking information". Both were the
+  symptom of #868 before #872 named the path; this pins that contract so
+  the gix arm's future typed tracking read (#884) keeps it.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Add untracked worktrees that sort before and after main
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git branch aaa-fresh
+      git branch zzz-fresh
+      git worktree add $WORK_DIR/test-repo/aaa-fresh aaa-fresh
+      git worktree add $WORK_DIR/test-repo/zzz-fresh zzz-fresh
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/aaa-fresh"
+        - "$WORK_DIR/test-repo/zzz-fresh"
+
+  - name: Move the remote's main ahead
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp"
+      echo "Neighbors update main" >> README.md
+      git add README.md
+      git commit -m "Update main"
+      git push origin main
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Update every worktree
+    run: daft update --all 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "[skipped] aaa-fresh"
+        - "[skipped] zzz-fresh"
+      output_not_contains:
+        - "[skipped] main"
+        - "no tracking information"
+
+  - name: main was pulled
+    run: grep -q "Neighbors update main" $WORK_DIR/test-repo/main/README.md
+    expect:
+      exit_code: 0
