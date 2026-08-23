@@ -15,7 +15,7 @@ use crate::{
     executor::cli_presenter::CliPresenter,
     get_current_worktree_path, get_git_common_dir, get_project_root,
     git::GitCommand,
-    hooks::{HookContext, HookExecutor, HookType},
+    hooks::{HookContext, HookExecutor, HookType, visitor_seeds::ConsolidationScope},
     is_git_repository,
     logging::init_logging,
     output::{
@@ -505,11 +505,46 @@ fn short_sha(sha: &str) -> &str {
 /// consolidation. Returns `None` when the user aborts or the context is
 /// non-interactive (no TTY / exhausted stdin pipe) — the caller bails before
 /// any git state changes.
-fn prompt_daft_conflict_side(filename: &str, keys: &[String]) -> Option<crate::core::ConflictSide> {
+/// One line of the post-merge consolidation summary.
+///
+/// Pure so the phrasing is testable: the key count and the key list belong to
+/// the per-key case *only*. The two whole-file cases used to arrive here as a
+/// one-element `adopt_keys` holding prose, which this site then counted and
+/// parenthesised — `adopted 1 key(s) ((entire file — target has none))` (#902).
+fn consolidation_summary_line(
+    filename: &str,
+    source_branch: &str,
+    scope: ConsolidationScope,
+    adopt_keys: &[String],
+) -> String {
+    match scope {
+        ConsolidationScope::WholeFile => {
+            format!(
+                "Consolidated {filename} from {source_branch} (whole file — no seed provenance)"
+            )
+        }
+        ConsolidationScope::NewFile => {
+            format!("Consolidated {filename} from {source_branch} (entire file — target has none)")
+        }
+        ConsolidationScope::Keys if adopt_keys.is_empty() => {
+            format!("Consolidated {filename} from {source_branch} (conflict resolution only)")
+        }
+        ConsolidationScope::Keys => format!(
+            "Consolidated {filename} from {source_branch}: adopted {} key(s) ({})",
+            adopt_keys.len(),
+            adopt_keys.join(", ")
+        ),
+    }
+}
+
+fn prompt_daft_conflict_side(
+    filename: &str,
+    subject: &crate::core::ConflictSubject,
+) -> Option<crate::core::ConflictSide> {
     use crate::prompt::{PromptConfig, PromptOption, PromptResult, single_key_select};
     eprint!(
-        "{filename}: keep the merge target's version or take the source branch's for {}? [s/t/A] ",
-        keys.join(", ")
+        "{filename}: keep the merge target's version or take the source branch's for {subject}? \
+         [s/t/A] "
     );
     let result = single_key_select(&PromptConfig {
         options: vec![
@@ -889,7 +924,7 @@ pub fn run() -> Result<()> {
     // changes.
     let seeds_git_dir = get_git_common_dir()?;
     let mut consolidation: Vec<(String, String)> = Vec::new();
-    let mut consolidation_report: Vec<(String, Vec<String>, bool)> = Vec::new();
+    let mut consolidation_report: Vec<(String, Vec<String>, ConsolidationScope)> = Vec::new();
     if let (Some(prop_src), Some(prop_tgt)) = (&prop_source, &prop_target)
         && prop_src != prop_tgt
     {
@@ -909,6 +944,8 @@ pub fn run() -> Result<()> {
                 prop_tgt,
                 class,
             );
+            // Before the match: `preview.resolution` is moved out by it.
+            let subject = preview.conflict_subject();
             let content = match preview.resolution {
                 crate::hooks::visitor_seeds::PreviewResolution::Resolved(content) => content,
                 crate::hooks::visitor_seeds::PreviewResolution::NeedsSide {
@@ -916,14 +953,14 @@ pub fn run() -> Result<()> {
                     source_priority,
                 } => {
                     output.finish_spinner();
-                    match prompt_daft_conflict_side(&preview.filename, &preview.conflict_keys) {
+                    match prompt_daft_conflict_side(&preview.filename, &subject) {
                         Some(crate::core::ConflictSide::Target) => target_priority,
                         Some(crate::core::ConflictSide::Source) => source_priority,
                         _ => anyhow::bail!(
                             "{} has conflicting refinements ({}); resolve with `daft file \
                              merge {}/{} {}/{}` and re-run daft merge",
                             preview.filename,
-                            preview.conflict_keys.join(", "),
+                            subject,
                             prop_tgt.display(),
                             preview.filename,
                             prop_src.display(),
@@ -935,7 +972,7 @@ pub fn run() -> Result<()> {
             consolidation_report.push((
                 preview.filename.clone(),
                 preview.adopt_keys.clone(),
-                preview.whole_file,
+                preview.scope,
             ));
             consolidation.push((preview.filename, content));
         }
@@ -1192,23 +1229,13 @@ pub fn run() -> Result<()> {
             // re-flagging it.
             if !consolidation_report.is_empty() {
                 let source_branch = &params.sources[0];
-                for (filename, adopt_keys, whole_file) in &consolidation_report {
-                    if *whole_file {
-                        output.info(&format!(
-                            "Consolidated {filename} from {source_branch} (whole file — no seed \
-                         provenance)"
-                        ));
-                    } else if adopt_keys.is_empty() {
-                        output.info(&format!(
-                        "Consolidated {filename} from {source_branch} (conflict resolution only)"
+                for (filename, adopt_keys, scope) in &consolidation_report {
+                    output.info(&consolidation_summary_line(
+                        filename,
+                        source_branch,
+                        *scope,
+                        adopt_keys,
                     ));
-                    } else {
-                        output.info(&format!(
-                            "Consolidated {filename} from {source_branch}: adopted {} key(s) ({})",
-                            adopt_keys.len(),
-                            adopt_keys.join(", ")
-                        ));
-                    }
                 }
                 if let (Some(prop_src), Some(seeds)) = (
                     &prop_source,
@@ -2301,5 +2328,62 @@ mod tests {
         let supported = crate::output::emit::dispatch::supported_formats(payload.shape());
         assert!(!supported.contains(&crate::output::emit::Format::Csv));
         assert!(supported.contains(&crate::output::emit::Format::Json));
+    }
+
+    /// #902: the summary line's key count and key list belong to the per-key
+    /// case only. The two whole-file cases used to arrive as a one-element
+    /// `adopt_keys` holding prose, which this site counted and parenthesised.
+    #[test]
+    fn consolidation_summary_never_counts_a_whole_file_as_a_key() {
+        let new_file =
+            consolidation_summary_line("daft.yml", "feat/add", ConsolidationScope::NewFile, &[]);
+        assert_eq!(
+            new_file,
+            "Consolidated daft.yml from feat/add (entire file — target has none)"
+        );
+
+        let whole =
+            consolidation_summary_line("daft.yml", "feat/add", ConsolidationScope::WholeFile, &[]);
+        assert_eq!(
+            whole,
+            "Consolidated daft.yml from feat/add (whole file — no seed provenance)"
+        );
+
+        for line in [&new_file, &whole] {
+            assert!(!line.contains("(("), "doubled parentheses in {line:?}");
+            assert!(
+                !line.contains("key(s)"),
+                "a whole file is not a key: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn consolidation_summary_still_names_adopted_keys() {
+        let keys = vec!["hooks.post-clone".to_string(), "shared".to_string()];
+        assert_eq!(
+            consolidation_summary_line("daft.yml", "feat/add", ConsolidationScope::Keys, &keys),
+            "Consolidated daft.yml from feat/add: adopted 2 key(s) (hooks.post-clone, shared)"
+        );
+        assert_eq!(
+            consolidation_summary_line("daft.yml", "feat/add", ConsolidationScope::Keys, &[]),
+            "Consolidated daft.yml from feat/add (conflict resolution only)"
+        );
+    }
+
+    /// The abort message and both side prompts interpolate the subject
+    /// directly, so its Display is the thing that must not read as a list.
+    #[test]
+    fn conflict_subject_renders_whole_file_as_prose() {
+        use crate::core::ConflictSubject;
+        assert_eq!(
+            ConflictSubject::WholeFile.to_string(),
+            "the whole file — no seed provenance"
+        );
+        assert_eq!(
+            ConflictSubject::Keys(vec!["a".to_string(), "b.c".to_string()]).to_string(),
+            "a, b.c"
+        );
+        assert!(!format!("({})", ConflictSubject::WholeFile).contains("(("));
     }
 }

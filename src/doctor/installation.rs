@@ -20,6 +20,7 @@ const EXPECTED_SYMLINKS: &[&str] = &[
     "git-worktree-branch-delete",
     "git-worktree-list",
     "git-worktree-merge",
+    "git-worktree-exec",
     "git-worktree-sync",
     "git-worktree-push",
     "git-worktree-warm",
@@ -699,7 +700,7 @@ mod tests {
 
     #[test]
     fn test_expected_symlinks_count() {
-        assert_eq!(EXPECTED_SYMLINKS.len(), 18);
+        assert_eq!(EXPECTED_SYMLINKS.len(), 19);
     }
 
     #[test]

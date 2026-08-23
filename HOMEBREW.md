@@ -11,6 +11,13 @@ each release.
 
 ## Multicall Binary Architecture
 
+> **The authoritative alias list is `[dist.bin-aliases]` in
+> `dist-workspace.toml`.** cargo-dist generates the formula from it, so that is
+> what a real `brew install` ships; xtask's `multicall_farm_drift` keeps it in
+> step with the argv[0] table in `src/main.rs` (#903). The lists in this
+> document are illustrative — they explain the shape of the customization, not
+> the current set, and predate several commands.
+
 daft uses a **single binary with multiple symlinks** (like BusyBox):
 
 - Single binary: `daft` (~589KB)

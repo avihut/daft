@@ -211,10 +211,10 @@ pub struct RefinedFileSummary {
     pub adopt_keys: Vec<String>,
     /// Key paths both sides changed — consolidating requires picking a side.
     pub conflict_keys: Vec<String>,
-    /// True when there is no usable seed base (pre-provenance worktree,
-    /// unparseable YAML): consolidation overlays the whole source file onto
-    /// the target instead of merging per key.
-    pub whole_file: bool,
+    /// Whether the two lists above describe the consolidation, or the file
+    /// moves as a unit (mirrors the preview's scope; see
+    /// `hooks::visitor_seeds::ConsolidationScope`).
+    pub scope: crate::hooks::visitor_seeds::ConsolidationScope,
 }
 
 /// Everything the prompter needs to render the consolidation question for
@@ -237,6 +237,38 @@ pub enum ConsolidationChoice {
     Abort,
 }
 
+/// What a side has to be chosen *for*: the conflicted key paths, or the file
+/// as a whole when no seed base makes per-key reasoning possible.
+///
+/// Renders itself so the prompts and the merge-abort message read as prose in
+/// the whole-file case instead of printing a one-element key list (#902).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictSubject {
+    /// The key paths both sides changed.
+    Keys(Vec<String>),
+    /// No usable seed base — the choice is the entire file.
+    WholeFile,
+}
+
+impl ConflictSubject {
+    /// The conflicted key paths, or an empty slice in the whole-file case.
+    pub fn keys(&self) -> &[String] {
+        match self {
+            ConflictSubject::Keys(keys) => keys,
+            ConflictSubject::WholeFile => &[],
+        }
+    }
+}
+
+impl std::fmt::Display for ConflictSubject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConflictSubject::Keys(keys) => write!(f, "{}", keys.join(", ")),
+            ConflictSubject::WholeFile => write!(f, "the whole file — no seed provenance"),
+        }
+    }
+}
+
 /// Answer to "these keys were changed on both sides — which version wins?".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConflictSide {
@@ -257,7 +289,7 @@ pub trait ConsolidationPrompter {
         ConsolidationChoice::Abort
     }
 
-    fn on_conflicts(&mut self, _filename: &str, _keys: &[String]) -> ConflictSide {
+    fn on_conflicts(&mut self, _filename: &str, _subject: &ConflictSubject) -> ConflictSide {
         ConflictSide::Abort
     }
 }

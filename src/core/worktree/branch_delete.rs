@@ -1813,7 +1813,7 @@ fn plan_refined_files(
                 filename: p.filename.clone(),
                 adopt_keys: p.adopt_keys.clone(),
                 conflict_keys: p.conflict_keys.clone(),
-                whole_file: p.whole_file,
+                scope: p.scope,
             })
             .collect(),
     };
@@ -1826,12 +1826,13 @@ fn plan_refined_files(
         ConsolidationChoice::Consolidate => {
             let mut resolved_files = Vec::new();
             for prepared in prepared {
+                let subject = prepared.conflict_subject();
                 let content = match prepared.resolution {
                     visitor_seeds::PreviewResolution::Resolved(content) => content,
                     visitor_seeds::PreviewResolution::NeedsSide {
                         target_priority,
                         source_priority,
-                    } => match sink.on_conflicts(&prepared.filename, &prepared.conflict_keys) {
+                    } => match sink.on_conflicts(&prepared.filename, &subject) {
                         ConflictSide::Target => target_priority,
                         ConflictSide::Source => source_priority,
                         ConflictSide::Abort => {
@@ -4252,7 +4253,11 @@ mod tests {
             self.choice
         }
 
-        fn on_conflicts(&mut self, _filename: &str, _keys: &[String]) -> crate::core::ConflictSide {
+        fn on_conflicts(
+            &mut self,
+            _filename: &str,
+            _subject: &crate::core::ConflictSubject,
+        ) -> crate::core::ConflictSide {
             self.side
         }
     }

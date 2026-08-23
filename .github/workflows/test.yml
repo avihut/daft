@@ -69,10 +69,15 @@ jobs:
           if echo "$files" | grep -qE '^(src/|Cargo\.(toml|lock)|mise\.(toml|lock)|lefthook\.yml)'; then
             rust=true
           fi
-          if echo "$files" | grep -qE '^(tests/|scripts/)'; then
+          if echo "$files" | grep -qE '^(tests/|scripts/|mise-tasks/setup/)'; then
             tests=true
           fi
-          if echo "$files" | grep -qE '^xtask/'; then
+          # `xtask` also gates the drift tests, so it must watch every file
+          # they read: the shared symlink farm and the install manifests that
+          # keep their own copy of it (#903). A PR touching only one of those
+          # would otherwise run no job at all, leaving the gate that exists
+          # for exactly that edit unexecuted.
+          if echo "$files" | grep -qE '^(xtask/|mise-tasks/setup/_rust_symlink_lib\.sh|dist-workspace\.toml|flake\.nix|packaging/)'; then
             xtask=true
           fi
           if echo "$files" | grep -qE '^(man/|docs/cli/)'; then
@@ -540,18 +545,16 @@ jobs:
           chmod +x target/release/daft
           chmod +x target/release/xtask
 
-          # Create symlinks for the multicall binary
-          cd target/release
-          for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
-                     git-worktree-branch git-worktree-branch-delete \
-                     git-worktree-prune git-worktree-carry \
-                     git-worktree-fetch \
-                     git-worktree-list git-worktree-merge git-worktree-sync \
-                     git-worktree-exec git-daft \
-                     daft-go daft-start daft-remove daft-rename; do
-            ln -sf daft "$cmd"
-          done
-          cd ../..
+          # The multicall farm comes from the same list the dev setup uses
+          # (mise-tasks/setup/rust and the shared-bin path source this too),
+          # so a new argv[0] arm reaches CI without a second hand-copied
+          # list. The list this replaced had drifted: it was missing
+          # git-worktree-push and git-worktree-warm, so a scenario invoking
+          # either passed locally (the dev farm has every name) and exited
+          # 127 here — or flaked green when a `doctor --fix` scenario
+          # happened to run first and backfilled the shared bin dir (#903).
+          source mise-tasks/setup/_rust_symlink_lib.sh
+          create_daft_symlinks target/release
 
           echo "${{ github.workspace }}/target/release" >> $GITHUB_PATH
 

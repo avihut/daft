@@ -1985,3 +1985,278 @@ mod ci_gate_drift {
         }
     }
 }
+
+/// The multicall symlink farm must match the binary's argv[0] table, and
+/// every install path must build it from the one list (#903).
+#[cfg(test)]
+mod multicall_farm_drift {
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+
+    const LIB: &str = "mise-tasks/setup/_rust_symlink_lib.sh";
+    const MAIN: &str = "src/main.rs";
+    const WORKFLOW: &str = ".github/workflows/test.yml";
+
+    /// The install paths that cannot source a bash list and therefore keep
+    /// their own copy: the window in each file that holds the names, as
+    /// (file, opening marker, closing marker).
+    const INSTALLERS: &[(&str, &str, &str)] = &[
+        // cargo-dist generates the Homebrew formula and the shell/msi
+        // installers from this — it is what `brew install` actually ships.
+        ("dist-workspace.toml", "[dist.bin-aliases]", "\n["),
+        ("flake.nix", "for cmd in", "; do"),
+        // The distro packages. Install *and* removal: a name added to one
+        // and not the other leaves a dangling /usr/bin symlink behind.
+        ("packaging/deb/postinst", "for cmd in", "; do"),
+        ("packaging/deb/prerm", "for cmd in", "; do"),
+        ("packaging/aur/PKGBUILD", "for cmd in", "; do"),
+        // The opening delimiter is part of the marker: splitting on a bare
+        // `"""` would end the window on the quote that starts it.
+        ("Cargo.toml", "post_install_script = \"\"\"", "\"\"\""),
+        ("Cargo.toml", "pre_uninstall_script = \"\"\"", "\"\"\""),
+        // `daft doctor` checks and repairs the farm; a name it does not
+        // know is one `doctor --fix` never creates while reporting all
+        // symlinks present.
+        (
+            "src/doctor/installation.rs",
+            "const EXPECTED_SYMLINKS",
+            "];",
+        ),
+    ];
+
+    /// Farm entries that deliberately have no dispatch arm, and why. An
+    /// entry here is a bug someone decided not to fix yet — not a blessing.
+    const ORPHANS: &[(&str, &str)] = &[(
+        "git-worktree-checkout-branch",
+        "#904 — installed by the Homebrew formula and flake.nix too; \
+         restoring the arm or retiring the name is a deliberate call",
+    )];
+
+    fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask/ sits directly under the repo root")
+            .to_path_buf()
+    }
+
+    fn read(rel: &str) -> String {
+        let path = repo_root().join(rel);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()))
+    }
+
+    /// Is this a name the multicall table dispatches on (as opposed to a
+    /// shortcut alias, which `src/shortcuts.rs` resolves to one of these)?
+    fn is_multicall_name(name: &str) -> bool {
+        name.starts_with("git-worktree-") || name.starts_with("daft-") || name == "git-daft"
+    }
+
+    /// The `daft_multicall_symlinks=( … )` array, multicall names only.
+    fn farm() -> BTreeSet<String> {
+        let text = read(LIB);
+        let body = text
+            .split_once("daft_multicall_symlinks=(")
+            .unwrap_or_else(|| panic!("{LIB} declares `daft_multicall_symlinks=(`"))
+            .1;
+        let body = body
+            .split_once("\n)")
+            .unwrap_or_else(|| panic!("{LIB}'s symlink array is closed by a `)` on its own line"))
+            .0;
+        body.lines()
+            .map(|line| line.split('#').next().unwrap_or("").trim())
+            .filter(|name| !name.is_empty())
+            .filter(|name| is_multicall_name(name))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The names `src/main.rs` dispatches on, read from the top-level arms
+    /// of `match resolved { … }` only — the nested subcommand match inside
+    /// the `git-daft` arm is indented deeper and is not a symlink table.
+    fn dispatch_arms() -> BTreeSet<String> {
+        let text = read(MAIN);
+        let body = text
+            .split_once("let result = match resolved {")
+            .unwrap_or_else(|| panic!("{MAIN} dispatches through `match resolved`"))
+            .1;
+        let body = body
+            .split_once("\n        _ =>")
+            .unwrap_or_else(|| panic!("{MAIN}'s multicall match ends in a catch-all arm"))
+            .0;
+
+        let mut arms = BTreeSet::new();
+        for line in body.lines() {
+            // Top-level arms sit at exactly eight spaces; anything deeper
+            // belongs to a nested match. A long or-pattern is wrapped by
+            // rustfmt onto continuation lines that start with `|`, so the
+            // arm's `=>` may be on a later line than its first name —
+            // reading only `"…" … =>` lines would drop both names silently.
+            let Some(rest) = line.strip_prefix("        ") else {
+                continue;
+            };
+            if rest.starts_with(' ') || !(rest.starts_with('"') || rest.starts_with('|')) {
+                continue;
+            }
+            let patterns = rest.split_once("=>").map_or(rest, |(p, _)| p);
+            let found: Vec<&str> = patterns
+                .split('"')
+                .skip(1)
+                .step_by(2)
+                .filter(|name| is_multicall_name(name))
+                .collect();
+            assert!(
+                !found.is_empty() || !patterns.contains("git-worktree-"),
+                "the {MAIN} arm scanner saw a line it could not read a name out of — the \
+                 source shape changed and this gate would silently under-report:\n{line}"
+            );
+            arms.extend(found.into_iter().map(str::to_string));
+        }
+        assert!(
+            arms.len() > 10,
+            "the {MAIN} arm scanner found only {} names — it stopped matching the source \
+             shape, so this whole gate is vacuous",
+            arms.len()
+        );
+        arms
+    }
+
+    #[test]
+    fn every_dispatch_arm_has_a_symlink() {
+        let missing: Vec<_> = dispatch_arms().difference(&farm()).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "{MAIN} answers to {missing:?}, but {LIB} does not create the symlink(s), so no \
+             install path ships the command. Add them to `daft_multicall_symlinks`."
+        );
+    }
+
+    #[test]
+    fn every_symlink_has_a_dispatch_arm() {
+        let arms = dispatch_arms();
+        let exempt: BTreeSet<String> = ORPHANS.iter().map(|(n, _)| n.to_string()).collect();
+        let orphaned: Vec<_> = farm()
+            .difference(&arms)
+            .filter(|name| !exempt.contains(*name))
+            .cloned()
+            .collect();
+        assert!(
+            orphaned.is_empty(),
+            "{LIB} creates {orphaned:?}, which {MAIN} has no arm for — invoking one prints \
+             \"Unknown command\" and exits 1. Add the arm, or drop the name from the farm."
+        );
+    }
+
+    /// Same spirit as the settings registry's exemption check: a documented
+    /// orphan that stopped being one must lose its exemption, or the next
+    /// real orphan hides behind it.
+    #[test]
+    fn every_orphan_exemption_is_still_needed() {
+        let (arms, farm) = (dispatch_arms(), farm());
+        for (name, why) in ORPHANS {
+            assert!(
+                farm.contains(*name),
+                "{name} is exempted here but {LIB} no longer creates it — drop the \
+                 ORPHANS entry ({why})"
+            );
+            assert!(
+                !arms.contains(*name),
+                "{name} now has a dispatch arm in {MAIN} — drop the ORPHANS entry ({why})"
+            );
+        }
+    }
+
+    /// Multicall names inside one installer's window. Tokenised rather than
+    /// parsed so the same reader works on TOML strings and bare Nix words.
+    fn installer_names(file: &str, open: &str, close: &str) -> BTreeSet<String> {
+        let text = read(file);
+        let body = text
+            .split_once(open)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{file} still contains `{open}` — this gate reads the \
+                 symlink list from that window and cannot find it"
+                )
+            })
+            .1;
+        let body = body
+            .split_once(close)
+            .unwrap_or_else(|| panic!("{file}'s symlink list is no longer closed by `{close}`"))
+            .0;
+
+        let names: BTreeSet<String> = body
+            .split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+            .filter(|token| is_multicall_name(token))
+            .map(str::to_string)
+            .collect();
+        assert!(
+            names.len() > 10,
+            "found only {} multicall names in {file} — the window moved and this gate went \
+             vacuous",
+            names.len()
+        );
+        names
+    }
+
+    /// The farm list is bash, so CI and the shell suite can source it; the
+    /// installers cannot, so they are gated instead of unified. A command
+    /// missing here is one a real `brew install` / `nix build` never ships.
+    #[test]
+    fn every_dispatch_arm_ships_in_every_installer() {
+        let arms = dispatch_arms();
+        let exempt: BTreeSet<String> = ORPHANS.iter().map(|(n, _)| n.to_string()).collect();
+        for (file, open, close) in INSTALLERS {
+            let shipped = installer_names(file, open, close);
+            let missing: Vec<_> = arms.difference(&shipped).cloned().collect();
+            assert!(
+                missing.is_empty(),
+                "{file} does not install {missing:?}, so users of that install path get \
+                 \"command not found\" for a command {MAIN} answers to."
+            );
+            let unknown: Vec<_> = shipped
+                .difference(&arms)
+                .filter(|name| !exempt.contains(*name))
+                .cloned()
+                .collect();
+            assert!(
+                unknown.is_empty(),
+                "{file} installs {unknown:?}, which {MAIN} has no arm for — those symlinks \
+                 print \"Unknown command\" and exit 1."
+            );
+        }
+    }
+
+    /// CI must build the farm from the same list, not from a copy of it.
+    #[test]
+    fn ci_sources_the_shared_symlink_list() {
+        let text = read(WORKFLOW);
+        let doc: serde_yaml::Value = serde_yaml::from_str(&text)
+            .unwrap_or_else(|e| panic!("{WORKFLOW} parses as YAML: {e}"));
+        let steps = doc
+            .get("jobs")
+            .and_then(|j| j.get("integration-tests"))
+            .and_then(|j| j.get("steps"))
+            .and_then(serde_yaml::Value::as_sequence)
+            .unwrap_or_else(|| panic!("{WORKFLOW} has an `integration-tests` job with steps"));
+        let setup = steps
+            .iter()
+            .find(|s| s.get("name").and_then(serde_yaml::Value::as_str) == Some("Set up binary"))
+            .unwrap_or_else(|| {
+                panic!("{WORKFLOW}'s integration-tests job has a `Set up binary` step")
+            });
+        let run = setup
+            .get("run")
+            .and_then(serde_yaml::Value::as_str)
+            .expect("`Set up binary` is a run: step");
+
+        assert!(
+            run.contains("_rust_symlink_lib.sh") && run.contains("create_daft_symlinks"),
+            "`Set up binary` must source {LIB} and call create_daft_symlinks, so CI's farm \
+             cannot drift from the dev one (#903). Step body:\n{run}"
+        );
+        assert!(
+            !run.contains("for cmd in git-worktree-"),
+            "`Set up binary` hand-copies the symlink list again — that is the drift {LIB} \
+             exists to prevent (#903). Step body:\n{run}"
+        );
+    }
+}

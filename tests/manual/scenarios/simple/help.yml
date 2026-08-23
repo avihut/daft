@@ -5,11 +5,19 @@ description:
 
 # The binary dispatches on argv[0] (src/main.rs); each symlink below is one
 # arm of that table. The no-args form (`daft`, `git-daft`) is covered by
-# unknown-command/no-args.yml. Only names CI's "Set up binary" step creates
-# appear here — a symlink it does not create would pass locally (the dev farm
-# has them all) and in CI exit 127 or, worse, flake: a `doctor --fix`
-# scenario that happens to run first backfills the whole farm into the
-# shared bin dir.
+# unknown-command/no-args.yml.
+#
+# Every install path — the dev setup, the shared bin dir, CI's "Set up
+# binary" step, the shell suite's framework — now builds the farm from the
+# one list in mise-tasks/setup/_rust_symlink_lib.sh (#903), so any name in
+# it may be exercised here. That makes this file CI's guard on the farm: a
+# name the farm stops creating fails here with 127 instead of silently
+# losing coverage. (Before #903 CI hand-copied a shorter list, so a name it
+# lacked passed locally and flaked in CI — a `doctor --fix` scenario running
+# first would backfill the whole farm into the shared bin dir.)
+#
+# `git-worktree-checkout-branch` is deliberately absent: it is in the farm
+# but has no dispatch arm, so it exits 1 with "Unknown command" (#904).
 
 repos: []
 
@@ -46,6 +54,47 @@ steps:
 
   - name: git-worktree-sync --help exits successfully
     run: git-worktree-sync --help 2>&1
+    expect:
+      exit_code: 0
+
+  # Reachable in CI only since #903 put CI on the shared farm list.
+  - name: git-worktree-push --help exits successfully
+    run: git-worktree-push --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-warm --help exits successfully
+    run: git-worktree-warm --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-exec --help exits successfully
+    run: git-worktree-exec --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-branch --help exits successfully
+    run: git-worktree-branch --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-branch-delete --help exits successfully
+    run: git-worktree-branch-delete --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-list --help exits successfully
+    run: git-worktree-list --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-merge --help exits successfully
+    run: git-worktree-merge --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-daft --help exits successfully
+    run: git-daft --help 2>&1
     expect:
       exit_code: 0
 
