@@ -38,9 +38,9 @@ pub struct CollectorTarget {
 
 pub struct CollectorContext {
     /// Whether worker threads should construct their `GitCommand` with
-    /// gitoxide enabled. `GitCommand` itself is not `Sync` (it holds a
-    /// `OnceLock<gix::ThreadSafeRepository>` whose internals contain
-    /// non-thread-safe `Rc`s), so each worker constructs its own.
+    /// gitoxide enabled. `GitCommand` itself is not `Sync` (its per-cwd
+    /// `gix::ThreadSafeRepository` handles contain non-thread-safe `Rc`s —
+    /// gix is built without `parallel`), so each worker constructs its own.
     pub use_gitoxide: bool,
     pub base_branch: String,
     pub remote_name: String,

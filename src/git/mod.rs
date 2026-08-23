@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 mod branch;
 pub mod cancel;
@@ -126,7 +128,15 @@ pub struct GitCommand {
     /// #733) is the sole opt-in source via `with_gitoxide`, so call sites
     /// that never thread the setting stay on the subprocess backend.
     pub(crate) use_gitoxide: bool,
-    pub(crate) gix_repo: OnceLock<gix::ThreadSafeRepository>,
+    /// Repository handles discovered by the gix arm, keyed by the working
+    /// directory each was discovered from (#868). One `GitCommand` lives
+    /// across the `chdir`s a worktree walk makes, and a worktree-scoped
+    /// question (current branch, toplevel, git dir) must be answered for
+    /// the worktree the process is standing in — exactly what the subprocess
+    /// arm gets for free from `git`'s own cwd discovery. Keying by cwd keeps
+    /// the discover-once property a command relies on (#584) while a walk
+    /// that returns to a worktree reuses its handle.
+    gix_repos: Mutex<HashMap<PathBuf, gix::ThreadSafeRepository>>,
     /// Shared cancellation flag observed by the long-running subprocess
     /// seams (fetch/pull/rebase/push). `None` keeps those seams
     /// cancel-unaware; commands that own a Ctrl+C handler (sync) inject
@@ -142,7 +152,7 @@ impl GitCommand {
         Self {
             quiet,
             use_gitoxide: false,
-            gix_repo: OnceLock::new(),
+            gix_repos: Mutex::new(HashMap::new()),
             cancel: None,
             push_supervision: None,
         }
@@ -187,24 +197,50 @@ impl GitCommand {
             .is_some_and(cancel::CancelFlag::is_cancelled)
     }
 
-    /// Lazily discover and open the git repository via gitoxide.
+    /// The gitoxide repository the process working directory is inside,
+    /// discovered lazily and cached per working directory (see `gix_repos`).
     /// Returns a thread-local Repository handle.
+    ///
+    /// Asks `current_dir()` on every call on purpose: a cached handle is
+    /// only reused for the directory it was discovered from, so a command
+    /// that `chdir`s between worktrees gets each worktree's own answer rather
+    /// than the first one's (#868). The subprocess arm has this property
+    /// because every `git` child discovers from its cwd; this is the gix
+    /// arm's equivalent.
     pub(crate) fn gix_repo(&self) -> Result<gix::Repository> {
-        if let Some(ts) = self.gix_repo.get() {
-            return Ok(ts.to_thread_local());
-        }
         let cwd = std::env::current_dir().context("Failed to get current working directory")?;
-        let ts = gix::ThreadSafeRepository::discover(&cwd)
-            .context("Failed to discover git repository via gitoxide")?;
-        #[cfg(test)]
-        DISCOVER_COUNT.with(|c| c.set(c.get() + 1));
-        // If another thread raced us via set(), that's fine - use whichever won
-        let _ = self.gix_repo.set(ts);
-        Ok(self
-            .gix_repo
-            .get()
-            .expect("OnceLock should be set")
-            .to_thread_local())
+        self.gix_repo_at(&cwd)
+    }
+
+    /// The cached handle for `dir`, discovering on first use.
+    ///
+    /// The mutex is interior mutability behind `&self`, not contention:
+    /// gix is built without its `parallel` feature, so `ThreadSafeRepository`
+    /// holds `Rc`s and `GitCommand` is `!Sync` — no two threads ever share
+    /// one (`list_stream.rs` builds a command per worker for exactly that
+    /// reason). Holding it across `discover` is therefore deadlock-free by
+    /// construction.
+    fn gix_repo_at(&self, dir: &Path) -> Result<gix::Repository> {
+        let shared = {
+            let mut repos = self
+                .gix_repos
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match repos.get(dir) {
+                // `ThreadSafeRepository` is a bundle of `Arc`s: cloning it out
+                // keeps the lock scoped to the lookup.
+                Some(ts) => ts.clone(),
+                None => {
+                    let ts = gix::ThreadSafeRepository::discover(dir)
+                        .context("Failed to discover git repository via gitoxide")?;
+                    #[cfg(test)]
+                    DISCOVER_COUNT.with(|c| c.set(c.get() + 1));
+                    repos.insert(dir.to_path_buf(), ts.clone());
+                    ts
+                }
+            }
+        };
+        Ok(shared.to_thread_local())
     }
 }
 
@@ -374,6 +410,80 @@ mod tests {
         assert_eq!(
             separate, 3,
             "independent instances each discover (guards the probe)"
+        );
+    }
+
+    /// #868 regression: one `GitCommand` reused across a `chdir` must answer
+    /// worktree-scoped questions for the worktree the process is standing
+    /// in. The predecessor cached a single discovery per process, so every
+    /// later worktree inherited the first one's branch, toplevel, git dir,
+    /// and dirtiness — silently, and only on the gix arm.
+    #[test]
+    #[serial_test::serial]
+    fn gix_arm_answers_for_the_worktree_the_process_stands_in() {
+        for var in GIT_ENV_VARS {
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let main_wt = base.join("main");
+        std::fs::create_dir(&main_wt).unwrap();
+        git_at(&main_wt, &["init", "-b", "main"]);
+        git_at(&main_wt, &["commit", "--allow-empty", "-m", "seed"]);
+        let feat_wt = base.join("feat");
+        git_at(
+            &main_wt,
+            &["worktree", "add", "-b", "feat", feat_wt.to_str().unwrap()],
+        );
+        // Only the linked worktree is dirty, so a stale handle is caught by
+        // the status question too, not just by ref/path questions.
+        std::fs::write(feat_wt.join("wip.txt"), "wip").unwrap();
+
+        let _cwd_guard = CwdGuard::new();
+        let git = GitCommand::new(true).with_gitoxide(true);
+
+        // Discover from the main worktree first…
+        std::env::set_current_dir(&main_wt).unwrap();
+        reset_discover_count();
+        assert_eq!(git.symbolic_ref_short_head().unwrap(), "main");
+        assert_eq!(git.get_current_worktree_path().unwrap(), main_wt);
+        assert!(!git.has_uncommitted_changes().unwrap());
+        let main_git_dir = git.get_git_dir().unwrap();
+        assert_eq!(discover_count(), 1);
+
+        // …then walk into the linked one with the same command: every
+        // worktree-scoped answer must follow the cwd.
+        std::env::set_current_dir(&feat_wt).unwrap();
+        assert_eq!(
+            git.symbolic_ref_short_head().unwrap(),
+            "feat",
+            "current branch must be the worktree's own, not the first one's"
+        );
+        assert_eq!(git.get_current_worktree_path().unwrap(), feat_wt);
+        assert!(
+            git.has_uncommitted_changes().unwrap(),
+            "dirtiness must be read from the worktree the process stands in"
+        );
+        assert_ne!(
+            git.get_git_dir().unwrap(),
+            main_git_dir,
+            "a linked worktree has its own git dir"
+        );
+        assert!(git.rev_parse_is_inside_work_tree().unwrap());
+        assert!(!git.rev_parse_is_bare_repository().unwrap());
+        assert_eq!(discover_count(), 2, "a new cwd is a new discovery");
+
+        // Returning to a worktree reuses its handle rather than discovering
+        // again — the cache is keyed by cwd, not dropped.
+        std::env::set_current_dir(&main_wt).unwrap();
+        assert_eq!(git.symbolic_ref_short_head().unwrap(), "main");
+        assert_eq!(
+            discover_count(),
+            2,
+            "revisiting a worktree must reuse its cached handle"
         );
     }
 
