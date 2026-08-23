@@ -69,10 +69,15 @@ jobs:
           if echo "$files" | grep -qE '^(src/|Cargo\.(toml|lock)|mise\.(toml|lock)|lefthook\.yml)'; then
             rust=true
           fi
-          if echo "$files" | grep -qE '^(tests/|scripts/)'; then
+          if echo "$files" | grep -qE '^(tests/|scripts/|mise-tasks/setup/)'; then
             tests=true
           fi
-          if echo "$files" | grep -qE '^xtask/'; then
+          # `xtask` also gates the drift tests, so it must watch every file
+          # they read: the shared symlink farm and the install manifests that
+          # keep their own copy of it (#903). A PR touching only one of those
+          # would otherwise run no job at all, leaving the gate that exists
+          # for exactly that edit unexecuted.
+          if echo "$files" | grep -qE '^(xtask/|mise-tasks/setup/_rust_symlink_lib\.sh|dist-workspace\.toml|flake\.nix|packaging/)'; then
             xtask=true
           fi
           if echo "$files" | grep -qE '^(man/|docs/cli/)'; then

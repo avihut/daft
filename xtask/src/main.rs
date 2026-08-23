@@ -2001,10 +2001,27 @@ mod multicall_farm_drift {
     /// their own copy: the window in each file that holds the names, as
     /// (file, opening marker, closing marker).
     const INSTALLERS: &[(&str, &str, &str)] = &[
-        // cargo-dist generates the Homebrew formula and every installer
-        // from this — it is what real installs actually ship.
+        // cargo-dist generates the Homebrew formula and the shell/msi
+        // installers from this — it is what `brew install` actually ships.
         ("dist-workspace.toml", "[dist.bin-aliases]", "\n["),
         ("flake.nix", "for cmd in", "; do"),
+        // The distro packages. Install *and* removal: a name added to one
+        // and not the other leaves a dangling /usr/bin symlink behind.
+        ("packaging/deb/postinst", "for cmd in", "; do"),
+        ("packaging/deb/prerm", "for cmd in", "; do"),
+        ("packaging/aur/PKGBUILD", "for cmd in", "; do"),
+        // The opening delimiter is part of the marker: splitting on a bare
+        // `"""` would end the window on the quote that starts it.
+        ("Cargo.toml", "post_install_script = \"\"\"", "\"\"\""),
+        ("Cargo.toml", "pre_uninstall_script = \"\"\"", "\"\"\""),
+        // `daft doctor` checks and repairs the farm; a name it does not
+        // know is one `doctor --fix` never creates while reporting all
+        // symlinks present.
+        (
+            "src/doctor/installation.rs",
+            "const EXPECTED_SYMLINKS",
+            "];",
+        ),
     ];
 
     /// Farm entries that deliberately have no dispatch arm, and why. An
@@ -2070,22 +2087,29 @@ mod multicall_farm_drift {
         let mut arms = BTreeSet::new();
         for line in body.lines() {
             // Top-level arms sit at exactly eight spaces; anything deeper
-            // belongs to a nested match.
+            // belongs to a nested match. A long or-pattern is wrapped by
+            // rustfmt onto continuation lines that start with `|`, so the
+            // arm's `=>` may be on a later line than its first name —
+            // reading only `"…" … =>` lines would drop both names silently.
             let Some(rest) = line.strip_prefix("        ") else {
                 continue;
             };
-            if rest.starts_with(' ') || !rest.starts_with('"') {
+            if rest.starts_with(' ') || !(rest.starts_with('"') || rest.starts_with('|')) {
                 continue;
             }
-            let Some((patterns, _)) = rest.split_once("=>") else {
-                continue;
-            };
-            for name in patterns.split('|') {
-                let name = name.trim().trim_matches('"');
-                if is_multicall_name(name) {
-                    arms.insert(name.to_string());
-                }
-            }
+            let patterns = rest.split_once("=>").map_or(rest, |(p, _)| p);
+            let found: Vec<&str> = patterns
+                .split('"')
+                .skip(1)
+                .step_by(2)
+                .filter(|name| is_multicall_name(name))
+                .collect();
+            assert!(
+                !found.is_empty() || !patterns.contains("git-worktree-"),
+                "the {MAIN} arm scanner saw a line it could not read a name out of — the \
+                 source shape changed and this gate would silently under-report:\n{line}"
+            );
+            arms.extend(found.into_iter().map(str::to_string));
         }
         assert!(
             arms.len() > 10,
