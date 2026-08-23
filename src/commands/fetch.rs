@@ -161,7 +161,7 @@ fn run_in_current_repo(args: Args) -> Result<()> {
         remote_name: settings.remote.clone(),
         quiet: args.quiet,
     };
-    let git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(wt_config.quiet);
     let project_root = get_project_root()?;
 
     // Merge CLI flags with config-based args

@@ -555,11 +555,11 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     }
 
     // In-repo already (guarded above), so local-or-global resolves the repo
-    // and reads its config — honoring a repo-local `daft.gitoxide = false`
-    // opt-out on this layout-mutating command (#733).
+    // and reads its config — honoring repo-local settings on this
+    // layout-mutating command.
     let settings = DaftSettings::load_local_or_global()?;
     let global_config = GlobalConfig::load().unwrap_or_default();
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(false);
 
     // Remember which branch the user is on, for CD target after transform
     let user_branch = crate::get_current_branch().ok();
@@ -581,12 +581,9 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     };
 
     // Detect default branch
-    let default_branch = crate::remote::get_default_branch_local(
-        &get_git_common_dir()?,
-        &settings.remote,
-        settings.use_gitoxide,
-    )
-    .unwrap_or_else(|_| "main".to_string());
+    let default_branch =
+        crate::remote::get_default_branch_local(&get_git_common_dir()?, &settings.remote)
+            .unwrap_or_else(|_| "main".to_string());
 
     // Read current state
     let mut source = transform::read_source_state(&git, &default_branch)?;

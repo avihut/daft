@@ -1,10 +1,11 @@
 //! Gitoxide-based implementations of git operations.
 //!
-//! Each function provides a native Rust alternative to a git subprocess call.
-//! These are called from `GitCommand` methods by default (#883): a bare
-//! `GitCommand` takes the gix arm. `daft.gitoxide` only reaches sites that
-//! thread it through `with_gitoxide`, where `false` is the explicit opt-out
-//! — until the switch itself goes.
+//! Each function is the in-process implementation behind a `GitCommand`
+//! method — the only one since #883 removed the git-subprocess arm and its
+//! opt-out setting (gitoxide had been the default since #733). The
+//! operations with no gix implementation (clone, fetch, push, pull, rebase,
+//! `worktree add`/`remove`, stash, config writes, …) stay subprocess calls
+//! on `GitCommand`; they are not a backend, they are how the op is done.
 
 use anyhow::{Context, Result};
 use gix::Repository;

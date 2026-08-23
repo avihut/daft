@@ -319,7 +319,7 @@ pub(crate) fn resolve_base_branch(
     git_common_dir: &std::path::Path,
     settings: &DaftSettings,
 ) -> String {
-    get_default_branch_local(git_common_dir, &settings.remote, settings.use_gitoxide)
+    get_default_branch_local(git_common_dir, &settings.remote)
         .unwrap_or_else(|_| "master".to_string())
 }
 
@@ -477,7 +477,6 @@ fn run_blocking(args: Args) -> Result<()> {
         None => SortSpec::default_sort().with_stat(stat),
     };
     let compute_mtime = sort_spec.needs_mtime();
-    let git = git.with_gitoxide(settings.use_gitoxide);
     // The forge gate may silently drop a default-sourced `pr` column from the
     // printed table. Structured emit keeps the ungated set instead: its
     // schema must stay stable across repos and health states, so `pr_*`

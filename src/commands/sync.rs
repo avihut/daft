@@ -400,11 +400,7 @@ fn run_sequential(args: Args, settings: DaftSettings, cancel: &Arc<CancelFlag>) 
     let force = args.force();
 
     // Determine the default branch for display annotations
-    let default_branch = get_default_branch_local(
-        &get_git_common_dir()?,
-        &settings.remote,
-        settings.use_gitoxide,
-    )?;
+    let default_branch = get_default_branch_local(&get_git_common_dir()?, &settings.remote)?;
 
     // Phase 1: Prune stale branches and worktrees
     let prune_result = run_prune_phase(&mut output, &settings, force, cancel);
@@ -432,7 +428,7 @@ fn run_sequential(args: Args, settings: DaftSettings, cancel: &Arc<CancelFlag>) 
         .iter()
         .map(|v| IncludeFilter::parse(v))
         .collect();
-    let git_for_email = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
+    let git_for_email = GitCommand::new(true);
     let user_email: Option<String> = git_for_email.config_get("user.email").ok().flatten();
     // Build the included-branch set only when ownership filtering is active
     // (i.e. when user.email is known or explicit --include filters are present).
@@ -519,7 +515,7 @@ fn run_sequential(args: Args, settings: DaftSettings, cancel: &Arc<CancelFlag>) 
         }
         if let Some(ref included) = included_branches {
             // Collect all worktree branches and skip those not included.
-            let git_tmp = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
+            let git_tmp = GitCommand::new(output.is_quiet());
             if let Ok(wts) = fetch::get_all_worktrees_with_branches(&git_tmp) {
                 for (_, branch) in wts {
                     if !included.contains(&branch) {
@@ -558,9 +554,7 @@ fn run_tui(
     cancel: &Arc<CancelFlag>,
     cancel_render: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
-    let git = GitCommand::new(false)
-        .with_gitoxide(settings.use_gitoxide)
-        .with_cancel(Arc::clone(cancel));
+    let git = GitCommand::new(false).with_cancel(Arc::clone(cancel));
     let project_root = get_project_root()?;
 
     // Clean up stale temp worktrees from previous crashes.
@@ -570,9 +564,8 @@ fn run_tui(
 
     // ── Pre-TUI: collect worktree info (no fetch needed) ───────────────
     let git_common_dir = get_git_common_dir()?;
-    let base_branch =
-        get_default_branch_local(&git_common_dir, &settings.remote, settings.use_gitoxide)
-            .unwrap_or_else(|_| "master".to_string());
+    let base_branch = get_default_branch_local(&git_common_dir, &settings.remote)
+        .unwrap_or_else(|_| "master".to_string());
 
     let current_path = crate::core::repo::get_current_worktree_path()
         .ok()
@@ -692,9 +685,8 @@ fn run_tui(
     let shared_hooks_config = Arc::new(hooks_config.clone());
     // One witness for the whole run: the workers share its single fetch, and
     // the post-TUI deferred pass must judge on the same data the table showed.
-    let shared_merged_witness = crate::commands::forge_cache::merged_witness(
-        &GitCommand::new(true).with_gitoxide(settings.use_gitoxide),
-    );
+    let shared_merged_witness =
+        crate::commands::forge_cache::merged_witness(&GitCommand::new(true));
     let orch_merged_witness = Arc::clone(&shared_merged_witness);
 
     use crate::output::tui::Column;
@@ -828,9 +820,7 @@ fn run_tui(
     // dir, and DAG workers shouldn't each pay a subprocess for it (#599).
     // The resolved path doubles as the governor's profile identity (#678).
     let shared_hook_path = if shared_push {
-        GitCommand::new(true)
-            .with_gitoxide(settings.use_gitoxide)
-            .pre_push_hook_path(&project_root)
+        GitCommand::new(true).pre_push_hook_path(&project_root)
     } else {
         None
     };
@@ -897,12 +887,7 @@ fn run_tui(
 
     let orchestrator_handle = std::thread::spawn(move || {
         // ── Phase 1: Fetch ─────────────────────────────────────────────
-        if !sync_shared::run_fetch_phase(
-            &tx,
-            orch_settings.use_gitoxide,
-            &orch_settings.remote,
-            Some(&orch_cancel),
-        ) {
+        if !sync_shared::run_fetch_phase(&tx, &orch_settings.remote, Some(&orch_cancel)) {
             return;
         }
 
@@ -930,9 +915,7 @@ fn run_tui(
             // read, no `ls-remote`), so nothing here can stall on the network.
             // The cancel flag is still carried so any git op added to this
             // block inherits the orchestrator's teardown (#663).
-            let git = GitCommand::new(false)
-                .with_gitoxide(orch_settings.use_gitoxide)
-                .with_cancel(Arc::clone(&orch_cancel));
+            let git = GitCommand::new(false).with_cancel(Arc::clone(&orch_cancel));
             let mut sink = NullBridge;
             prune::identify_gone_branches(
                 &git,
@@ -1171,7 +1154,6 @@ fn run_tui(
                             task.worktree_path.as_ref(),
                             base,
                             &shared_project_root,
-                            &shared_settings,
                             shared_force,
                             shared_autostash,
                             outcomes,
@@ -1304,7 +1286,6 @@ fn run_tui(
             )
             .collect();
         let ctx = Arc::new(list_stream::CollectorContext {
-            use_gitoxide: settings.use_gitoxide,
             base_branch: base_branch.clone(),
             remote_name: settings.remote.clone(),
             ownership_strategy: settings.ownership_strategy,
@@ -1535,7 +1516,6 @@ fn spawn_post_task_refresh(
         is_detached: false,
     };
     let ctx = Arc::new(list_stream::CollectorContext {
-        use_gitoxide: settings.use_gitoxide,
         base_branch: base_branch.to_string(),
         remote_name: settings.remote.clone(),
         ownership_strategy: settings.ownership_strategy,
@@ -1578,9 +1558,7 @@ fn execute_update_task(
         return execute_local_branch_update(branch_name, project_root);
     };
 
-    let git = GitCommand::new(false)
-        .with_gitoxide(settings.use_gitoxide)
-        .with_cancel(Arc::clone(cancel));
+    let git = GitCommand::new(false).with_cancel(Arc::clone(cancel));
 
     let worktree_name = target_path
         .strip_prefix(project_root)
@@ -1637,7 +1615,6 @@ fn execute_rebase_task(
     worktree_path: Option<&PathBuf>,
     base_branch: &str,
     project_root: &std::path::Path,
-    settings: &DaftSettings,
     force: bool,
     autostash: bool,
     branch_outcomes: &HashSet<TaskOutcome>,
@@ -1675,9 +1652,7 @@ fn execute_rebase_task(
     }
     let target_path = &target_path;
 
-    let git = GitCommand::new(false)
-        .with_gitoxide(settings.use_gitoxide)
-        .with_cancel(Arc::clone(cancel));
+    let git = GitCommand::new(false).with_cancel(Arc::clone(cancel));
 
     let worktree_name = target_path
         .strip_prefix(project_root)
@@ -1849,9 +1824,7 @@ fn execute_push_batch_task(
         ))
     });
     let git = attach_push_supervision(
-        GitCommand::new(false)
-            .with_gitoxide(settings.use_gitoxide)
-            .with_cancel(Arc::clone(cancel)),
+        GitCommand::new(false).with_cancel(Arc::clone(cancel)),
         governor_unit.as_ref(),
         settings.sync_push_timeout,
         jobserver_env,
@@ -2050,9 +2023,7 @@ fn execute_push_task(
         Arc::new(gov.begin_unit(branch_name, crate::governor::ports::UnitClass::Background))
     });
     let git = attach_push_supervision(
-        GitCommand::new(false)
-            .with_gitoxide(settings.use_gitoxide)
-            .with_cancel(Arc::clone(cancel)),
+        GitCommand::new(false).with_cancel(Arc::clone(cancel)),
         governor_unit.as_ref(),
         settings.sync_push_timeout,
         jobserver_env,
@@ -2253,10 +2224,9 @@ fn run_prune_phase(
     force: bool,
     cancel: &Arc<CancelFlag>,
 ) -> Result<prune::PruneResult> {
-    let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(true);
     let params = prune::PruneParams {
         force,
-        use_gitoxide: settings.use_gitoxide,
         is_quiet: output.is_quiet(),
         remote_name: settings.remote.clone(),
         prune_cd_target: settings.prune_cd_target,
@@ -2297,9 +2267,7 @@ fn run_update_phase(
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
     };
-    let git = GitCommand::new(wt_config.quiet)
-        .with_gitoxide(settings.use_gitoxide)
-        .with_cancel(Arc::clone(cancel));
+    let git = GitCommand::new(wt_config.quiet).with_cancel(Arc::clone(cancel));
     let project_root = get_project_root()?;
 
     // Merge config-based args
@@ -2497,9 +2465,7 @@ fn run_rebase_phase(
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
     };
-    let git = GitCommand::new(wt_config.quiet)
-        .with_gitoxide(settings.use_gitoxide)
-        .with_cancel(Arc::clone(cancel));
+    let git = GitCommand::new(wt_config.quiet).with_cancel(Arc::clone(cancel));
     let project_root = get_project_root()?;
 
     let params = rebase::RebaseParams {
@@ -2656,9 +2622,7 @@ fn run_push_phase(
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
     };
-    let mut git = GitCommand::new(wt_config.quiet)
-        .with_gitoxide(settings.use_gitoxide)
-        .with_cancel(Arc::clone(cancel));
+    let mut git = GitCommand::new(wt_config.quiet).with_cancel(Arc::clone(cancel));
     // Per-unit wall-clock budget (#678): run_push arms a fresh clock for
     // every branch this sequential engine pushes.
     if settings.sync_push_timeout.is_some() {

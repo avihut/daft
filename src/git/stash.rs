@@ -25,16 +25,14 @@ impl GitCommand {
 
     /// Check if working directory has uncommitted or untracked changes
     pub fn has_uncommitted_changes(&self) -> Result<bool> {
-        if self.use_gitoxide {
-            let repo = self.gix_repo()?;
-            // Capability check, not preference: standing in a bare repository
-            // (or inside a git dir) there is no worktree for gix to diff, so
-            // the question falls through to `git status`, which reports git's
-            // own error for that state. The handle follows the cwd (#868), so
-            // this is the only way a bare handle is seen here.
-            if repo.workdir().is_some() {
-                return oxide::has_uncommitted_changes(&repo);
-            }
+        let repo = self.gix_repo()?;
+        // Capability check: standing in a bare repository (or inside a git
+        // dir) there is no worktree for gix to diff, so the question falls
+        // through to `git status`, which reports git's own error for that
+        // state. The handle follows the cwd (#868), so this is the only way
+        // a bare handle is seen here.
+        if repo.workdir().is_some() {
+            return oxide::has_uncommitted_changes(&repo);
         }
         let output = Command::new("git")
             .args(["status", "--porcelain"])

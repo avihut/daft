@@ -12,7 +12,6 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use crate::catalog::{Catalog, RegistrationFacts, RegistrationOutcome};
-use crate::core::settings::DaftSettings;
 use crate::core::worktree::remove_repo::resolve_repo;
 use crate::output::{CliOutput, Output, OutputConfig};
 
@@ -67,8 +66,7 @@ pub fn run() -> Result<()> {
     let args = Args::parse_from(argv);
     let mut output = CliOutput::new(OutputConfig::new(args.quiet, args.verbose));
 
-    let settings = DaftSettings::load().unwrap_or_default();
-    let target = resolve_repo(args.path.as_deref(), settings.use_gitoxide)?;
+    let target = resolve_repo(args.path.as_deref())?;
     let facts =
         crate::catalog::gather_facts(&target.bare_git_dir, &target.project_root, None, None)
             .context("could not gather repository facts")?;

@@ -350,7 +350,6 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         multi_remote_enabled: settings.multi_remote_enabled,
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_upstream: settings.checkout_upstream,
-        use_gitoxide: settings.use_gitoxide,
     };
 
     // Plan-execute rail timeline (#651): the rail opens the moment the
@@ -463,7 +462,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     }
 
     // Resolve branches against the remote
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(false);
     let remote_branches = match git.list_remote_branches(&bare_params.remote_name) {
         Ok(branches) => branches,
         Err(e) => {
@@ -1038,7 +1037,6 @@ fn create_satellite_worktrees(
                 &worktree_path,
                 &bare_params.remote_name,
                 settings.checkout_upstream,
-                settings.use_gitoxide,
                 &mut sink,
             )
         };
@@ -1265,7 +1263,6 @@ fn create_satellite_worktrees_tui(
     // Shared data for the worker thread
     let shared_remote_name = Arc::new(bare_params.remote_name.clone());
     let shared_checkout_upstream = settings.checkout_upstream;
-    let shared_use_gitoxide = settings.use_gitoxide;
     let shared_ownership_strategy = settings.ownership_strategy;
     let shared_default_branch = Arc::new(base_result.default_branch.clone());
     let shared_satellite_paths = Arc::new(satellite_paths);
@@ -1365,7 +1362,6 @@ fn create_satellite_worktrees_tui(
                 spawn_post_clone_refresh(
                     base,
                     bp,
-                    shared_use_gitoxide,
                     &shared_default_branch,
                     &shared_remote_name,
                     shared_ownership_strategy,
@@ -1465,7 +1461,6 @@ fn create_satellite_worktrees_tui(
                     worktree_path,
                     &shared_remote_name,
                     shared_checkout_upstream,
-                    shared_use_gitoxide,
                     &mut sink,
                 )
             };
@@ -1535,7 +1530,6 @@ fn create_satellite_worktrees_tui(
                     spawn_post_clone_refresh(
                         branch,
                         worktree_path,
-                        shared_use_gitoxide,
                         &shared_default_branch,
                         &shared_remote_name,
                         shared_ownership_strategy,
@@ -1948,7 +1942,6 @@ fn run_clone_install(
 fn spawn_post_clone_refresh(
     branch_name: &str,
     path: &std::path::Path,
-    use_gitoxide: bool,
     base_branch: &str,
     remote_name: &str,
     ownership_strategy: OwnershipStrategy,
@@ -1963,7 +1956,6 @@ fn spawn_post_clone_refresh(
         is_detached: false,
     };
     let ctx = Arc::new(list_stream::CollectorContext {
-        use_gitoxide,
         base_branch: base_branch.to_string(),
         remote_name: remote_name.to_string(),
         ownership_strategy,

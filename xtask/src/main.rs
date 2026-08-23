@@ -155,23 +155,12 @@ struct MatrixEntry {
     config: &'static [(&'static str, &'static str)],
 }
 
-const MATRIX: &[MatrixEntry] = &[
-    MatrixEntry {
-        name: "default",
-        config: &[],
-    },
-    // #733: gitoxide is the stable default, so "default" exercises the gix
-    // paths; this entry keeps the git-subprocess backend fully covered and
-    // proves the opt-out key genuinely forces it.
-    MatrixEntry {
-        name: "subprocess",
-        // The constant, not a literal: if the key is ever renamed again, a
-        // stale literal here would still be *written* while daft read the new
-        // name, so the entry would quietly run gitoxide and the whole matrix
-        // would stay green with zero subprocess coverage.
-        config: &[(daft::settings::keys::GITOXIDE, "false")],
-    },
-];
+// One entry since #883 removed the git-subprocess backend and its opt-out
+// setting; the matrix machinery itself goes with the job unification (#885).
+const MATRIX: &[MatrixEntry] = &[MatrixEntry {
+    name: "default",
+    config: &[],
+}];
 
 /// Get the clap Command for a given command name
 fn get_command_for_name(command_name: &str) -> Option<clap::Command> {

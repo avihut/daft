@@ -116,14 +116,11 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     // commonly runs from outside any repo (e.g. `daft repo remove ./old-repo`
     // from a parent directory), where a plain `DaftSettings::load()` would
     // fail — its `config_get` bottoms out in `gix::discover(&cwd)`. But when
-    // it *is* run from inside a repo, that repo's local `daft.gitoxide = false`
-    // opt-out must win over a global default (#733): the removal walks and
-    // deletes worktrees on the chosen backend, so silently ignoring the
-    // opt-out is exactly the case a user disables gitoxide to avoid. The
-    // helper reads local config when there is a repo and falls back to global
-    // when there is not.
+    // it *is* run from inside a repo, that repo's local settings must win
+    // over the global ones. The helper reads local config when there is a
+    // repo and falls back to global when there is not.
     let settings = crate::core::settings::DaftSettings::load_local_or_global()?;
-    let resolved = resolve_target(args.repo.as_deref(), args.purge, settings.use_gitoxide)?;
+    let resolved = resolve_target(args.repo.as_deref(), args.purge)?;
 
     if args.purge {
         purge(args, &resolved, &settings)
@@ -198,13 +195,13 @@ fn catalog_row_for(
 ///
 /// `purge` is not a formality: the two modes need different halves, and
 /// resolving the half a mode never reads only invents failures for it.
-fn resolve_target(needle: Option<&str>, purge: bool, use_gitoxide: bool) -> Result<Resolved> {
+fn resolve_target(needle: Option<&str>, purge: bool) -> Result<Resolved> {
     use crate::core::worktree::remove_repo::resolve_repo;
 
     let catalog = open_catalog()?;
 
     let Some(needle) = needle else {
-        let target = resolve_repo(None, use_gitoxide)?;
+        let target = resolve_repo(None)?;
         let row = catalog_row_for(catalog.as_ref(), &target)?;
         return Ok(Resolved {
             row,
@@ -240,7 +237,7 @@ fn resolve_target(needle: Option<&str>, purge: bool, use_gitoxide: bool) -> Resu
         // repaired. The directory may also be gone outright: that is the
         // stale-entry case, which the default handles and `--purge` reports.
         let on_disk = match purge && Path::new(&row.path).is_dir() {
-            true => Some(resolve_repo(Some(Path::new(&row.path)), use_gitoxide)?),
+            true => Some(resolve_repo(Some(Path::new(&row.path)))?),
             false => None,
         };
         return Ok(Resolved {
@@ -252,7 +249,7 @@ fn resolve_target(needle: Option<&str>, purge: bool, use_gitoxide: bool) -> Resu
     }
 
     let pathish = crate::catalog::needle_looks_pathish(needle);
-    let target = match resolve_repo(Some(Path::new(needle)), use_gitoxide) {
+    let target = match resolve_repo(Some(Path::new(needle))) {
         Ok(target) => target,
         // Error copy follows the needle's shape. A path-shaped needle asked
         // for a path, so the filesystem's complaint ("… is not inside a Git
@@ -403,8 +400,6 @@ fn purge(
 ) -> Result<()> {
     use crate::core::worktree::remove_repo::enumerate_worktrees;
 
-    let use_gitoxide = settings.use_gitoxide;
-
     let Some(target) = &resolved.on_disk else {
         // Only the catalog route can lack an on-disk target: the entry points
         // at a directory that is already gone.
@@ -429,7 +424,7 @@ fn purge(
     // cwd-outside-any-repo invocation working.
     let hooks_config = crate::core::settings::load_hooks_config_global()?;
 
-    let worktrees = enumerate_worktrees(target, use_gitoxide)?;
+    let worktrees = enumerate_worktrees(target)?;
 
     // Computed before the dry run returns: a preview of a guessed target that
     // does not mention the guess is exactly the preview a cautious user runs
@@ -773,13 +768,6 @@ fn build_tui_rows(
         WorktreeInfo, get_branch_creation_timestamp, get_commit_metadata,
     };
 
-    // A bare command answers from gix since #883, same as every site that
-    // threads the setting — so there is nothing to thread here. This runs
-    // once at TUI bootstrap for a typical 1-10 worktrees and stays
-    // in-process; `get_commit_metadata` falls back to `git log` if the gix
-    // read fails.
-    let git = crate::git::GitCommand::new(true);
-
     worktrees
         .iter()
         .map(|w| {
@@ -787,7 +775,7 @@ fn build_tui_rows(
             let mut info = WorktreeInfo::empty(label);
             info.path = Some(w.path.clone());
 
-            let (ts, hash, subj) = get_commit_metadata(&w.path, &git);
+            let (ts, hash, subj) = get_commit_metadata(&w.path);
             info.last_commit_timestamp = ts;
             info.last_commit_hash = hash;
             info.last_commit_subject = subj;

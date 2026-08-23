@@ -688,7 +688,6 @@ fn run_branch_delete(
     let params = branch_delete::BranchDeleteParams {
         branches: branches.to_vec(),
         force,
-        use_gitoxide: settings.use_gitoxide,
         is_quiet: quiet,
         remote_name: settings.remote.clone(),
         delete_remote: if local_only {
@@ -736,7 +735,7 @@ fn run_branch_delete(
     // the cwd, and a relative `core.hooksPath` resolves per worktree. The
     // residue is cosmetic — a miss renders the hook through the fallback
     // spinner path instead of the reported pre-push phase.
-    let probe_git = GitCommand::new(quiet).with_gitoxide(settings.use_gitoxide);
+    let probe_git = GitCommand::new(quiet);
     let push_hook_will_render = params.delete_remote
         && !params.no_verify
         && params.push_verify == PushVerify::Always
@@ -792,9 +791,7 @@ fn run_branch_delete(
         if matches!(scope, RemoveScope::CrossRepo { .. }) {
             bridge = bridge.without_prompts();
         }
-        let witness = crate::commands::forge_cache::merged_witness(
-            &GitCommand::new(true).with_gitoxide(settings.use_gitoxide),
-        );
+        let witness = crate::commands::forge_cache::merged_witness(&GitCommand::new(true));
         branch_delete::execute(
             &params,
             push_presenter.as_ref(),
@@ -926,7 +923,6 @@ fn run_rename_inner(
         new_branch: new_branch.to_string(),
         no_remote,
         dry_run,
-        use_gitoxide: settings.use_gitoxide,
         is_quiet: output.is_quiet(),
         remote_name: settings.remote.clone(),
         multi_remote_enabled: settings.multi_remote_enabled,
@@ -943,7 +939,7 @@ fn run_rename_inner(
 
     // The pre-push hook run on the remote rename renders through this
     // presenter — keep the spinner off when it will fire (#599).
-    let probe_git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
+    let probe_git = GitCommand::new(output.is_quiet());
     let push_hook_will_render = !params.dry_run
         && !params.no_remote
         && !params.no_verify

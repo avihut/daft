@@ -38,7 +38,7 @@ pub fn worktree_children(
         bare_git_dir: PathBuf::from(&row.git_common_dir),
         project_root: PathBuf::from(&row.path),
     };
-    let mut children: Vec<WorktreeChild> = enumerate_worktrees(&target, true)
+    let mut children: Vec<WorktreeChild> = enumerate_worktrees(&target)
         .ok()?
         .into_iter()
         .map(|entry| WorktreeChild {

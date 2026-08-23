@@ -53,30 +53,17 @@ cleanup_bench() {
     rm -rf "$TEMP_BASE"
 }
 
-# Run a hyperfine comparison.
+# Run a hyperfine comparison: daft vs git, one shared --prepare.
 #
-# Usage: bench_compare [--two-way] <name> <prepare_cmd> <daft_cmd> <git_cmd> [extra hyperfine flags...]
+# Usage: bench_compare <name> <prepare_cmd> <daft_cmd> <git_cmd> [extra hyperfine flags...]
 #
-# By default runs a three-way comparison: daft, daft-subprocess, and git.
-# Each command gets its own --prepare that toggles the gitoxide config key
-# in the isolated GIT_CONFIG_GLOBAL so the right variant is active: daft
-# runs the stable gitoxide default (key unset, #733), daft-subprocess opts
-# out (key false).
-#
-# Pass --two-way as the first argument for a two-way comparison
-# (daft vs git only), which skips the backend toggle entirely and uses
-# a single --prepare for both commands.
+# (Until #883 this also ran a git-subprocess variant of daft, toggled through
+# the gitoxide opt-out key; that backend is gone.)
 #
 # WARNING: Extra flags passed via "$@" must NOT include --prepare, because
 # hyperfine pairs --prepare flags positionally with commands. Adding an
 # extra --prepare would shift the pairing and produce wrong results.
 bench_compare() {
-    local two_way=false
-    if [[ "${1:-}" == "--two-way" ]]; then
-        two_way=true
-        shift
-    fi
-
     local name="$1"
     local prepare_cmd="$2"
     local daft_cmd="$3"
@@ -94,53 +81,16 @@ bench_compare() {
         show_output=(--show-output)
     fi
 
-    if [[ "$two_way" == true ]]; then
-        # Two-way mode: daft vs git, single --prepare, no backend toggle
-        hyperfine \
-            --warmup 3 \
-            --min-runs 10 \
-            "${show_output[@]}" \
-            "$@" \
-            --prepare "$prepare_cmd" \
-            --export-json "$json_out" \
-            --export-markdown "$md_out" \
-            --command-name "daft" "$daft_cmd" \
-            --command-name "git" "$git_cmd"
-    else
-        # Backend toggle: gitoxide default (key unset) vs subprocess opt-out
-        # (key false), set in the isolated GIT_CONFIG_GLOBAL
-        local unset_backend="git config --file \"$GIT_CONFIG_GLOBAL\" --unset-all daft.gitoxide 2>/dev/null || [ \$? -eq 5 ]"
-        local set_subprocess="git config --file \"$GIT_CONFIG_GLOBAL\" daft.gitoxide false || exit 1"
-
-        # Build per-command prepare: base cleanup + backend toggle
-        local prep_daft=""
-        local prep_subprocess=""
-        local prep_git=""
-        if [[ -n "$prepare_cmd" ]]; then
-            prep_daft="$prepare_cmd && $unset_backend"
-            prep_subprocess="$prepare_cmd && $set_subprocess"
-            prep_git="$prepare_cmd && $unset_backend"
-        else
-            prep_daft="$unset_backend"
-            prep_subprocess="$set_subprocess"
-            prep_git="$unset_backend"
-        fi
-
-        # Three-way mode: daft, daft-subprocess, git
-        hyperfine \
-            --warmup 3 \
-            --min-runs 10 \
-            "${show_output[@]}" \
-            "$@" \
-            --prepare "$prep_daft" \
-            --prepare "$prep_subprocess" \
-            --prepare "$prep_git" \
-            --export-json "$json_out" \
-            --export-markdown "$md_out" \
-            --command-name "daft" "$daft_cmd" \
-            --command-name "daft-subprocess" "$daft_cmd" \
-            --command-name "git" "$git_cmd"
-    fi
+    hyperfine \
+        --warmup 3 \
+        --min-runs 10 \
+        "${show_output[@]}" \
+        "$@" \
+        --prepare "$prepare_cmd" \
+        --export-json "$json_out" \
+        --export-markdown "$md_out" \
+        --command-name "daft" "$daft_cmd" \
+        --command-name "git" "$git_cmd"
 
     log_success "Saved: $json_out"
 }
