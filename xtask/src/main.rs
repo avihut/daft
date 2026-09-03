@@ -2380,4 +2380,23 @@ mod mise_upgrade_drift {
              so it is checked here. Step body:\n{run}"
         );
     }
+
+    #[test]
+    fn unresolved_version_lists_are_fatal() {
+        let run = upgrade_run();
+        assert!(
+            run.contains("Failed to resolve tool version list"),
+            "the upgrade step must fail when mise reports \
+             `Failed to resolve tool version list`. mise WARNs rather than \
+             errors there, and a run that resolved nothing is otherwise \
+             indistinguishable from a run that had nothing to do — both are \
+             green and open no PR, which is how #926 hid for four months and \
+             #803's no-op hid before it. Grep the step's own output and exit \
+             non-zero.\n\
+             \n\
+             Match that sentinel specifically, not WARNs in general: `newer \
+             <tool> release X ignored by minimum_release_age` is also a WARN \
+             and fires on healthy runs. Step body:\n{run}"
+        );
+    }
 }
