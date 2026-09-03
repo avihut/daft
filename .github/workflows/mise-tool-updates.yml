@@ -65,13 +65,21 @@ jobs:
         #            still carries 1.95.x patches, which is what we want here.
         #   neovim — the vfox backend records no concrete version in mise.lock;
         #            mise.toml keeps the "stable" tag selector deliberately.
-        env:
-          # Per-invocation override for the [settings] minimum_release_age in
-          # mise.toml. Empty string falls through to the file-level setting
-          # (the safe default for cron + unchecked manual runs); "0" disables
-          # the cooldown for this single run when manually requested.
-          MISE_MINIMUM_RELEASE_AGE: ${{ inputs.bypass_cooldown && '0' || '' }}
-        run: mise upgrade --bump --exclude rust --exclude neovim
+        #
+        # The cooldown override is a CLI flag, never an `env:` entry, and the
+        # xtask `mise_upgrade_drift` test holds that. An Actions `env:` value
+        # is always *set*: the false branch of a `${{ ... && ... || '' }}`
+        # expression exports the variable as the empty string rather than
+        # omitting it. mise cannot parse "" as a duration, WARNs instead of
+        # erroring, and resolves no version list for any tool — so `--bump`
+        # finds nothing to bump and the job goes green having done nothing.
+        # That is #926: zero PRs from 2026-05-10 (#489) to 2026-09-04, which
+        # also meant #804's `--bump` fix never took effect. An unset variable
+        # is what falls through to mise.toml's `[settings] minimum_release_age`
+        # — and leaving it unset is why the 7d default is not duplicated here.
+        run:
+          mise upgrade --bump --exclude rust --exclude neovim ${{
+          inputs.bypass_cooldown && '--minimum-release-age 0' || '' }}
 
       - name: Open PR
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
@@ -84,7 +92,7 @@ jobs:
           body: |
             Automated `mise upgrade` run.
 
-            ${{ inputs.bypass_cooldown && '**Cooldown bypassed.** Triggered manually with `bypass_cooldown=true` — `MISE_MINIMUM_RELEASE_AGE=0` was exported for this run, so the 7-day cooldown in `mise.toml` was disabled and the newest available versions (including fresh releases) were picked.' || 'Versions selected are subject to the 7-day cooldown set in `mise.toml` `[settings] minimum_release_age = "7d"`.' }}
+            ${{ inputs.bypass_cooldown && '**Cooldown bypassed.** Triggered manually with `bypass_cooldown=true` — `--minimum-release-age 0` was passed for this run, so the 7-day cooldown in `mise.toml` was disabled and the newest available versions (including fresh releases) were picked.' || 'Versions selected are subject to the 7-day cooldown set in `mise.toml` `[settings] minimum_release_age = "7d"`.' }}
 
             Runs `mise upgrade --bump`, so the pins in `mise.toml` advance too,
             not just `mise.lock`. `rust` and `neovim` are excluded on purpose:
