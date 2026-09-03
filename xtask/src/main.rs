@@ -2260,3 +2260,124 @@ mod multicall_farm_drift {
         );
     }
 }
+
+/// Drift gate for the daily tool-upgrade job (#926).
+///
+/// `.github/workflows/mise-tool-updates.yml` is the only thing keeping the
+/// pins in `mise.toml` current, and its characteristic failure is doing
+/// nothing while reporting success. It has now silently no-op'd twice from two
+/// unrelated causes — a missing `--bump` (#803), then an empty
+/// `MISE_MINIMUM_RELEASE_AGE` (#926) — and neither was visible from the
+/// outside: the job goes green in fifteen seconds and opens no PR, which is
+/// also exactly what a genuinely up-to-date day looks like. Nothing else in
+/// the repo can tell those two apart, so these tests hold the properties that
+/// separate them.
+///
+/// Same home as `ci_gate_drift` / `multicall_farm_drift`, for the same reason:
+/// the `xtask-test` CI job, the `xtask-tests` pre-merge ring, and
+/// `mise run test:xtask` already run it — one check, three surfaces, no new
+/// wiring.
+#[cfg(test)]
+mod mise_upgrade_drift {
+    use std::path::{Path, PathBuf};
+
+    const WORKFLOW: &str = ".github/workflows/mise-tool-updates.yml";
+    const ENV_KNOB: &str = "MISE_MINIMUM_RELEASE_AGE";
+
+    fn workflow() -> serde_yaml::Value {
+        let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask/ sits directly under the repo root")
+            .join(WORKFLOW);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
+        serde_yaml::from_str(&text)
+            .unwrap_or_else(|e| panic!("{} parses as YAML: {e}", path.display()))
+    }
+
+    /// The body of the step that runs `mise upgrade`.
+    fn upgrade_run() -> String {
+        let doc = workflow();
+        let steps = doc
+            .get("jobs")
+            .and_then(|j| j.get("upgrade"))
+            .and_then(|j| j.get("steps"))
+            .and_then(serde_yaml::Value::as_sequence)
+            .unwrap_or_else(|| panic!("{WORKFLOW} has an `upgrade` job with steps"))
+            .clone();
+        steps
+            .iter()
+            .filter_map(|s| s.get("run").and_then(serde_yaml::Value::as_str))
+            .find(|r| r.contains("mise upgrade"))
+            .unwrap_or_else(|| panic!("{WORKFLOW}'s `upgrade` job runs `mise upgrade`"))
+            .to_string()
+    }
+
+    /// Is `key` used as a mapping key anywhere in the document? Workflow-level
+    /// `env:`, job-level, and step-level all land here, so the check does not
+    /// depend on where someone puts the block.
+    fn set_as_mapping_key(node: &serde_yaml::Value, key: &str) -> bool {
+        match node {
+            serde_yaml::Value::Mapping(m) => m
+                .iter()
+                .any(|(k, v)| k.as_str() == Some(key) || set_as_mapping_key(v, key)),
+            serde_yaml::Value::Sequence(s) => s.iter().any(|v| set_as_mapping_key(v, key)),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn cooldown_override_is_never_an_env_var() {
+        assert!(
+            !set_as_mapping_key(&workflow(), ENV_KNOB),
+            "{WORKFLOW} must not set `{ENV_KNOB}` through `env:` — pass \
+             `--minimum-release-age` on the command line instead.\n\
+             \n\
+             An Actions `env:` value is always *set*. The false branch of a \
+             `${{{{ inputs.x && '0' || '' }}}}` expression therefore exports the \
+             variable as the empty string rather than omitting it, and mise \
+             cannot parse \"\" as a duration: it WARNs instead of erroring, \
+             resolves no version list for any tool, and `--bump` finds nothing \
+             to bump. The job stays green having done nothing — that is #926, \
+             which cost every pin four months of drift and silently neutered \
+             #804's `--bump` fix along the way.\n\
+             \n\
+             Only an *unset* variable falls through to mise.toml's `[settings] \
+             minimum_release_age`. Spelling the 7d default here instead would \
+             duplicate a value mise.toml owns, which is its own drift bug."
+        );
+    }
+
+    #[test]
+    fn upgrade_bumps_pins_and_wires_the_bypass_as_a_flag() {
+        let run = upgrade_run();
+        assert!(
+            run.contains("--bump"),
+            "`mise upgrade` must keep `--bump` in {WORKFLOW}: every tool in \
+             mise.toml is pinned exactly, and an exact pin admits exactly one \
+             version, so a bare `mise upgrade` can never move anything (#803). \
+             Do not drop it without also unpinning the tools. Step body:\n{run}"
+        );
+        assert!(
+            run.contains("--minimum-release-age") && run.contains("inputs.bypass_cooldown"),
+            "the `bypass_cooldown` input must reach `mise upgrade` as \
+             `--minimum-release-age`, or the workflow_dispatch input is a lie: \
+             it only runs on manual dispatch, so an inert bypass would go \
+             unnoticed indefinitely — exactly how #926 survived four months. \
+             Discriminating check when editing this: with the cooldown the job \
+             offers the newest release older than 7d, and with the bypass it \
+             offers the newest release outright. If both agree, the flag is \
+             doing nothing. Step body:\n{run}"
+        );
+        assert!(
+            !run.contains(ENV_KNOB),
+            "the cooldown knob must not reach mise as an inline env prefix \
+             either: `{ENV_KNOB}=\"\" mise upgrade` sets it to the empty \
+             string for that command and breaks version resolution exactly \
+             the way the `env:` block did (#926). The parsed-YAML check in \
+             `cooldown_override_is_never_an_env_var` cannot see it — an \
+             inline prefix is part of the `run:` string, not a mapping key — \
+             so it is checked here. Step body:\n{run}"
+        );
+    }
+}
