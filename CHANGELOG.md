@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.7](https://github.com/avihut/daft/compare/v1.27.6...v1.27.7) - 2026-09-03
+
+
+### Bug Fixes
+
+- **deps**: Bump quinn-proto to 0.11.17 (GHSA-4w2j-m93h-cj5j) (#924)
+- **deps**: Clear yanked bisync + chacha20 blocking every PR (#922)
 ## [1.27.6](https://github.com/avihut/daft/compare/v1.27.5...v1.27.6) - 2026-08-23
 
 
