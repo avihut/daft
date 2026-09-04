@@ -172,10 +172,19 @@ pub fn local_head_branch(common_dir: &Path) -> Option<String> {
 
 /// Does `refs/heads/<branch>` resolve in the repo at `common_dir`?
 ///
-/// Failure to ask (spawn error, not a repo) reads as "no", the conservative
-/// answer for the one caller: it declines to name a branch it could not
-/// confirm. Both pipes are redirected — `--quiet` silences stdout for some
-/// subcommands and never touches stderr (CLAUDE.md, Test Hygiene).
+/// Anything short of a confirmed hit reads as "no": a non-zero exit (no such
+/// ref, or the path is not a repo) and a failure to spawn at all, alike. That
+/// is the conservative answer for the one caller — it declines to name a
+/// branch it could not confirm.
+///
+/// Note this fails in the *opposite* direction to
+/// [`crate::core::worktree::push`]'s `remote_head_is_set`, and both are right:
+/// "no" here means *don't name it*, "yes" there means *don't stamp it*. Each
+/// resolves its unknown to the inaction, which is why they disagree on the
+/// boolean and agree on the behaviour. Don't "fix" one to match the other.
+///
+/// Both pipes are redirected — `--quiet` silences stdout for some subcommands
+/// and never touches stderr (CLAUDE.md, Test Hygiene).
 fn local_branch_exists(common_dir: &Path, branch: &str) -> bool {
     crate::utils::git_command_at(common_dir)
         .args([
