@@ -1,8 +1,11 @@
 name: Catalog default branch survives a refresh
 description:
-  A repo created by daft init records its default branch. Re-registering it
+  "A repo created by daft init records its default branch. Re-registering it
   (daft repo add) must not erase that, because a repo with no origin/HEAD has
-  nothing else to resolve from and daft go <repo> would dead-end (#925).
+  nothing else to resolve from and daft go <repo> would dead-end (#925). The
+  converse matters just as much — re-registration must still be able to correct
+  the value when the branch is renamed, or preserving it would freeze a repo on
+  a branch that no longer exists."
 
 steps:
   - name: Init a repo with no remote
@@ -58,3 +61,30 @@ steps:
       exit_code: 0
       output_not_contains:
         - "could not determine the default branch"
+
+  # Preserving a recorded value is only half of it. Once "unknown" stops
+  # overwriting, nothing corrects a value that has gone *stale* either — unless
+  # re-registration gathers the branch instead of shrugging. Rename the default
+  # branch and re-register: without the bare-HEAD rung in gather_facts, the row
+  # would keep saying "master" for the life of the repo, with no command able to
+  # fix it, and `daft go` would send the user to a branch that no longer exists.
+  - name: Rename the default branch
+    run: git branch -m master main
+    cwd: "$WORK_DIR/dbsurvive/master"
+    expect:
+      exit_code: 0
+
+  - name: Re-register after the rename
+    run: daft repo add
+    cwd: "$WORK_DIR/dbsurvive/master"
+    expect:
+      exit_code: 0
+
+  - name: The catalog followed the rename
+    run: daft repo info dbsurvive --format json
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"default_branch": "main"'
+      output_not_contains:
+        - '"default_branch": "master"'

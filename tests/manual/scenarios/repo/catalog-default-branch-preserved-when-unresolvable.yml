@@ -1,0 +1,79 @@
+name: An unresolvable default branch is preserved, not invented
+description:
+  "The companion to catalog-default-branch-survives-refresh, where a refresh
+  that gathers no branch is rescued by re-deriving one from the repo's bare
+  HEAD. Here HEAD itself is no help: it names a branch the repo has never had,
+  the state a repo reaches by being initialized on one branch name and only ever
+  given another. `git symbolic-ref HEAD` reports the pointer and never whether
+  it resolves, so the fallback must decline — and with nothing left to
+  re-derive, the recorded value survives only because the store reads a caller's
+  `None` as ignorance rather than as an instruction to clear (#925)."
+
+steps:
+  - name: Init a repo with no remote
+    run: daft init dbkeep --layout contained
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/dbkeep/master"
+
+  - name: Commit so the branch is born
+    run: |
+      echo '# dbkeep' > README.md &&
+      git add README.md &&
+      git commit -q -m "init"
+    cwd: "$WORK_DIR/dbkeep/master"
+    expect:
+      exit_code: 0
+
+  - name: init recorded the default branch
+    run: daft repo info dbkeep --format json
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"default_branch": "master"'
+
+  - name: Strand HEAD on a branch that does not exist
+    run: git --git-dir=$WORK_DIR/dbkeep/.git symbolic-ref HEAD refs/heads/legacy
+    expect:
+      exit_code: 0
+
+  # Neither fallback can answer now: no remote was ever added, and HEAD names
+  # 'legacy' while only 'master' exists.
+  - name: Nothing is left to re-derive the branch from
+    run: |
+      git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo "NO-ORIGIN-HEAD"
+      git show-ref --verify --quiet refs/heads/legacy || echo "HEAD-IS-DANGLING"
+    cwd: "$WORK_DIR/dbkeep/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "NO-ORIGIN-HEAD"
+        - "HEAD-IS-DANGLING"
+
+  - name: Re-register the repo
+    run: daft repo add
+    cwd: "$WORK_DIR/dbkeep/master"
+    expect:
+      exit_code: 0
+
+  # Two ways to fail, and the assertions separate them: 'null' means the
+  # refresh erased what it did not know, 'legacy' means the fallback named a
+  # branch no ref confirms.
+  - name: The recorded branch survived, and no phantom replaced it
+    run: daft repo info dbkeep --format json
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"default_branch": "master"'
+      output_not_contains:
+        - '"default_branch": null'
+        - "legacy"
+
+  - name: Cross-repo go still resolves it
+    run: daft go dbkeep
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "could not determine the default branch"

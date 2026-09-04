@@ -1,0 +1,113 @@
+name: Publishing the default branch adopts origin/HEAD
+description:
+  "A repo born from daft init and given a remote by hand never gets
+  refs/remotes/origin/HEAD — only git clone or git remote set-head create one
+  (#925). daft stamps it when it publishes the repo's own declared default
+  branch, and only then: SetUpstream fires on every upstream-less push, so
+  publishing a feature branch first must leave origin/HEAD alone rather than
+  point it at whatever happened to go out first."
+
+steps:
+  - name: Create an empty bare remote
+    run: git init -q --bare $BASE_DIR/remotes/pubhead-remote
+    expect:
+      exit_code: 0
+
+  - name: Init a repo and give it that remote by hand
+    run: |
+      daft init pubhead --layout contained &&
+      cd $WORK_DIR/pubhead/master &&
+      echo '# pubhead' > README.md &&
+      git add README.md &&
+      git commit -q -m "init" &&
+      git remote add origin $BASE_DIR/remotes/pubhead-remote
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/pubhead/master"
+
+  - name: Baseline — git remote add created no origin/HEAD
+    run: git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo "UNSET"
+    cwd: "$WORK_DIR/pubhead/master"
+    expect:
+      exit_code: 0
+      output_contains: ["UNSET"]
+
+  # The guard's whole reason for existing. The push below really is a
+  # SetUpstream with no origin/HEAD present, so a guard that stopped at "first
+  # upstream-less push" would stamp here and declare feature-x the repo's
+  # default branch forever.
+  - name: Create a feature branch
+    run: daft start feature-x 2>&1
+    cwd: "$WORK_DIR/pubhead/master"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/pubhead/feature-x"
+
+  - name: Publish the feature branch first
+    run: daft push 2>&1
+    cwd: "$WORK_DIR/pubhead/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Pushed 'feature-x' to 'origin'"
+
+  # Tracking config is the proof the push really took the SetUpstream arm —
+  # only `git push --set-upstream` writes it. Without it the next assertion
+  # would pass for the wrong reason: a push that never happened also leaves
+  # origin/HEAD unset.
+  - name: It really was a set-upstream push, and it reached the remote
+    run: |
+      git config branch.feature-x.remote
+      git ls-remote --heads origin feature-x
+    cwd: "$WORK_DIR/pubhead/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "origin"
+        - "feature-x"
+
+  - name: But origin/HEAD is untouched — feature-x is not the default branch
+    run: git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo "UNSET"
+    cwd: "$WORK_DIR/pubhead/master"
+    expect:
+      exit_code: 0
+      output_contains: ["UNSET"]
+      output_not_contains: ["feature-x"]
+
+  - name: Now publish the branch the repo's own HEAD declares
+    run: daft push 2>&1
+    cwd: "$WORK_DIR/pubhead/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Pushed 'master' to 'origin'"
+
+  - name: origin/HEAD now points at the default branch
+    run: git symbolic-ref refs/remotes/origin/HEAD
+    cwd: "$WORK_DIR/pubhead/master"
+    expect:
+      exit_code: 0
+      output_contains: ["refs/remotes/origin/master"]
+
+  # Once set, origin/HEAD is the user's to change — a later publish must not
+  # move it, or every new branch would rewrite the repo's declared default.
+  - name: A later publish leaves it alone
+    run: |
+      daft start feature-y &&
+      cd $WORK_DIR/pubhead/feature-y &&
+      daft push 2>&1
+    cwd: "$WORK_DIR/pubhead/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Pushed 'feature-y' to 'origin'"
+
+  - name: origin/HEAD is still the default branch
+    run: git symbolic-ref refs/remotes/origin/HEAD
+    cwd: "$WORK_DIR/pubhead/feature-y"
+    expect:
+      exit_code: 0
+      output_contains: ["refs/remotes/origin/master"]
+      output_not_contains: ["feature-y"]
