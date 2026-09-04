@@ -1619,9 +1619,13 @@ fn lookup_live_repo(name: &str) -> Option<crate::store::CatalogRepoRow> {
     catalog.resolve_live_name(name).ok().flatten()
 }
 
-/// A cataloged repo's default branch: the catalog's recorded value,
-/// refreshed from the repo's local `origin/HEAD` when unknown (write-back
-/// is best-effort).
+/// A cataloged repo's default branch: the catalog's recorded value, refreshed
+/// from the repo's own state when unknown (write-back is best-effort).
+///
+/// The write-back is source-blind — `discovered` knows only that the row was
+/// empty, not which rung of `effective_default_branch` answered — so every rung
+/// it can reach must be safe to persist. That invariant is enforced inside the
+/// rungs (`local_head_branch` refuses a non-bare common dir), not here.
 fn repo_default_branch(row: &crate::store::CatalogRepoRow) -> Option<String> {
     let discovered = row.default_branch.is_none();
     let branch = crate::catalog::effective_default_branch(row)?;
@@ -1632,14 +1636,70 @@ fn repo_default_branch(row: &crate::store::CatalogRepoRow) -> Option<String> {
     Some(branch)
 }
 
+/// How many branches to name before summarising; enough to be useful in a
+/// small repo, short enough not to bury the error in a large one.
+const BRANCH_HINT_LIMIT: usize = 8;
+
+/// Render the branch list as a trailing hint line, capped. Empty for an empty
+/// list, so a repo with no branches (or an unreadable one) just keeps the
+/// original message.
+fn branch_hint(branches: &[String]) -> String {
+    if branches.is_empty() {
+        return String::new();
+    }
+    let shown = branches
+        .iter()
+        .take(BRANCH_HINT_LIMIT)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut hint = format!("\n  branches: {shown}");
+    let extra = branches.len().saturating_sub(BRANCH_HINT_LIMIT);
+    if extra > 0 {
+        hint.push_str(&format!(" (and {extra} more)"));
+    }
+    hint
+}
+
+/// The repo's local branches, for the "pass one of these" hint. Best-effort:
+/// this only ever decorates an error that is already being returned.
+fn branch_names_for_hint(row: &crate::store::CatalogRepoRow) -> Vec<String> {
+    let Ok(out) = crate::utils::git_command_at(std::path::Path::new(&row.git_common_dir))
+        .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(String::from)
+        .collect()
+}
+
 /// The branch `daft go <repo>` lands on. Assumes cwd is already the target repo.
+///
+/// On a miss the error names the candidates rather than guessing among them.
+/// "The repo has only one branch, so enter it" is the tempting shortcut and the
+/// wrong one: it infers from correlated state, and silently stops working the
+/// day a second branch appears. Naming the branches costs nothing, records
+/// nothing, and cannot be wrong. An interactive picker
+/// (`crate::output::tui::shared_picker`) is the intended successor here once
+/// one exists for branches.
 fn resolve_repo_default_branch(row: &crate::store::CatalogRepoRow) -> Result<String> {
     repo_default_branch(row).ok_or_else(|| {
-        anyhow::anyhow!(
+        let mut msg = format!(
             "could not determine the default branch of '{}'; pass a branch: `{}`",
             row.name,
             crate::daft_cmd(&format!("go {} <branch>", row.name))
-        )
+        );
+        msg.push_str(&branch_hint(&branch_names_for_hint(row)));
+        anyhow::anyhow!(msg)
     })
 }
 
@@ -3391,6 +3451,45 @@ mod start_grammar_tests {
                 also_live_repo: false
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod branch_hint_tests {
+    use super::*;
+
+    fn names(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("b{i}")).collect()
+    }
+
+    #[test]
+    fn no_branches_adds_no_hint() {
+        assert_eq!(branch_hint(&[]), "");
+    }
+
+    #[test]
+    fn lists_the_branches_it_found() {
+        assert_eq!(
+            branch_hint(&["master".into(), "feature-x".into()]),
+            "\n  branches: master, feature-x"
+        );
+    }
+
+    #[test]
+    fn caps_the_list_and_counts_the_rest() {
+        let hint = branch_hint(&names(BRANCH_HINT_LIMIT + 3));
+        assert!(hint.ends_with("(and 3 more)"), "got: {hint}");
+        assert_eq!(
+            hint.matches(", ").count(),
+            BRANCH_HINT_LIMIT - 1,
+            "exactly the cap is listed"
+        );
+    }
+
+    #[test]
+    fn exactly_the_cap_does_not_say_and_more() {
+        let hint = branch_hint(&names(BRANCH_HINT_LIMIT));
+        assert!(!hint.contains("more"), "got: {hint}");
     }
 }
 
