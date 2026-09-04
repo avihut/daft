@@ -58,6 +58,22 @@ impl CatalogReposRepo {
 
     /// Refresh the facts of an existing entry and resurrect it if removed.
     /// Deliberately does not update `name`.
+    ///
+    /// `default_branch: None` means *"the caller doesn't know"*, not *"clear
+    /// it"* — the column keeps whatever it held. Only `init` and `clone` ever
+    /// know a repo's default branch for certain; every other registration path
+    /// (`repo add`, `repo move`, `doctor --fix`, the ambient touch after a repo
+    /// moves) derives it from `origin/HEAD`, which a repo published by hand
+    /// never has. Letting that ignorance overwrite a recorded branch is #925:
+    /// `daft repo add` printed "Refreshed" while deleting the one fact
+    /// `daft go <repo>` needs.
+    ///
+    /// `remote_url` is deliberately NOT treated this way. Both fields are
+    /// probed on every registration, but a missing remote URL is an
+    /// observation — this repo has no remote — whereas a missing default
+    /// branch only says `origin/HEAD` is unset, which is not the same as
+    /// having no default branch. Only the second is ignorance, and only
+    /// ignorance must be non-destructive.
     #[allow(clippy::too_many_arguments)]
     pub fn update_registration(
         conn: &Connection,
@@ -72,7 +88,8 @@ impl CatalogReposRepo {
         conn.execute(
             "UPDATE catalog_repos
                 SET path = ?2, git_common_dir = ?3, remote_url = ?4,
-                    remote_url_normalized = ?5, default_branch = ?6,
+                    remote_url_normalized = ?5,
+                    default_branch = COALESCE(?6, default_branch),
                     updated_at = ?7, removed_at = NULL
               WHERE uuid = ?1",
             params![
@@ -346,6 +363,42 @@ mod tests {
         assert_eq!(got.path, "/moved/api");
         assert_eq!(got.default_branch.as_deref(), Some("trunk"));
         assert!(got.removed_at.is_none(), "re-registration resurrects");
+    }
+
+    /// #925: `daft repo add` on a repo whose `origin/HEAD` is unset gathers
+    /// `default_branch: None` and used to write that straight over a branch
+    /// `daft init` had recorded, leaving `daft go <repo>` with nothing to
+    /// resolve. Unknown must not overwrite known.
+    #[test]
+    fn update_registration_keeps_default_branch_when_caller_does_not_know() {
+        let (_tmp, conn) = catalog_conn();
+        // `row()` hardcodes Some("main"); spell it out so the intent is local.
+        let mut r = row("u1", "api", "/w/api");
+        r.default_branch = Some("main".into());
+        CatalogReposRepo::insert(&conn, &r).unwrap();
+
+        CatalogReposRepo::update_registration(
+            &conn,
+            "u1",
+            "/w/api",
+            "/w/api/.git",
+            Some("https://example.com/org/api"),
+            Some("example.com/org/api"),
+            None,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+
+        let got = CatalogReposRepo::get_by_uuid(&conn, "u1").unwrap().unwrap();
+        assert_eq!(
+            got.default_branch.as_deref(),
+            Some("main"),
+            "a refresh that doesn't know the branch must not erase it"
+        );
+        assert_eq!(
+            got.remote_url.as_deref(),
+            Some("https://example.com/org/api")
+        );
     }
 
     #[test]
