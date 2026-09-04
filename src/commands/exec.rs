@@ -211,7 +211,7 @@ pub fn run() -> Result<()> {
         if args.repo.is_some() && args.targets.is_empty() && !args.all {
             // Bare `--repo X`: the repo's default-branch worktree, resolved
             // through the catalog like --all-repos/--related (not origin/HEAD
-            // only), so a recorded default branch without origin/HEAD resolves.
+            // only), so a repo with no origin/HEAD still resolves.
             (
                 vec![default_branch_target(&snaps, repo_row.as_ref())?],
                 Vec::new(),
@@ -556,9 +556,10 @@ fn find_worktree_for_branch(
 }
 
 /// Bare `--repo X` target: X's default-branch worktree. cwd is already X. The
-/// branch comes from the catalog row (recorded default branch, else
-/// origin/HEAD) — the same resolution --all-repos/--related use — so bare
-/// `--repo` can't diverge from them on a repo with no origin/HEAD.
+/// branch comes from the catalog row through
+/// [`crate::catalog::effective_default_branch`], which owns the rung order —
+/// the same resolution --all-repos/--related use, so bare `--repo` can't
+/// diverge from them on a repo with no origin/HEAD.
 fn default_branch_target(
     snaps: &[crate::core::worktree::exec::WorktreeSnapshot],
     row: Option<&crate::store::CatalogRepoRow>,

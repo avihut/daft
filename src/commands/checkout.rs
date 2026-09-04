@@ -2967,7 +2967,7 @@ fn run_start_with_related(
 }
 
 /// Create `args.branch_name` in a related repo, based on that repo's own
-/// default branch (recorded in the catalog, else origin/HEAD) regardless of
+/// default branch ([`crate::catalog::effective_default_branch`]) regardless of
 /// which worktree happens to be checked out there. Never carry, never run
 /// `-x`, and run hooks only when the repo is explicitly trusted (`Allow`) — a
 /// fan-out must not block on interactive trust prompts.
@@ -2988,8 +2988,8 @@ fn create_branch_in_related_repo(
         let settings = DaftSettings::load_with(&git)?;
 
         let mut repo_args = args.clone();
-        // Base the new branch on the related repo's own default branch (its
-        // recorded catalog default, else origin/HEAD) — NOT whatever branch
+        // Base the new branch on the related repo's own default branch (via
+        // `catalog::effective_default_branch`) — NOT whatever branch
         // find_representative_worktree happened to enter, which is wrong when
         // the default branch has no checkout. An explicit base only applies to
         // the current repo; fall back to the entered worktree's branch (None)
