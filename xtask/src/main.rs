@@ -2400,3 +2400,206 @@ mod mise_upgrade_drift {
         );
     }
 }
+
+/// Keeps every workflow's `actions/setup-node` pin on the same node major as
+/// `mise.toml`.
+///
+/// The daily tool-upgrade job moves the `mise.toml` pin on its own, and the
+/// workflows pin their own copy through `actions/setup-node` — so a node major
+/// bump silently splits local development from what CI builds and what
+/// production deploys. That is exactly what #930 did: it took node to 26.8.1
+/// while both workflows stayed on 24, and nothing anywhere noticed (#931).
+#[cfg(test)]
+mod node_version_parity {
+    use std::path::{Path, PathBuf};
+
+    const MISE_TOML: &str = "mise.toml";
+    const WORKFLOW_DIR: &str = ".github/workflows";
+    const SETUP_NODE: &str = "actions/setup-node";
+
+    fn repo_root() -> &'static Path {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask/ sits directly under the repo root")
+    }
+
+    /// The major of a version spelled `26`, `26.8`, or `26.8.1`. `None` for
+    /// anything else — `lts/*`, `latest`, an empty string.
+    fn major_of(version: &str) -> Option<u64> {
+        version.trim().split('.').next()?.parse().ok()
+    }
+
+    /// The node version pinned in `mise.toml`'s `[tools]` table.
+    ///
+    /// Scanned rather than parsed: xtask carries no TOML dependency and the
+    /// pin is one flat `node = "<version>"` line. Tracking the section header
+    /// as we go stops a `node` key in some other table from answering for
+    /// `[tools]`.
+    fn mise_node_pin() -> String {
+        let path = repo_root().join(MISE_TOML);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
+
+        let mut section = "";
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(header) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                section = header.trim();
+                continue;
+            }
+            if section != "tools" {
+                continue;
+            }
+            // `strip_prefix("node")` alone would also swallow `node_foo`;
+            // requiring `=` after the trimmed remainder rules that out.
+            if let Some(value) = line
+                .strip_prefix("node")
+                .map(str::trim_start)
+                .and_then(|rest| rest.strip_prefix('='))
+            {
+                return value.trim().trim_matches('"').to_string();
+            }
+        }
+        panic!("{} has a `node` pin in its [tools] table", path.display());
+    }
+
+    /// Every `actions/setup-node` step across every workflow, as
+    /// `(file name, the `node-version` it pins)`.
+    fn setup_node_pins() -> Vec<(String, Option<String>)> {
+        let dir = repo_root().join(WORKFLOW_DIR);
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", dir.display()))
+            .map(|entry| {
+                entry
+                    .expect("a workflow directory entry is readable")
+                    .path()
+            })
+            .filter(|p| {
+                p.extension()
+                    .is_some_and(|ext| ext == "yml" || ext == "yaml")
+            })
+            .collect();
+        files.sort();
+
+        let mut found = Vec::new();
+        for path in files {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
+            let doc: serde_yaml::Value = serde_yaml::from_str(&text)
+                .unwrap_or_else(|e| panic!("{} parses as YAML: {e}", path.display()));
+            let name = path
+                .file_name()
+                .expect("a read_dir entry has a file name")
+                .to_string_lossy()
+                .into_owned();
+            collect_steps(&doc, &name, &mut found);
+        }
+        found
+    }
+
+    /// Walk the whole document rather than indexing `jobs.<id>.steps`: a step
+    /// nested anywhere still pins a node, and a check that only looks where
+    /// today's steps happen to live stops covering the file the moment one
+    /// moves.
+    fn collect_steps(
+        node: &serde_yaml::Value,
+        file: &str,
+        out: &mut Vec<(String, Option<String>)>,
+    ) {
+        if node
+            .get("uses")
+            .and_then(serde_yaml::Value::as_str)
+            .is_some_and(|uses| uses.starts_with(SETUP_NODE))
+        {
+            out.push((
+                file.to_string(),
+                node.get("with")
+                    .and_then(|with| with.get("node-version"))
+                    .map(render_scalar),
+            ));
+        }
+        match node {
+            serde_yaml::Value::Mapping(map) => {
+                for (_, value) in map {
+                    collect_steps(value, file, out);
+                }
+            }
+            serde_yaml::Value::Sequence(seq) => {
+                for value in seq {
+                    collect_steps(value, file, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `node-version: "26"` is a string and `node-version: 26` a number; both
+    /// mean the same thing to setup-node, so both must reach the comparison.
+    fn render_scalar(value: &serde_yaml::Value) -> String {
+        match value {
+            serde_yaml::Value::String(s) => s.clone(),
+            other => serde_yaml::to_string(other)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+        }
+    }
+
+    #[test]
+    fn workflows_track_the_mise_node_pin() {
+        let pin = mise_node_pin();
+        let want = major_of(&pin).unwrap_or_else(|| {
+            panic!(
+                "{MISE_TOML}'s node pin is \"{pin}\", which has no major to \
+                 compare against. Pin an exact version — the tool-upgrade job \
+                 writes one, and a floating spelling would make this gate \
+                 vacuous."
+            )
+        });
+
+        let pins = setup_node_pins();
+        assert!(
+            !pins.is_empty(),
+            "no `{SETUP_NODE}` step found anywhere under {WORKFLOW_DIR}, but \
+             this gate exists to keep those steps honest. If the last one was \
+             removed on purpose, remove this test with it; otherwise the walk \
+             has stopped finding them and the parity check is now vacuous."
+        );
+
+        let drifted: Vec<String> = pins
+            .iter()
+            .filter_map(|(file, pinned)| match pinned {
+                None => Some(format!("  {file}: `{SETUP_NODE}` pins no `node-version`")),
+                Some(spelling) => match major_of(spelling) {
+                    Some(major) if major == want => None,
+                    Some(major) => Some(format!(
+                        "  {file}: node-version \"{spelling}\" (major {major}, want {want})"
+                    )),
+                    None => Some(format!(
+                        "  {file}: node-version \"{spelling}\" pins no concrete major"
+                    )),
+                },
+            })
+            .collect();
+
+        assert!(
+            drifted.is_empty(),
+            "workflow node pins have drifted from {MISE_TOML} (node = \
+             \"{pin}\", major {want}):\n{}\n\n\
+             The daily `mise upgrade --bump` job rewrites {MISE_TOML} on its \
+             own, so this drifts without anyone editing a workflow — and the \
+             skew is invisible, because a mise-only diff does not match the \
+             `docs` path class and the jobs that use node never run on it \
+             (#931). Fix by matching the majors: set `node-version` to \
+             \"{want}\", or add `--exclude node` to the upgrade job and revert \
+             the {MISE_TOML} pin if the workflows should own the version \
+             instead.\n\
+             \n\
+             Before bumping the workflows, check that `actions/node-versions` \
+             ships a build for the new major and that wrangler's `engines.node` \
+             still admits it — `docs.yml` needs node only so wrangler's version \
+             check can find one.",
+            drifted.join("\n")
+        );
+    }
+}

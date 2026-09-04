@@ -870,5 +870,16 @@ mise run docs:site:format   # Auto-fix config with Biome
 - **Biome** (docs): `docs/.vitepress/config.ts` and `docs/.vitepress/theme/`
   only
 - Auto-deploys to Cloudflare Pages on push to `master` when `docs/**` changes
+- **Node lives in three places and they must agree**: `mise.toml`'s `node` pin
+  (local dev — the Playwright runner is the only Node-shebang consumer; every
+  other docs task is `bun`/`bunx`), `test.yml`'s `docs-build`, and `docs.yml`'s
+  deploy. The daily tool-upgrade job rewrites the first on its own, and a
+  mise-only diff does not match the `docs` path class, so the jobs that pin node
+  never run on the PR that moves it — the skew is invisible (#931).
+  `cargo test --package xtask` (`node_version_parity`) is what catches it: every
+  `actions/setup-node` in `.github/workflows/` must pin `mise.toml`'s major.
+  Before raising it, check `actions/node-versions` ships that major and that
+  wrangler's `engines.node` admits it — `docs.yml` needs node only so wrangler's
+  version check finds one.
 - **Playwright screenshots**: Save to `.playwright-mcp/` directory (gitignored),
   not the project root. Use filename like `.playwright-mcp/screenshot.png`.

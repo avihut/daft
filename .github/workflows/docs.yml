@@ -46,11 +46,17 @@ jobs:
       # `bun run wrangler --version`. That verification shells out to system
       # Node, and wrangler 4 requires Node ≥ 22 — but ubuntu-latest still ships
       # Node 20.x as the default. Without this step the deploy fails with
-      # "Wrangler requires at least Node.js v22.0.0". Pinning to the current
-      # Active LTS (24, EOL April 2028) buys the longest runway.
+      # "Wrangler requires at least Node.js v22.0.0".
+      #
+      # The major tracks `mise.toml`'s node pin, and `cargo test --package
+      # xtask` (`node_version_parity`) fails if it stops doing so — the daily
+      # tool-upgrade job moves that pin on its own, and the resulting skew is
+      # invisible here otherwise (#931). Node 26 is Current until 2026-10-28
+      # and Active LTS after, EOL 2029-04-30; that is a year more runway than
+      # the 24 this replaced, which drops to Maintenance on 2026-10-20.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: "26"
 
       - name: Install dependencies
         working-directory: docs
