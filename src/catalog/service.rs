@@ -461,12 +461,31 @@ fn resolve_repo_arg_impl(needle: &str, require_path: bool) -> anyhow::Result<Cat
     }
 }
 
-/// The branch a repo's "default worktree" refers to: the catalog's recorded
-/// default branch, falling back to the repo's local `origin/HEAD`.
+/// The branch a repo's "default worktree" refers to. Three rungs, each a fact
+/// rather than an inference: the catalog's recorded branch, the repo's local
+/// `origin/HEAD`, then the repository's own `HEAD`.
+///
+/// The last rung exists because the first two can both be empty on a perfectly
+/// ordinary repo (#925): `daft init` records a branch, but any later
+/// registration that doesn't know one used to erase it, and `origin/HEAD` is
+/// created only by `git clone` or an explicit `git remote set-head` — never by
+/// `git remote add` + `git push -u`. A repo's own HEAD is the one source always
+/// present for a daft-managed repo.
+///
+/// Note the paths differ, and must. `origin/HEAD` is read from `path` because
+/// remote-tracking refs are shared repo-wide; `HEAD` is read from
+/// `git_common_dir` because HEAD is per-worktree and only the common dir's copy
+/// is the repository's own declaration. [`local_head_branch`] refuses a
+/// non-bare common dir, which is what keeps a drifting checkout out of the
+/// answer — callers persist what this returns and can't see which rung
+/// answered.
+///
+/// [`local_head_branch`]: crate::core::remote::local_head_branch
 pub fn effective_default_branch(row: &CatalogRepoRow) -> Option<String> {
     row.default_branch
         .clone()
         .or_else(|| crate::core::remote::local_default_branch(Path::new(&row.path), "origin"))
+        .or_else(|| crate::core::remote::local_head_branch(Path::new(&row.git_common_dir)))
 }
 
 #[cfg(test)]
@@ -595,6 +614,75 @@ mod tests {
         let row = cat.get_by_uuid("u1").unwrap().unwrap();
         assert_eq!(row.path, "/moved/api");
         assert!(row.removed_at.is_none());
+    }
+
+    /// #925 at the service layer: `daft repo add` on a repo with no
+    /// `origin/HEAD` gathers `default_branch: None`, and that must not
+    /// overwrite the branch `daft init` recorded.
+    #[test]
+    fn reregistering_without_a_known_branch_keeps_the_recorded_one() {
+        let tmp = TempDir::new().unwrap();
+        let cat = catalog(&tmp);
+        cat.register(&facts("u1", "api", "/w/api")).unwrap();
+        assert_eq!(
+            cat.get_by_uuid("u1")
+                .unwrap()
+                .unwrap()
+                .default_branch
+                .as_deref(),
+            Some("main"),
+        );
+
+        // What every registration path but init/clone supplies when the repo
+        // has no origin/HEAD to derive a branch from.
+        let unknowing = RegistrationFacts {
+            default_branch: None,
+            ..facts("u1", "api", "/w/api")
+        };
+        cat.register(&unknowing).unwrap();
+
+        assert_eq!(
+            cat.get_by_uuid("u1")
+                .unwrap()
+                .unwrap()
+                .default_branch
+                .as_deref(),
+            Some("main"),
+            "a refresh that doesn't know the branch must not erase it"
+        );
+    }
+
+    /// The ladder's last rung, end to end: a row with nothing recorded and no
+    /// `origin/HEAD` still resolves, from the repo's own bare HEAD.
+    #[test]
+    fn effective_default_branch_falls_back_to_the_repos_own_bare_head() {
+        let tmp = TempDir::new().unwrap();
+        let gcd = tmp.path().join("demo.git");
+        let out = crate::utils::git_command_at(tmp.path())
+            .args(["init", "-q", "--bare", "-b", "master"])
+            .arg(&gcd)
+            .output()
+            .expect("git init --bare");
+        assert!(out.status.success());
+
+        let row = CatalogRepoRow {
+            uuid: "u1".into(),
+            name: "demo".into(),
+            path: tmp.path().join("demo").to_string_lossy().into_owned(),
+            git_common_dir: gcd.to_string_lossy().into_owned(),
+            remote_url: None,
+            remote_url_normalized: None,
+            default_branch: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            removed_at: None,
+        };
+
+        assert_eq!(
+            effective_default_branch(&row).as_deref(),
+            Some("master"),
+            "a repo born from `daft init` resolves from its own HEAD"
+        );
     }
 
     #[test]
