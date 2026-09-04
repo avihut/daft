@@ -25,8 +25,24 @@ use std::path::Path;
 
 /// Build [`RegistrationFacts`] for a repo whose git common dir and project
 /// root are known. Canonicalizes both paths, derives the default name from
-/// the remote URL (falling back to the project dir's name), and consults
-/// `origin/HEAD` for the default branch when the caller doesn't know it.
+/// the remote URL (falling back to the project dir's name), and resolves the
+/// default branch when the caller doesn't know it.
+///
+/// The branch ladder mirrors [`crate::catalog::effective_default_branch`], and
+/// mirroring it is the point: `origin/HEAD` first, then the repo's own bare
+/// `HEAD`. A repo published by hand (`git remote add` + `git push -u`) has no
+/// `origin/HEAD` at all — that is #925 — so without the second rung every
+/// registration path but `init`/`clone` gathers nothing and the row can only
+/// ever be *preserved*, never *corrected*.
+///
+/// That distinction is why the rung belongs here rather than only at read time.
+/// `update_registration` treats `None` as "the caller doesn't know" and keeps
+/// what is recorded, so a *stale* branch — recorded before a `git branch -m`,
+/// say — would otherwise survive every `repo add`, `repo move`, and
+/// `doctor --fix` for the life of the repo, with no command able to fix it.
+/// Gathering the fact turns those three back into the repair they read as.
+/// Recording it also keeps the read-time rungs off per-repo fan-outs
+/// (`exec --all-repos`, `fetch`), which would otherwise re-derive it every run.
 pub fn gather_facts(
     git_common_dir: &Path,
     project_root: &Path,
@@ -43,7 +59,8 @@ pub fn gather_facts(
     let remote_url =
         remote_url.or_else(|| crate::hooks::get_remote_url_for_git_dir(&canonical_gcd));
     let default_branch = default_branch
-        .or_else(|| crate::core::remote::local_default_branch(&canonical_root, "origin"));
+        .or_else(|| crate::core::remote::local_default_branch(&canonical_root, "origin"))
+        .or_else(|| crate::core::remote::local_head_branch(&canonical_gcd));
     let default_name = normalize::derive_default_name(remote_url.as_deref(), &canonical_root);
     Ok(RegistrationFacts {
         uuid,
@@ -273,4 +290,108 @@ fn touch_current_repo_impl() -> anyhow::Result<()> {
     let facts = gather_facts(&git_common_dir, &project_root, None, None)?;
     Catalog::open_rw()?.register(&facts)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git_at(dir: &Path, args: &[&std::ffi::OsStr]) {
+        let out = crate::utils::git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A `contained`-layout repo the way `daft init` leaves one: bare common
+    /// dir at `<root>/.git`, a born default branch, and no remote at all.
+    fn contained_repo(parent: &Path, branch: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let os = std::ffi::OsStr::new;
+        let src = parent.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        git_at(&src, &[os("init"), os("-q"), os("-b"), os(branch)]);
+        git_at(
+            &src,
+            &[
+                os("commit"),
+                os("-q"),
+                os("--allow-empty"),
+                os("-m"),
+                os("init"),
+            ],
+        );
+
+        let root = parent.join("demo");
+        std::fs::create_dir_all(&root).unwrap();
+        let gcd = root.join(".git");
+        git_at(
+            parent,
+            &[
+                os("clone"),
+                os("-q"),
+                os("--bare"),
+                src.as_os_str(),
+                gcd.as_os_str(),
+            ],
+        );
+        // `git clone --bare` leaves an `origin` pointing at the fixture. Strip
+        // it: the repo under test is the #925 shape — no remote, and therefore
+        // no `origin/HEAD` for the first rung to read.
+        git_at(&gcd, &[os("remote"), os("remove"), os("origin")]);
+        (gcd, root)
+    }
+
+    /// The rung that makes `repo add` / `repo move` / `doctor --fix` able to
+    /// *correct* a row rather than only preserve it. Without it these paths
+    /// gather `None`, and `update_registration`'s `COALESCE` then keeps
+    /// whatever is recorded — including a value that has gone stale.
+    #[test]
+    fn gather_facts_reads_the_default_branch_from_a_bare_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (gcd, root) = contained_repo(tmp.path(), "master");
+
+        let facts = gather_facts(&gcd, &root, None, None).expect("gather");
+
+        assert_eq!(
+            facts.default_branch.as_deref(),
+            Some("master"),
+            "a repo with no origin/HEAD still declares its default branch in \
+             its own bare HEAD"
+        );
+    }
+
+    /// A branch rename is the case the whole rung exists for: the fact daft
+    /// recorded at init is now wrong, and re-registration has to see the new
+    /// name to overwrite it.
+    #[test]
+    fn gather_facts_follows_a_renamed_default_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let os = std::ffi::OsStr::new;
+        let (gcd, root) = contained_repo(tmp.path(), "master");
+        git_at(&gcd, &[os("branch"), os("-m"), os("master"), os("main")]);
+
+        let facts = gather_facts(&gcd, &root, None, None).expect("gather");
+
+        assert_eq!(facts.default_branch.as_deref(), Some("main"));
+    }
+
+    /// An explicitly known branch always wins — the rungs only fill a gap.
+    #[test]
+    fn gather_facts_prefers_the_branch_the_caller_knows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (gcd, root) = contained_repo(tmp.path(), "master");
+
+        let facts = gather_facts(&gcd, &root, None, Some("release".to_string())).expect("gather");
+
+        assert_eq!(facts.default_branch.as_deref(), Some("release"));
+    }
 }
