@@ -480,6 +480,12 @@ fn resolve_repo_arg_impl(needle: &str, require_path: bool) -> anyhow::Result<Cat
 /// answer — callers persist what this returns and can't see which rung
 /// answered.
 ///
+/// The same two fallback rungs run at registration time
+/// ([`crate::catalog::gather_facts`]), so a repo that has been registered since
+/// this shipped answers on rung 1 and pays for no git probe here. Keep the two
+/// orders identical: a repo must not resolve one way when read and another way
+/// when recorded.
+///
 /// [`local_head_branch`]: crate::core::remote::local_head_branch
 pub fn effective_default_branch(row: &CatalogRepoRow) -> Option<String> {
     row.default_branch
@@ -657,13 +663,48 @@ mod tests {
     #[test]
     fn effective_default_branch_falls_back_to_the_repos_own_bare_head() {
         let tmp = TempDir::new().unwrap();
+        // A real branch, not just an `init --bare` pointer: `local_head_branch`
+        // refuses a HEAD no ref confirms, so the fixture has to hold a commit.
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let git = |dir: &std::path::Path, args: &[&std::ffi::OsStr]| {
+            let out = crate::utils::git_command_at(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let os = std::ffi::OsStr::new;
+        git(&src, &[os("init"), os("-q"), os("-b"), os("master")]);
+        git(
+            &src,
+            &[
+                os("commit"),
+                os("-q"),
+                os("--allow-empty"),
+                os("-m"),
+                os("init"),
+            ],
+        );
         let gcd = tmp.path().join("demo.git");
-        let out = crate::utils::git_command_at(tmp.path())
-            .args(["init", "-q", "--bare", "-b", "master"])
-            .arg(&gcd)
-            .output()
-            .expect("git init --bare");
-        assert!(out.status.success());
+        git(
+            tmp.path(),
+            &[
+                os("clone"),
+                os("-q"),
+                os("--bare"),
+                src.as_os_str(),
+                gcd.as_os_str(),
+            ],
+        );
 
         let row = CatalogRepoRow {
             uuid: "u1".into(),

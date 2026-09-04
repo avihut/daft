@@ -141,8 +141,17 @@ pub fn branch_from_head_symref(full_ref: &str) -> Option<String> {
 /// (Contrast [`local_default_branch`], which may be called from any worktree
 /// because remote-tracking refs are shared repo-wide.)
 ///
+/// **The branch it names must also exist.** `git symbolic-ref HEAD` reports the
+/// pointer, never whether it resolves, and a bare repo happily keeps a dangling
+/// one: `git init --bare -b master` followed by only ever pushing `main` leaves
+/// `HEAD` on `refs/heads/master` forever. Answering there would name a branch
+/// `daft go` cannot check out, `daft start <repo> <branch>` cannot use as a
+/// base, and — because callers write the answer back — the catalog would then
+/// record permanently. An unconfirmed pointer is not evidence, so it takes the
+/// same exit as no pointer at all.
+///
 /// Runs through [`crate::utils::git_command_at`] so an inherited `GIT_DIR`
-/// can't retarget the query, with stderr nulled — an unborn or detached HEAD
+/// can't retarget the queries, with stderr nulled — a dangling or detached HEAD
 /// is an expected miss, not something to report.
 pub fn local_head_branch(common_dir: &Path) -> Option<String> {
     if !crate::git::worktree_state::is_bare(common_dir).unwrap_or(false) {
@@ -157,7 +166,28 @@ pub fn local_head_branch(common_dir: &Path) -> Option<String> {
         return None;
     }
     let full = String::from_utf8_lossy(&out.stdout);
-    branch_from_head_symref(full.trim())
+    let branch = branch_from_head_symref(full.trim())?;
+    local_branch_exists(common_dir, &branch).then_some(branch)
+}
+
+/// Does `refs/heads/<branch>` resolve in the repo at `common_dir`?
+///
+/// Failure to ask (spawn error, not a repo) reads as "no", the conservative
+/// answer for the one caller: it declines to name a branch it could not
+/// confirm. Both pipes are redirected — `--quiet` silences stdout for some
+/// subcommands and never touches stderr (CLAUDE.md, Test Hygiene).
+fn local_branch_exists(common_dir: &Path, branch: &str) -> bool {
+    crate::utils::git_command_at(common_dir)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// Determine a repository's default branch from local state, falling back to a
@@ -407,24 +437,67 @@ mod tests {
 
     /// The #925 case: a repo born from `daft init`, never cloned, with no
     /// `origin/HEAD` to read. Its bare common dir's HEAD is the answer.
+    /// A bare repo with `<branch>` born and `HEAD` pointing at it — the shape
+    /// every daft-managed repo has once it holds a commit.
+    fn bare_repo_with_branch(parent: &std::path::Path, branch: &str) -> std::path::PathBuf {
+        let src = parent.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        git_at(&src, &["init", "-q", "-b", branch]);
+        git_at(&src, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        let bare = parent.join("bare.git");
+        git_at(
+            parent,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                &src.to_string_lossy(),
+                &bare.to_string_lossy(),
+            ],
+        );
+        bare
+    }
+
     #[test]
     fn local_head_branch_reads_bare_common_dir_head() {
         let dir = tempfile::tempdir().unwrap();
-        git_at(dir.path(), &["init", "-q", "--bare", "-b", "master"]);
+        let bare = bare_repo_with_branch(dir.path(), "master");
         assert_eq!(
-            local_head_branch(dir.path()),
+            local_head_branch(&bare),
             Some("master".to_string()),
             "a bare repo's HEAD declares its default branch"
         );
     }
 
-    /// HEAD resolves before any commit exists, so a freshly-initialized repo
-    /// still answers — `symbolic-ref` reads the pointer, not the commit.
+    /// The other half of the gate. `git symbolic-ref HEAD` reports the pointer
+    /// and never whether it resolves, so a repo initialized on one branch name
+    /// and only ever pushed another keeps a dangling HEAD indefinitely. Callers
+    /// persist what comes back, so a branch no ref confirms must not leave here
+    /// — it would name a checkout target that does not exist.
     #[test]
-    fn local_head_branch_resolves_on_an_unborn_head() {
+    fn local_head_branch_refuses_a_dangling_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let bare = bare_repo_with_branch(dir.path(), "main");
+        // HEAD now claims a branch this repo has never had.
+        git_at(&bare, &["symbolic-ref", "HEAD", "refs/heads/master"]);
+
+        assert_eq!(
+            local_head_branch(&bare),
+            None,
+            "HEAD names 'master', but only 'main' exists — an unconfirmed \
+             pointer is not evidence"
+        );
+    }
+
+    /// An unborn HEAD is the same refusal for the same reason: nothing has
+    /// confirmed the name yet. It costs nothing, because the two commands that
+    /// create a repo — `daft init` and `daft clone` — both record the branch
+    /// themselves at registration, so this rung never has to answer for them.
+    #[test]
+    fn local_head_branch_refuses_an_unborn_head() {
         let dir = tempfile::tempdir().unwrap();
         git_at(dir.path(), &["init", "-q", "--bare", "-b", "trunk"]);
-        assert_eq!(local_head_branch(dir.path()), Some("trunk".to_string()));
+        assert_eq!(local_head_branch(dir.path()), None);
     }
 
     /// The gate. In a non-bare repo, HEAD is the working tree's *current
@@ -449,10 +522,12 @@ mod tests {
     #[test]
     fn local_head_branch_none_on_detached_head() {
         let dir = tempfile::tempdir().unwrap();
-        git_at(dir.path(), &["init", "-q", "--bare", "-b", "main"]);
+        // Built with a real branch, so the `None` below isolates detachment
+        // rather than passing for want of any ref at all.
+        let bare = bare_repo_with_branch(dir.path(), "main");
         // A bare repo can be detached too; HEAD then names no branch.
-        git_at(dir.path(), &["symbolic-ref", "HEAD", "refs/tags/v1"]);
-        assert_eq!(local_head_branch(dir.path()), None);
+        git_at(&bare, &["symbolic-ref", "HEAD", "refs/tags/v1"]);
+        assert_eq!(local_head_branch(&bare), None);
     }
 
     #[test]
