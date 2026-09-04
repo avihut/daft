@@ -1,0 +1,60 @@
+name: Catalog default branch survives a refresh
+description:
+  A repo created by daft init records its default branch. Re-registering it
+  (daft repo add) must not erase that, because a repo with no origin/HEAD has
+  nothing else to resolve from and daft go <repo> would dead-end (#925).
+
+steps:
+  - name: Init a repo with no remote
+    run: daft init dbsurvive --layout contained
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/dbsurvive/.git"
+        - "$WORK_DIR/dbsurvive/master"
+
+  - name: Commit so the branch is born
+    run: |
+      echo '# dbsurvive' > README.md &&
+      git add README.md &&
+      git commit -q -m "init"
+    cwd: "$WORK_DIR/dbsurvive/master"
+    expect:
+      exit_code: 0
+
+  # daft init is the one command that knows the branch for certain, and records
+  # it at registration time.
+  - name: init recorded the default branch
+    run: daft repo info dbsurvive --format json
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"default_branch": "master"'
+
+  # No remote was ever added, so `git remote add` + `git push -u` never created
+  # refs/remotes/origin/HEAD — re-registration gathers no branch at all. That
+  # ignorance used to be written straight over the recorded value.
+  - name: Re-register the repo
+    run: daft repo add
+    cwd: "$WORK_DIR/dbsurvive/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "dbsurvive"
+
+  - name: The recorded default branch is still there
+    run: daft repo info dbsurvive --format json
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"default_branch": "master"'
+      output_not_contains:
+        - '"default_branch": null'
+
+  - name: Cross-repo go resolves the default branch
+    run: daft go dbsurvive
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "could not determine the default branch"
