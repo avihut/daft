@@ -22,7 +22,7 @@ minimum_release_age = "7d"
 # cargo-from-source build (chicken-and-egg).
 "aqua:cargo-bins/cargo-binstall" = "1.22.0"
 rust = "1.95"
-lefthook = "2.1.11"
+lefthook = "2.1.12"
 cocogitto = "7.0.0"
 bun = "1.4.0"
 # node: the docs UI test runner (Playwright, docs:test:ui) is a Node
