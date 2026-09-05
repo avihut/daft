@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.8](https://github.com/avihut/daft/compare/v1.27.7...v1.27.8) - 2026-09-05
+
+
+### Bug Fixes
+
+- Record daft's own determination of a repo's default branch (#949)
+- **doctor**: Read origin/HEAD as a symref, not a config key (#948)
+- Stop erasing a repo's recorded default branch (#937)
+
+
+### Testing
+
+- Poll the observable the rail-hook timer assertions read (#947)
+- Compare the carried index by entry, not by raw bytes (#946)
 ## [1.27.7](https://github.com/avihut/daft/compare/v1.27.6...v1.27.7) - 2026-09-03
 
 
