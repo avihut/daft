@@ -544,19 +544,32 @@ fn remote_tracking_ref_exists(dir: &Path, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Which branch a set `refs/remotes/origin/HEAD` names, as the check's detail
-/// line.
+/// What a present `refs/remotes/origin/HEAD` actually says.
 ///
-/// Reads the **symref**, not config. `origin/HEAD` is a ref — git stores it at
-/// `refs/remotes/origin/HEAD` and writes no `remote.origin.head` key, so the
-/// config read this replaced could never answer and the check always rendered
-/// the bare "set" (#935).
-fn remote_head_detail(git_common_dir: &Path) -> String {
-    match crate::core::remote::local_default_branch(git_common_dir, "origin")
-        .filter(|branch| remote_tracking_ref_exists(git_common_dir, branch))
-    {
-        Some(branch) => format!("set to origin/{branch}"),
-        None => "set".to_string(),
+/// Read from the **symref**, not config. `origin/HEAD` is a ref — git stores
+/// it at `refs/remotes/origin/HEAD` and writes no `remote.origin.head` key, so
+/// the config read this replaced could never answer and the check always
+/// rendered the bare "set" (#935).
+enum RemoteHeadState {
+    /// Names a branch whose remote-tracking ref resolves.
+    Names(String),
+    /// Names a branch whose remote-tracking ref is gone. The shape a
+    /// default-branch rename leaves behind when nobody re-points the symref
+    /// (#933) — and it is not inert: `local_default_branch` reads this symref
+    /// ahead of the bare-HEAD rung, so registration re-derives the dead name
+    /// and writes it into the catalog, every time, until this is repaired.
+    Dangling(String),
+    /// Present but not symbolic, so it names no branch at all.
+    Opaque,
+}
+
+fn remote_head_state(git_common_dir: &Path) -> RemoteHeadState {
+    match crate::core::remote::local_default_branch(git_common_dir, "origin") {
+        Some(branch) if remote_tracking_ref_exists(git_common_dir, &branch) => {
+            RemoteHeadState::Names(branch)
+        }
+        Some(branch) => RemoteHeadState::Dangling(branch),
+        None => RemoteHeadState::Opaque,
     }
 }
 
@@ -576,7 +589,19 @@ pub fn check_remote_head(ctx: &RepoContext) -> CheckResult {
     }
 
     match git.show_ref_exists("refs/remotes/origin/HEAD") {
-        Ok(true) => CheckResult::pass("Remote HEAD", &remote_head_detail(&ctx.git_common_dir)),
+        Ok(true) => match remote_head_state(&ctx.git_common_dir) {
+            RemoteHeadState::Names(branch) => {
+                CheckResult::pass("Remote HEAD", &format!("set to origin/{branch}"))
+            }
+            RemoteHeadState::Dangling(branch) => CheckResult::warning(
+                "Remote HEAD",
+                &format!("points at origin/{branch}, which no longer exists"),
+            )
+            .with_suggestion("Run 'git remote set-head origin --auto'")
+            .with_fix(Box::new(fix_remote_head))
+            .with_dry_run_fix(Box::new(dry_run_remote_head)),
+            RemoteHeadState::Opaque => CheckResult::pass("Remote HEAD", "set"),
+        },
         Ok(false) => CheckResult::warning("Remote HEAD", "not set")
             .with_suggestion("Run 'git remote set-head origin --auto'")
             .with_fix(Box::new(fix_remote_head))
@@ -936,7 +961,7 @@ mod tests {
     /// rendered the bare "set". Reading the symref is what makes the detailed
     /// arm reachable at all.
     #[test]
-    fn remote_head_detail_names_the_branch_the_symref_points_at() {
+    fn remote_head_state_names_the_branch_the_symref_points_at() {
         let dir = tempfile::tempdir().unwrap();
         repo_with_remote_branch(dir.path(), "develop");
         git_at(
@@ -947,15 +972,18 @@ mod tests {
                 "refs/remotes/origin/develop",
             ],
         );
-        assert_eq!(remote_head_detail(dir.path()), "set to origin/develop");
+        assert!(matches!(
+            remote_head_state(dir.path()),
+            RemoteHeadState::Names(b) if b == "develop"
+        ));
     }
 
-    /// A symref pointing at a ref that is gone. `show_ref_exists` still says
-    /// the symref is there (gix resolves the pointer, not the target), so this
-    /// arm is reached — and naming `origin/develop` here would report a branch
-    /// that does not exist as a green pass.
+    /// #933: a symref pointing at a ref that is gone — what a default-branch
+    /// rename leaves behind. `show_ref_exists` still says the symref is there
+    /// (gix resolves the pointer, not the target), so the check reaches this
+    /// and must not report a branch that does not exist as a green pass.
     #[test]
-    fn remote_head_detail_stays_bare_when_the_symref_dangles() {
+    fn remote_head_state_reports_a_dangling_symref() {
         let dir = tempfile::tempdir().unwrap();
         git_at(dir.path(), &["init", "-q", "--bare", "-b", "main"]);
         git_at(
@@ -966,20 +994,26 @@ mod tests {
                 "refs/remotes/origin/develop",
             ],
         );
-        assert_eq!(remote_head_detail(dir.path()), "set");
+        assert!(matches!(
+            remote_head_state(dir.path()),
+            RemoteHeadState::Dangling(b) if b == "develop"
+        ));
     }
 
     /// `origin/HEAD` written as a plain sha rather than a symref — `git
-    /// symbolic-ref` exits non-zero there, so keep the bare "set" rather than
-    /// claiming a branch.
+    /// symbolic-ref` exits non-zero there, so it names no branch and the check
+    /// keeps the bare "set" rather than claiming one.
     #[test]
-    fn remote_head_detail_stays_bare_when_the_ref_is_not_symbolic() {
+    fn remote_head_state_is_opaque_when_the_ref_is_not_symbolic() {
         let dir = tempfile::tempdir().unwrap();
         let sha = repo_with_remote_branch(dir.path(), "develop");
         git_at(
             dir.path(),
             &["update-ref", "--no-deref", "refs/remotes/origin/HEAD", &sha],
         );
-        assert_eq!(remote_head_detail(dir.path()), "set");
+        assert!(matches!(
+            remote_head_state(dir.path()),
+            RemoteHeadState::Opaque
+        ));
     }
 }
