@@ -102,6 +102,15 @@ pub fn execute(
         old_path.display()
     ));
 
+    // Is the branch being renamed this repository's own declared default? Ask
+    // before anything moves: `git branch -m` updates the common dir's HEAD as
+    // a side effect, so afterwards it names the new branch and the question
+    // cannot be asked any more. The repo's own HEAD is the observation — not
+    // the catalog (which may already be stale) and not `<remote>/HEAD` (which
+    // answers for the remote).
+    let renaming_default =
+        crate::core::remote::local_head_branch(&git_dir).as_deref() == Some(old_branch.as_str());
+
     // Step 2: Validate.
     // New branch must not already exist.
     let new_ref = format!("refs/heads/{}", params.new_branch);
@@ -427,14 +436,28 @@ pub fn execute(
     // Step 8: Clean up empty parent directories.
     cleanup_empty_parent_dirs(&project_root, &old_path, sink);
 
-    // Step 9: The catalog records this repo's default branch, and daft just
+    // Step 9: Write down that the default branch moved. The catalog alone is
+    // not enough — registration re-derives it from `<remote>/HEAD`, which the
+    // remote will not let daft update, so the old name would come straight
+    // back (#933).
+    if renaming_default
+        && let Err(e) =
+            crate::core::worktree::provenance::mark_default(&git, &new_path, &params.new_branch)
+    {
+        warnings.push(format!(
+            "could not record '{}' as the default branch: {e}",
+            params.new_branch
+        ));
+    }
+
+    // Step 10: The catalog records this repo's default branch, and daft just
     // renamed a branch — so a row naming the old one is stale by daft's own
     // action. Only ever corrects a row that named exactly the renamed branch;
     // it never decides *which* branch is default, which stays the ladder's
     // job (#933).
     stamp_catalog_default_branch(&git_dir, &old_branch, &params.new_branch);
 
-    // Step 10: Set cd_target if CWD was inside the source worktree.
+    // Step 11: Set cd_target if CWD was inside the source worktree.
     let cd_target = if cwd_inside_source {
         Some(new_path.clone())
     } else {

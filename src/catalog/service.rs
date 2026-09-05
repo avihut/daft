@@ -490,6 +490,11 @@ fn resolve_repo_arg_impl(needle: &str, require_path: bool) -> anyhow::Result<Cat
 pub fn effective_default_branch(row: &CatalogRepoRow) -> Option<String> {
     row.default_branch
         .clone()
+        .or_else(|| {
+            crate::core::worktree::provenance::recorded_default_branch(Path::new(
+                &row.git_common_dir,
+            ))
+        })
         .or_else(|| crate::core::remote::local_default_branch(Path::new(&row.path), "origin"))
         .or_else(|| crate::core::remote::local_head_branch(Path::new(&row.git_common_dir)))
 }

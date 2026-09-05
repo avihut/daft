@@ -59,6 +59,11 @@ pub fn gather_facts(
     let remote_url =
         remote_url.or_else(|| crate::hooks::get_remote_url_for_git_dir(&canonical_gcd));
     let default_branch = default_branch
+        // Ahead of the symref: when daft renamed this repo's default branch,
+        // `<remote>/HEAD` still names the old one — correctly, since the
+        // remote would not let daft delete it — and re-deriving from it here
+        // is what used to overwrite the new name at every registration (#933).
+        .or_else(|| crate::core::worktree::provenance::recorded_default_branch(&canonical_gcd))
         .or_else(|| crate::core::remote::local_default_branch(&canonical_root, "origin"))
         .or_else(|| crate::core::remote::local_head_branch(&canonical_gcd));
     let default_name = normalize::derive_default_name(remote_url.as_deref(), &canonical_root);

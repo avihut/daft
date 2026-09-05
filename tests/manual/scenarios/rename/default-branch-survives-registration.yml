@@ -1,0 +1,106 @@
+name: A renamed default branch survives the next registration
+description:
+  "Renaming a repo's default branch used to be undone by the next registration
+  event. The remote refuses to delete the branch its own HEAD names, so
+  <remote>/HEAD keeps pointing at the old one — correctly — and gather_facts
+  re-derives from that symref, overwriting the new name. daft go then reopened
+  the branch the user had renamed away. daft now records its own determination
+  at the rename seam, and the ladder consults it ahead of the symref (#933)."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repo
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  # A clone is the one path that sets origin/HEAD, which is why clone-born
+  # repos are the ones this bug bites.
+  - name: Baseline — origin/HEAD and the catalog both say main
+    run: |
+      git --git-dir=$WORK_DIR/test-repo/.git symbolic-ref refs/remotes/origin/HEAD
+      daft repo info test-repo --format json
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "refs/remotes/origin/main"
+        - '"default_branch": "main"'
+
+  # The remote refuses to delete the branch its HEAD names
+  # (receive.denyDeleteCurrent, bare repositories included), so the rename
+  # succeeds locally and warns about the half it could not do. That warning is
+  # the whole reason the record below has to exist.
+  - name: Rename the default branch
+    run: daft rename main trunk 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/trunk"
+      output_contains:
+        - "Failed to delete old remote branch"
+
+  - name:
+      The remote still calls the old branch its default, and origin/HEAD agrees
+    run:
+      git --git-dir=$WORK_DIR/test-repo/.git symbolic-ref
+      refs/remotes/origin/HEAD
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "refs/remotes/origin/main"
+
+  - name: daft recorded its own determination at the rename seam
+    run:
+      git --git-dir=$WORK_DIR/test-repo/.git config --local --get-regexp
+      '^branch\..*\.daftdefault$'
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "branch.trunk.daftdefault true"
+
+  - name: The catalog followed the rename
+    run: daft repo info test-repo --format json
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"default_branch": "trunk"'
+
+  # The regression this scenario exists for. Before the record, this step put
+  # "main" straight back — re-derived from a symref that is not wrong, just
+  # answering for the remote rather than for this repo.
+  - name: A registration event does not put the old name back
+    run: |
+      daft repo add
+      daft repo info test-repo --format json
+    cwd: "$WORK_DIR/test-repo/trunk"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"default_branch": "trunk"'
+      output_not_contains:
+        - '"default_branch": "main"'
+
+  # The user-visible harm: go used to resurrect the renamed-away branch as a
+  # fresh worktree instead of opening the one that replaced it.
+  - name: go opens the renamed branch, and does not resurrect the old one
+    run: daft go test-repo 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "trunk"
+      output_not_contains:
+        - "Prepared worktree 'main'"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main"
