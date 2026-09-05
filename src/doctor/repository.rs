@@ -523,6 +523,20 @@ pub fn check_remote_sync_config(_ctx: &RepoContext) -> CheckResult {
     }
 }
 
+/// Which branch a set `refs/remotes/origin/HEAD` names, as the check's detail
+/// line.
+///
+/// Reads the **symref**, not config. `origin/HEAD` is a ref — git stores it at
+/// `refs/remotes/origin/HEAD` (or in `packed-refs`) and writes no
+/// `remote.origin.head` key, so the config read this replaced could never
+/// answer and the check always rendered the bare "set" (#935).
+fn remote_head_detail(git_common_dir: &Path) -> String {
+    match crate::core::remote::local_default_branch(git_common_dir, "origin") {
+        Some(branch) => format!("set to origin/{branch}"),
+        None => "set".to_string(),
+    }
+}
+
 /// Check that remote HEAD (refs/remotes/origin/HEAD) is set.
 pub fn check_remote_head(ctx: &RepoContext) -> CheckResult {
     if !ctx.is_bare {
@@ -539,16 +553,7 @@ pub fn check_remote_head(ctx: &RepoContext) -> CheckResult {
     }
 
     match git.show_ref_exists("refs/remotes/origin/HEAD") {
-        Ok(true) => {
-            // Try to get the actual target
-            match git.config_get("remote.origin.head") {
-                Ok(Some(head)) => {
-                    let target = head.strip_prefix("refs/remotes/origin/").unwrap_or(&head);
-                    CheckResult::pass("Remote HEAD", &format!("set to origin/{target}"))
-                }
-                _ => CheckResult::pass("Remote HEAD", "set"),
-            }
-        }
+        Ok(true) => CheckResult::pass("Remote HEAD", &remote_head_detail(&ctx.git_common_dir)),
         Ok(false) => CheckResult::warning("Remote HEAD", "not set")
             .with_suggestion("Run 'git remote set-head origin --auto'")
             .with_fix(Box::new(fix_remote_head))
@@ -851,5 +856,52 @@ mod tests {
             "got: {}",
             result.message
         );
+    }
+
+    /// Run git in an isolated temp repo with a fixed identity — never global
+    /// config (CLAUDE.md Rule #1), never this project's repo (Rule #2).
+    fn git_at(dir: &Path, args: &[&str]) {
+        let out = crate::utils::git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// #935: the detail came from `config_get("remote.origin.head")`, a key
+    /// git never writes, so a repo with `origin/HEAD` properly set still
+    /// rendered the bare "set". Reading the symref is what makes the detailed
+    /// arm reachable at all.
+    #[test]
+    fn remote_head_detail_names_the_branch_the_symref_points_at() {
+        let dir = tempfile::tempdir().unwrap();
+        git_at(dir.path(), &["init", "-q", "--bare", "-b", "main"]);
+        git_at(
+            dir.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/develop",
+            ],
+        );
+        assert_eq!(remote_head_detail(dir.path()), "set to origin/develop");
+    }
+
+    /// `show_ref_exists` has already said the ref is there, so this arm is
+    /// only reached when it exists but is not symbolic — keep the bare "set"
+    /// rather than claiming a branch.
+    #[test]
+    fn remote_head_detail_stays_bare_without_a_symref() {
+        let dir = tempfile::tempdir().unwrap();
+        git_at(dir.path(), &["init", "-q", "--bare", "-b", "main"]);
+        assert_eq!(remote_head_detail(dir.path()), "set");
     }
 }
