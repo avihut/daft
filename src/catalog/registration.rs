@@ -29,8 +29,9 @@ use std::path::Path;
 /// default branch when the caller doesn't know it.
 ///
 /// The branch ladder mirrors [`crate::catalog::effective_default_branch`], and
-/// mirroring it is the point: `origin/HEAD` first, then the repo's own bare
-/// `HEAD`. A repo published by hand (`git remote add` + `git push -u`) has no
+/// mirroring it is the point: daft's own recorded determination first
+/// (`branch.<name>.daftDefault`, written when daft renamed the default branch —
+/// #933), then `origin/HEAD`, then the repo's own bare `HEAD`. A repo published by hand (`git remote add` + `git push -u`) has no
 /// `origin/HEAD` at all — that is #925 — so without the second rung every
 /// registration path but `init`/`clone` gathers nothing and the row can only
 /// ever be *preserved*, never *corrected*.

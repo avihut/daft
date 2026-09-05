@@ -665,6 +665,77 @@ mod tests {
 
     /// The ladder's last rung, end to end: a row with nothing recorded and no
     /// `origin/HEAD` still resolves, from the repo's own bare HEAD.
+    /// #933: daft's own record outranks `<remote>/HEAD` on the read path too.
+    ///
+    /// The symref here names a branch that still exists — the state a
+    /// default-branch rename leaves, since the remote refuses to give up the
+    /// branch its HEAD names — so nothing about it looks broken. It is simply
+    /// answering for the remote, and the repository's own record is the better
+    /// answer for the repository.
+    #[test]
+    fn effective_default_branch_prefers_dafts_own_record_over_origin_head() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = crate::utils::git_command_at(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&src, &["init", "-q", "-b", "trunk"]);
+        git(&src, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        let gcd = tmp.path().join("demo.git");
+        crate::utils::git_command_at(tmp.path())
+            .args(["clone", "-q", "--bare"])
+            .arg(&src)
+            .arg(&gcd)
+            .output()
+            .expect("clone");
+        // The remote's opinion, pointing at a branch that is really there.
+        git(&gcd, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(
+            &gcd,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+        crate::core::worktree::provenance::mark_default(
+            &crate::git::GitCommand::new(true),
+            &gcd,
+            "trunk",
+        )
+        .unwrap();
+
+        let row = CatalogRepoRow {
+            uuid: "u2".into(),
+            name: "demo".into(),
+            path: gcd.to_string_lossy().into_owned(),
+            git_common_dir: gcd.to_string_lossy().into_owned(),
+            remote_url: None,
+            remote_url_normalized: None,
+            // The row is empty, so the read path has to resolve it — the case
+            // `exec --all-repos` and `fetch` hit.
+            default_branch: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            removed_at: None,
+        };
+
+        assert_eq!(effective_default_branch(&row).as_deref(), Some("trunk"));
+    }
+
     #[test]
     fn effective_default_branch_falls_back_to_the_repos_own_bare_head() {
         let tmp = TempDir::new().unwrap();

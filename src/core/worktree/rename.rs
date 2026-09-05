@@ -108,6 +108,12 @@ pub fn execute(
     // cannot be asked any more. The repo's own HEAD is the observation — not
     // the catalog (which may already be stale) and not `<remote>/HEAD` (which
     // answers for the remote).
+    //
+    // Scope: `local_head_branch` reads a *bare* common dir only, because in a
+    // non-bare one HEAD is the main worktree's current checkout and drifts
+    // (#925). So in `contained-classic` and any layout with `bare: false` this
+    // is always false and nothing is recorded — #933 stays unfixed there,
+    // rather than fixed from a source that cannot be trusted.
     let renaming_default =
         crate::core::remote::local_head_branch(&git_dir).as_deref() == Some(old_branch.as_str());
 
@@ -241,6 +247,25 @@ pub fn execute(
                 old_branch, params.new_branch
             )
         })?;
+
+    // Record the moved default branch *here*, not at the end: git has already
+    // renamed the branch and moved the common dir's HEAD onto the new name, so
+    // from this line on the repo needs the record. Steps 7 and 8 can still bail
+    // — a full disk, a permission, a stale lock — and bailing without it leaves
+    // exactly the state #933 is about, with the next registration re-deriving
+    // the old name from `<remote>/HEAD`.
+    //
+    // `git_dir` is the cwd because `new_path` does not exist yet; a
+    // `git config --local` write resolves to the same shared config either way.
+    if renaming_default
+        && let Err(e) =
+            crate::core::worktree::provenance::mark_default(&git, &git_dir, &params.new_branch)
+    {
+        warnings.push(format!(
+            "could not record '{}' as the default branch: {e}",
+            params.new_branch
+        ));
+    }
 
     // Step 7: Create parent dirs if needed, then move the worktree.
     if let Some(parent) = new_path.parent()
@@ -436,28 +461,21 @@ pub fn execute(
     // Step 8: Clean up empty parent directories.
     cleanup_empty_parent_dirs(&project_root, &old_path, sink);
 
-    // Step 9: Write down that the default branch moved. The catalog alone is
-    // not enough — registration re-derives it from `<remote>/HEAD`, which the
-    // remote will not let daft update, so the old name would come straight
-    // back (#933).
-    if renaming_default
-        && let Err(e) =
-            crate::core::worktree::provenance::mark_default(&git, &new_path, &params.new_branch)
-    {
-        warnings.push(format!(
-            "could not record '{}' as the default branch: {e}",
-            params.new_branch
-        ));
+    // Step 9: The catalog records this repo's default branch, and daft just
+    // renamed one — so a row naming it is stale by daft's own action.
+    //
+    // Gated on the same observation as the record above, not on the row alone.
+    // A row naming a branch that is *not* the default is precisely the
+    // staleness this fix exists to correct, and rewriting it on rename would
+    // promote an ordinary branch: real default `trunk`, stale row saying
+    // `main`, `daft rename main legacy` — and the catalog would then call
+    // `legacy` the default. The row's agreement is a second condition, never
+    // the deciding one.
+    if renaming_default {
+        stamp_catalog_default_branch(&git_dir, &old_branch, &params.new_branch);
     }
 
-    // Step 10: The catalog records this repo's default branch, and daft just
-    // renamed a branch — so a row naming the old one is stale by daft's own
-    // action. Only ever corrects a row that named exactly the renamed branch;
-    // it never decides *which* branch is default, which stays the ladder's
-    // job (#933).
-    stamp_catalog_default_branch(&git_dir, &old_branch, &params.new_branch);
-
-    // Step 11: Set cd_target if CWD was inside the source worktree.
+    // Step 10: Set cd_target if CWD was inside the source worktree.
     let cd_target = if cwd_inside_source {
         Some(new_path.clone())
     } else {
