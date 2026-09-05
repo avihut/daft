@@ -1229,6 +1229,8 @@ mod tests {
     use crate::test_support::CwdGuard;
     use serial_test::serial;
     use std::path::Path;
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tempfile::TempDir;
 
     use super::super::plan::{build_plan, classify_worktrees};
@@ -1437,12 +1439,12 @@ mod tests {
         }
     }
 
-    /// `--no-optional-locks` is load-bearing, not decoration: `git status`
-    /// opportunistically refreshes stale stat data and **writes the index
-    /// back**. A test that compares index bytes before and after a rollback
-    /// therefore fails whenever a plain `status()` ran between the two reads —
-    /// order-dependently, since the refresh only happens when git judges the
-    /// cached stat data stale. Same for `diff --cached`.
+    /// `--no-optional-locks` keeps these observations from mutating their
+    /// subject: a plain `git status` refreshes stale stat data and **writes the
+    /// index back**, and `diff --cached` does the same. Nothing here compares
+    /// raw index bytes any more — see `staged_entries` — so the flag is hygiene
+    /// rather than load-bearing, but a helper the tests call on both sides of a
+    /// transform should read the repository, not rewrite it.
     fn status(wt: &Path) -> String {
         git_ok(wt, &["--no-optional-locks", "status", "--porcelain"])
     }
@@ -1451,12 +1453,48 @@ mod tests {
         git_ok(wt, &["--no-optional-locks", "diff", "--cached"])
     }
 
+    /// The index's *content*: mode, blob, stage and path for every entry, and
+    /// none of its stat cache. That is what "the index was carried, not
+    /// rebuilt" means — a rebuilt index loses the unmerged stages and the
+    /// intent-to-add entry `dirty_every_way` puts there, and this catches it.
+    ///
+    /// Deliberately not `fs::read` of the index file. The transform renames
+    /// every top-level entry, which bumps ctime and leaves mtime alone, and the
+    /// `ValidateIntegrity` op's own `git status` then refreshes — and writes
+    /// back — the stat cache of every entry whose content still matches its
+    /// blob. Git compares ctime by whole seconds, so that rewrite only lands
+    /// when a one-second tick falls between the fixture's `git add` and the
+    /// rename ~100 ms later: ~10% of runs, far more on a loaded machine, which
+    /// is how the byte comparison this replaces read as a flake (#945). A real
+    /// transform crosses that boundary every time, so byte-for-byte was never a
+    /// property daft delivered — only one a fast fixture could usually observe.
+    fn staged_entries(wt: &Path) -> String {
+        git_ok(wt, &["ls-files", "--stage"])
+    }
+
+    /// Sleep past the next whole second, so that the ctime bump the transform's
+    /// renames cause is one git can see.
+    ///
+    /// Turns the refresh described on `staged_entries` from a ~10% event into
+    /// every run, which is what makes that assertion revert-verifiable: put the
+    /// byte comparison back and it fails three times out of three.
+    fn wait_for_the_clock_to_tick() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("a clock after the epoch");
+        thread::sleep(
+            Duration::from_nanos(1_000_000_000 - u64::from(now.subsec_nanos()))
+                + Duration::from_millis(2),
+        );
+    }
+
     // ── #859 / #875 ──────────────────────────────────────────────────────
 
     /// A plain clone whose main working tree is on a feature branch, dirty
     /// in every way, taken to `contained` and then failed at the last step:
-    /// the repository must come back exactly as it was — index bytes included,
-    /// because rollback *moves* it back rather than rebuilding it.
+    /// the repository must come back exactly as it was — every index entry
+    /// included, because rollback *moves* the index back rather than
+    /// rebuilding it.
     #[test]
     #[serial]
     fn failed_transform_of_a_nondefault_root_rolls_back_completely() {
@@ -1468,7 +1506,7 @@ mod tests {
         );
         dirty_every_way(&repo);
         let status_before = status(&repo);
-        let index_before = fs::read(repo.join(".git/index")).unwrap();
+        let staged_before = staged_entries(&repo);
 
         let _cwd = CwdGuard::enter(&repo);
         let git = GitCommand::new(false);
@@ -1497,9 +1535,9 @@ mod tests {
             "rollback must not leave the repo without an index"
         );
         assert_eq!(
-            fs::read(repo.join(".git/index")).unwrap(),
-            index_before,
-            "the index must come back byte for byte — moved, not rebuilt"
+            staged_entries(&repo),
+            staged_before,
+            "every index entry must come back — moved, not rebuilt"
         );
         assert_eq!(
             git_ok(&repo, &["config", "--get", "core.bare"]).trim(),
@@ -1533,6 +1571,7 @@ mod tests {
     fn successful_transform_of_a_nondefault_root_registers_it_and_carries_its_index() {
         let (_base, repo) = scratch_repo("feature/x");
         dirty_every_way(&repo);
+        wait_for_the_clock_to_tick();
         let status_before = status(&repo);
         let cached_before = diff_cached(&repo);
         assert!(
@@ -1541,7 +1580,7 @@ mod tests {
         );
         assert!(status_before.contains("M  main.py"), "{status_before}");
         assert!(status_before.contains("AM both.txt"), "{status_before}");
-        let index_before = fs::read(repo.join(".git/index")).unwrap();
+        let staged_before = staged_entries(&repo);
 
         let _cwd = CwdGuard::enter(&repo);
         let git = GitCommand::new(false);
@@ -1575,9 +1614,9 @@ mod tests {
             "the index lives in the registration"
         );
         assert_eq!(
-            fs::read(reg.join("index")).unwrap(),
-            index_before,
-            "the index was moved, byte for byte"
+            staged_entries(&wt),
+            staged_before,
+            "the index was carried — every mode, blob, conflict stage and path"
         );
         assert_eq!(
             fs::read_to_string(repo.join(".git/HEAD")).unwrap(),
