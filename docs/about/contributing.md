@@ -267,9 +267,10 @@ docs: update installation instructions
   method and keeps a linear history
 - One status check is required, `ci-gate`, which fans in every CI job; jobs that
   do not apply to a change are skipped, and skipped counts as green
-- The branch must be up to date with `master` when it merges — rebase and
-  force-push (`--force-with-lease`), or press **Update branch**, and CI re-runs
-  on the result
+- The branch does not have to be up to date with `master` to merge (until public
+  launch); rebase and force-push (`--force-with-lease`) only to resolve a
+  conflict. Because of that, the test workflow also runs on every push to
+  `master`, and a red run there is fixed forward at once
 - Every review thread must be resolved before merging
 - Dependabot's patch and minor updates auto-merge once `ci-gate` is green; major
   bumps wait for a maintainer

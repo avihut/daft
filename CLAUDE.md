@@ -32,12 +32,16 @@ IMPORTANT: These rules must NEVER be violated:
    `heed::Env::open` is `unsafe fn`.
 5. **Don't weaken the merge gate or the Dependabot auto-merge path** — what lets
    a Dependabot PR land unattended is that nothing can merge to `master` until
-   `ci-gate` (`.github/workflows/test.yml`) is green on an up-to-date branch;
-   the `master` ruleset (`.github/rulesets/master.json`) requires only that one
-   check, and `ci-gate` must `need:` every other job and run on `if: always()`
-   (a skipped required check is a passing one — `cargo test --package xtask`
-   enforces both). `test.yml` must never regain a workflow-level `paths:`
-   filter: a run that never starts leaves `ci-gate` "Expected" forever.
+   `ci-gate` (`.github/workflows/test.yml`) is green on the PR (the branch need
+   not be up to date with `master` until public launch — #941 dropped that rule,
+   #942 restores it — which is why `test.yml` also runs on every push to
+   `master`: the push run is what catches two individually green PRs combining
+   into a red master; never remove it while the rule is off); the `master`
+   ruleset (`.github/rulesets/master.json`) requires only that one check, and
+   `ci-gate` must `need:` every other job and run on `if: always()` (a skipped
+   required check is a passing one — `cargo test --package xtask` enforces
+   both). `test.yml` must never regain a workflow-level `paths:` filter: a run
+   that never starts leaves `ci-gate` "Expected" forever.
    `.github/workflows/dependabot-auto-merge.yml` stays on `pull_request` (never
    `pull_request_target`), gates on
    `pull_request.user.login == 'dependabot[bot]'` **and**
@@ -126,16 +130,16 @@ the only status check the `master` ruleset requires (Critical Rule #5). Adding
 or renaming a CI job therefore never touches the ruleset — but the new job
 **must** be added to `ci-gate`'s `needs:` list, or its failure blocks nothing;
 `cargo test --package xtask` (`ci_gate_drift`) fails until it is. `test.yml`
-runs on every PR: path gating is per job, through the `changes` job's outputs
-and each job's `if:`, never through a workflow-level `paths:` filter (a
-filtered-out run never starts, so `ci-gate` never reports and the PR can never
-merge). That is also why the docs build and the diagram golden suite are
-`test.yml` jobs (`docs-build`, `docs-golden`, gated on the `docs` class) rather
-than `docs.yml` jobs — `docs.yml` only deploys, on release tags.
-`actions-pinned` (`mise run validate:actions-pinned`) is the one check that runs
-unconditionally alongside `release-env-guard`, and for the same reason: the
-dangerous PR — `dist generate` rewriting `release.yml` with tag refs — touches
-no path the filters watch.
+runs on every PR and on every push to `master` (#941): path gating is per job,
+through the `changes` job's outputs and each job's `if:`, never through a
+workflow-level `paths:` filter (a filtered-out run never starts, so `ci-gate`
+never reports and the PR can never merge). That is also why the docs build and
+the diagram golden suite are `test.yml` jobs (`docs-build`, `docs-golden`, gated
+on the `docs` class) rather than `docs.yml` jobs — `docs.yml` only deploys, on
+release tags. `actions-pinned` (`mise run validate:actions-pinned`) is the one
+check that runs unconditionally alongside `release-env-guard`, and for the same
+reason: the dangerous PR — `dist generate` rewriting `release.yml` with tag refs
+— touches no path the filters watch.
 
 ## Profiling
 
@@ -471,11 +475,15 @@ navigation must also support Vim-style `hjkl` keys.
   (`squash_merge_commit_title: PR_TITLE`), so `git-cliff` reads the version bump
   from it; the body is the PR's commit messages (`COMMIT_MESSAGES`)
 - Issue references go in PR body, not title: `Fixes #42`
-- A PR merges only when `ci-gate` is green **and the branch is up to date with
-  `master`** (strict status checks — the tested tree is the landed tree, the
-  same rule `daft merge`'s `ff: only` enforces locally). When master moves,
-  rebase and force-push (`--force-with-lease`) or use the Update branch button;
-  Dependabot rebases its own PRs.
+- A PR merges when `ci-gate` is green. Until public launch the branch does
+  **not** have to be up to date with `master` (#941 dropped the strict
+  status-check rule so a batch of non-conflicting PRs lands without a
+  rebase-and-rerun cycle each; #942 restores it at launch). The cost is that two
+  individually green PRs can combine into a red `master` that no PR run saw —
+  the push-to-master run of `test.yml` is what catches that, and a red master
+  run is fixed forward immediately. `daft merge`'s `ff: only` still enforces
+  tested-tree-is-landed-tree on the local path. Rebase and force-push
+  (`--force-with-lease`) only when a PR actually conflicts.
 
 ### Repository policy (GitHub side)
 

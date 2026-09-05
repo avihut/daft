@@ -3,8 +3,8 @@ name: Dependabot auto-merge
 # Lets Dependabot's pull requests land without a human once — and only once —
 # the `master` ruleset is satisfied. This workflow merges nothing itself: it
 # turns on GitHub's auto-merge (squash) for the PR, and GitHub performs the
-# merge when the rules hold, i.e. when `ci-gate` is green on a branch that is
-# up to date with master. The ruleset is the gate; this is the button.
+# merge when the rules hold, i.e. when `ci-gate` is green. The ruleset is the
+# gate; this is the button.
 #
 # What it will and will not touch:
 #   - Only PRs opened by dependabot[bot], only for events dependabot[bot]
@@ -28,9 +28,9 @@ name: Dependabot auto-merge
 # get the two scopes that enabling auto-merge needs. This is the shape GitHub's
 # own "Automating Dependabot with GitHub Actions" guide uses.
 #
-# Squash-only, linear history, the up-to-date rule, and `ci-gate` itself are
-# all the ruleset's business — see .github/rulesets/master.json and CLAUDE.md
-# "Repository policy".
+# Squash-only, linear history, and `ci-gate` itself are all the ruleset's
+# business — see .github/rulesets/master.json and CLAUDE.md "Repository
+# policy".
 
 on:
   pull_request:
@@ -119,4 +119,4 @@ jobs:
             exit 0
           fi
           gh pr merge --auto --squash "$PR_URL"
-          echo "auto-merge enabled (squash); GitHub merges when ci-gate is green on an up-to-date branch"
+          echo "auto-merge enabled (squash); GitHub merges when ci-gate is green"
