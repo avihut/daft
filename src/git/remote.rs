@@ -674,6 +674,34 @@ impl GitCommand {
         format!("{configured} -o BatchMode=yes")
     }
 
+    /// Point `refs/remotes/<remote>/HEAD` at `branch`, locally.
+    ///
+    /// The explicit-branch counterpart to [`Self::remote_set_head_auto`]: no
+    /// network, because the caller already knows the answer. `--auto` asks the
+    /// remote; this states it.
+    ///
+    /// `cwd`-explicit for the same reason [`Self::config_set_at`] is — the push
+    /// seam carries its own working directory (sync pushes run from arbitrary
+    /// worktree paths), so a process-rooted write would land in whichever repo
+    /// daft happened to be standing in. Goes through
+    /// [`crate::utils::git_command_at`] so an inherited `GIT_DIR` can't
+    /// retarget it either.
+    ///
+    /// Git refuses unless `refs/remotes/<remote>/<branch>` already exists, so
+    /// callers should treat failure as best-effort rather than fatal.
+    pub fn remote_set_head(&self, remote: &str, branch: &str, cwd: &std::path::Path) -> Result<()> {
+        let output = crate::utils::git_command_at(cwd)
+            .args(["remote", "set-head", remote, branch])
+            .output()
+            .context("Failed to execute git remote set-head command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git remote set-head failed: {}", stderr);
+        }
+        Ok(())
+    }
+
     pub fn remote_set_head_auto(&self, remote: &str) -> Result<()> {
         let output = Command::new("git")
             .args(["remote", "set-head", remote, "--auto"])

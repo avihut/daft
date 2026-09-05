@@ -554,9 +554,95 @@ pub fn push_with_hooks(
     // worked must not be reported as failed because a config write did not.
     if outcome.success() && !action.is_delete() {
         let _ = provenance::mark_published(git, cwd, action.remote(), action.branch());
+        adopt_remote_head_if_first_publish(git, &action, cwd);
     }
 
     Ok(outcome)
+}
+
+/// Whether a just-succeeded push should also set `refs/remotes/<remote>/HEAD`.
+///
+/// Split from its I/O so every case below is testable without a remote.
+///
+/// `SetUpstream` alone is nowhere near enough, and that is the whole subtlety:
+/// it is a per-*branch* property, firing on every upstream-less push — i.e.
+/// every new feature branch, for the repo's whole life — not once per repo. A
+/// repo published by hand (`git remote add` + `git push -u`, which never enters
+/// daft) has no `origin/HEAD`, so the next `daft start feature-x` would satisfy
+/// "SetUpstream and no remote HEAD" and point `origin/HEAD` at `feature-x`.
+/// Worse, that value is then read straight back by
+/// `catalog::effective_default_branch` and persisted as the repo's default
+/// branch — an accident of ordering laundered into a recorded fact.
+///
+/// So the branch must be the repository's own declared default.
+/// `repo_head_branch` comes from [`crate::core::remote::local_head_branch`],
+/// which answers only for a bare common dir, so a non-bare repo simply never
+/// stamps.
+fn should_adopt_remote_head(
+    action: &PushAction<'_>,
+    remote_head_set: bool,
+    repo_head_branch: Option<&str>,
+) -> bool {
+    matches!(action, PushAction::SetUpstream { .. })
+        && !remote_head_set
+        && repo_head_branch == Some(action.branch())
+}
+
+/// Give a repo the `refs/remotes/<remote>/HEAD` that `git clone` would have
+/// created, at the moment daft itself first publishes the default branch.
+///
+/// Without it, a repo born from `daft init` never gets one no matter how it is
+/// published, which is half of #925 — and plain-git consumers lose
+/// `git rev-parse origin/HEAD` too.
+///
+/// Best-effort, like the provenance stamp beside it: a push that worked must
+/// not be reported as failed because a ref write did not.
+///
+/// The batched push strategy (`push_batched`) deliberately has no counterpart.
+/// It skips every branch without an upstream, so `SetUpstream` cannot occur
+/// there and it can never be a first publish — the "two paths must both
+/// record" rule is satisfied by one path being structurally incapable of the
+/// event, not by an omission.
+fn adopt_remote_head_if_first_publish(git: &GitCommand, action: &PushAction<'_>, cwd: &Path) {
+    // Re-checked by `should_adopt_remote_head`; short-circuited here so the two
+    // git probes below never run on the overwhelmingly common `Sync` push.
+    if !matches!(action, PushAction::SetUpstream { .. }) {
+        return;
+    }
+    let repo_head = crate::core::repo::git_common_dir_at(cwd)
+        .and_then(|dir| crate::core::remote::local_head_branch(&dir));
+    if !should_adopt_remote_head(
+        action,
+        remote_head_is_set(cwd, action.remote()),
+        repo_head.as_deref(),
+    ) {
+        return;
+    }
+    let _ = git.remote_set_head(action.remote(), action.branch(), cwd);
+}
+
+/// Does `refs/remotes/<remote>/HEAD` already exist in the repo at `cwd`?
+///
+/// Deliberately not `GitCommand::show_ref_exists`, which resolves through
+/// `std::env::current_dir()` — during a sync fan-out that is whichever repo the
+/// process happens to be standing in, not the worktree being pushed. Unknown
+/// (spawn failure, not a repo) reads as "set", the conservative answer: it
+/// declines to write.
+fn remote_head_is_set(cwd: &Path, remote: &str) -> bool {
+    crate::utils::git_command_at(cwd)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/{remote}/HEAD"),
+        ])
+        // Both pipes: `--quiet` silences stdout for some subcommands and never
+        // touches stderr (CLAUDE.md, Test Hygiene).
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(true)
 }
 
 fn push_with_hooks_inner(
@@ -1273,6 +1359,76 @@ mod tests {
     use std::process::Stdio;
     use std::sync::Mutex;
     use std::time::Duration;
+
+    // ── Remote HEAD adoption on first publish (#925) ────────────────────
+
+    fn set_upstream(branch: &str) -> PushAction<'_> {
+        PushAction::SetUpstream {
+            remote: "origin",
+            branch,
+            force_with_lease: false,
+        }
+    }
+
+    #[test]
+    fn adopts_remote_head_publishing_the_repos_default_branch() {
+        // The repo declares `master`, daft is publishing `master`, and the
+        // remote has no HEAD yet: exactly what `git clone` would have set up.
+        assert!(should_adopt_remote_head(
+            &set_upstream("master"),
+            false,
+            Some("master")
+        ));
+    }
+
+    #[test]
+    fn leaves_an_existing_remote_head_alone() {
+        assert!(!should_adopt_remote_head(
+            &set_upstream("master"),
+            true,
+            Some("master")
+        ));
+    }
+
+    /// The regression this guard exists for. A repo published by hand has no
+    /// `origin/HEAD`, so the next `daft start feature-x` reaches here with
+    /// `SetUpstream` and no remote HEAD — and must NOT claim `feature-x` is
+    /// the repo's default branch, which would then be persisted into the
+    /// catalog by `effective_default_branch`'s write-back.
+    #[test]
+    fn refuses_to_adopt_a_branch_that_is_not_the_repos_default() {
+        assert!(!should_adopt_remote_head(
+            &set_upstream("feature-x"),
+            false,
+            Some("master")
+        ));
+    }
+
+    /// A non-bare common dir yields no declared default (`local_head_branch`
+    /// refuses one), so there is nothing to match against and nothing to write.
+    #[test]
+    fn refuses_to_adopt_when_the_repo_declares_no_default() {
+        assert!(!should_adopt_remote_head(
+            &set_upstream("master"),
+            false,
+            None
+        ));
+    }
+
+    #[test]
+    fn never_adopts_on_a_sync_or_delete_push() {
+        let sync = PushAction::Sync {
+            remote: "origin",
+            branch: "master",
+            force_with_lease: false,
+        };
+        let delete = PushAction::Delete {
+            remote: "origin",
+            branch: "master",
+        };
+        assert!(!should_adopt_remote_head(&sync, false, Some("master")));
+        assert!(!should_adopt_remote_head(&delete, false, Some("master")));
+    }
 
     // ── Batched-push attribution (#678) ─────────────────────────────────
 

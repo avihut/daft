@@ -198,7 +198,9 @@ Use '-' as the branch name to switch to the previous worktree, similar to
 
 `daft go` also jumps across repositories through the repo catalog. A name
 that matches no branch in the current repository falls back to the catalog
-and opens that repository's default-branch worktree. Two arguments —
+and opens that repository's default-branch worktree; if that branch does not
+exist (or cannot be determined), it lands in the repository's root directory
+instead. Two arguments —
 `daft go <repo> <branch>` — open a specific branch there, creating its
 worktree if needed. `--repo <name>` addresses a repository explicitly (for
 names shadowed by local branches), and outside any git repository `daft go`
@@ -1549,6 +1551,7 @@ fn run_with_args(mut args: Args, routing: GoRouting) -> Result<()> {
         routing.catalog_fallback,
         original_dir,
         source_worktree,
+        None,
     )
 }
 
@@ -1619,9 +1622,13 @@ fn lookup_live_repo(name: &str) -> Option<crate::store::CatalogRepoRow> {
     catalog.resolve_live_name(name).ok().flatten()
 }
 
-/// A cataloged repo's default branch: the catalog's recorded value,
-/// refreshed from the repo's local `origin/HEAD` when unknown (write-back
-/// is best-effort).
+/// A cataloged repo's default branch: the catalog's recorded value, refreshed
+/// from the repo's own state when unknown (write-back is best-effort).
+///
+/// The write-back is source-blind — `discovered` knows only that the row was
+/// empty, not which rung of `effective_default_branch` answered — so every rung
+/// it can reach must be safe to persist. That invariant is enforced inside the
+/// rungs (`local_head_branch` refuses a non-bare common dir), not here.
 fn repo_default_branch(row: &crate::store::CatalogRepoRow) -> Option<String> {
     let discovered = row.default_branch.is_none();
     let branch = crate::catalog::effective_default_branch(row)?;
@@ -1632,15 +1639,159 @@ fn repo_default_branch(row: &crate::store::CatalogRepoRow) -> Option<String> {
     Some(branch)
 }
 
-/// The branch `daft go <repo>` lands on. Assumes cwd is already the target repo.
-fn resolve_repo_default_branch(row: &crate::store::CatalogRepoRow) -> Result<String> {
-    repo_default_branch(row).ok_or_else(|| {
-        anyhow::anyhow!(
-            "could not determine the default branch of '{}'; pass a branch: `{}`",
-            row.name,
-            crate::daft_cmd(&format!("go {} <branch>", row.name))
-        )
-    })
+/// How many branches to name before summarising; enough to be useful in a
+/// small repo, short enough not to bury the note in a large one.
+const BRANCH_HINT_LIMIT: usize = 8;
+
+/// Render the branch list as one indented hint line, capped. Empty for an
+/// empty list, so a repo with no branches (or an unreadable one) simply gets
+/// no line.
+fn branch_hint(branches: &[String]) -> String {
+    if branches.is_empty() {
+        return String::new();
+    }
+    let shown = branches
+        .iter()
+        .take(BRANCH_HINT_LIMIT)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut hint = format!("  branches: {shown}");
+    let extra = branches.len().saturating_sub(BRANCH_HINT_LIMIT);
+    if extra > 0 {
+        hint.push_str(&format!(" (and {extra} more)"));
+    }
+    hint
+}
+
+/// The repo's local branches, for the "open one of these" hint. Best-effort:
+/// this only ever decorates a note that is already being printed.
+fn branch_names_for_hint(row: &crate::store::CatalogRepoRow) -> Vec<String> {
+    let Ok(out) = crate::utils::git_command_at(std::path::Path::new(&row.git_common_dir))
+        .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Why bare `daft go <repo>` had no default-branch worktree to open. Carries
+/// everything its note needs, so rendering stays pure.
+enum NoBranchToOpen {
+    /// No rung of `effective_default_branch` answered. `branches` is what the
+    /// repo does have, so the user can name one — and only name one: "the
+    /// repo has only one branch, so enter it" would infer from correlated
+    /// state and silently stop working the day a second branch appears. An
+    /// interactive picker (`crate::output::tui::shared_picker`) is the
+    /// intended successor once one exists for branches.
+    Unknown { branches: Vec<String> },
+    /// The default branch resolved, but no ref confirms it — locally or on
+    /// `remote`, which could not be reached when `fetch_failed`.
+    Missing {
+        branch: String,
+        remote: String,
+        fetch_failed: bool,
+    },
+}
+
+impl NoBranchToOpen {
+    /// The indented lines printed under the "Opening repository" result.
+    fn explain(&self, repo: &str) -> Vec<String> {
+        match self {
+            Self::Unknown { branches } => {
+                let mut lines = vec![format!(
+                    "  no worktree to open: could not determine the default branch of '{repo}'"
+                )];
+                let hint = branch_hint(branches);
+                if !hint.is_empty() {
+                    lines.push(hint);
+                }
+                lines.push(format!(
+                    "  tip: Use `{}` to open one",
+                    crate::daft_cmd(&format!("go {repo} <branch>"))
+                ));
+                lines
+            }
+            // A branch the remote may well have is not one to recreate.
+            Self::Missing {
+                branch,
+                remote,
+                fetch_failed: true,
+            } => vec![format!(
+                "  no worktree to open: branch '{branch}' not found -- could not reach remote \
+                 '{remote}' to check"
+            )],
+            Self::Missing {
+                branch,
+                remote,
+                fetch_failed: false,
+            } => vec![
+                format!(
+                    "  no worktree to open: branch '{branch}' does not exist locally or on \
+                     remote '{remote}'"
+                ),
+                format!(
+                    "  tip: Use `{}` to create it",
+                    crate::daft_cmd(&format!("start {branch}"))
+                ),
+            ],
+        }
+    }
+}
+
+/// Bare `daft go <repo>` with nothing to open: enter the repository's root
+/// directory instead of dead-ending.
+///
+/// `daft go <repo>` means "go to that repo"; opening its default-branch
+/// worktree is sugar on top, and the sugar failing must not withhold the
+/// repo. The root is a real destination in every layout — the catalog's
+/// project root, where `daft start` and `daft list` work — and for a repo
+/// with no worktrees at all (every branch deleted, a valid state a bare
+/// common dir holds happily) it is the only one. Assumes cwd is already
+/// `row.path`.
+fn land_in_repo_root(
+    row: &crate::store::CatalogRepoRow,
+    why: NoBranchToOpen,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let root = Path::new(&row.path);
+    output.result(&format!(
+        "Opening repository '{}' → {}",
+        row.name,
+        root.display()
+    ));
+    for line in why.explain(&row.name) {
+        output.info(&line);
+    }
+    output.cd_path(root);
+    maybe_show_shell_hint(output)?;
+    Ok(())
+}
+
+/// One `GitCommand`, the settings loaded through it, and a `CliOutput` whose
+/// autocd honours both `daft.autocd` and `--no-cd` — what every in-repo entry
+/// point needs, built in one place so the autocd rule cannot drift.
+///
+/// The single `GitCommand` is deliberate (#584): settings (and, in the
+/// run_checkout / run_create_branch bodies, the hooks config) load through it
+/// so a checkout discovers the repo exactly once instead of per throwaway
+/// instance.
+fn repo_session(args: &Args) -> Result<(GitCommand, DaftSettings, CliOutput)> {
+    let git = GitCommand::new(args.quiet);
+    let settings = DaftSettings::load_with(&git)?;
+    let autocd = settings.autocd && !args.no_cd;
+    let output = CliOutput::new(OutputConfig::with_autocd(args.quiet, args.verbose, autocd));
+    Ok((git, settings, output))
 }
 
 /// Enter `row`'s repository and open `branch` there (the repo's default
@@ -1668,15 +1819,35 @@ fn go_to_repo(
     }
     change_directory(path)?;
 
+    // Bare `daft go <repo>`: the branch is daft's guess, not the user's ask,
+    // so a guess that cannot be opened lands in the root rather than erroring.
+    let implicit_default = explicit_branch.is_none() && !args.create_branch;
     let result = (|| {
         if !args.create_branch {
             args.branch_name = match explicit_branch {
                 Some(branch) => branch,
-                None => resolve_repo_default_branch(row)?,
+                None => match repo_default_branch(row) {
+                    Some(branch) => branch,
+                    None => {
+                        let (_git, _settings, mut output) = repo_session(&args)?;
+                        let branches = branch_names_for_hint(row);
+                        return land_in_repo_root(
+                            row,
+                            NoBranchToOpen::Unknown { branches },
+                            &mut output,
+                        );
+                    }
+                },
             };
         }
         // Catalog fallback stays off inside the target repo — one hop only.
-        run_in_repo(args, false, original_dir.clone(), source_worktree)
+        run_in_repo(
+            args,
+            false,
+            original_dir.clone(),
+            source_worktree,
+            implicit_default.then_some(row),
+        )
     })();
     if result.is_err() {
         change_directory(&original_dir).ok();
@@ -1685,21 +1856,18 @@ fn go_to_repo(
 }
 
 /// Dispatch a checkout/create inside the repo the cwd currently sits in.
+///
+/// `implicit_default_of` is set when `branch_name` was not named by the user
+/// but resolved as this catalog repo's default branch (bare `daft go <repo>`):
+/// a `BranchNotFound` then lands in that repo's root rather than erroring.
 fn run_in_repo(
     args: Args,
     catalog_fallback: bool,
     original_dir: PathBuf,
     source_worktree: Option<PathBuf>,
+    implicit_default_of: Option<&crate::store::CatalogRepoRow>,
 ) -> Result<()> {
-    // Construct one `GitCommand` and load settings (and, in the run_checkout /
-    // run_create_branch bodies, the hooks config) through it so a checkout
-    // discovers the repo exactly once instead of per throwaway instance (#584).
-    let git = GitCommand::new(args.quiet);
-    let settings = DaftSettings::load_with(&git)?;
-
-    let autocd = settings.autocd && !args.no_cd;
-    let config = OutputConfig::with_autocd(args.quiet, args.verbose, autocd);
-    let mut output = CliOutput::new(config);
+    let (git, settings, mut output) = repo_session(&args)?;
 
     // The sandbox rung's early half (#53): spellings like `HEAD~2` or
     // `@{-1}` can never be branches — `validate_branch_name` rejects them
@@ -1764,13 +1932,34 @@ fn run_in_repo(
                 ref remote,
                 fetch_failed,
             }) => {
+                // Bare `daft go <repo>`: the default-branch worktree is sugar
+                // on "go to that repo", so a default that cannot be opened
+                // lands in the repository root instead of dead-ending.
+                // Explicit --start / --at keep their meaning — the user asked
+                // for a branch — while ambient `daft.go.autoStart` yields: it
+                // would create the default branch from a HEAD that resolves
+                // to nothing.
+                if let Some(row) = implicit_default_of
+                    && !args.start
+                    && args.at.is_none()
+                {
+                    land_in_repo_root(
+                        row,
+                        NoBranchToOpen::Missing {
+                            branch: branch.clone(),
+                            remote: remote.clone(),
+                            fetch_failed,
+                        },
+                        &mut output,
+                    )
+                }
                 // A daft-created sandbox answers to its directory name —
                 // local-first, like everything in the ladder, so an
                 // established sandbox keeps beating a later-cataloged repo
                 // of the same name. (Sandboxes at their layout-default path
                 // never reach this handler: core's on-disk fallback
                 // navigates first. This arm covers --at-placed ones.)
-                if catalog_fallback
+                else if catalog_fallback
                     && !args.start
                     && let Some((dirname, sandbox_path)) = lookup_sandbox_by_name(branch)
                 {
@@ -2907,7 +3096,7 @@ fn run_start_with_related(
 }
 
 /// Create `args.branch_name` in a related repo, based on that repo's own
-/// default branch (recorded in the catalog, else origin/HEAD) regardless of
+/// default branch ([`crate::catalog::effective_default_branch`]) regardless of
 /// which worktree happens to be checked out there. Never carry, never run
 /// `-x`, and run hooks only when the repo is explicitly trusted (`Allow`) — a
 /// fan-out must not block on interactive trust prompts.
@@ -2928,8 +3117,8 @@ fn create_branch_in_related_repo(
         let settings = DaftSettings::load_with(&git)?;
 
         let mut repo_args = args.clone();
-        // Base the new branch on the related repo's own default branch (its
-        // recorded catalog default, else origin/HEAD) — NOT whatever branch
+        // Base the new branch on the related repo's own default branch (via
+        // `catalog::effective_default_branch`) — NOT whatever branch
         // find_representative_worktree happened to enter, which is wrong when
         // the default branch has no checkout. An explicit base only applies to
         // the current repo; fall back to the entered worktree's branch (None)
@@ -3391,6 +3580,99 @@ mod start_grammar_tests {
                 also_live_repo: false
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod root_landing_tests {
+    use super::*;
+
+    fn names(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("b{i}")).collect()
+    }
+
+    #[test]
+    fn no_branches_adds_no_hint() {
+        assert_eq!(branch_hint(&[]), "");
+    }
+
+    #[test]
+    fn lists_the_branches_it_found() {
+        assert_eq!(
+            branch_hint(&["master".into(), "feature-x".into()]),
+            "  branches: master, feature-x"
+        );
+    }
+
+    #[test]
+    fn missing_default_names_the_branch_and_how_to_create_it() {
+        let lines = NoBranchToOpen::Missing {
+            branch: "master".into(),
+            remote: "origin".into(),
+            fetch_failed: false,
+        }
+        .explain("demo");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].contains("branch 'master' does not exist locally or on remote 'origin'"),
+            "{lines:?}"
+        );
+        assert!(lines[1].contains("start master"), "{lines:?}");
+    }
+
+    /// A branch the remote may well have is not one to offer recreating.
+    #[test]
+    fn unreachable_remote_offers_no_create_tip() {
+        let lines = NoBranchToOpen::Missing {
+            branch: "master".into(),
+            remote: "origin".into(),
+            fetch_failed: true,
+        }
+        .explain("demo");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("could not reach remote 'origin'"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_default_lists_the_candidates() {
+        let lines = NoBranchToOpen::Unknown {
+            branches: vec!["main".into(), "dev".into()],
+        }
+        .explain("demo");
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(
+            lines[0].contains("could not determine the default branch of 'demo'"),
+            "{lines:?}"
+        );
+        assert_eq!(lines[1], "  branches: main, dev");
+        assert!(lines[2].contains("go demo <branch>"), "{lines:?}");
+    }
+
+    #[test]
+    fn unknown_default_with_no_branches_skips_the_list() {
+        let lines = NoBranchToOpen::Unknown { branches: vec![] }.explain("demo");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("branches:")), "{lines:?}");
+    }
+
+    #[test]
+    fn caps_the_list_and_counts_the_rest() {
+        let hint = branch_hint(&names(BRANCH_HINT_LIMIT + 3));
+        assert!(hint.ends_with("(and 3 more)"), "got: {hint}");
+        assert_eq!(
+            hint.matches(", ").count(),
+            BRANCH_HINT_LIMIT - 1,
+            "exactly the cap is listed"
+        );
+    }
+
+    #[test]
+    fn exactly_the_cap_does_not_say_and_more() {
+        let hint = branch_hint(&names(BRANCH_HINT_LIMIT));
+        assert!(!hint.contains("more"), "got: {hint}");
     }
 }
 

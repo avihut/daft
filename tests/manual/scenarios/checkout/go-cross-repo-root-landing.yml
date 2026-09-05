@@ -1,0 +1,81 @@
+name: Cross-repo go lands in the root when there is no branch to open
+description:
+  "`daft go <repo>` means go to that repo; opening its default-branch worktree
+  is sugar on top. A repo whose default branch does not exist — every branch
+  deleted, a valid state a bare common dir holds happily — must still be
+  entered. Land in the repository's root directory rather than error out and
+  leave the shell where it was (#925)."
+
+steps:
+  - name: Init a repo with no remote
+    run: daft init rootland --layout contained
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/rootland/.git"
+        - "$WORK_DIR/rootland/master"
+
+  - name: Commit so the branch is born
+    run: |
+      echo '# rootland' > README.md &&
+      git add README.md &&
+      git commit -q -m "init"
+    cwd: "$WORK_DIR/rootland/master"
+    expect:
+      exit_code: 0
+
+  - name: Delete every branch
+    run: |
+      git --git-dir=$WORK_DIR/rootland/.git worktree remove --force $WORK_DIR/rootland/master &&
+      git --git-dir=$WORK_DIR/rootland/.git branch -D master
+    expect:
+      exit_code: 0
+
+  # The bare HEAD still declares master — a declaration, not an observation —
+  # and so does the catalog. That is the branch go will try to open.
+  - name: The repo still declares a default branch no ref confirms
+    run: |
+      git --git-dir=$WORK_DIR/rootland/.git symbolic-ref HEAD
+      echo "BRANCHES=$(git --git-dir=$WORK_DIR/rootland/.git for-each-ref refs/heads | wc -l | tr -d ' ')"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "refs/heads/master"
+        - "BRANCHES=0"
+
+  # Compare against the physical path: the catalog stores the canonical root,
+  # and on macOS $WORK_DIR may spell /tmp where the canonical form says
+  # /private/tmp.
+  - name: Bare go lands in the repository root
+    run: |
+      cd_file=$(mktemp)
+      DAFT_CD_FILE="$cd_file" daft go rootland 2>&1
+      status=$?
+      root=$(cd "$WORK_DIR/rootland" && pwd -P)
+      if [ "$(cat "$cd_file")" = "$root" ]; then
+        echo "CD-TARGET-IS-ROOT"
+      else
+        echo "CD-TARGET-WRONG: [$(cat "$cd_file")]"
+      fi
+      rm -f "$cd_file"
+      exit $status
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Opening repository 'rootland'"
+        - "branch 'master' does not exist locally or on remote 'origin'"
+        - "CD-TARGET-IS-ROOT"
+      output_not_contains:
+        - "Branch 'master' not found"
+        - "could not determine"
+
+  # Naming the branch is a different request. The user asked for master, and
+  # the honest answer is still that it does not exist.
+  - name: An explicit branch keeps the error
+    run: daft go rootland master 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "Branch 'master' not found"
