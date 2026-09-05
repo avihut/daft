@@ -102,6 +102,21 @@ pub fn execute(
         old_path.display()
     ));
 
+    // Is the branch being renamed this repository's own declared default? Ask
+    // before anything moves: `git branch -m` updates the common dir's HEAD as
+    // a side effect, so afterwards it names the new branch and the question
+    // cannot be asked any more. The repo's own HEAD is the observation — not
+    // the catalog (which may already be stale) and not `<remote>/HEAD` (which
+    // answers for the remote).
+    //
+    // Scope: `local_head_branch` reads a *bare* common dir only, because in a
+    // non-bare one HEAD is the main worktree's current checkout and drifts
+    // (#925). So in `contained-classic` and any layout with `bare: false` this
+    // is always false and nothing is recorded — #933 stays unfixed there,
+    // rather than fixed from a source that cannot be trusted.
+    let renaming_default =
+        crate::core::remote::local_head_branch(&git_dir).as_deref() == Some(old_branch.as_str());
+
     // Step 2: Validate.
     // New branch must not already exist.
     let new_ref = format!("refs/heads/{}", params.new_branch);
@@ -233,6 +248,25 @@ pub fn execute(
             )
         })?;
 
+    // Record the moved default branch *here*, not at the end: git has already
+    // renamed the branch and moved the common dir's HEAD onto the new name, so
+    // from this line on the repo needs the record. Steps 7 and 8 can still bail
+    // — a full disk, a permission, a stale lock — and bailing without it leaves
+    // exactly the state #933 is about, with the next registration re-deriving
+    // the old name from `<remote>/HEAD`.
+    //
+    // `git_dir` is the cwd because `new_path` does not exist yet; a
+    // `git config --local` write resolves to the same shared config either way.
+    if renaming_default
+        && let Err(e) =
+            crate::core::worktree::provenance::mark_default(&git, &git_dir, &params.new_branch)
+    {
+        warnings.push(format!(
+            "could not record '{}' as the default branch: {e}",
+            params.new_branch
+        ));
+    }
+
     // Step 7: Create parent dirs if needed, then move the worktree.
     if let Some(parent) = new_path.parent()
         && !parent.exists()
@@ -278,6 +312,14 @@ pub fn execute(
             // Check if the old branch exists on the remote.
             let old_remote_ref = format!("refs/remotes/{remote}/{old_branch}");
             let has_remote = git.show_ref_exists(&old_remote_ref).unwrap_or(false);
+
+            // Does `<remote>/HEAD` still name the branch being renamed? Read
+            // before the pushes, while it describes the pre-rename world — a
+            // local branch rename leaves `refs/remotes/**` untouched, so this
+            // is the last honest moment to ask.
+            let remote_head_named_old = crate::core::remote::local_default_branch(&git_dir, remote)
+                .as_deref()
+                == Some(old_branch.as_str());
 
             if has_remote {
                 // Push new branch name from within the new worktree directory.
@@ -331,6 +373,32 @@ pub fn execute(
                             Ok(()) => {
                                 remote_renamed = true;
                                 sink.on_step("Remote branch renamed successfully");
+                                // Both halves confirmed, so the branch
+                                // `<remote>/HEAD` names is one daft just
+                                // deleted from the remote — stale by daft's
+                                // own action (#933). Re-point it at the
+                                // successor.
+                                //
+                                // `remote_renamed` is what makes this safe on
+                                // a forge: GitHub refuses to delete a
+                                // repository's default branch, so the delete
+                                // fails, the flag stays false, and nothing is
+                                // stamped — exactly the case where the remote
+                                // still considers the old name its HEAD.
+                                //
+                                // It asserts locally rather than asking the
+                                // server (`set-head --auto` is a network
+                                // round-trip in a path that may be offline),
+                                // so it records the successor daft pushed,
+                                // not a claim about the server's own HEAD.
+                                if remote_head_named_old
+                                    && !set_remote_head(&git_dir, remote, &params.new_branch)
+                                {
+                                    warnings.push(format!(
+                                        "could not re-point {remote}/HEAD at '{}'; run `git remote set-head {remote} --auto`",
+                                        params.new_branch
+                                    ));
+                                }
                             }
                             Err(PushFailure::Gated(msg, verdict)) => {
                                 let hint = if verdict.no_verify_might_help() {
@@ -393,7 +461,21 @@ pub fn execute(
     // Step 8: Clean up empty parent directories.
     cleanup_empty_parent_dirs(&project_root, &old_path, sink);
 
-    // Step 9: Set cd_target if CWD was inside the source worktree.
+    // Step 9: The catalog records this repo's default branch, and daft just
+    // renamed one — so a row naming it is stale by daft's own action.
+    //
+    // Gated on the same observation as the record above, not on the row alone.
+    // A row naming a branch that is *not* the default is precisely the
+    // staleness this fix exists to correct, and rewriting it on rename would
+    // promote an ordinary branch: real default `trunk`, stale row saying
+    // `main`, `daft rename main legacy` — and the catalog would then call
+    // `legacy` the default. The row's agreement is a second condition, never
+    // the deciding one.
+    if renaming_default {
+        stamp_catalog_default_branch(&git_dir, &old_branch, &params.new_branch);
+    }
+
+    // Step 10: Set cd_target if CWD was inside the source worktree.
     let cd_target = if cwd_inside_source {
         Some(new_path.clone())
     } else {
@@ -413,6 +495,38 @@ pub fn execute(
         warnings,
         push_gate_error,
     })
+}
+
+/// Point `refs/remotes/<remote>/HEAD` at `branch`, locally. Returns whether it
+/// took: callers warn rather than fail, since a rename that already succeeded
+/// must not be reported as broken over a bookkeeping ref.
+fn set_remote_head(git_common_dir: &Path, remote: &str, branch: &str) -> bool {
+    crate::utils::git_command_at(git_common_dir)
+        .args(["remote", "set-head", remote, branch])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Move the catalog's recorded default branch when it named `old_branch`.
+///
+/// Best-effort and deliberately narrow. The row is corrected only when it
+/// names the exact branch daft renamed — never inferred from HEAD, `origin/
+/// HEAD`, or "the repo has one branch". A row naming anything else is left
+/// alone, so a repo daft is not the only writer of degrades to unchanged
+/// rather than to wrong.
+fn stamp_catalog_default_branch(git_common_dir: &Path, old_branch: &str, new_branch: &str) {
+    let Ok(catalog) = crate::catalog::service::Catalog::open_rw() else {
+        return;
+    };
+    let Ok(Some(row)) = crate::catalog::registration::live_row_in(&catalog, git_common_dir) else {
+        return;
+    };
+    if row.default_branch.as_deref() == Some(old_branch) {
+        let _ = catalog.refresh_default_branch(&row.uuid, new_branch);
+    }
 }
 
 // ── Remote push helpers ────────────────────────────────────────────────────

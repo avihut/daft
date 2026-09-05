@@ -50,11 +50,16 @@ const ORIGIN_KEY: &str = "daftOrigin";
 const PUBLISHED_KEY: &str = "daftPublished";
 /// The only [`ORIGIN_KEY`] value daft writes.
 const ORIGIN_LOCAL: &str = "local";
+/// Written at daft's rename seam; the value is always [`DEFAULT_TRUE`].
+const DEFAULT_KEY: &str = "daftDefault";
+/// The only [`DEFAULT_KEY`] value daft writes.
+const DEFAULT_TRUE: &str = "true";
 
 /// Git reports config variable names lowercased regardless of how they were
 /// written, so the parser matches these rather than the camelCase spellings.
 const ORIGIN_KEY_REPORTED: &str = ".daftorigin";
 const PUBLISHED_KEY_REPORTED: &str = ".daftpublished";
+const DEFAULT_KEY_REPORTED: &str = ".daftdefault";
 
 /// Record that daft created `branch` here and has not published it.
 ///
@@ -75,6 +80,95 @@ pub fn mark_local(git: &GitCommand, cwd: &Path, branch: &str) -> Result<()> {
 pub fn mark_published(git: &GitCommand, cwd: &Path, remote: &str, branch: &str) -> Result<()> {
     let stamp = format!("{remote} {}", chrono::Utc::now().to_rfc3339());
     git.config_set_at(&format!("branch.{branch}.{PUBLISHED_KEY}"), &stamp, cwd)
+}
+
+/// Record that `branch` is this repository's default branch, as daft
+/// determined at the moment it renamed the previous one.
+///
+/// This fact has nowhere else durable to live. `<remote>/HEAD` names the
+/// *remote's* default, and a default-branch rename can never move it: a remote
+/// refuses to delete the branch its own HEAD names (`receive.denyDeleteCurrent`,
+/// bare repositories included), so daft's rename leaves the old branch standing
+/// on the remote and the symref rightly keeps pointing at it. The catalog is
+/// then re-derived from that symref at every registration, overwriting the new
+/// name with the old one — and `daft go` reopens a branch the user renamed
+/// away (#933).
+///
+/// "The record is stale" and "the derivation is stale" are locally
+/// indistinguishable, which is the case ARCHITECTURE.md says must be written
+/// down rather than inferred.
+///
+/// Written only where daft has just observed the repository's own `HEAD`
+/// naming the branch it is renaming — an observation, never a guess about
+/// which branch is default. Exactly one branch carries the marker: any other's
+/// is cleared first, so a repo renamed twice cannot hold two answers.
+pub fn mark_default(git: &GitCommand, cwd: &Path, branch: &str) -> Result<()> {
+    for stale in recorded_default_branches(cwd) {
+        if stale != branch {
+            let _ = git.config_unset_at(&format!("branch.{stale}.{DEFAULT_KEY}"), cwd);
+        }
+    }
+    git.config_set_at(&format!("branch.{branch}.{DEFAULT_KEY}"), DEFAULT_TRUE, cwd)
+}
+
+/// The branch daft recorded as this repository's default.
+///
+/// `None` — unknown, so the ladder's remaining rungs answer — when nothing is
+/// marked, when more than one branch is, or when the marker is not corroborated
+/// by the repository's own `HEAD`.
+///
+/// That last condition is what makes the marker trustworthy. Its job is to
+/// outrank `<remote>/HEAD`, never to outrank the repository itself, so it is
+/// read as *permission to believe this repo's own declaration over the
+/// remote's* rather than as a standalone claim. Both records are maintained by
+/// git across `git branch -m` — it moves `HEAD` and renames the whole
+/// `branch.<name>` section — so a genuine rename keeps them agreeing.
+///
+/// It also closes the one way a false claimant appears: `git branch -c` copies
+/// the entire `branch.<name>` section, marker included, so copying the default
+/// branch would otherwise leave a second branch quietly claiming to be it.
+/// The copy is not what `HEAD` names, so it does not corroborate. Verified
+/// against real git, along with the rename and delete lifecycle.
+pub fn recorded_default_branch(dir: &Path) -> Option<String> {
+    let mut marked = recorded_default_branches(dir);
+    let branch = match marked.len() {
+        1 => marked.pop()?,
+        _ => return None,
+    };
+    (crate::core::remote::local_head_branch(dir).as_deref() == Some(branch.as_str()))
+        .then_some(branch)
+}
+
+/// Branch names carrying the default marker.
+///
+/// The name is recovered by stripping the known suffix rather than splitting
+/// on dots, for the same reason [`Provenance::parse`] does it that way: a
+/// branch called `release.2.x` would otherwise be filed under `release`.
+fn recorded_default_branches(dir: &Path) -> Vec<String> {
+    let Ok(out) = crate::utils::git_command_at(dir)
+        .args([
+            "config",
+            "--local",
+            "--get-regexp",
+            r"^branch\..*\.daftdefault$",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.trim_end().split_once(' ')?;
+            (value.trim() == DEFAULT_TRUE).then_some(key)
+        })
+        .filter_map(|key| key.strip_prefix("branch."))
+        .filter_map(|rest| rest.strip_suffix(DEFAULT_KEY_REPORTED))
+        .map(String::from)
+        .collect()
 }
 
 /// Every branch's provenance in one repository, read once per prune run.
@@ -277,5 +371,120 @@ mod tests {
 
         assert!(!provenance.published_on("anything", "origin"));
         assert!(!provenance.is_local_only("anything"));
+    }
+
+    // ── the default-branch record (#933) ──────────────────────────────────
+
+    /// A bare repo holding `branch`, with `HEAD` naming it — the shape every
+    /// daft-managed repo has. `local_head_branch` only reads a bare common
+    /// dir, so the corroboration these tests exercise needs one.
+    fn bare_repo_with_branch(parent: &Path, branch: &str) -> std::path::PathBuf {
+        let src = parent.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for args in [
+            vec!["init", "-q", "-b", branch],
+            vec!["commit", "-q", "--allow-empty", "-m", "init"],
+        ] {
+            git_at(&src)
+                .args(&args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .output()
+                .unwrap();
+        }
+        let bare = parent.join("bare.git");
+        git_at(parent)
+            .args(["clone", "-q", "--bare"])
+            .arg(&src)
+            .arg(&bare)
+            .output()
+            .unwrap();
+        bare
+    }
+
+    fn mark(dir: &Path, branch: &str) {
+        mark_default(&GitCommand::new(true), dir, branch).unwrap();
+    }
+
+    #[test]
+    fn a_recorded_default_branch_reads_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = bare_repo_with_branch(tmp.path(), "trunk");
+        mark(&bare, "trunk");
+        assert_eq!(recorded_default_branch(&bare).as_deref(), Some("trunk"));
+    }
+
+    /// The lifecycle the `branch.<name>` namespace is chosen for: `git branch
+    /// -m` moves HEAD and renames the whole section, so both halves of the
+    /// record follow the branch with no migration.
+    #[test]
+    fn the_record_follows_a_branch_rename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = bare_repo_with_branch(tmp.path(), "trunk");
+        mark(&bare, "trunk");
+        git_at(&bare)
+            .args(["branch", "-m", "trunk", "mainline"])
+            .output()
+            .unwrap();
+        assert_eq!(recorded_default_branch(&bare).as_deref(), Some("mainline"));
+    }
+
+    /// `git branch -c` copies the entire `branch.<name>` section, marker
+    /// included. Two claimants is unknown; and once the original is gone the
+    /// survivor is still not what HEAD names, so it never inherits the claim.
+    #[test]
+    fn a_copied_branch_does_not_inherit_the_claim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = bare_repo_with_branch(tmp.path(), "trunk");
+        mark(&bare, "trunk");
+        git_at(&bare)
+            .args(["branch", "-c", "trunk", "copy"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            recorded_default_branch(&bare),
+            None,
+            "two marked branches is unknown, not a coin flip"
+        );
+        git_at(&bare)
+            .args(["branch", "-D", "copy"])
+            .output()
+            .unwrap();
+        assert_eq!(recorded_default_branch(&bare).as_deref(), Some("trunk"));
+    }
+
+    /// The marker outranks `<remote>/HEAD`, never the repository itself, so on
+    /// its own it is not evidence.
+    #[test]
+    fn an_uncorroborated_marker_is_not_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = bare_repo_with_branch(tmp.path(), "trunk");
+        git_at(&bare)
+            .args(["branch", "other", "trunk"])
+            .output()
+            .unwrap();
+        mark(&bare, "other");
+        assert_eq!(recorded_default_branch(&bare), None);
+    }
+
+    /// A repo renamed twice must not end up with two answers.
+    #[test]
+    fn marking_clears_the_previous_claimant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = bare_repo_with_branch(tmp.path(), "trunk");
+        git_at(&bare)
+            .args(["branch", "second", "trunk"])
+            .output()
+            .unwrap();
+        mark(&bare, "second");
+        mark(&bare, "trunk");
+        assert_eq!(
+            local_value(&bare, "branch.second.daftDefault"),
+            None,
+            "the stale claim is cleared, not left to collide"
+        );
+        assert_eq!(recorded_default_branch(&bare).as_deref(), Some("trunk"));
     }
 }

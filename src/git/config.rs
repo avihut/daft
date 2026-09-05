@@ -342,6 +342,16 @@ impl GitCommand {
         Ok(())
     }
 
+    /// [`Self::config_set_at`]'s inverse. A key that was not there is not an
+    /// error (git exits 5), so the result says only whether git ran.
+    pub fn config_unset_at(&self, key: &str, cwd: &std::path::Path) -> Result<()> {
+        crate::utils::git_command_at(cwd)
+            .args(["config", "--unset", key])
+            .output()
+            .context("Failed to execute git config command")?;
+        Ok(())
+    }
+
     /// Every branch-provenance key in this repository, raw `key value` lines.
     ///
     /// One pass for the whole repo rather than a read per branch — prune asks
