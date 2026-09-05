@@ -2313,6 +2313,33 @@ mod mise_upgrade_drift {
             .to_string()
     }
 
+    /// The `upgrade` job's step whose `name` contains `needle`.
+    fn step(needle: &str) -> serde_yaml::Value {
+        let doc = workflow();
+        doc.get("jobs")
+            .and_then(|j| j.get("upgrade"))
+            .and_then(|j| j.get("steps"))
+            .and_then(serde_yaml::Value::as_sequence)
+            .unwrap_or_else(|| panic!("{WORKFLOW} has an `upgrade` job with steps"))
+            .iter()
+            .find(|s| {
+                s.get("name")
+                    .and_then(serde_yaml::Value::as_str)
+                    .is_some_and(|n| n.contains(needle))
+            })
+            .unwrap_or_else(|| panic!("{WORKFLOW}'s `upgrade` job has a step named `{needle}`"))
+            .clone()
+    }
+
+    /// A step's `run:` body, by step name.
+    fn step_run(needle: &str) -> String {
+        step(needle)
+            .get("run")
+            .and_then(serde_yaml::Value::as_str)
+            .unwrap_or_else(|| panic!("the `{needle}` step has a `run:` body"))
+            .to_string()
+    }
+
     /// Is `key` used as a mapping key anywhere in the document? Workflow-level
     /// `env:`, job-level, and step-level all land here, so the check does not
     /// depend on where someone puts the block.
@@ -2397,6 +2424,62 @@ mod mise_upgrade_drift {
              Match that sentinel specifically, not WARNs in general: `newer \
              <tool> release X ignored by minimum_release_age` is also a WARN \
              and fires on healthy runs. Step body:\n{run}"
+        );
+    }
+
+    #[test]
+    fn auto_merge_is_armed_only_behind_the_ci_gate_probe() {
+        let arm = step("Enable auto-merge");
+        let body = step_run("Enable auto-merge");
+
+        assert!(
+            body.contains("required_status_checks") && body.contains("ci-gate"),
+            "the auto-merge step must verify that `ci-gate` is still a required \
+             status check on the target branch before arming, and refuse \
+             otherwise. Arming is only safe because the master ruleset will not \
+             merge until `ci-gate` passes; without that rule, arming auto-merge \
+             merges the PR on no checks at all. This is the same fail-closed \
+             probe dependabot-auto-merge.yml runs, and Critical Rule #5 in \
+             CLAUDE.md covers both. Step body:\n{body}"
+        );
+
+        let gate = arm
+            .get("if")
+            .and_then(serde_yaml::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            gate.contains("steps.bump.outputs.automerge"),
+            "the auto-merge step must be gated on the classifier's verdict, or \
+             every bump arms — including the majors the classifier exists to \
+             hold back. Its `if:` is currently: {gate:?}"
+        );
+    }
+
+    #[test]
+    fn the_bump_classifier_defaults_to_declining() {
+        let body = step_run("Classify the bump");
+
+        assert!(
+            body.contains("automerge=false"),
+            "the classifier must have a path that writes `automerge=false`. \
+             Every uncertain branch has to decline: the dangerous mistake is \
+             reading \"no bumps found\" as \"no majors found\", which is how a \
+             reworded upstream summary would silently start auto-merging \
+             majors. Step body:\n{body}"
+        );
+        assert!(
+            body.contains("Upgraded") && body.contains("declared"),
+            "the classifier must read mise's own `Upgraded N tools:` summary \
+             and hold the declared count, which is the cross-check that keeps \
+             it honest when mise rewords the per-tool lines. Step body:\n{body}"
+        );
+        assert!(
+            body.contains("git diff") && body.contains("mise.toml"),
+            "the classifier must cross-check mise's prose against the pins that \
+             actually moved in mise.toml — the summary is a UI string, the diff \
+             is the change being merged. If they disagree, trust neither. Step \
+             body:\n{body}"
         );
     }
 }

@@ -104,7 +104,102 @@ jobs:
             exit 1
           fi
 
+      # Classify the bump while the working tree still holds the diff — after
+      # `Open PR` the action has reset the checkout, and the evidence is gone.
+      #
+      # mise prints its own summary, which is the signal:
+      #
+      #   Upgraded 6 tools:
+      #     aqua:cargo-bins/cargo-binstall 1.18.1 → 1.22.0
+      #     lefthook 2.1.6 → 2.1.11
+      #
+      # Auto-merge is for the boring case only: every tool stayed inside its
+      # major. That is the same line dependabot-auto-merge.yml draws, for the
+      # same reason — green CI is necessary but not sufficient for a major
+      # (tera 2.0 gutted its built-in filters behind a green build; shlex 2.0
+      # changed its API).
+      #
+      # Green is *weaker* evidence here than it is for a Dependabot PR, and the
+      # comment should say so rather than imply parity. A mise-only diff
+      # matches test.yml's `rust` path class but not `docs` or `lockfile`, so
+      # docs-build, docs-golden and dep-age-check all skip — and docs-build
+      # pins its own node/bun through setup-node/setup-bun, never mise's. So
+      # mise's bun and node are exercised by nothing in CI, ever. Two things
+      # bound that: the blast radius for bun/lefthook/bat is local development
+      # (the workflows and the deploy use their own pins), and a node *major*
+      # is self-blocking — it stops matching the workflows, `node_version_parity`
+      # reddens xtask-test, and ci-gate never goes green (#931).
+      #
+      # Every branch below fails *closed*, because the dangerous mistake is
+      # reading "no bumps found" as "no majors found". A missing summary, an
+      # upstream rewording, an unparseable version, or a count that disagrees
+      # with the pins that actually moved in mise.toml all decline. The count
+      # cross-check is what keeps that true if mise ever rewords the summary —
+      # the same upstream-wording dependency the no-op guard above carries.
+      - name: Classify the bump
+        id: bump
+        run: |
+          set -euo pipefail
+
+          decline() {
+            echo "automerge=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::not arming auto-merge: $1"
+            exit 0
+          }
+
+          log="$RUNNER_TEMP/mise-upgrade.log"
+          [ -f "$log" ] || decline "no upgrade log at $log"
+
+          # mise colourises even through a pipe on CI; strip escapes first.
+          plain=$(sed -E $'s/\033\[[0-9;]*[A-Za-z]//g' "$log")
+
+          declared=$(printf '%s\n' "$plain" |
+            sed -nE 's/^Upgraded ([0-9]+) tools?:.*$/\1/p' | tail -1)
+          [ -n "${declared:-}" ] ||
+            decline "no 'Upgraded N tools:' summary — did mise reword it?"
+          [ "$declared" -gt 0 ] || decline "the summary declares zero tools"
+
+          bumps=$(printf '%s\n' "$plain" |
+            sed -nE 's/^[[:space:]]+([^[:space:]]+) ([^[:space:]]+) (→|->) ([^[:space:]]+)[[:space:]]*$/\1 \2 \4/p')
+          parsed=$(printf '%s' "$bumps" | grep -c . || true)
+          [ "$parsed" -eq "$declared" ] ||
+            decline "parsed $parsed bump line(s), summary declares $declared"
+
+          # The summary is mise's prose; this is the change actually being
+          # merged. If they disagree, trust neither.
+          # Count added *pin* lines only (they start with a bare name or a
+          # quoted backend spec). A blanket '^\+[^+]' would also count a
+          # comment or a [settings] line the bump happened to touch, inflating
+          # the count and declining a legitimate all-minor run — fails closed,
+          # but as a mystery refusal.
+          moved=$(git diff --unified=0 -- mise.toml | grep -cE '^\+[A-Za-z"]' || true)
+          [ "$moved" -eq "$declared" ] ||
+            decline "$moved pin(s) moved in mise.toml, summary declares $declared"
+
+          held=true
+          while read -r tool from to; do
+            [ -n "$tool" ] || continue
+            from_major=${from%%.*}
+            to_major=${to%%.*}
+            if ! printf '%s' "$from_major" | grep -qE '^[0-9]+$' ||
+              ! printf '%s' "$to_major" | grep -qE '^[0-9]+$'; then
+              echo "  $tool $from -> $to: no numeric major to compare"
+              held=false
+            elif [ "$from_major" != "$to_major" ]; then
+              echo "  $tool $from -> $to: major $from_major -> $to_major"
+              held=false
+            fi
+          done <<<"$bumps"
+
+          if [ "$held" = true ]; then
+            echo "automerge=true" >>"$GITHUB_OUTPUT"
+            echo "::notice::$declared tool(s) bumped, every major unchanged — arming auto-merge"
+          else
+            decline "a major changed (listed above); this one is for a human"
+          fi
+
       - name: Open PR
+        id: pr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
@@ -124,9 +219,64 @@ jobs:
             `stable` tag.
 
             Opened with the Wheatley App token so CI runs on it like any other
-            PR. Not auto-merged: that is reserved for Dependabot's PRs — review,
-            then squash-merge once `ci-gate` is green.
+            PR. Auto-merge is armed only when every tool stayed inside its
+            major; a major bump waits for a human, and the job's log says which
+            branch it took. Either way GitHub merges nothing until `ci-gate` is green.
           branch: deps/mise-auto-upgrade
           delete-branch: true
           labels: |
             dependencies
+
+      # Fail closed, the same probe dependabot-auto-merge.yml runs and for the
+      # same reason: auto-merge is only safe because the master ruleset refuses
+      # to merge until `ci-gate` passes. If that rule is ever removed, arming
+      # auto-merge would merge this PR on no checks at all. The branch-rules
+      # endpoint reports the rules in force for the target branch.
+      #
+      # Armed with the App token, not GITHUB_TOKEN, for the same reason the PR
+      # is opened with it: a GITHUB_TOKEN-driven merge triggers no downstream
+      # workflows. Verified 2026-09-04 — the two Dependabot PRs that
+      # auto-merged that day (afd9c496, 6ef04345) have no release-flow.yml run,
+      # while every commit merged by hand around them does. That is harmless
+      # for `deps:` commits, which cliff.toml maps to no version bump, and it
+      # self-heals on the next push to master, but there is no reason to
+      # inherit it here.
+      #
+      # If this step ever 403s on the rules probe, the App is missing
+      # `administration: read` — grant it rather than dropping the probe.
+      - name: Enable auto-merge (squash)
+        if:
+          steps.bump.outputs.automerge == 'true' &&
+          steps.pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.pull-request-number }}
+          BASE_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          rules=$(gh api "repos/${GH_REPO}/rules/branches/${BASE_REF}")
+          if ! echo "$rules" | jq -e '
+              [ .[] | select(.type == "required_status_checks")
+                    | .parameters.required_status_checks[]? | .context ]
+              | index("ci-gate") != null' >/dev/null; then
+            echo "::error::ci-gate is not a required status check on ${BASE_REF}; refusing to enable auto-merge. Restore the master ruleset (.github/rulesets/master.json)."
+            exit 1
+          fi
+          echo "ci-gate is required on ${BASE_REF}"
+
+          # Idempotent: this job re-runs daily against the same branch, so the
+          # PR may already be armed from yesterday's run.
+          state=$(gh pr view "$PR" --json autoMergeRequest,mergeStateStatus)
+          if [ "$(echo "$state" | jq -r '.autoMergeRequest != null')" = "true" ]; then
+            echo "auto-merge already enabled"
+            exit 0
+          fi
+          if [ "$(echo "$state" | jq -r '.mergeStateStatus')" = "CLEAN" ]; then
+            echo "PR is already mergeable; merging (squash)"
+            gh pr merge --squash "$PR"
+            exit 0
+          fi
+          gh pr merge --auto --squash "$PR"
+          echo "auto-merge enabled (squash); GitHub merges when ci-gate is green"

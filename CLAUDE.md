@@ -48,11 +48,20 @@ IMPORTANT: These rules must NEVER be violated:
    `github.actor == 'dependabot[bot]'`, keeps `dependabot/fetch-metadata`'s
    commit verification on, auto-merges only `semver-patch`/`semver-minor`, and
    refuses to arm auto-merge unless `ci-gate` is a required check on the target
-   branch (fail closed). Every `uses:` in every workflow is pinned to a full
-   commit SHA (`scripts/check-actions-pinned.sh`; Dependabot moves the pins).
-   Never add a path-filtered workflow's job as a required check — fold it into
-   `test.yml` behind the `changes` job instead, which is why the docs build and
-   golden suite live there and `docs.yml` only deploys.
+   branch (fail closed). `mise-tool-updates.yml` arms auto-merge on its own PR
+   under the same contract: it runs that identical `ci-gate` probe, and it arms
+   only when its classifier proves every tool stayed inside its major — read
+   from mise's own `Upgraded N tools:` summary, cross-checked against both the
+   declared count and the pins that actually moved in `mise.toml`. Every
+   uncertain branch there must **decline**; the dangerous mistake is reading "no
+   bumps found" as "no majors found", so a reworded upstream summary must fail
+   closed rather than wave a major through. `cargo test --package xtask`
+   (`mise_upgrade_drift`) holds the probe, the classifier gate, and that
+   cross-check. Every `uses:` in every workflow is pinned to a full commit SHA
+   (`scripts/check-actions-pinned.sh`; Dependabot moves the pins). Never add a
+   path-filtered workflow's job as a required check — fold it into `test.yml`
+   behind the `changes` job instead, which is why the docs build and golden
+   suite live there and `docs.yml` only deploys.
 
 ## Safe Local Testing with Git
 
@@ -505,7 +514,17 @@ The intent lives in the repo; GitHub enforces the live copy:
   security update still has to pass `dep-age-check`, so the 7-day gate holds
   even for auto-merge — `.dep-age-allowlist` is the way through, on purpose.
   `mise-tool-updates.yml` opens its PR with the Wheatley App token so CI runs on
-  it; it is reviewed and merged by hand.
+  it, and arms auto-merge itself when no tool crossed a major; a major bump
+  waits for a human. It arms with the **App** token, not `GITHUB_TOKEN` — a
+  `GITHUB_TOKEN`-driven merge triggers no downstream workflows, so
+  `release-flow.yml` never sees the push (visible on the Dependabot PRs that
+  auto-merge: they have no release-flow run, unlike every hand-merged commit).
+  Note what green means there: a mise-only diff matches `test.yml`'s `rust` path
+  class but not `docs` or `lockfile`, and `docs-build` pins its own node/bun
+  through `setup-node`/`setup-bun` — so **mise's bun and node are exercised by
+  no CI job at all**. What bounds that is blast radius (those pins serve local
+  development; the workflows and the deploy use their own) plus
+  `node_version_parity`, which makes a node major self-blocking.
 - Repository settings that pair with this (applied, not in a file): squash-only
   merges, auto-merge enabled, delete branch on merge, always suggest updating PR
   branches, Dependabot alerts + security updates, private vulnerability
