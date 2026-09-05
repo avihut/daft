@@ -1707,10 +1707,17 @@ mod tests {
         };
         let (mut r, _term, _h) = harness_with(config, None, false);
         r.start_job_with_description("build", Some("Compile everything"), None);
-        // The promoter runs on a detached ticker thread; poll rather than
-        // sleep a fixed amount (same pattern as the block renderer's test).
+        // The promoter runs on a detached ticker thread, and it raises the
+        // flag before it rewrites the bar's message. Polling `timer_promoted`
+        // and then asserting on `bar.message()` watches two different
+        // observables, so under load the message assertion loses the window
+        // between them (#936). Poll on what the assertions actually read.
+        let promoted = |r: &RailHookRenderer| {
+            let msg = r.jobs.get("build").unwrap().bar.message();
+            r.timer_promoted("build") && msg.starts_with("build") && msg.contains('(')
+        };
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while !r.timer_promoted("build") && std::time::Instant::now() < deadline {
+        while !promoted(&r) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(
@@ -1751,8 +1758,15 @@ mod tests {
         };
         let (mut r, _term, _h) = harness_with(config, None, false);
         r.start_job("build", None);
+        // The same two-observable race as the verbose test above (#936): the
+        // flag is raised before the message is rewritten, so the poll has to
+        // cover both.
+        let promoted = |r: &RailHookRenderer| {
+            let msg = r.jobs.get("build").unwrap().bar.message();
+            r.timer_promoted("build") && msg.starts_with("build") && msg.contains('(')
+        };
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while !r.timer_promoted("build") && std::time::Instant::now() < deadline {
+        while !promoted(&r) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(
