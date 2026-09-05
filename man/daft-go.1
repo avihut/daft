@@ -23,7 +23,9 @@ Use \*(Aq\-\*(Aq as the branch name to switch to the previous worktree, similar 
 .PP
 `daft go` also jumps across repositories through the repo catalog. A name
 that matches no branch in the current repository falls back to the catalog
-and opens that repository\*(Aqs default\-branch worktree. Two arguments —
+and opens that repository\*(Aqs default\-branch worktree; if that branch does not
+exist (or cannot be determined), it lands in the repository\*(Aqs root directory
+instead. Two arguments —
 `daft go <repo> <branch>` — open a specific branch there, creating its
 worktree if needed. `\-\-repo <name>` addresses a repository explicitly (for
 names shadowed by local branches), and outside any git repository `daft go`
