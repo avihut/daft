@@ -523,15 +523,38 @@ pub fn check_remote_sync_config(_ctx: &RepoContext) -> CheckResult {
     }
 }
 
+/// Does `refs/remotes/origin/<branch>` resolve?
+///
+/// `git symbolic-ref` reports a pointer without saying whether it resolves,
+/// and a dangling `origin/HEAD` outlives the ref it names. Without this gate
+/// the detail below would upgrade a harmless "set" into a confident lie —
+/// naming a branch that is not there. Same reasoning as the gate
+/// `core::remote::local_head_branch` puts on a bare `HEAD`.
+///
+/// It confirms the *ref*, not the branch's continued existence on the remote:
+/// a remote-tracking ref survives the branch being deleted upstream, and even
+/// `fetch --prune` keeps the one `origin/HEAD` points at. Detecting that kind
+/// of staleness is #933's job, not this check's.
+fn remote_tracking_ref_exists(dir: &Path, branch: &str) -> bool {
+    crate::utils::git_command_at(dir)
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("refs/remotes/origin/{branch}"))
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
 /// Which branch a set `refs/remotes/origin/HEAD` names, as the check's detail
 /// line.
 ///
 /// Reads the **symref**, not config. `origin/HEAD` is a ref — git stores it at
-/// `refs/remotes/origin/HEAD` (or in `packed-refs`) and writes no
-/// `remote.origin.head` key, so the config read this replaced could never
-/// answer and the check always rendered the bare "set" (#935).
+/// `refs/remotes/origin/HEAD` and writes no `remote.origin.head` key, so the
+/// config read this replaced could never answer and the check always rendered
+/// the bare "set" (#935).
 fn remote_head_detail(git_common_dir: &Path) -> String {
-    match crate::core::remote::local_default_branch(git_common_dir, "origin") {
+    match crate::core::remote::local_default_branch(git_common_dir, "origin")
+        .filter(|branch| remote_tracking_ref_exists(git_common_dir, branch))
+    {
         Some(branch) => format!("set to origin/{branch}"),
         None => "set".to_string(),
     }
@@ -876,6 +899,38 @@ mod tests {
         );
     }
 
+    /// `git_at`, but hands back trimmed stdout.
+    fn git_out(dir: &Path, args: &[&str]) -> String {
+        let out = crate::utils::git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repo whose `origin/HEAD` names a branch that is really there.
+    fn repo_with_remote_branch(dir: &Path, branch: &str) -> String {
+        git_at(dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("f"), "x").expect("write fixture file");
+        git_at(dir, &["add", "f"]);
+        git_at(dir, &["commit", "-q", "-m", "init"]);
+        let sha = git_out(dir, &["rev-parse", "HEAD"]);
+        git_at(
+            dir,
+            &["update-ref", &format!("refs/remotes/origin/{branch}"), &sha],
+        );
+        sha
+    }
+
     /// #935: the detail came from `config_get("remote.origin.head")`, a key
     /// git never writes, so a repo with `origin/HEAD` properly set still
     /// rendered the bare "set". Reading the symref is what makes the detailed
@@ -883,7 +938,7 @@ mod tests {
     #[test]
     fn remote_head_detail_names_the_branch_the_symref_points_at() {
         let dir = tempfile::tempdir().unwrap();
-        git_at(dir.path(), &["init", "-q", "--bare", "-b", "main"]);
+        repo_with_remote_branch(dir.path(), "develop");
         git_at(
             dir.path(),
             &[
@@ -895,13 +950,36 @@ mod tests {
         assert_eq!(remote_head_detail(dir.path()), "set to origin/develop");
     }
 
-    /// `show_ref_exists` has already said the ref is there, so this arm is
-    /// only reached when it exists but is not symbolic — keep the bare "set"
-    /// rather than claiming a branch.
+    /// A symref pointing at a ref that is gone. `show_ref_exists` still says
+    /// the symref is there (gix resolves the pointer, not the target), so this
+    /// arm is reached — and naming `origin/develop` here would report a branch
+    /// that does not exist as a green pass.
     #[test]
-    fn remote_head_detail_stays_bare_without_a_symref() {
+    fn remote_head_detail_stays_bare_when_the_symref_dangles() {
         let dir = tempfile::tempdir().unwrap();
         git_at(dir.path(), &["init", "-q", "--bare", "-b", "main"]);
+        git_at(
+            dir.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/develop",
+            ],
+        );
+        assert_eq!(remote_head_detail(dir.path()), "set");
+    }
+
+    /// `origin/HEAD` written as a plain sha rather than a symref — `git
+    /// symbolic-ref` exits non-zero there, so keep the bare "set" rather than
+    /// claiming a branch.
+    #[test]
+    fn remote_head_detail_stays_bare_when_the_ref_is_not_symbolic() {
+        let dir = tempfile::tempdir().unwrap();
+        let sha = repo_with_remote_branch(dir.path(), "develop");
+        git_at(
+            dir.path(),
+            &["update-ref", "--no-deref", "refs/remotes/origin/HEAD", &sha],
+        );
         assert_eq!(remote_head_detail(dir.path()), "set");
     }
 }
