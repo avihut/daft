@@ -48,7 +48,24 @@ tool homes itself; if that fails, pin the binary in the config (below).
 
 ## Install
 
-Link the directory (no build step; the scripts run in place):
+`herdr plugin install` takes an `owner/repo[/subdir]` shorthand, and daft's
+repository is public, so the plugin installs straight out of it — no separate
+repository, no clone of your own, nothing to build:
+
+```sh
+herdr plugin install avihut/daft/integrations/herdr
+herdr plugin list
+```
+
+herdr shallow-fetches `https://github.com/avihut/daft.git` over HTTPS into its
+own plugin directory and reads the manifest from `integrations/herdr`. Add
+`--ref <branch-or-tag>` to install a specific version, and `--yes` when stdin is
+not a terminal. There is no `plugin update` in 0.8.2: to move to a newer
+version, `herdr plugin uninstall daft` and install again.
+
+If you already have the daft repository checked out, link it in place instead —
+the scripts run from wherever they are, so an edit takes effect on the next
+action:
 
 ```sh
 herdr plugin link /path/to/daft/integrations/herdr
@@ -241,7 +258,7 @@ live workspace, so the row keeps its old path until you re-group it with
 ## Uninstall
 
 ```sh
-herdr plugin unlink daft
+herdr plugin uninstall daft   # or: herdr plugin unlink daft, if you linked it
 rm "$(daft __dirs | awk -F'\t' '$1 == "config" { print $2 }')"/hooks/worktree-{post-create,pre-remove}
 ```
 
