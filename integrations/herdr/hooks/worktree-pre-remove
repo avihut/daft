@@ -1,0 +1,6 @@
+#!/bin/bash
+# managed by the daft herdr plugin — reinstalled on every herdr start; edit the plugin, not this file.
+# daft runs this before removing a worktree. It does nothing outside a herdr pane.
+[ "${HERDR_ENV:-}" = "1" ] || exit 0
+[ -x "__PLUGIN_ROOT__/bin/daft-hook.sh" ] || exit 0
+exec /bin/bash "__PLUGIN_ROOT__/bin/daft-hook.sh" worktree-pre-remove

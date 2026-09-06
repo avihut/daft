@@ -23,6 +23,9 @@
 #                       test_remove_reaper.sh     the detached `__reap-trash`
 #                                                 process (DAFT_TESTING would
 #                                                 make it inline)
+#   foreign process     test_herdr_plugin.sh      the herdr plugin (integrations/
+#                                                 herdr): daft hooks calling back
+#                                                 into a stub herdr, popup flows
 #   one-shell contract  test_shell_init.sh        the wrapper's cd contract:
 #                                                 eval, run, `builtin pwd` in
 #                                                 the same shell
@@ -44,6 +47,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_sync_cancel.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_merge_gate_lane.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_remove_reaper.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_shell_init.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_herdr_plugin.sh"
 
 # Test framework self-tests
 test_integration_framework_assertions() {
@@ -147,6 +151,9 @@ run_all_integration_tests() {
 
     # The wrapper's cd contract
     run_shell_init_tests
+
+    # A foreign process contract
+    run_herdr_plugin_tests
 }
 
 # Main execution

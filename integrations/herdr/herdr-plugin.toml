@@ -1,0 +1,150 @@
+# daft as the worktree engine under herdr.
+#
+# Link it while developing (no build step; the scripts run in place):
+#
+#   herdr plugin link /path/to/daft/integrations/herdr
+#
+# then bind keys and add the sidebar token row — see README.md.
+#
+# Runtime commands are argv arrays run from this directory with the herdr
+# *server's* environment. That PATH is not your shell's (under `brew services`
+# it is /usr/bin:/bin:/usr/sbin:/sbin), which is why lib/common.sh resolves
+# `daft` and `jq` itself instead of assuming them.
+
+id = "daft"
+name = "daft"
+version = "0.1.0"
+# Everything this plugin calls exists on 0.8.0: worktree open with --cwd/--path,
+# workspace metadata tokens with a TTL, popup plugin panes, plugin pane open
+# --cwd. Verified against 0.8.2.
+min_herdr_version = "0.8.0"
+description = "daft as the worktree engine: start, go, fork and remove worktrees through daft, mirror every daft-made worktree into herdr, and show daft's status in the sidebar."
+platforms = ["macos", "linux"]
+
+# Once per server start (and again after a live handoff): install the daft
+# user-global hooks that mirror worktrees into herdr, record where daft lives,
+# and re-seed the sidebar tokens (herdr does not keep token metadata across a
+# restart).
+[[startup]]
+command = ["bash", "bin/startup.sh"]
+
+# Actions are headless subprocesses. The interactive ones open their popup
+# entrypoint (below), where daft has a real TTY: its progress rail renders,
+# trust prompts work, and errors stay on screen until you dismiss them.
+
+[[actions]]
+id = "start"
+title = "daft: start a new branch and worktree"
+contexts = ["workspace", "global"]
+command = ["bash", "bin/action.sh", "start"]
+
+[[actions]]
+id = "go"
+title = "daft: open a branch, PR, commit, or another repo's worktree"
+contexts = ["workspace", "global"]
+command = ["bash", "bin/action.sh", "go"]
+
+[[actions]]
+id = "fork"
+title = "daft: fork throwaway worktrees off the current commit"
+contexts = ["workspace"]
+command = ["bash", "bin/action.sh", "fork"]
+
+[[actions]]
+id = "remove"
+title = "daft: remove this worktree and its branch"
+contexts = ["workspace"]
+command = ["bash", "bin/action.sh", "remove"]
+
+[[actions]]
+id = "repo"
+title = "daft: open a cataloged repository"
+contexts = ["global"]
+command = ["bash", "bin/action.sh", "repo"]
+
+[[actions]]
+id = "adopt"
+title = "daft: group this checkout under its repository"
+contexts = ["workspace"]
+command = ["bash", "bin/action.sh", "adopt"]
+
+[[actions]]
+id = "layout"
+title = "daft: apply the repository's herdr layout to this pane"
+contexts = ["pane", "workspace"]
+command = ["bash", "bin/action.sh", "layout"]
+
+[[actions]]
+id = "tokens"
+title = "daft: refresh the sidebar status of this repository"
+contexts = ["workspace"]
+command = ["bash", "bin/action.sh", "tokens"]
+
+[[actions]]
+id = "install-hooks"
+title = "daft: (re)install the daft hooks that mirror worktrees into herdr"
+contexts = ["global"]
+command = ["bash", "bin/action.sh", "install-hooks"]
+
+# Popup entrypoints. Size and placement come from the plugin config when the
+# action opens them; these are the manifest defaults.
+
+[[panes]]
+id = "start"
+title = "daft start"
+placement = "popup"
+width = "70%"
+height = "60%"
+command = ["bash", "bin/pane.sh", "start"]
+
+[[panes]]
+id = "go"
+title = "daft go"
+placement = "popup"
+width = "70%"
+height = "60%"
+command = ["bash", "bin/pane.sh", "go"]
+
+[[panes]]
+id = "fork"
+title = "daft start --fork"
+placement = "popup"
+width = "70%"
+height = "60%"
+command = ["bash", "bin/pane.sh", "fork"]
+
+[[panes]]
+id = "remove"
+title = "daft remove"
+placement = "popup"
+width = "70%"
+height = "60%"
+command = ["bash", "bin/pane.sh", "remove"]
+
+[[panes]]
+id = "repo"
+title = "daft repo"
+placement = "popup"
+width = "70%"
+height = "60%"
+command = ["bash", "bin/pane.sh", "repo"]
+
+# Event hooks keep the sidebar tokens fresh. Each fires as its own process
+# with the event payload in HERDR_PLUGIN_EVENT_JSON; refreshes are debounced
+# per repository so a burst of events costs one `daft list`.
+
+[[events]]
+on = "worktree.opened"
+command = ["bash", "bin/event.sh"]
+
+[[events]]
+on = "worktree.created"
+command = ["bash", "bin/event.sh"]
+
+[[events]]
+on = "workspace.focused"
+command = ["bash", "bin/event.sh"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["bash", "bin/event.sh"]
