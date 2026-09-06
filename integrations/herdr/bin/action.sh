@@ -10,7 +10,7 @@ LOG_SCOPE=action
 . "$PLUGIN_ROOT/lib/tokens.sh"
 
 mode=${1:-}
-resolve_jq
+resolve_jq || die "$RESOLVE_ERROR"
 
 # open_popup MODE — open the popup entrypoint for MODE where the user is.
 open_popup() {
@@ -37,15 +37,14 @@ case $mode in
     ;;
 
   adopt)
-    resolve_daft
+    resolve_daft || die "$RESOLVE_ERROR"
     cwd=$(context_cwd)
     [ -n "$cwd" ] || die "no working directory in the invocation context"
     info=$(repo_info "$cwd") || { notify "daft" "$cwd is not inside a repository daft knows"; exit 1; }
     root=$(repo_field "$info" .path)
     entry=$(worktree_containing "$info" "$cwd")
     [ -n "$entry" ] || { notify "daft" "$cwd is not inside a worktree of $(repo_field "$info" .name)"; exit 1; }
-    branch=${entry%%	*}
-    path=${entry#*	}
+    IFS=$'\t' read -r branch path <<<"$entry"
     [ -n "$branch" ] || branch=$(basename "$path")
     if [ "$(canon "$path")" = "$(canon "$root")" ]; then
       notify "daft" "$path is the repository root, not a worktree"
@@ -57,7 +56,7 @@ case $mode in
     ;;
 
   layout)
-    resolve_daft
+    resolve_daft || die "$RESOLVE_ERROR"
     pane=$(ctx .focused_pane_id)
     [ -n "$pane" ] || pane=$(read_intent pane_id)
     [ -n "$pane" ] || die "no focused pane in the invocation context"
@@ -65,24 +64,27 @@ case $mode in
     info=$(repo_info "$cwd") || { notify "daft" "$cwd is not inside a repository daft knows"; exit 1; }
     entry=$(worktree_containing "$info" "$cwd")
     [ -n "$entry" ] || { notify "daft" "$cwd is not inside a worktree"; exit 1; }
-    branch=${entry%%	*}
-    path=${entry#*	}
+    IFS=$'\t' read -r branch path <<<"$entry"
     [ -n "$branch" ] || branch=$(basename "$path")
-    apply_layout "$pane" "$path" "$branch" "$(repo_field "$info" .path)" "$(repo_field "$info" .name)" >/dev/null
+    apply_layout "$pane" "$path" "$branch" "$(repo_field "$info" .name)" >/dev/null
     notify "daft" "layout applied: $(repo_field "$info" .name) ▸ $branch"
     ;;
 
   tokens)
-    resolve_daft
+    resolve_daft || die "$RESOLVE_ERROR"
     cwd=$(context_cwd)
     [ -n "$cwd" ] || die "no working directory in the invocation context"
     FORCE_REFRESH=1 tokens_refresh_repo "$cwd"
     ;;
 
   install-hooks)
-    resolve_daft
+    resolve_daft || die "$RESOLVE_ERROR"
     . "$PLUGIN_ROOT/lib/install.sh"
-    install_user_hooks && notify "daft" "hooks installed in $(user_hooks_dir)"
+    if install_user_hooks; then
+      notify "daft" "hooks installed in $(user_hooks_dir)"
+    else
+      notify "daft" "${SKIPPED_HOOKS:+kept your own $SKIPPED_HOOKS; }see $LOG_FILE"
+    fi
     ;;
 
   *)

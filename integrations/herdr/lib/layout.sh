@@ -8,11 +8,17 @@
 # HERDR_LAYOUT_DRY_RUN=1 makes `run` and `start_agent` print instead of act
 # (splits still happen). Files are looked up in this order:
 #
-#   <project root>/herdr-layout.sh          next to daft.yml, outside every
-#                                           checkout in the contained layout
-#   <plugin config dir>/layouts/<repo>.sh    layout-agnostic per-repo home
-#   <plugin config dir>/layouts/default.sh   fallback for every repo
-#   ~/.config/herdr/layouts/default.sh       the pre-plugin location
+#   <plugin config dir>/layouts/<repo>.sh   per repo, by daft's catalog name
+#   <plugin config dir>/layouts/default.sh  fallback for every repo
+#   ~/.config/herdr/layouts/default.sh      the pre-plugin location
+#
+# Every candidate lives in a directory the user owns, and that is deliberate.
+# `<project root>/herdr-layout.sh` was a fourth candidate until #950's review
+# found the hole: in the *sibling* layout — daft's default — the project root
+# IS the default branch's checkout, so that file arrives with `git clone`.
+# Sourcing it would have run a cloned repository's shell code on the first
+# `daft go` into it. daft gates `.daft/hooks` behind a trust database; this
+# plugin has none, so it never reads a layout out of a checkout.
 
 LAYOUT_CWD=
 
@@ -45,10 +51,16 @@ slugify() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]+/-/g; s/^[^a-z]/wt-&/' | cut -c1-32
 }
 
-# layout_file_for ROOT REPO_NAME — the first readable layout file, or nothing.
+# layout_file_for REPO_NAME — the first readable layout file, or nothing.
+# The name indexes into a directory, and daft derives it from a clone URL, so
+# anything that could climb out of `layouts/` disqualifies the per-repo
+# candidate rather than being sanitized into a different repo's file.
 layout_file_for() {
-  local f
-  for f in "$1/herdr-layout.sh" "$CONFIG_DIR/layouts/$2.sh" "$CONFIG_DIR/layouts/default.sh" \
+  local name=$1 f
+  case $name in
+    */* | .* | '') name= ;;
+  esac
+  for f in ${name:+"$CONFIG_DIR/layouts/$name.sh"} "$CONFIG_DIR/layouts/default.sh" \
     "${XDG_CONFIG_HOME:-$HOME/.config}/herdr/layouts/default.sh"; do
     if [ -r "$f" ]; then
       printf '%s\n' "$f"
@@ -58,15 +70,24 @@ layout_file_for() {
   return 1
 }
 
-# apply_layout PANE CHECKOUT BRANCH ROOT REPO_NAME
+# apply_layout PANE CHECKOUT BRANCH REPO_NAME
+#
+# The file is sourced in a subshell. It is user code: a bare `exit`, an unset
+# variable under `set -u`, or a failing helper inside it would otherwise take
+# the caller down with it — and for the daft hook that means failing a
+# worktree creation daft has already completed.
 apply_layout() {
-  local pane=$1 checkout=$2 branch=$3 root=$4 name=$5 file
-  file=$(layout_file_for "$root" "$name") || { log "no layout file for $name; leaving the pane alone"; return 0; }
-  after_open() { :; }
-  # shellcheck disable=SC1090
-  . "$file"
-  LAYOUT_CWD=$checkout
+  local pane=$1 checkout=$2 branch=$3 name=$4 file
+  file=$(layout_file_for "$name") || { log "no layout file for $name; leaving the pane alone"; return 0; }
   log "applying layout $file to $pane"
   printf 'layout: %s\n' "${file/#$HOME/~}"
-  after_open "$pane" "$checkout" "$branch" "$(slugify "$branch")"
+  (
+    set +u
+    LAYOUT_CWD=$checkout
+    after_open() { :; }
+    # shellcheck disable=SC1090
+    . "$file"
+    after_open "$pane" "$checkout" "$branch" "$(slugify "$branch")"
+  ) || log "layout $file exited non-zero"
+  return 0
 }

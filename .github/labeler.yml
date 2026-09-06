@@ -126,3 +126,8 @@
   - changed-files:
       - any-glob-to-any-file:
           - "term-styles/**"
+
+"area:integrations":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "integrations/**"

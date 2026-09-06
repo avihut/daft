@@ -13,8 +13,8 @@ json=${HERDR_PLUGIN_EVENT_JSON:-}
 [ -n "$event" ] && [ -n "$json" ] || exit 0
 tokens_enabled || exit 0
 
-resolve_jq
-resolve_daft
+resolve_jq || exit 0
+resolve_daft || exit 0
 
 evt() {
   printf '%s' "$json" | "$JQ" -r "$1 // empty" 2>/dev/null

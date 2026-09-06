@@ -24,6 +24,7 @@ LOG_SCOPE=${LOG_SCOPE:-plugin}
 MANAGED_MARKER="managed by the daft herdr plugin"
 DAFT=
 JQ=
+RESOLVE_ERROR=
 
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 
@@ -55,25 +56,41 @@ augment_path() {
 }
 
 # config_get KEY [DEFAULT] — read a flat `key = value` line from config.toml.
-# Strings may be double-quoted; a trailing `# comment` is dropped.
+# The file is flat by contract (the generated default says so), so reading
+# stops at the first `[table]` header rather than letting a key nested under
+# one masquerade as a global.  Double-quoted strings keep everything inside
+# the quotes, including a `#`; an unquoted value drops a trailing comment.
 config_get() {
   local key=$1 default=${2:-} line
   [ -r "$CONFIG_FILE" ] || { printf '%s' "$default"; return 0; }
-  line=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$CONFIG_FILE" 2>/dev/null | tail -n 1)
+  line=$(awk -v key="$key" '
+    /^[[:space:]]*\[/ { exit }
+    $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { last = $0 }
+    END { if (last != "") print last }
+  ' "$CONFIG_FILE" 2>/dev/null)
   [ -n "$line" ] || { printf '%s' "$default"; return 0; }
   line=${line#*=}
-  line=$(printf '%s' "$line" | sed -E 's/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//; s/^"(.*)"$/\1/')
+  line=$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+  case $line in
+    '"'*'"') line=${line#\"}; line=${line%\"} ;;
+    *) line=$(printf '%s' "$line" | sed -E 's/[[:space:]]*#.*$//; s/[[:space:]]+$//') ;;
+  esac
   printf '%s' "$line"
 }
 
-# resolve_daft — sets DAFT: config `daft = "..."`, then the path recorded by the
-# startup hook, then PATH (augmented). Dies with the config hint otherwise.
+# resolve_daft — sets DAFT: config `daft = "..."`, then the path recorded by
+# the startup hook, then PATH (augmented). On failure it sets RESOLVE_ERROR
+# and returns 1; it never exits. Each entrypoint decides what a missing tool
+# means for it — a popup shows the message, an event hook shrugs, and startup
+# still has to write the config file the user needs in order to fix it. A
+# `die` here would have made every one of those `|| ...` fallbacks dead code
+# (`||` cannot catch an `exit` in the current shell).
 resolve_daft() {
   local c
   c=$(config_get daft)
   if [ -n "$c" ]; then
     c=${c/#\~/$HOME}
-    [ -x "$c" ] || die "daft is not executable: $c (from $CONFIG_FILE)"
+    [ -x "$c" ] || { RESOLVE_ERROR="daft is not executable: $c (from $CONFIG_FILE)"; return 1; }
     DAFT=$c
     return 0
   fi
@@ -90,7 +107,8 @@ resolve_daft() {
     DAFT=$(deshim "$c")
     return 0
   fi
-  die "daft not found on the herdr server's PATH; set daft = \"/path/to/daft\" in $CONFIG_FILE"
+  RESOLVE_ERROR="daft not found on the herdr server's PATH; set daft = \"/path/to/daft\" in $CONFIG_FILE"
+  return 1
 }
 
 # deshim PATH — the real binary behind a mise shim, or PATH unchanged. A shim
@@ -105,7 +123,8 @@ deshim() {
       # only from inside that project, so also look at what mise installed.
       real=$(cd / && mise which "$name" 2>/dev/null) || real=
       if [ -z "$real" ] || [ ! -x "$real" ]; then
-        real=$(find "${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/installs" -maxdepth 4 -type f -name "$name" -perm -u+x 2>/dev/null | sort | tail -n 1)
+        # -V so 1.10 beats 1.9 (BSD sort has it too).
+        real=$(find "${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/installs" -maxdepth 4 -type f -name "$name" -perm -u+x 2>/dev/null | sort -V | tail -n 1)
       fi
       if [ -n "$real" ] && [ -x "$real" ]; then
         printf '%s' "$real"
@@ -116,24 +135,29 @@ deshim() {
   printf '%s' "$1"
 }
 
+# resolve_jq — sets JQ, or sets RESOLVE_ERROR and returns 1. See resolve_daft.
 resolve_jq() {
   local c
   c=$(config_get jq)
   if [ -n "$c" ]; then
     c=${c/#\~/$HOME}
-    [ -x "$c" ] || die "jq is not executable: $c (from $CONFIG_FILE)"
+    [ -x "$c" ] || { RESOLVE_ERROR="jq is not executable: $c (from $CONFIG_FILE)"; return 1; }
     JQ=$c
     return 0
   fi
   augment_path
   c=$(command -v jq 2>/dev/null || true)
-  [ -n "$c" ] || die "jq not found on the herdr server's PATH (brew install jq / apt install jq), or set jq = \"/path/to/jq\" in $CONFIG_FILE"
+  if [ -z "$c" ]; then
+    RESOLVE_ERROR="jq not found on the herdr server's PATH (brew install jq / apt install jq), or set jq = \"/path/to/jq\" in $CONFIG_FILE"
+    return 1
+  fi
   JQ=$(deshim "$c")
 }
 
 # daft_quiet ARGS... — daft for machine consumption: no update check, no trust
 # prune, no log clean, no hints, no live table, and never a cd redirect.
 daft_quiet() {
+  [ -n "$DAFT" ] || { log "daft_quiet called before resolve_daft"; return 1; }
   (
     unset DAFT_CD_FILE
     DAFT_NO_UPDATE_CHECK=1 DAFT_NO_TRUST_PRUNE=1 DAFT_NO_LOG_CLEAN=1 DAFT_NO_HINTS=1 DAFT_NO_LIVE=1 \
@@ -239,13 +263,28 @@ workspace_for_path() {
 # register_worktree ROOT PATH LABEL [--focus|--no-focus] — open PATH as a
 # grouped child of ROOT's repo row. Prints the root pane id of a newly opened
 # workspace; prints nothing when herdr only focused an already-open one.
+#
+# herdr answers an already-open checkout with a full `root_pane` all the same
+# (src/app/api/worktrees.rs), so `already_open` is the only thing separating
+# "here is a fresh pane to lay out" from "that is the workspace you are
+# working in". Reading the pane id unconditionally re-ran the layout over a
+# live workspace: extra splits, commands typed into a pane in use, a second
+# agent. Stderr is captured apart from stdout for the same reason — folded
+# in, one herdr warning makes the reply unparseable and the layout silently
+# does not happen.
 register_worktree() {
-  local root=$1 path=$2 label=$3 focus=${4:---focus} out
-  if ! out=$("$HERDR" worktree open --cwd "$root" --path "$path" --label "$label" "$focus" 2>&1); then
+  local root=$1 path=$2 label=$3 focus=${4:---focus} out err rc
+  err=$(mktemp "${TMPDIR:-/tmp}/daft-herdr-err.XXXXXX") || err=/dev/null
+  out=$("$HERDR" worktree open --cwd "$root" --path "$path" --label "$label" "$focus" 2>"$err")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    out="${out}$(cat "$err" 2>/dev/null)"
+    [ "$err" = /dev/null ] || rm -f "$err"
     log "worktree open failed for $path: $out"
     printf '%s\n' "$out" >&2
     return 1
   fi
+  [ "$err" = /dev/null ] || rm -f "$err"
   log "registered $path as $(printf '%s' "$out" | "$JQ" -r '.result.workspace.workspace_id // "?"' 2>/dev/null) ($focus)"
-  printf '%s' "$out" | "$JQ" -r '.result.root_pane.pane_id // empty' 2>/dev/null
+  printf '%s' "$out" | "$JQ" -r 'select(.result.already_open != true) | .result.root_pane.pane_id // empty' 2>/dev/null
 }

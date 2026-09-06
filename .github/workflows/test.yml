@@ -93,7 +93,11 @@ jobs:
           if echo "$files" | grep -qE '^(src/|Cargo\.(toml|lock)|mise\.(toml|lock)|lefthook\.yml)'; then
             rust=true
           fi
-          if echo "$files" | grep -qE '^(tests/|scripts/|mise-tasks/setup/)'; then
+          # `integrations/` is in the tests class because the only thing that
+          # exercises it is the blessed shell suite, which `integration-tests`
+          # runs. Left out, a PR touching only a plugin script would run no
+          # job at all and `ci-gate` would go green on an unexecuted gate.
+          if echo "$files" | grep -qE '^(tests/|scripts/|mise-tasks/setup/|integrations/)'; then
             tests=true
           fi
           # `xtask` also gates the drift tests, so it must watch every file

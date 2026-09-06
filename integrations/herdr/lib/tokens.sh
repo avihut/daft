@@ -15,6 +15,20 @@ tokens_enabled() {
   [ "$(config_get tokens true)" = true ]
 }
 
+# lock_is_stale DIR — a crashed refresh rather than a running one: the holder
+# it recorded is gone, or it recorded none and the directory is over a minute
+# old. Reading the holder's pid rather than only the mtime is what lets a
+# legitimately slow refresh (tokens_pr = true adds a forge call per repo) keep
+# its lock instead of having it stolen out from under it.
+lock_is_stale() {
+  local pid
+  pid=$(cat "$1/pid" 2>/dev/null)
+  case $pid in
+    '' | *[!0-9]*) [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ] ;;
+    *) ! kill -0 "$pid" 2>/dev/null ;;
+  esac
+}
+
 # tokens_refresh_repo PATH — refresh every open workspace of the repository
 # containing PATH. Debounced per repo (refresh_debounce_secs, FORCE_REFRESH=1
 # bypasses) and serialized with a lock so concurrent event hooks cost one
@@ -30,27 +44,32 @@ tokens_refresh_repo() {
   stamp=$STATE_DIR/refresh/$key
   lock=$STATE_DIR/refresh/$key.lock
   debounce=$(config_get refresh_debounce_secs 15)
+  # Both sides of the comparison are arithmetic: a hand-edited debounce and a
+  # stamp truncated by a crash between the open and the write would otherwise
+  # be a syntax error inside `$(( ))`.
+  case $debounce in '' | *[!0-9]*) debounce=15 ;; esac
   now=$(date +%s)
-  last=$(cat "$stamp" 2>/dev/null || printf 0)
+  last=$(cat "$stamp" 2>/dev/null)
+  case $last in '' | *[!0-9]*) last=0 ;; esac
   if [ "${FORCE_REFRESH:-0}" != 1 ] && [ $((now - last)) -lt "$debounce" ]; then
     return 0
-  fi
-  # A lock older than a minute is a crashed refresh, not a running one.
-  if [ -d "$lock" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-    rmdir "$lock" 2>/dev/null || true
   fi
   # Another refresh is running: a forced refresh waits for it (the caller
   # wants fresh tokens now), a debounced one yields to it.
   local waited=0
   until mkdir "$lock" 2>/dev/null; do
+    if lock_is_stale "$lock" && rm -rf "$lock" 2>/dev/null && mkdir "$lock" 2>/dev/null; then
+      break
+    fi
     [ "${FORCE_REFRESH:-0}" = 1 ] || return 0
     [ "$waited" -lt 40 ] || { log "tokens: lock held too long for $root"; return 0; }
     sleep 0.25
     waited=$((waited + 1))
   done
+  printf '%s' $$ >"$lock/pid" 2>/dev/null
   printf '%s' "$(date +%s)" >"$stamp"
   tokens_report_repo "$root"
-  rmdir "$lock" 2>/dev/null || true
+  rm -rf "$lock" 2>/dev/null || true
 }
 
 # tokens_report_repo ROOT — compute and push the token for each worktree of
@@ -94,7 +113,7 @@ tokens_report_repo() {
         if [ "$(canon "$path")" = "$abs" ]; then printf '%s' "$id"; break; fi
       done)
       [ -n "$id" ] || continue
-      "$HERDR" workspace report-metadata "$id" --source "$TOKEN_SOURCE" --token "daft=$summary" --ttl-ms "$ttl" >/dev/null 2>&1 \
+      "$HERDR" workspace report-metadata "$id" --source "$TOKEN_SOURCE" --token "daft=$summary" --ttl-ms "$ttl" </dev/null >/dev/null 2>&1 \
         || log "tokens: report-metadata failed for $id"
     done
 }

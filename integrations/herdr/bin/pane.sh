@@ -14,8 +14,6 @@ LOG_SCOPE=pane
 . "$PLUGIN_ROOT/lib/tokens.sh"
 
 mode=${1:-}
-resolve_jq
-resolve_daft
 
 pause() {
   [ -t 0 ] || return 0
@@ -29,6 +27,9 @@ fail() {
   pause
   exit 1
 }
+
+resolve_jq || fail "$RESOLVE_ERROR"
+resolve_daft || fail "$RESOLVE_ERROR"
 
 # ask VAR PROMPT — read one line into VAR; false on EOF.
 ask() {
@@ -56,7 +57,7 @@ open_and_layout() {
   printf '\n» herdr worktree open --cwd %s --path %s\n' "$root" "$path"
   pane=$(register_worktree "$root" "$path" "$label" --focus) || fail "herdr could not open $path"
   if [ -n "$pane" ]; then
-    apply_layout "$pane" "$path" "$label" "$root" "$name"
+    apply_layout "$pane" "$path" "$label" "$name"
   fi
   ( FORCE_REFRESH=1 tokens_refresh_repo "$root" </dev/null >/dev/null 2>&1 & )
   printf 'opened %s under %s%s\n' "$label" "$name" "${pane:+ (pane $pane)}"
@@ -100,8 +101,12 @@ case $mode in
     printf 'a branch, "repo branch", pr:N, a commit, or - for the previous worktree\n'
     ask target 'go to: ' || fail "aborted"
     [ -n "$target" ] || fail "aborted: empty target"
+    # Split on whitespace, but never glob: the popup's cwd is a checkout, so
+    # a `*` typed at the prompt would otherwise expand to its filenames.
+    set -f
     # shellcheck disable=SC2086
     set -- $target
+    set +f
     printf '\n» daft go %s\n\n' "$*"
     run_daft_cd -C "$cwd" go "$@" || fail "daft go failed"
     [ -n "$DAFT_RESULT_PATH" ] && [ -d "$DAFT_RESULT_PATH" ] || fail "daft finished but reported no path (daft.autocd off?)"
@@ -113,7 +118,7 @@ case $mode in
       printf 'opened %s\n' "$(repo_field "$info" .name)"
     else
       entry=$(worktree_containing "$info" "$DAFT_RESULT_PATH")
-      label=${entry%%	*}
+      IFS=$'\t' read -r label _ <<<"$entry"
       [ -n "$label" ] || label=$(basename "$DAFT_RESULT_PATH")
       open_and_layout "$DAFT_RESULT_PATH" "$label"
     fi
@@ -134,10 +139,11 @@ case $mode in
     printf '%s\n' "$paths" | while IFS= read -r path; do
       [ -d "$path" ] || continue
       label=$(basename "$path")
-      root=$(repo_field "$(repo_info "$path")" .path)
-      name=$(basename "$root")
+      forkinfo=$(repo_info "$path")
+      root=$(repo_field "$forkinfo" .path)
+      name=$(repo_field "$forkinfo" .name)
       pane=$(register_worktree "$root" "$path" "$label" "$focus") || { printf 'herdr could not open %s\n' "$path" >&2; continue; }
-      [ -n "$pane" ] && apply_layout "$pane" "$path" "$label" "$root" "$name"
+      [ -n "$pane" ] && apply_layout "$pane" "$path" "$label" "$name"
       printf 'opened %s%s\n' "$label" "${pane:+ (pane $pane)}"
       focus=--no-focus
     done
@@ -149,24 +155,27 @@ case $mode in
     root=$(repo_field "$info" .path)
     entry=$(worktree_containing "$info" "$cwd")
     [ -n "$entry" ] || fail "not inside a worktree: $cwd"
-    branch=${entry%%	*}
-    path=${entry#*	}
-    target=$branch
-    [ -n "$target" ] || target=$(basename "$path")
+    IFS=$'\t' read -r branch path <<<"$entry"
+    label=$branch
+    [ -n "$label" ] || label=$(basename "$path")
     if [ "$(canon "$path")" = "$(canon "$root")" ]; then
       fail "$path is the repository root, not a worktree"
     fi
-    printf 'repo:     %s\nworktree: %s\npath:     %s\n\n' "$(repo_field "$info" .name)" "$target" "$path"
-    ask answer "remove '$target' and delete its branch? [y/N] " || fail "aborted"
+    printf 'repo:     %s\nworktree: %s\npath:     %s\n\n' "$(repo_field "$info" .name)" "$label" "$path"
+    if [ -n "$branch" ]; then
+      ask answer "remove '$label' and delete its branch? [y/N] " || fail "aborted"
+    else
+      ask answer "remove the sandbox '$label'? [y/N] " || fail "aborted"
+    fi
     case $answer in y | Y | yes) ;; *) fail "aborted" ;; esac
     ask answer 'force (-f, skips the merge and sync safety checks)? [y/N] ' || answer=
     force=
     case $answer in y | Y | yes) force=-f ;; esac
-    printf '\n» daft remove %s%s\n\n' "$target" "${force:+ $force}"
+    printf '\n» daft remove %s%s\n\n' "$path" "${force:+ $force}"
     cd -- "$root" || fail "cannot cd to $root"
     # The pre-remove hook closes the workspace once daft has exited and the directory is gone.
-    "$DAFT" -C "$root" remove "$target" ${force:+"$force"} || fail "daft remove failed"
-    printf 'removed %s\n' "$target"
+    "$DAFT" -C "$root" remove "$path" ${force:+"$force"} || fail "daft remove failed"
+    printf 'removed %s\n' "$label"
     ;;
 
   repo)

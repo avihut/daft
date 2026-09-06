@@ -36,7 +36,7 @@ case "$1 $2" in
   "workspace get")
     echo '{"id":"x","result":{"type":"workspace_info","workspace":{"workspace_id":"'"$3"'","worktree":{"checkout_path":"'"${HERDR_STUB_GET_PATH:-}"'"}}}}' ;;
   "worktree open")
-    echo '{"id":"x","result":{"type":"worktree_open","workspace":{"workspace_id":"w2"},"tab":{"tab_id":"w2:t1"},"root_pane":{"pane_id":"w2:p1"},"already_open":false}}' ;;
+    echo '{"id":"x","result":{"type":"worktree_open","workspace":{"workspace_id":"w2"},"tab":{"tab_id":"w2:t1"},"root_pane":{"pane_id":"w2:p1"},"already_open":'"${HERDR_STUB_ALREADY_OPEN:-false}"'}}' ;;
   "pane split")
     echo '{"id":"x","result":{"type":"pane_split","pane":{"pane_id":"w2:p2"}}}' ;;
   *)
@@ -45,6 +45,11 @@ esac
 exit 0
 STUB
     chmod +x "$stub_dir/herdr"
+
+    # daft's user-global hooks dir is shared by every test in this suite
+    # (test_framework.sh exports one DAFT_CONFIG_DIR). Reset it here so a
+    # test that returns early cannot leave a hook behind for the next one.
+    rm -f "$DAFT_CONFIG_DIR/hooks/worktree-post-create" "$DAFT_CONFIG_DIR/hooks/worktree-pre-remove"
 
     export HERDR_STUB_LOG="$PWD/herdr-calls.log"
     : > "$HERDR_STUB_LOG"
@@ -55,7 +60,7 @@ STUB
     export HERDR_PLUGIN_CONFIG_DIR="$PWD/plugin-config"
     export HERDR_PLUGIN_STATE_DIR="$PWD/plugin-state"
     mkdir -p "$HERDR_PLUGIN_CONFIG_DIR" "$HERDR_PLUGIN_STATE_DIR"
-    unset HERDR_STUB_WORKSPACES HERDR_STUB_FAIL HERDR_WORKSPACE_ID HERDR_PLUGIN_CONTEXT_JSON DAFT_HERDR_PLUGIN_ACTIVE
+    unset HERDR_STUB_WORKSPACES HERDR_STUB_FAIL HERDR_PLUGIN_CONTEXT_JSON DAFT_HERDR_PLUGIN_ACTIVE HERDR_STUB_ALREADY_OPEN
 }
 
 # herdr_stub_calls PATTERN — the recorded calls matching PATTERN (fixed string).
@@ -89,19 +94,45 @@ clone_contained() {
     (cd -P "$PWD/$1" && pwd -P)
 }
 
+# clone_sibling NAME FILE SOURCE — a sibling-layout clone of a fresh remote
+# whose default-branch checkout carries FILE (a copy of SOURCE); prints the
+# project root, which in this layout *is* that checkout.
+clone_sibling() {
+    local remote_dir
+    remote_dir=$(create_test_remote "$1" "main")
+    # Commit the payload on the remote so it arrives with the clone.
+    local staging="$PWD/staging-$1"
+    git clone -q "$remote_dir" "$staging" >/dev/null 2>&1 || return 1
+    cp "$3" "$staging/$2"
+    (cd "$staging" && git add "$2" && git -c user.name=T -c user.email=t@t commit -qm "add $2" && git push -q origin main) >/dev/null 2>&1 || return 1
+    rm -rf "$staging"
+    git-worktree-clone --layout sibling "$remote_dir" >/dev/null 2>&1 || return 1
+    : > "$HERDR_STUB_LOG"
+    (cd -P "$PWD/$1" && pwd -P)
+}
+
+# plugin_layout REPO_NAME — write a layout file for REPO_NAME (body on stdin)
+# where the plugin actually reads layouts from: a directory the user owns.
+plugin_layout() {
+    mkdir -p "$HERDR_PLUGIN_CONFIG_DIR/layouts"
+    cat > "$HERDR_PLUGIN_CONFIG_DIR/layouts/$1.sh"
+}
+
 # refresh_idle — wait for any background token refresh (spawned by daft's
 # post-create hook) to finish, then forget its debounce stamp so the next
 # refresh is the one under test.
 refresh_idle() {
     local i=0
-    # Let the detached refresh start (it stamps the repo first) ...
-    while [ ! -d "$HERDR_PLUGIN_STATE_DIR/refresh" ] && [ "$i" -lt 40 ]; do
+    # Wait for the stamp, not the directory: the refresh creates the directory
+    # before it takes the lock, so a directory-shaped wait can win the race and
+    # delete the state of a refresh that is still running.
+    while [ -z "$(find "$HERDR_PLUGIN_STATE_DIR/refresh" -type f ! -name pid 2>/dev/null)" ] && [ "$i" -lt 40 ]; do
         sleep 0.25
         i=$((i + 1))
     done
-    # ... and finish, then forget it.
+    # ... and for the lock it took to be released, then forget the stamp.
     i=0
-    while [ -n "$(find "$HERDR_PLUGIN_STATE_DIR/refresh" -name '*.lock' 2>/dev/null)" ] && [ "$i" -lt 40 ]; do
+    while [ -n "$(find "$HERDR_PLUGIN_STATE_DIR/refresh" -type d -name '*.lock' 2>/dev/null)" ] && [ "$i" -lt 40 ]; do
         sleep 0.25
         i=$((i + 1))
     done
@@ -153,8 +184,9 @@ test_herdr_startup_leaves_foreign_hooks_alone() {
         log_error "the foreign post-create hook was overwritten"
         return 1
     fi
+    # herdr_stub_install cleared both hooks, so this proves the run under test
+    # installed pre-remove rather than inheriting it from an earlier one.
     assert_file_contains "$DAFT_CONFIG_DIR/hooks/worktree-pre-remove" "managed by the daft herdr plugin" || return 1
-    rm -f "$DAFT_CONFIG_DIR/hooks/worktree-post-create"
 
     log_success "foreign hook kept, the plugin's other hook still installed"
     return 0
@@ -226,25 +258,135 @@ test_herdr_post_remove_hook_closes_workspace() {
     return 0
 }
 
-test_herdr_post_remove_defers_close_of_own_workspace() {
-    log "Testing: removing the worktree you are standing in closes its workspace only after daft exits"
+test_herdr_pre_remove_keeps_a_refused_removal_open() {
+    log "Testing: a removal that never happens leaves the workspace open"
     herdr_stub_install
     bash "$HERDR_PLUGIN_DIR/bin/startup.sh" || return 1
     local root
-    root=$(clone_contained "herdr-self") || return 1
-    (cd "$root/main" && daft start feat/self --no-cd >/dev/null 2>&1) || return 1
-    herdr_stub_workspaces "w9" "$root/feat/self"
+    root=$(clone_contained "herdr-refused") || return 1
+    (cd "$root/main" && daft start feat/stays --no-cd >/dev/null 2>&1) || return 1
+    herdr_stub_workspaces "w9" "$root/feat/stays"
+    : > "$HERDR_STUB_LOG"
 
-    # HERDR_WORKSPACE_ID marks the invoking pane as living in workspace w9.
-    (cd "$root/main" && HERDR_WORKSPACE_ID=w9 daft remove feat/self >/dev/null 2>&1) || { log_error "daft remove failed"; return 1; }
-    # The close waits for the daft ancestor to exit; daft has exited now.
-    if ! wait_for_stub_call "workspace close w9"; then
-        log_error "deferred workspace close w9 never arrived:"
+    # The hook as daft runs it, for a removal that then does not happen
+    # (a dirty worktree, a refused prompt, a failed git call). The watcher
+    # must see the directory still on disk and leave the workspace alone.
+    DAFT_WORKTREE_PATH="$root/feat/stays" DAFT_PROJECT_ROOT="$root" \
+        bash "$DAFT_CONFIG_DIR/hooks/worktree-pre-remove" || { log_error "pre-remove hook failed"; return 1; }
+
+    sleep 2
+    if herdr_stub_calls "workspace close" | grep -q .; then
+        log_error "the workspace was closed although $root/feat/stays still exists:"
         cat "$HERDR_STUB_LOG"
         return 1
     fi
+    assert_directory_exists "$root/feat/stays" || return 1
 
-    log_success "deferred close arrived after daft exited"
+    log_success "no workspace close while the worktree is still on disk"
+    return 0
+}
+
+test_herdr_move_leaves_the_workspace_alone() {
+    log "Testing: daft rename does not close or duplicate the worktree's workspace"
+    herdr_stub_install
+    bash "$HERDR_PLUGIN_DIR/bin/startup.sh" || return 1
+    local root
+    root=$(clone_contained "herdr-move") || return 1
+    (cd "$root/main" && daft start feat/before --no-cd >/dev/null 2>&1) || return 1
+    herdr_stub_workspaces "w6" "$root/feat/before"
+    : > "$HERDR_STUB_LOG"
+
+    (cd "$root/main" && daft rename feat/before feat/after --no-remote >/dev/null 2>&1) \
+        || { log_error "daft rename failed"; return 1; }
+    assert_directory_exists "$root/feat/after" || return 1
+
+    # daft replays the whole remove-then-create hook sequence for a move. Both
+    # arms must stand down: closing w6 would kill the panes the user is in,
+    # and opening the new path would leave a second row beside the stale one.
+    sleep 2
+    if herdr_stub_calls "workspace close" | grep -q .; then
+        log_error "the move closed the workspace:"; cat "$HERDR_STUB_LOG"; return 1
+    fi
+    if herdr_stub_calls "worktree open" | grep -q .; then
+        log_error "the move opened a second workspace:"; cat "$HERDR_STUB_LOG"; return 1
+    fi
+
+    log_success "rename left w6 alone: no close, no second open"
+    return 0
+}
+
+test_herdr_layout_is_never_read_from_a_checkout() {
+    log "Testing: a herdr-layout.sh committed to a repository is never sourced"
+    herdr_stub_install
+    bash "$HERDR_PLUGIN_DIR/bin/startup.sh" || return 1
+    printf 'layout_on_hook = true\n' >> "$HERDR_PLUGIN_CONFIG_DIR/config.toml"
+
+    # In the sibling layout — daft's default — the project root IS the default
+    # branch's checkout, so this file arrives with the clone.
+    cat > "$PWD/payload-layout.sh" <<'LAYOUT'
+touch "$HOME/PWNED-BY-A-CLONED-REPO"
+after_open() { touch "$HOME/PWNED-BY-A-CLONED-REPO"; }
+LAYOUT
+    local root
+    root=$(clone_sibling "herdr-untrusted" "herdr-layout.sh" "$PWD/payload-layout.sh") \
+        || { log_error "clone failed"; return 1; }
+
+    (cd "$root" && daft start feat/untrusted --no-cd >/dev/null 2>&1) || { log_error "daft start failed"; return 1; }
+    assert_file_exists "$root/herdr-layout.sh" || return 1
+    if [ -e "$HOME/PWNED-BY-A-CLONED-REPO" ]; then
+        rm -f "$HOME/PWNED-BY-A-CLONED-REPO"
+        log_error "the cloned repository's herdr-layout.sh was executed"
+        return 1
+    fi
+
+    log_success "the repository's own herdr-layout.sh was ignored"
+    return 0
+}
+
+test_herdr_layout_failure_never_breaks_daft() {
+    log "Testing: a layout file that exits non-zero does not fail daft start"
+    herdr_stub_install
+    bash "$HERDR_PLUGIN_DIR/bin/startup.sh" || return 1
+    printf 'layout_on_hook = true\n' >> "$HERDR_PLUGIN_CONFIG_DIR/config.toml"
+    local root name
+    root=$(clone_contained "herdr-badlayout") || return 1
+    name=$(daft repo info "$root" --format json | jq -r .name)
+    # Sourced user code: a bare exit, and a reference that trips `set -u`.
+    plugin_layout "$name" <<'LAYOUT'
+after_open() { :; }
+echo "$THIS_VARIABLE_IS_NOT_SET" >/dev/null
+exit 1
+LAYOUT
+
+    if ! (cd "$root/main" && daft start feat/survives --no-cd >/dev/null 2>&1); then
+        log_error "daft start failed because the layout file did"
+        return 1
+    fi
+    assert_directory_exists "$root/feat/survives" || return 1
+
+    log_success "daft start succeeded with a layout file that exits 1"
+    return 0
+}
+
+test_herdr_already_open_workspace_is_not_relaid_out() {
+    log "Testing: registering a checkout herdr already has open reports no pane to lay out"
+    herdr_stub_install
+    local out
+    out=$(HERDR_STUB_ALREADY_OPEN=true bash -c \
+        '. "$1/lib/common.sh"; resolve_jq || exit 1; register_worktree /tmp/root /tmp/root/wt label --focus' \
+        _ "$HERDR_PLUGIN_DIR") || { log_error "register_worktree failed"; return 1; }
+    if [ -n "$out" ]; then
+        log_error "expected no pane id for an already-open workspace, got: $out"
+        return 1
+    fi
+    out=$(bash -c '. "$1/lib/common.sh"; resolve_jq || exit 1; register_worktree /tmp/root /tmp/root/wt label --focus' \
+        _ "$HERDR_PLUGIN_DIR") || return 1
+    if [ "$out" != "w2:p1" ]; then
+        log_error "expected the root pane id for a newly opened workspace, got: $out"
+        return 1
+    fi
+
+    log_success "already_open reports no pane; a fresh open reports w2:p1"
     return 0
 }
 
@@ -254,7 +396,7 @@ test_herdr_popup_start_creates_registers_and_lays_out() {
     bash "$HERDR_PLUGIN_DIR/bin/startup.sh" || return 1
     local root
     root=$(clone_contained "herdr-popup") || return 1
-    cat > "$root/herdr-layout.sh" <<'LAYOUT'
+    plugin_layout "$(daft repo info "$root" --format json | jq -r .name)" <<'LAYOUT'
 after_open() {
   local pane=$1 checkout=$2 branch=$3 slug=$4
   split_right "$pane" >/dev/null
@@ -288,9 +430,10 @@ test_herdr_adopt_action_groups_a_checkout() {
     root=$(clone_contained "herdr-adopt") || return 1
     (cd "$root/main" && daft start feat/adopt --no-cd >/dev/null 2>&1) || return 1
     : > "$HERDR_STUB_LOG"
-    # A herdr pane reports its cwd through the symlinked /tmp spelling on macOS;
-    # the plugin must still resolve it to the physical checkout.
-    plugin_context "${root/#\/private\/tmp\//\/tmp\/}/feat/adopt"
+    # A herdr pane can report its cwd through a symlink (on macOS every /tmp
+    # path is one); the plugin must still resolve it to the physical checkout.
+    ln -s "$root" "$PWD/link-to-adopt"
+    plugin_context "$PWD/link-to-adopt/feat/adopt"
 
     bash "$HERDR_PLUGIN_DIR/bin/action.sh" adopt || { log_error "action.sh adopt failed"; return 1; }
     herdr_stub_calls "worktree open --cwd $root --path $root/feat/adopt --label feat/adopt --focus" | grep -q . || {
@@ -374,7 +517,11 @@ run_herdr_plugin_tests() {
     run_test "herdr_post_create_hook_mirrors_daft_start" test_herdr_post_create_hook_mirrors_daft_start
     run_test "herdr_post_create_hook_never_breaks_daft" test_herdr_post_create_hook_never_breaks_daft
     run_test "herdr_post_remove_hook_closes_workspace" test_herdr_post_remove_hook_closes_workspace
-    run_test "herdr_post_remove_defers_close_of_own_workspace" test_herdr_post_remove_defers_close_of_own_workspace
+    run_test "herdr_pre_remove_keeps_a_refused_removal_open" test_herdr_pre_remove_keeps_a_refused_removal_open
+    run_test "herdr_move_leaves_the_workspace_alone" test_herdr_move_leaves_the_workspace_alone
+    run_test "herdr_layout_is_never_read_from_a_checkout" test_herdr_layout_is_never_read_from_a_checkout
+    run_test "herdr_layout_failure_never_breaks_daft" test_herdr_layout_failure_never_breaks_daft
+    run_test "herdr_already_open_workspace_is_not_relaid_out" test_herdr_already_open_workspace_is_not_relaid_out
     run_test "herdr_popup_start_creates_registers_and_lays_out" test_herdr_popup_start_creates_registers_and_lays_out
     run_test "herdr_adopt_action_groups_a_checkout" test_herdr_adopt_action_groups_a_checkout
     run_test "herdr_tokens_report_worktree_status" test_herdr_tokens_report_worktree_status
