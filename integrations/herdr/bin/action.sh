@@ -40,7 +40,7 @@ case $mode in
     resolve_daft || die "$RESOLVE_ERROR"
     cwd=$(context_cwd)
     [ -n "$cwd" ] || die "no working directory in the invocation context"
-    info=$(repo_info "$cwd") || { notify "daft" "$cwd is not inside a repository daft knows"; exit 1; }
+    info=$(repo_info_adopting "$cwd") || { notify "daft" "$cwd is not inside a repository daft can manage"; exit 1; }
     root=$(repo_field "$info" .path)
     entry=$(worktree_containing "$info" "$cwd")
     [ -n "$entry" ] || { notify "daft" "$cwd is not inside a worktree of $(repo_field "$info" .name)"; exit 1; }
@@ -61,7 +61,7 @@ case $mode in
     [ -n "$pane" ] || pane=$(read_intent pane_id)
     [ -n "$pane" ] || die "no focused pane in the invocation context"
     cwd=$(context_cwd)
-    info=$(repo_info "$cwd") || { notify "daft" "$cwd is not inside a repository daft knows"; exit 1; }
+    info=$(repo_info_adopting "$cwd") || { notify "daft" "$cwd is not inside a repository daft can manage"; exit 1; }
     entry=$(worktree_containing "$info" "$cwd")
     [ -n "$entry" ] || { notify "daft" "$cwd is not inside a worktree"; exit 1; }
     IFS=$'\t' read -r branch path <<<"$entry"

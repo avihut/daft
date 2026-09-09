@@ -10,6 +10,23 @@
 #   rebasing  a paused git operation
 #   #42 open  the pull request, with ✓ ✗ ◌ for CI (opt-in: tokens_pr = true)
 #   ✓         nothing to report
+#
+# Beside it, one token per fact, so herdr 0.9's ordered token `rules` have a
+# value they can compare (`gt`/`lt` need a bare number; `"↑3 ~1"` matches
+# nothing). Same refresh, same `report-metadata` call:
+#
+#   $daft_ahead      $daft_behind      commits against the base branch
+#   $daft_dirty      staged + unstaged + untracked files, as one count
+#   $daft_conflicts  conflicted files
+#   $daft_unpushed   $daft_unpulled    commits against the remote
+#   $daft_op         the paused git operation, by name
+#   $daft_ci         the PR's CI state, by name (only with tokens_pr = true)
+#
+# A fact that is zero or absent is `--clear-token`ed rather than reported as
+# `0`: herdr drops a missing token and its separator, so a quiet worktree
+# stays quiet, while a token that is merely left out of the call keeps its
+# last value until the TTL expires — a row would go on claiming ↑3 after the
+# push. Nine keys are well inside herdr's 16-per-request limit.
 
 tokens_enabled() {
   [ "$(config_get tokens true)" = true ]
@@ -72,10 +89,22 @@ tokens_refresh_repo() {
   rm -rf "$lock" 2>/dev/null || true
 }
 
-# tokens_report_repo ROOT — compute and push the token for each worktree of
+# token_arg NAME VALUE — append one token to TOKEN_ARGS: `--token NAME=VALUE`
+# when VALUE is set, `--clear-token NAME` when it is empty. See the clear-on-
+# zero rule at the top of this file.
+token_arg() {
+  if [ -n "$2" ]; then
+    TOKEN_ARGS+=(--token "$1=$2")
+  else
+    TOKEN_ARGS+=(--clear-token "$1")
+  fi
+}
+
+# tokens_report_repo ROOT — compute and push the tokens for each worktree of
 # ROOT that has an open workspace.
 tokens_report_repo() {
   local root=$1 cols pr rows wsmap ttl rel summary abs id path
+  local ahead behind dirty conflicts unpushed unpulled op ci
   pr=$(config_get tokens_pr false)
   ttl=$(config_get tokens_ttl_ms 86400000)
   cols=name,annotation,path,base,changes,remote
@@ -86,6 +115,7 @@ tokens_report_repo() {
   [ -n "$wsmap" ] || return 0
   printf '%s' "$rows" | "$JQ" -r --arg pr "$pr" '
     def n: if . == null then 0 else . end;
+    def z: if . > 0 then tostring else "" end;
     .[] | select(.kind == "worktree")
     | ([
         ([ (if (.ahead | n) > 0 then "↑\(.ahead)" else empty end),
@@ -103,8 +133,22 @@ tokens_report_repo() {
            + (if .ci_status == "success" then " ✓" elif .ci_status == "failure" then " ✗" elif .ci_status == "pending" then " ◌" else "" end)
          else empty end)
       ] | if length == 0 then "✓" else join(" · ") end) as $summary
-    | [.path, $summary] | @tsv' 2>/dev/null \
-  | while IFS=$'\t' read -r rel summary; do
+    | [ .path,
+        $summary,
+        ((.ahead | n) | z),
+        ((.behind | n) | z),
+        (((.staged | n) + (.unstaged | n) + (.untracked | n)) | z),
+        ((.conflicted | n) | z),
+        ((.remote_ahead | n) | z),
+        ((.remote_behind | n) | z),
+        (.operation // ""),
+        (if $pr == "true" then (.ci_status // "") else "" end)
+      ] | join("\u001f")' 2>/dev/null \
+  | while IFS=$'\037' read -r rel summary ahead behind dirty conflicts unpushed unpulled op ci; do
+      # Unit separator, not a tab: tab is an IFS *whitespace* character, so
+      # `read` folds a run of them into one delimiter and every empty field —
+      # which is exactly how a fact says "nothing to report" — would shift the
+      # columns after it.
       case $rel in
         /*) abs=$(canon "$rel") ;;
         *) abs=$(canon "$root/$rel") ;;
@@ -113,7 +157,22 @@ tokens_report_repo() {
         if [ "$(canon "$path")" = "$abs" ]; then printf '%s' "$id"; break; fi
       done)
       [ -n "$id" ] || continue
-      "$HERDR" workspace report-metadata "$id" --source "$TOKEN_SOURCE" --token "daft=$summary" --ttl-ms "$ttl" </dev/null >/dev/null 2>&1 \
+      # One call per workspace, tokens in a fixed order so the log of a run
+      # reads the same way every time.
+      TOKEN_ARGS=("$id" --source "$TOKEN_SOURCE" --token "daft=$summary")
+      token_arg daft_ahead "$ahead"
+      token_arg daft_behind "$behind"
+      token_arg daft_dirty "$dirty"
+      token_arg daft_conflicts "$conflicts"
+      token_arg daft_unpushed "$unpushed"
+      token_arg daft_unpulled "$unpulled"
+      token_arg daft_op "$op"
+      # With tokens_pr off the `pr` column is not even requested, so there is
+      # no CI state to report or to clear.
+      if [ "$pr" = true ]; then
+        token_arg daft_ci "$ci"
+      fi
+      "$HERDR" workspace report-metadata "${TOKEN_ARGS[@]}" --ttl-ms "$ttl" </dev/null >/dev/null 2>&1 \
         || log "tokens: report-metadata failed for $id"
     done
 }
