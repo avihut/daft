@@ -224,6 +224,42 @@ repo_info() {
   daft_quiet repo info "$1" --format json 2>/dev/null
 }
 
+# repo_info_adopting PATH — repo_info, and on a catalog miss register PATH's
+# repository with daft and ask once more.
+#
+# `repo info` is the catalog *view*: it reads and never upserts, so in a plain
+# `git clone` daft has not operated in yet it fails with "not found in the
+# catalog". daft's own catalog is ambient — one daft command inside that clone
+# registers it — so refusing there asked daft the one question it cannot
+# answer about a new repository, then gave up before daft got to touch it.
+#
+# Only the explicit actions use this. The passive paths (the token refresh
+# behind workspace.focused / pane.agent_status_changed, bin/event.sh, the daft
+# hooks) stay on plain repo_info: they fire for every workspace the user so
+# much as looks at, and cataloging on a glance would put every repository
+# herdr ever touched into `daft repo list`, and so into the scope of
+# `daft update --all-repos` and `daft prune --all-repos`. daft's own rule is
+# "operated in", not "looked at".
+repo_info_adopting() {
+  local info out
+  if info=$(repo_info "$1") && [ -n "$info" ]; then
+    printf '%s' "$info"
+    return 0
+  fi
+  # stderr only: with -q there is nothing on stdout, and the message worth
+  # logging is the refusal ("not a git repository", a catalog error).
+  if ! out=$(daft_quiet repo add -q "$1" 2>&1 >/dev/null); then
+    log "repo add failed for $1: $out"
+    return 1
+  fi
+  if ! info=$(repo_info "$1") || [ -z "$info" ]; then
+    log "repo info still refuses $1 after adding it to the catalog"
+    return 1
+  fi
+  log "added $1 to the daft catalog"
+  printf '%s' "$info"
+}
+
 repo_field() {
   printf '%s' "$1" | "$JQ" -r "$2 // empty"
 }

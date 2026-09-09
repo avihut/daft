@@ -13,10 +13,16 @@
 
 id = "daft"
 name = "daft"
-version = "0.1.0"
+version = "0.2.0"
 # Everything this plugin calls exists on 0.8.0: worktree open with --cwd/--path,
-# workspace metadata tokens with a TTL, popup plugin panes, plugin pane open
-# --cwd. Verified against 0.8.2.
+# workspace metadata tokens with a TTL (--token and --clear-token both), popup
+# plugin panes, plugin pane open --cwd. Verified against 0.9.0.
+#
+# 0.9 is where the per-fact sidebar tokens earn their keep (token `rules` can
+# compare them) and where `workspace close` refuses a parent that still has
+# linked worktree workspaces — bin/close-watch.sh stands down for that. Both
+# degrade cleanly on 0.8.x: the extra tokens are reported and nothing styles
+# them, and the refusal never happens.
 min_herdr_version = "0.8.0"
 description = "daft as the worktree engine: start, go, fork and remove worktrees through daft, mirror every daft-made worktree into herdr, and show daft's status in the sidebar."
 platforms = ["macos", "linux"]

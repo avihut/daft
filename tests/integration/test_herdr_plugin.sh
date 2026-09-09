@@ -22,7 +22,9 @@ HERDR_PLUGIN_DIR="$PROJECT_ROOT/integrations/herdr"
 
 # herdr_stub_install — write the stub herdr into the current test dir and
 # export the plugin environment. HERDR_STUB_LOG collects one line per call;
-# HERDR_STUB_WORKSPACES, when set, is the JSON `workspace list` answers with.
+# HERDR_STUB_WORKSPACES, when set, is the JSON `workspace list` answers with;
+# HERDR_STUB_GROUP_CLOSE=1 makes `workspace close` answer the way herdr 0.9
+# answers for a workspace that still has linked worktree workspaces.
 herdr_stub_install() {
     local stub_dir="$PWD/stub-bin"
     mkdir -p "$stub_dir"
@@ -39,6 +41,12 @@ case "$1 $2" in
     echo '{"id":"x","result":{"type":"worktree_open","workspace":{"workspace_id":"w2"},"tab":{"tab_id":"w2:t1"},"root_pane":{"pane_id":"w2:p1"},"already_open":'"${HERDR_STUB_ALREADY_OPEN:-false}"'}}' ;;
   "pane split")
     echo '{"id":"x","result":{"type":"pane_split","pane":{"pane_id":"w2:p2"}}}' ;;
+  "workspace close")
+    if [ -n "${HERDR_STUB_GROUP_CLOSE:-}" ]; then
+      echo '{"id":"x","error":{"code":"workspace_group_close_required","message":"workspace has linked worktree workspaces; use --group (close_group=true in the API) to close the group"}}' >&2
+      exit 1
+    fi
+    echo '{"id":"x","result":{"type":"ok"}}' ;;
   *)
     echo '{"id":"x","result":{"type":"ok"}}' ;;
 esac
@@ -60,7 +68,35 @@ STUB
     export HERDR_PLUGIN_CONFIG_DIR="$PWD/plugin-config"
     export HERDR_PLUGIN_STATE_DIR="$PWD/plugin-state"
     mkdir -p "$HERDR_PLUGIN_CONFIG_DIR" "$HERDR_PLUGIN_STATE_DIR"
-    unset HERDR_STUB_WORKSPACES HERDR_STUB_FAIL HERDR_PLUGIN_CONTEXT_JSON DAFT_HERDR_PLUGIN_ACTIVE HERDR_STUB_ALREADY_OPEN
+    unset HERDR_STUB_WORKSPACES HERDR_STUB_FAIL HERDR_PLUGIN_CONTEXT_JSON DAFT_HERDR_PLUGIN_ACTIVE HERDR_STUB_ALREADY_OPEN HERDR_STUB_GROUP_CLOSE
+}
+
+# catalog_has PATH — true when daft's catalog holds an entry for PATH. The
+# path, not the name: `daft repo add` names an entry after the remote's
+# basename and auto-suffixes on a collision, so only the path is stable.
+catalog_has() {
+    daft repo list --format json 2>/dev/null | jq -e --arg p "$1" 'any(.[]?; .path == $p)' >/dev/null 2>&1
+}
+
+# plain_clone NAME — a clone made with plain git, so daft has never operated
+# in it and nothing has cataloged it. Prints the physical project root.
+plain_clone() {
+    local remote_dir
+    remote_dir=$(create_test_remote "$1" "main")
+    git clone -q "$remote_dir" "$PWD/$1" >/dev/null 2>&1 || return 1
+    (cd -P "$PWD/$1" && pwd -P)
+}
+
+# wait_for_plugin_log PATTERN — the plugin writes its log after the call it
+# describes returns, so a recorded stub call is not proof the line is there.
+wait_for_plugin_log() {
+    local i=0
+    while [ "$i" -lt 40 ]; do
+        grep -qF -- "$1" "$HERDR_PLUGIN_STATE_DIR/plugin.log" 2>/dev/null && return 0
+        sleep 0.25
+        i=$((i + 1))
+    done
+    return 1
 }
 
 # herdr_stub_calls PATTERN — the recorded calls matching PATTERN (fixed string).
@@ -255,6 +291,52 @@ test_herdr_post_remove_hook_closes_workspace() {
     fi
 
     log_success "pre-remove hook closed the workspace: herdr workspace close w7"
+    return 0
+}
+
+test_herdr_group_close_refusal_stands_down() {
+    log "Testing: herdr 0.9's workspace_group_close_required is a stand-down, not a retry"
+    herdr_stub_install
+    bash "$HERDR_PLUGIN_DIR/bin/startup.sh" || return 1
+    local root
+    root=$(clone_contained "herdr-group") || return 1
+    (cd "$root/main" && daft start feat/grouped --no-cd >/dev/null 2>&1) || return 1
+    herdr_stub_workspaces "w8" "$root/feat/grouped"
+    : > "$HERDR_STUB_LOG"
+
+    # HERDR_STUB_GROUP_CLOSE is exported into daft, so the hook and the
+    # watcher it spawns both inherit it.
+    (cd "$root/main" && HERDR_STUB_GROUP_CLOSE=1 daft remove feat/grouped >/dev/null 2>&1) \
+        || { log_error "daft remove failed"; return 1; }
+    [ ! -d "$root/feat/grouped" ] || { log_error "worktree still on disk"; return 1; }
+
+    if ! wait_for_stub_call "workspace close w8"; then
+        log_error "the watcher never called workspace close:"
+        cat "$HERDR_STUB_LOG"
+        return 1
+    fi
+    if ! wait_for_plugin_log "still has open worktree workspaces"; then
+        log_error "the refusal was not logged as a stand-down:"
+        cat "$HERDR_PLUGIN_STATE_DIR/plugin.log"
+        return 1
+    fi
+
+    # A retry would land shortly after the first call; give it the chance.
+    sleep 1
+    local closes
+    closes=$(herdr_stub_calls "workspace close" | grep -c . || true)
+    if [ "$closes" -ne 1 ]; then
+        log_error "expected exactly one workspace close call, got $closes:"
+        cat "$HERDR_STUB_LOG"
+        return 1
+    fi
+    if herdr_stub_calls "--group" | grep -q .; then
+        log_error "the watcher retried with --group, which would close live children:"
+        cat "$HERDR_STUB_LOG"
+        return 1
+    fi
+
+    log_success "one close, stand-down logged, no --group retry"
     return 0
 }
 
@@ -453,21 +535,86 @@ test_herdr_tokens_report_worktree_status() {
     refresh_idle
     : > "$HERDR_STUB_LOG"
 
-    # A clean, in-sync worktree reports the check mark.
+    # A clean, in-sync worktree reports the check mark, and every per-fact
+    # token is cleared rather than reported as 0. daft_ci is absent entirely:
+    # tokens_pr is off, so the pr column was never asked for.
     bash -c '. "$1/lib/common.sh"; . "$1/lib/tokens.sh"; resolve_jq; resolve_daft; FORCE_REFRESH=1 tokens_refresh_repo "$2"' _ "$HERDR_PLUGIN_DIR" "$root" \
         || { log_error "token refresh failed"; return 1; }
-    herdr_stub_calls "workspace report-metadata w4 --source plugin:daft --token daft=✓ --ttl-ms 86400000" | grep -q . || {
-        log_error "expected a clean token, got:"; cat "$HERDR_STUB_LOG"; return 1; }
+    herdr_stub_calls "workspace report-metadata w4 --source plugin:daft --token daft=✓ --clear-token daft_ahead --clear-token daft_behind --clear-token daft_dirty --clear-token daft_conflicts --clear-token daft_unpushed --clear-token daft_unpulled --clear-token daft_op --ttl-ms 86400000" | grep -q . || {
+        log_error "expected a clean token with every fact cleared, got:"; cat "$HERDR_STUB_LOG"; return 1; }
+    if herdr_stub_calls "daft_ci" | grep -q .; then
+        log_error "daft_ci was reported with tokens_pr off:"; cat "$HERDR_STUB_LOG"; return 1
+    fi
 
-    # Two untracked files and one modified file change the token.
+    # Two untracked files and one modified file change the token: the composite
+    # keeps its text, and daft_dirty carries the number the `gt` rules compare.
     touch "$root/feat/tokens/a.txt" "$root/feat/tokens/b.txt"
     echo "change" >> "$root/feat/tokens/README.md"
     : > "$HERDR_STUB_LOG"
     bash -c '. "$1/lib/common.sh"; . "$1/lib/tokens.sh"; resolve_jq; resolve_daft; FORCE_REFRESH=1 tokens_refresh_repo "$2"' _ "$HERDR_PLUGIN_DIR" "$root" || return 1
-    herdr_stub_calls "report-metadata w4 --source plugin:daft --token daft=~1 ?2 --ttl-ms" | grep -q . || {
-        log_error "expected a dirty token (~1 ?2), got:"; cat "$HERDR_STUB_LOG"; return 1; }
+    herdr_stub_calls "report-metadata w4 --source plugin:daft --token daft=~1 ?2 --clear-token daft_ahead --clear-token daft_behind --token daft_dirty=3 --clear-token daft_conflicts --clear-token daft_unpushed --clear-token daft_unpulled --clear-token daft_op --ttl-ms" | grep -q . || {
+        log_error "expected a dirty token (~1 ?2) with daft_dirty=3, got:"; cat "$HERDR_STUB_LOG"; return 1; }
 
-    log_success "tokens: ✓ when clean, ~1 ?2 with changes"
+    log_success "tokens: ✓ with every fact cleared when clean, ~1 ?2 + daft_dirty=3 with changes"
+    return 0
+}
+
+test_herdr_explicit_action_adopts_an_uncataloged_repo() {
+    log "Testing: an explicit action catalogs a repository daft has never operated in"
+    herdr_stub_install
+    local clone wt
+    clone=$(plain_clone "herdr-uncataloged") || { log_error "git clone failed"; return 1; }
+    # A linked worktree, also by hand: `adopt` refuses a repository root, and
+    # nothing here may go through daft or the repo would be cataloged already.
+    git -C "$clone" worktree add -q -b feat/adopted "$PWD/uncataloged-wt" >/dev/null 2>&1 \
+        || { log_error "git worktree add failed"; return 1; }
+    wt=$(cd -P "$PWD/uncataloged-wt" && pwd -P)
+    if catalog_has "$clone"; then
+        log_error "the plain clone was in the catalog before the action ran"
+        return 1
+    fi
+
+    plugin_context "$wt"
+    bash "$HERDR_PLUGIN_DIR/bin/action.sh" adopt || {
+        log_error "action.sh adopt failed:"; cat "$HERDR_PLUGIN_STATE_DIR/plugin.log"; return 1; }
+
+    herdr_stub_calls "worktree open --cwd $clone --path $wt --label feat/adopted --focus" | grep -q . || {
+        log_error "expected a focused worktree open for the adopted checkout, got:"; cat "$HERDR_STUB_LOG"; return 1; }
+    if ! catalog_has "$clone"; then
+        log_error "adopt did not catalog $clone:"
+        daft repo list --format json || true
+        return 1
+    fi
+
+    log_success "adopt cataloged the plain clone and grouped its worktree"
+    return 0
+}
+
+test_herdr_focus_event_leaves_the_catalog_alone() {
+    log "Testing: a focus event never catalogs the repository it only looked at"
+    herdr_stub_install
+    local clone
+    clone=$(plain_clone "herdr-glanced") || { log_error "git clone failed"; return 1; }
+    herdr_stub_workspaces "w10" "$clone"
+    export HERDR_STUB_GET_PATH="$clone"
+    export HERDR_PLUGIN_EVENT=workspace.focused
+    export HERDR_PLUGIN_EVENT_JSON='{"event":"workspace.focused","data":{"workspace_id":"w10"}}'
+
+    bash "$HERDR_PLUGIN_DIR/bin/event.sh" || { log_error "event.sh failed"; return 1; }
+    unset HERDR_PLUGIN_EVENT HERDR_PLUGIN_EVENT_JSON HERDR_STUB_GET_PATH
+
+    if catalog_has "$clone"; then
+        log_error "a focus event put $clone into the catalog; every repo herdr touches would land in daft update --all-repos"
+        daft repo list --format json || true
+        return 1
+    fi
+    if herdr_stub_calls "report-metadata" | grep -q .; then
+        log_error "tokens were reported for a repository daft does not know:"
+        cat "$HERDR_STUB_LOG"
+        return 1
+    fi
+
+    log_success "focus on an uncataloged clone: no catalog entry, no token report"
     return 0
 }
 
@@ -517,6 +664,7 @@ run_herdr_plugin_tests() {
     run_test "herdr_post_create_hook_mirrors_daft_start" test_herdr_post_create_hook_mirrors_daft_start
     run_test "herdr_post_create_hook_never_breaks_daft" test_herdr_post_create_hook_never_breaks_daft
     run_test "herdr_post_remove_hook_closes_workspace" test_herdr_post_remove_hook_closes_workspace
+    run_test "herdr_group_close_refusal_stands_down" test_herdr_group_close_refusal_stands_down
     run_test "herdr_pre_remove_keeps_a_refused_removal_open" test_herdr_pre_remove_keeps_a_refused_removal_open
     run_test "herdr_move_leaves_the_workspace_alone" test_herdr_move_leaves_the_workspace_alone
     run_test "herdr_layout_is_never_read_from_a_checkout" test_herdr_layout_is_never_read_from_a_checkout
@@ -525,6 +673,8 @@ run_herdr_plugin_tests() {
     run_test "herdr_popup_start_creates_registers_and_lays_out" test_herdr_popup_start_creates_registers_and_lays_out
     run_test "herdr_adopt_action_groups_a_checkout" test_herdr_adopt_action_groups_a_checkout
     run_test "herdr_tokens_report_worktree_status" test_herdr_tokens_report_worktree_status
+    run_test "herdr_explicit_action_adopts_an_uncataloged_repo" test_herdr_explicit_action_adopts_an_uncataloged_repo
+    run_test "herdr_focus_event_leaves_the_catalog_alone" test_herdr_focus_event_leaves_the_catalog_alone
     run_test "herdr_event_refresh_is_debounced" test_herdr_event_refresh_is_debounced
 }
 

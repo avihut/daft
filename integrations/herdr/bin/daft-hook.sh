@@ -14,7 +14,7 @@
 # replay the full remove-then-create hook sequence with DAFT_IS_MOVE=true
 # (src/hooks/move_hooks.rs), and the same worktree is on both sides of it.
 # Acting on that would close the workspace the user is working in and open a
-# second one for the new path — herdr 0.8.2 has no way to re-point a live
+# second one for the new path — herdr 0.9 still has no way to re-point a live
 # workspace (`worktree open` keys reuse on the checkout path, `workspace
 # close` kills every pane), so the safe outcome is to leave the workspace
 # alone with a stale path and let the user re-group it with the adopt
@@ -55,7 +55,8 @@ daft_ancestor_pid() {
 # this hook has exited and PATH is really gone. Waiting keeps a removal typed
 # inside that very workspace alive until daft is done (closing the pane would
 # kill daft mid-flight), and the path check keeps a refused removal's
-# workspace open.
+# workspace open. The waiting and the close itself live in bin/close-watch.sh,
+# which reads what herdr answers rather than discarding it.
 close_when_removed() {
   local ws=$1 path=$2 pid
   pid=$(daft_ancestor_pid) || pid=
@@ -65,15 +66,7 @@ close_when_removed() {
   # plugin exists for as the untested one. The watcher ignores SIGHUP, holds
   # no terminal, and is bounded at 120 s, so the worst case if herdr reaps the
   # pane's process group is a workspace row that outlives its worktree.
-  nohup /bin/bash -c '
-    pid=$1 ws=$2 path=$3 herdr=$4 i=0
-    if [ -n "$pid" ]; then
-      while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 480 ]; do sleep 0.25; i=$((i + 1)); done
-    fi
-    sleep 0.5
-    [ -d "$path" ] && exit 0
-    "$herdr" workspace close "$ws" >/dev/null 2>&1
-  ' _ "$pid" "$ws" "$path" "$HERDR" </dev/null >/dev/null 2>&1 &
+  nohup /bin/bash "$PLUGIN_ROOT/bin/close-watch.sh" "$pid" "$ws" "$path" </dev/null >/dev/null 2>&1 &
 }
 
 hook=${1:-}
