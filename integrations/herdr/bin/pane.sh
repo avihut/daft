@@ -80,7 +80,7 @@ cd -- "$cwd" 2>/dev/null || cd "$HOME" || exit 1
 
 case $mode in
   start)
-    info=$(repo_info "$cwd") || fail "not inside a repository daft can manage: $cwd"
+    info=$(repo_info_adopting "$cwd") || fail "not inside a repository daft can manage: $cwd"
     current=$(git -C "$cwd" branch --show-current 2>/dev/null)
     [ -n "$current" ] || current=detached
     printf 'repo:    %s  (%s)\ncurrent: %s\n\n' "$(repo_field "$info" .name)" "$(repo_field "$info" .path)" "$current"
@@ -94,7 +94,9 @@ case $mode in
     ;;
 
   go)
-    info=$(repo_info "$cwd" 2>/dev/null) || info=
+    # `go` also runs from the global context, where the cwd may be no
+    # repository at all — hence the fallback rather than a fail.
+    info=$(repo_info_adopting "$cwd" 2>/dev/null) || info=
     if [ -n "$info" ]; then
       printf 'repo: %s  (%s)\n\n' "$(repo_field "$info" .name)" "$(repo_field "$info" .path)"
     fi
@@ -125,7 +127,7 @@ case $mode in
     ;;
 
   fork)
-    info=$(repo_info "$cwd") || fail "not inside a repository daft can manage: $cwd"
+    info=$(repo_info_adopting "$cwd") || fail "not inside a repository daft can manage: $cwd"
     printf 'repo: %s  (%s)\n\n' "$(repo_field "$info" .name)" "$(repo_field "$info" .path)"
     ask base 'fork from (enter = HEAD): ' || base=
     ask count 'how many (enter = 1): ' || count=
@@ -151,7 +153,7 @@ case $mode in
     ;;
 
   remove)
-    info=$(repo_info "$cwd") || fail "not inside a repository daft can manage: $cwd"
+    info=$(repo_info_adopting "$cwd") || fail "not inside a repository daft can manage: $cwd"
     root=$(repo_field "$info" .path)
     entry=$(worktree_containing "$info" "$cwd")
     [ -n "$entry" ] || fail "not inside a worktree: $cwd"
