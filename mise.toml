@@ -20,7 +20,7 @@ minimum_release_age = "7d"
 # worktree-post-create hook timeout (the failure that motivated this entry).
 # Pin the aqua backend explicitly so binstall itself never falls back to a
 # cargo-from-source build (chicken-and-egg).
-"aqua:cargo-bins/cargo-binstall" = "1.22.0"
+"aqua:cargo-bins/cargo-binstall" = "1.23.0"
 rust = "1.95"
 lefthook = "2.1.12"
 cocogitto = "7.0.0"
