@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.28.0](https://github.com/avihut/daft/compare/v1.27.8...v1.28.0) - 2026-09-13
+
+
+### Features
+
+- **integrations**: A herdr plugin that makes daft its worktree engine (#951)
 ## [1.27.8](https://github.com/avihut/daft/compare/v1.27.7...v1.27.8) - 2026-09-05
 
 
