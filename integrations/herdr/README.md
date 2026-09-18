@@ -33,11 +33,13 @@ And two things that need no key:
   against the remote, a paused operation such as `rebasing`, optionally the PR
   (`#42 open ✓`), or `✓` when there is nothing to report. herdr hides its own
   branch and status tokens on indented worktree rows, so this is the row's
-  status.
+  status. Beside it, the same facts one per token, so herdr 0.9's token `rules`
+  have a bare number to compare (below).
 
 ## Requirements
 
-- herdr 0.8.0 or newer (developed against 0.8.2)
+- herdr 0.8.0 or newer (developed against 0.9.0; the per-fact token `rules`
+  below need 0.9)
 - daft 1.27 or newer
 - `jq`
 - macOS or Linux (daft on Windows is WSL-only)
@@ -60,7 +62,7 @@ herdr plugin list
 herdr shallow-fetches `https://github.com/avihut/daft.git` over HTTPS into its
 own plugin directory and reads the manifest from `integrations/herdr`. Add
 `--ref <branch-or-tag>` to install a specific version, and `--yes` when stdin is
-not a terminal. There is no `plugin update` in 0.8.2: to move to a newer
+not a terminal. There is still no `plugin update` as of 0.9: to move to a newer
 version, `herdr plugin uninstall daft` and install again.
 
 If you already have the daft repository checked out, link it in place instead —
@@ -130,6 +132,45 @@ Show the token in the sidebar (herdr renders only the tokens a row names):
 [ui.sidebar.spaces]
 rows = [["state_icon", "workspace"], ["branch", "git_status"], ["$daft"]]
 ```
+
+### Per-fact tokens
+
+`$daft` is one string, so a row gets one style for all of it. Every refresh also
+reports each fact on its own token, which is what herdr 0.9's ordered `rules`
+can match — `gt` and `lt` need a value that parses as a number, and
+`↑3 ~1 · #42 ✓` parses as nothing:
+
+| Token             | Value                                          |
+| ----------------- | ---------------------------------------------- |
+| `$daft_ahead`     | commits ahead of the base branch               |
+| `$daft_behind`    | commits behind it                              |
+| `$daft_dirty`     | staged + unstaged + untracked files, one count |
+| `$daft_conflicts` | conflicted files                               |
+| `$daft_unpushed`  | commits the remote does not have               |
+| `$daft_unpulled`  | commits you do not have                        |
+| `$daft_op`        | the paused git operation, by name              |
+| `$daft_ci`        | the PR's CI state (only with `tokens_pr`)      |
+
+A fact that is zero or absent is cleared, not reported as `0`: herdr drops a
+missing token and its separator, so a quiet worktree shows nothing. Colour the
+ones you care about and leave the rest out of the layout:
+
+```toml
+[ui.sidebar.spaces]
+rows = [
+  ["state_icon", "workspace"],
+  ["branch", "git_status"],
+  [
+    { token = "$daft_behind", rules = [{ gt = 5, fg = "#f38ba8", bold = true }, { gt = 0, fg = "#f9e2af" }] },
+    { token = "$daft_dirty", fg = "#f9e2af" },
+    { token = "$daft_conflicts", fg = "#f38ba8", bold = true },
+    { token = "$daft_op", fg = "#f38ba8" },
+  ],
+]
+```
+
+Rules are a 0.9 feature; on 0.8.x the tokens are still reported and simply carry
+no style of their own.
 
 Then `herdr server reload-config`. The hooks and tokens are installed and seeded
 by the plugin's startup hook, which runs when the server starts; run the
@@ -226,23 +267,44 @@ layout and refreshes tokens.
 directory (`daft __dirs` shows the config dir) in every repository. The plugin
 generates them at startup, each one a four-line script that execs
 `bin/daft-hook.sh` from the plugin root. The installed `worktree-post-create`
-hook calls `herdr worktree open` when `HERDR_ENV=1`; `worktree-pre-remove`
-closes the matching workspace once daft has exited and the directory is really
-gone, so a removal typed inside that very workspace does not kill its own daft,
-and a removal that is refused leaves the workspace open. The popup flows set
-`DAFT_HERDR_PLUGIN_ACTIVE=1` so a creation is mirrored once.
+hook calls `herdr worktree open` when `HERDR_ENV=1`; `worktree-pre-remove` hands
+the close to `bin/close-watch.sh`, which closes the matching workspace once daft
+has exited and the directory is really gone, so a removal typed inside that very
+workspace does not kill its own daft, and a removal that is refused leaves the
+workspace open. The popup flows set `DAFT_HERDR_PLUGIN_ACTIVE=1` so a creation
+is mirrored once.
+
+herdr 0.9 refuses to close a workspace that still has linked worktree workspaces
+open (`workspace_group_close_required`), where 0.8.x closed the whole group. The
+watcher stands down and says so in its log rather than retrying with `--group`:
+the only removal that reaches a parent with live children is `daft repo remove`,
+and every child worktree there gets its own pre-remove hook and closes its own
+row — a group close would take down workspaces whose worktrees still exist.
+
+**What gets cataloged.** daft's repo catalog is ambient: cloning, or any daft
+command run inside a repository, registers it. `daft repo info`, which the
+plugin asks first, only _reads_ that catalog — so in a repository daft has never
+operated in it has nothing to answer. The explicit actions (`start`, `go`,
+`fork`, `remove`, `adopt`, `layout`) therefore register the repository and ask
+again, and work in a plain `git clone` from the first keystroke. The passive
+paths — the token refresh behind `workspace.focused` and
+`pane.agent_status_changed`, and daft's own hooks — do not: they fire for every
+workspace you so much as focus, and cataloging on a glance would put every
+repository herdr ever touched into `daft repo list`, and so into the scope of
+`daft update --all-repos` and `daft prune --all-repos`. Their rows simply carry
+no `$daft` token until something explicit happens there.
 
 Both hooks stand down for a move. `daft rename` and `daft layout transform`
 replay the whole remove-then-create sequence with `DAFT_IS_MOVE=true`, with the
 same worktree on either side; acting on it would close the workspace you are
-working in and open a second one for the new path. herdr 0.8.2 cannot re-point a
+working in and open a second one for the new path. herdr 0.9 cannot re-point a
 live workspace, so the row keeps its old path until you re-group it with
 `adopt`.
 
 ## Caveats
 
 - herdr's right-click entries **New worktree** and **Delete worktree checkout…**
-  still run herdr's own `git worktree` path; on 0.8.2 a plugin cannot replace
+  still run herdr's own `git worktree` path; through 0.9 a plugin cannot replace
   them. Keep `[worktrees].directory` pointed at your daft projects root as a
   safety net.
 - `daft go` to an already existing worktree fires no daft hook, so a `daft go`
@@ -252,6 +314,9 @@ live workspace, so the row keeps its old path until you re-group it with
   fixes it.
 - `DAFT_CD_FILE` follows `daft.autocd`; with it off, the popups cannot learn
   where daft landed.
+- Plugins are per herdr **server**, so a saved machine (`herdr machine`, 0.9)
+  runs this one only if that host has its own daft, its own copy of the plugin,
+  and its own catalog. Nothing here reaches across the SSH connection.
 - A renamed or relocated worktree keeps its old path in the sidebar until
   `adopt` re-groups it (see How it works).
 
