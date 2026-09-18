@@ -45,6 +45,18 @@ cargo:crossbeam-epoch@0.9.20
 # Same security exception Dependabot PRs get automatically.
 # Safe to remove after 2026-08-28.
 cargo:h2@0.4.18
+
+# why: RUSTSEC-2026-0285 / GHSA-2mjx-qc3c-rqvc (rustls accepts TLS 1.3
+# handshake messages that span a key change, which RFC 8446 §5.1 forbids)
+# turns the cargo-deny advisories gate red on every lockfile PR; rustls reaches
+# us transitively through gix -> gix-transport -> reqwest. 0.23.45 (2026-09-14)
+# is the designated fix and is 4 days old at time of bump — the same security
+# exception Dependabot PRs get automatically (GitHub has no advisory for it
+# yet, so no Dependabot security PR is coming). The rustls-webpki / aws-lc-rs /
+# aws-lc-sys bumps it requires are all past the gate already.
+# Safe to remove after 2026-09-21.
+cargo:rustls@0.23.45
+
 # why: first-party packages — released from avihut/dumbshow by its own pipeline
 # with provenance and pinned exact here; the age gate guards against hijacked
 # third-party releases, which does not apply to our own (mirrors the
