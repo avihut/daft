@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.9](https://github.com/avihut/daft/compare/v1.27.8...v1.27.9) - 2026-09-19
+
+
+### Bug Fixes
+
+- **deps**: Bump rustls to 0.23.45 (RUSTSEC-2026-0285) (#981)
+
+
+### Features
+
+- **integrations**: Herdr 0.9 follow-ups for the daft plugin (#960)
+- **integrations**: A herdr plugin that makes daft its worktree engine (#951)
 ## [1.27.8](https://github.com/avihut/daft/compare/v1.27.7...v1.27.8) - 2026-09-05
 
 
