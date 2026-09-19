@@ -2439,7 +2439,7 @@ mod mise_upgrade_drift {
              otherwise. Arming is only safe because the master ruleset will not \
              merge until `ci-gate` passes; without that rule, arming auto-merge \
              merges the PR on no checks at all. This is the same fail-closed \
-             probe dependabot-auto-merge.yml runs, and Critical Rule #5 in \
+             probe dependabot-auto-merge.yml runs, and Critical Rule #4 in \
              CLAUDE.md covers both. Step body:\n{body}"
         );
 
