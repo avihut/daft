@@ -281,7 +281,7 @@ and check whether the reason still applies.
 - **Other embedded databases** (sled, fjall, redb, RocksDB, persy). See
   CLAUDE.md "Database & Storage" for the full reasoning.
 - **`fork()` for background work.** `libc::fork()` is intrinsically `unsafe fn`;
-  conflicts with Critical Rule #4. Spawn-self is the pattern.
+  conflicts with Critical Rule #3. Spawn-self is the pattern.
 - **ADR-per-decision** (one structured file per architectural decision, Nygard
   template). Useful at multi-architect scale; overhead for a pre-1.0
   single-maintainer project. This document is the right granularity until that
@@ -300,7 +300,7 @@ Shaping decisions and where to find their full context:
   extracting one domain module (reconcile) before forcing all of `process.rs`
   through it. Future domain extractions (cancel, lifecycle) follow the same
   shape, FCIS-style.
-- **`forbid(unsafe_code)` in production code paths** — Critical Rule #4. Why:
+- **`forbid(unsafe_code)` in production code paths** — Critical Rule #3. Why:
   every dependency choice and architectural pattern has to compose with this.
   Drives the SQLite-over-LMDB choice (`rusqlite` has a fully safe public API;
   `heed::Env::open` is `unsafe fn`) and the spawn-not-fork pattern.

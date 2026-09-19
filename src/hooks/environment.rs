@@ -804,7 +804,7 @@ mod tests {
         assert!(warnings.is_empty());
 
         // Never-clobber: a parent-set name is filtered out. set_var is
-        // `unsafe fn` in edition 2024; tests may wrap it (Critical Rule 4).
+        // `unsafe fn` in edition 2024; tests may wrap it (Critical Rule 3).
         let config =
             env_yaml_config("env:\n  salt: myapp\n  ports:\n    - DAFTTEST_CLOBBERED_PORT\n");
         unsafe { std::env::set_var("DAFTTEST_CLOBBERED_PORT", "999") };

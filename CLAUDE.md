@@ -10,15 +10,7 @@ IMPORTANT: These rules must NEVER be violated:
 2. **Never use this repository for testing** — This project's own git repo must
    never be used as a test subject for worktree commands. Tests must always
    create isolated temporary repositories.
-3. **Don't weaken `.github/workflows/claude-pr-review.yml`** — its security
-   properties are deliberate: SHA-pinned actions, `environment: claude-review`
-   (master-only deployment-branch policy), `author_association == 'OWNER'`
-   gating on the `/claude review` comment trigger, no `pull_request` or
-   `pull_request_target` event, and `timeout-minutes`. Never re-introduce a
-   `pull_request[_target]` trigger. Never reference `CLAUDE_CODE_OAUTH_TOKEN`
-   from any other workflow. Never replace SHA pins with mutable refs (Dependabot
-   keeps them current). Workflow changes are CODEOWNERS-gated to `@avihut`.
-4. **Don't reintroduce `unsafe` in production code paths** — `src/lib.rs` uses
+3. **Don't reintroduce `unsafe` in production code paths** — `src/lib.rs` uses
    `#![cfg_attr(not(test), forbid(unsafe_code))]` and `src/main.rs` uses
    `#![forbid(unsafe_code)]`. Tests can wrap `env::set_var`/`remove_var` in
    `unsafe { … }` (these became `unsafe fn` in edition 2024); production code
@@ -30,7 +22,7 @@ IMPORTANT: These rules must NEVER be violated:
    When picking dependencies, prefer those with a fully safe public API — SQLite
    via `rusqlite` was chosen over LMDB via `heed` partly because
    `heed::Env::open` is `unsafe fn`.
-5. **Don't weaken the merge gate or the Dependabot auto-merge path** — what lets
+4. **Don't weaken the merge gate or the Dependabot auto-merge path** — what lets
    a Dependabot PR land unattended is that nothing can merge to `master` until
    `ci-gate` (`.github/workflows/test.yml`) is green on the PR (the branch need
    not be up to date with `master` until public launch — #941 dropped that rule,
@@ -132,10 +124,9 @@ inline `run:` steps in the workflow cannot be mirrored, which is why every job
 needs its `mise run` task — add the task in the same PR as the job. Four checks
 are deliberately CI-only and say so in `daft.yml`: `windows-check`,
 `release-env-guard`, `homebrew-simulation`, and `bench.yml`.
-`claude-pr-review.yml` is out of the parity set: Critical Rule #3 governs it.
 
 On the GitHub side all of `test.yml` fans into one job, `ci-gate`, and that is
-the only status check the `master` ruleset requires (Critical Rule #5). Adding
+the only status check the `master` ruleset requires (Critical Rule #4). Adding
 or renaming a CI job therefore never touches the ruleset — but the new job
 **must** be added to `ci-gate`'s `needs:` list, or its failure blocks nothing;
 `cargo test --package xtask` (`ci_gate_drift`) fails until it is. `test.yml`
@@ -360,7 +351,7 @@ work uses the spawn-self pattern, not `fork()`. The coordinator
 
 `fork()` is **not** an option for new background work — `libc::fork()` is
 intrinsically `unsafe fn` (POSIX async-signal-safety rules) and conflicts with
-the `forbid(unsafe_code)` policy in Critical Rule #4. Spawn-self is the pattern.
+the `forbid(unsafe_code)` policy in Critical Rule #3. Spawn-self is the pattern.
 
 When debugging a spawned daemon's startup, `Stdio::null()` on stderr hides
 panics. Temporarily replace it with
