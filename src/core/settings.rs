@@ -317,15 +317,17 @@ impl MemoryReserve {
     }
 }
 
-/// Parse `daft.sync.pushTimeout`: `off`/`0` disables (outer `Some(None)`);
-/// otherwise a positive duration with an optional case-insensitive
-/// `s`/`m`/`h`/`d` suffix (bare numbers are seconds). Outer `None` =
-/// unparseable (caller warns and keeps the default) — including an
-/// overflowing product, which `checked_mul` rejects rather than wrapping to a
-/// nonsensical budget (mirrors `MemoryReserve::parse` above).
-pub fn parse_push_timeout(value: &str) -> Option<Option<std::time::Duration>> {
+/// Parse a timeout in the bare-seconds dialect (`DurationDialect::BareSeconds`)
+/// shared by `daft.sync.pushTimeout`, `daft.hooks.timeout`, and the daft.yml
+/// `timeout:` key: `off` or a zero (`0`, `0s`, `0m`, …) disables (outer
+/// `Some(None)`); otherwise a positive duration with an optional
+/// case-insensitive `s`/`m`/`h`/`d` suffix (bare numbers are seconds). Outer
+/// `None` = unparseable (caller reports it and keeps the default) — including
+/// an overflowing product, which `checked_mul` rejects rather than wrapping to
+/// a nonsensical budget (mirrors `MemoryReserve::parse` above).
+pub fn parse_timeout(value: &str) -> Option<Option<std::time::Duration>> {
     let value = value.trim().to_ascii_lowercase();
-    if value == "off" || value == "0" {
+    if value == "off" {
         return Some(None);
     }
     let (digits, unit_secs) = if let Some(d) = value.strip_suffix('d') {
@@ -341,7 +343,26 @@ pub fn parse_push_timeout(value: &str) -> Option<Option<std::time::Duration>> {
     };
     let n: u64 = digits.trim().parse().ok()?;
     let secs = n.checked_mul(unit_secs)?;
-    (secs > 0).then(|| Some(std::time::Duration::from_secs(secs)))
+    Some((secs > 0).then(|| std::time::Duration::from_secs(secs)))
+}
+
+/// Render a timeout exactly, in the largest unit that divides it — `90s`,
+/// `40m`, `2h`, `1d` — so a message names the limit the user configured
+/// (`shorthand_from_seconds` truncates: 90 s would read "1m"). The output
+/// parses back through [`parse_timeout`]. Sub-second limits (tests only)
+/// render as milliseconds.
+pub fn format_timeout(limit: std::time::Duration) -> String {
+    if limit.subsec_nanos() != 0 {
+        return format!("{}ms", limit.as_millis());
+    }
+    let secs = limit.as_secs();
+    match secs {
+        0 => "0s".to_string(),
+        s if s % 86_400 == 0 => format!("{}d", s / 86_400),
+        s if s % 3_600 == 0 => format!("{}h", s / 3_600),
+        s if s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
 }
 
 /// Default values for settings.
@@ -1106,7 +1127,7 @@ impl DaftSettings {
         if let Some(value) = git.config_get(keys::SYNC_PUSH_TIMEOUT)?
             && !value.is_empty()
         {
-            match parse_push_timeout(&value) {
+            match parse_timeout(&value) {
                 Some(timeout) => settings.sync_push_timeout = timeout,
                 None => eprintln!(
                     "daft: unknown value for {}: {:?} — using default",
@@ -2328,37 +2349,49 @@ mod tests {
     }
 
     #[test]
-    fn push_timeout_parse() {
+    fn timeout_parse() {
         use std::time::Duration;
-        assert_eq!(parse_push_timeout("off"), Some(None));
-        assert_eq!(parse_push_timeout("OFF"), Some(None));
-        assert_eq!(parse_push_timeout("0"), Some(None));
-        assert_eq!(
-            parse_push_timeout("30m"),
-            Some(Some(Duration::from_secs(1_800)))
-        );
-        assert_eq!(parse_push_timeout("2s"), Some(Some(Duration::from_secs(2))));
-        assert_eq!(
-            parse_push_timeout("1h"),
-            Some(Some(Duration::from_secs(3_600)))
-        );
-        assert_eq!(
-            parse_push_timeout("90"),
-            Some(Some(Duration::from_secs(90)))
-        );
-        assert_eq!(parse_push_timeout("forever"), None);
-        assert_eq!(parse_push_timeout("-5m"), None);
-        assert_eq!(parse_push_timeout(""), None);
+        assert_eq!(parse_timeout("off"), Some(None));
+        assert_eq!(parse_timeout("OFF"), Some(None));
+        assert_eq!(parse_timeout("0"), Some(None));
+        // A zero with a unit is off too, not unparseable.
+        assert_eq!(parse_timeout("0s"), Some(None));
+        assert_eq!(parse_timeout("0m"), Some(None));
+        assert_eq!(parse_timeout(" 0H "), Some(None));
+        assert_eq!(parse_timeout("30m"), Some(Some(Duration::from_secs(1_800))));
+        assert_eq!(parse_timeout("2s"), Some(Some(Duration::from_secs(2))));
+        assert_eq!(parse_timeout("1h"), Some(Some(Duration::from_secs(3_600))));
+        assert_eq!(parse_timeout("90"), Some(Some(Duration::from_secs(90))));
+        assert_eq!(parse_timeout("forever"), None);
+        assert_eq!(parse_timeout("-5m"), None);
+        assert_eq!(parse_timeout(""), None);
         // Day suffix (consistent with clean_policy's duration parser).
         assert_eq!(
-            parse_push_timeout("2d"),
+            parse_timeout("2d"),
             Some(Some(Duration::from_secs(172_800)))
         );
         // An overflowing product (n × unit_secs > u64::MAX) is rejected (outer
         // None → default kept), not wrapped to a nonsensical budget nor a
         // debug-build panic. 6e15 h × 3600 s/h overflows u64.
-        assert_eq!(parse_push_timeout("6000000000000000h"), None);
-        assert_eq!(parse_push_timeout("999999999999999999d"), None);
+        assert_eq!(parse_timeout("6000000000000000h"), None);
+        assert_eq!(parse_timeout("999999999999999999d"), None);
+    }
+
+    #[test]
+    fn format_timeout_is_exact() {
+        use std::time::Duration;
+        assert_eq!(format_timeout(Duration::from_secs(90)), "90s");
+        assert_eq!(format_timeout(Duration::from_secs(2_400)), "40m");
+        assert_eq!(format_timeout(Duration::from_secs(5_400)), "90m");
+        assert_eq!(format_timeout(Duration::from_secs(7_200)), "2h");
+        assert_eq!(format_timeout(Duration::from_secs(86_400)), "1d");
+        assert_eq!(format_timeout(Duration::from_secs(300)), "5m");
+        assert_eq!(format_timeout(Duration::from_millis(200)), "200ms");
+        // Every rendering parses back to the same limit.
+        for secs in [1, 59, 90, 300, 2_400, 3_600, 5_400, 86_400, 90_000] {
+            let d = Duration::from_secs(secs);
+            assert_eq!(parse_timeout(&format_timeout(d)), Some(Some(d)));
+        }
     }
 
     #[test]

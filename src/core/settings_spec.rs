@@ -171,7 +171,7 @@ impl ValueType {
                 }
             }
             Self::Duration(DurationDialect::BareSeconds) => {
-                crate::core::settings::parse_push_timeout(value)
+                crate::core::settings::parse_timeout(value)
                     .map(|_| ())
                     .ok_or_else(|| {
                         "expected a duration (30m, 2h, 90) or off to disable".to_string()
