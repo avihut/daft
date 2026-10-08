@@ -124,6 +124,9 @@ pub fn run_command(
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
 
+    // Kept back from the reader threads: a teardown that leaves processes
+    // behind says so in the job's own output.
+    let tx_notice = line_sender.clone();
     let tx_stdout = line_sender.clone();
     let tx_stderr = line_sender;
 
@@ -166,11 +169,18 @@ pub fn run_command(
     // pipes and unblocks the reader threads above; a timeout keeps escalating
     // until they have drained.
     let drains_done = || stdout_thread.is_finished() && stderr_thread.is_finished();
-    let outcome = wait_child(&mut child, timeout, cancel, drains_done)
+    let (outcome, survivors) = wait_child(&mut child, timeout, cancel, drains_done)
         .with_context(|| format!("Command execution failed: {cmd}"))?;
 
     let stdout_content = stdout_thread.join().unwrap_or_default();
-    let stderr_content = stderr_thread.join().unwrap_or_default();
+    let mut stderr_content = stderr_thread.join().unwrap_or_default();
+    if let Some(notice) = survivors_notice(&survivors) {
+        if let Some(tx) = &tx_notice {
+            tx.send((OutputKind::Stderr, notice.clone())).ok();
+        }
+        stderr_content.push_str(&notice);
+        stderr_content.push('\n');
+    }
 
     match outcome {
         WaitOutcome::Exited(status) => Ok(CommandResult {
@@ -202,6 +212,24 @@ pub fn run_command(
             timed_out: Some(limit),
         }),
     }
+}
+
+/// The line a teardown that left process groups alive adds to the job's
+/// stderr — the rail tail, the background job's log, and `daft hooks jobs
+/// logs` all show it. Worded like `daft sync`'s cancel report.
+fn survivors_notice(pgids: &[u32]) -> Option<String> {
+    if pgids.is_empty() {
+        return None;
+    }
+    let list = pgids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "daft: processes this job started may still be running (process group(s): {list}). \
+         Recover manually with: kill -KILL -<pgid>"
+    ))
 }
 
 /// Spawn a shell command with inherited stdin/stdout/stderr (interactive).
@@ -345,8 +373,13 @@ enum WaitOutcome {
 /// Once a deadline teardown starts, the wait also holds until every process
 /// group it signaled is gone: a descendant that ignores SIGTERM and holds no
 /// pipe would otherwise outlive a job reported as stopped. A group still alive
-/// [`HARD_SETTLE`] after the SIGKILL is recorded for the leftover report
-/// rather than waited on forever.
+/// [`HARD_SETTLE`] after the SIGKILL is not waited on forever: it is returned
+/// beside the outcome, for the caller to report, and recorded for `daft
+/// sync`'s leftover report.
+///
+/// The teardown reaches the groups it can find by walking the tree from the
+/// shell. A process that started its own session and whose parent has already
+/// exited is out of reach; the wait then lasts until it closes the pipes.
 ///
 /// `cancel: None` polls no flag.
 ///
@@ -357,7 +390,7 @@ fn wait_child(
     timeout: Option<Duration>,
     cancel: Option<&crate::git::cancel::CancelFlag>,
     drains_done: impl Fn() -> bool,
-) -> Result<WaitOutcome> {
+) -> Result<(WaitOutcome, Vec<u32>)> {
     use std::thread;
     use std::time::Instant;
 
@@ -407,23 +440,29 @@ fn wait_child(
             #[cfg(not(unix))]
             let settled = true;
             if settled {
-                // Whatever outlived a settled deadline teardown goes to the
-                // leftover report rather than vanishing silently.
+                // Whatever outlived a settled deadline teardown is reported
+                // rather than left to vanish silently.
                 #[cfg(unix)]
-                if deadline_level > 0
-                    && let Some(teardown) = &teardown
-                {
-                    crate::git::cancel::record_survivors(&teardown.survivors());
-                }
+                let survivors = match &teardown {
+                    Some(teardown) if deadline_level > 0 => {
+                        let survivors = teardown.survivors();
+                        crate::git::cancel::record_survivors(&survivors);
+                        survivors
+                    }
+                    _ => Vec::new(),
+                };
+                #[cfg(not(unix))]
+                let survivors = Vec::new();
                 // Priority: a user cancel outranks a timeout; a timeout
                 // outranks the exit status (the teardown forged it anyway).
-                return Ok(if cancelling {
+                let outcome = if cancelling {
                     WaitOutcome::Cancelled
                 } else if let Some(limit) = timed_out {
                     WaitOutcome::TimedOut(limit)
                 } else {
                     WaitOutcome::Exited(status)
-                });
+                };
+                return Ok((outcome, survivors));
             }
         }
 
@@ -890,6 +929,20 @@ mod tests {
             "the forked workload survived the timeout: {}",
             String::from_utf8_lossy(&survivors.stdout)
         );
+    }
+
+    /// A group that outlives even SIGKILL (a process in uninterruptible
+    /// sleep, a recycled pgid) can't be produced on demand, so the notice
+    /// that reports one is tested as a formatter.
+    #[test]
+    fn survivors_notice_names_the_groups_and_the_recovery() {
+        assert_eq!(survivors_notice(&[]), None);
+        let notice = survivors_notice(&[4242, 4343]).expect("survivors are reported");
+        assert!(
+            notice.contains("may still be running (process group(s): 4242, 4343)"),
+            "{notice}"
+        );
+        assert!(notice.contains("kill -KILL -<pgid>"), "{notice}");
     }
 
     /// Live members of process group `pgid`, killed on the way out so a

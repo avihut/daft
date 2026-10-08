@@ -412,6 +412,12 @@ close, and at the limit it stops the process the same way. A job whose command
 had already finished keeps its own exit status. To leave a process running past
 the job, redirect its output (`server > server.log 2>&1 &`).
 
+The teardown reaches the processes it can trace back to the job. One that starts
+a session of its own (`setsid`, Python's `start_new_session=True`) and whose
+parent has already exited is out of reach: daft waits for it to close the job's
+output, however long that takes. If a process survives even SIGKILL, the job's
+output names its process group so you can stop it by hand.
+
 `timeout:` has no effect on interactive jobs (`interactive: true`) or under
 `tasks:`: those run until they exit or you cancel them. `daft hooks jobs retry`
 replays the recorded command rather than re-reading `daft.yml`, so a retried job
