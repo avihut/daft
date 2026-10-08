@@ -406,6 +406,12 @@ pre-merge hook failed: job 'check-all' timed out after 40m
 Output the job printed before the limit is kept in its log
 (`daft hooks jobs logs`).
 
+The limit also covers a process the job leaves running with its output still
+open, such as `server &` without a redirect: daft waits for that output to
+close, and at the limit it stops the process the same way. A job whose command
+had already finished keeps its own exit status. To leave a process running past
+the job, redirect its output (`server > server.log 2>&1 &`).
+
 `timeout:` has no effect on interactive jobs (`interactive: true`) or under
 `tasks:`: those run until they exit or you cancel them. `daft hooks jobs retry`
 replays the recorded command rather than re-reading `daft.yml`, so a retried job

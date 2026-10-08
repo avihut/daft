@@ -32,6 +32,9 @@ Set up a scratch repo with a `pre-merge` gate that sleeps past its limit, e.g.
 - [ ] `pgrep -f 'sleep 30'` right after the refusal finds nothing
 - [ ] A job that traps SIGTERM (`trap '' TERM; sleep 60; echo done`) is
       SIGKILLed ~10s after the limit, and the merge then returns
+- [ ] A job that leaves a pipe holder behind (`sleep 60 & echo started`, no
+      redirect) with `timeout: 3`: the merge goes through at ~3s (the job keeps
+      its exit 0), and `sleep 60` is gone
 
 ## Background jobs
 
