@@ -800,15 +800,15 @@ mod tests {
     fn run_command_timeout_tears_down_forked_workload() {
         let env = HashMap::new();
         let dir = std::env::temp_dir();
-        let marker = "sleep 31.25";
+        let (pid_tx, pid_rx) = mpsc::channel::<u32>();
         let started = std::time::Instant::now();
         let result = run_command(
-            &format!("echo started; {marker}; echo after"),
+            "echo started; sleep 31; echo after",
             &env,
             &dir,
             Some(Duration::from_millis(300)),
             None,
-            None,
+            Some(pid_tx),
             None,
         )
         .expect("a timed-out command still returns a result");
@@ -828,8 +828,13 @@ mod tests {
             elapsed < Duration::from_secs(5),
             "timeout returned after {elapsed:?}"
         );
+        // The job is its own process-group leader (pid == pgid), and the
+        // forked `sleep` lives in that group. Probing the group — not a
+        // machine-wide command-line match — keeps a concurrent run of this
+        // suite from failing the test.
+        let pgid = pid_rx.recv().expect("the child pid is reported");
         let survivors = Command::new("pgrep")
-            .args(["-f", marker])
+            .args(["-g", &pgid.to_string()])
             .output()
             .expect("pgrep runs");
         assert!(
