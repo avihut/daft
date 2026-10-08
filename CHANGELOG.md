@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.28.0](https://github.com/avihut/daft/compare/v1.27.9...v1.28.0) - 2026-10-08
+
+
+### Features
+
+- **hooks**: Configurable hook job timeouts that honor daft.hooks.timeout (#1012)
 ## [1.27.9](https://github.com/avihut/daft/compare/v1.27.8...v1.27.9) - 2026-09-19
 
 
