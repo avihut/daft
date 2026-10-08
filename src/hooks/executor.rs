@@ -86,6 +86,13 @@ fn warn_unparsed_hooks_timeout(config: &HooksConfig, output: &mut dyn Output, wa
 /// Process-wide guard for [`warn_unparsed_hooks_timeout`].
 static WARNED_UNPARSED_HOOKS_TIMEOUT: AtomicBool = AtomicBool::new(false);
 
+/// Warn about an invalid `daft.hooks.timeout`, at most once per process.
+/// Every path that puts that setting's limit on a job calls this: hook fires
+/// and `daft hooks jobs retry`.
+pub(crate) fn warn_unparsed_hooks_timeout_once(config: &HooksConfig, output: &mut dyn Output) {
+    warn_unparsed_hooks_timeout(config, output, &WARNED_UNPARSED_HOOKS_TIMEOUT);
+}
+
 /// A hook that failed under `FailMode::Abort`, carrying the recorded
 /// invocation id out with the failure.
 ///
@@ -738,7 +745,7 @@ impl HookExecutor {
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
 
-        warn_unparsed_hooks_timeout(&self.config, output, &WARNED_UNPARSED_HOOKS_TIMEOUT);
+        warn_unparsed_hooks_timeout_once(&self.config, output);
 
         let cfg = yaml_executor::HookExecutionContext {
             source_dir,
@@ -888,7 +895,7 @@ impl HookExecutor {
 
         // Convert legacy hook paths to generic JobSpecs; scripts have no
         // daft.yml, so `daft.hooks.timeout` is their limit.
-        warn_unparsed_hooks_timeout(&self.config, output, &WARNED_UNPARSED_HOOKS_TIMEOUT);
+        warn_unparsed_hooks_timeout_once(&self.config, output);
         let specs = crate::hooks::job_adapter::scripts_to_specs(
             &discovery.hooks,
             &env,

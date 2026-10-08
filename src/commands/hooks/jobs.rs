@@ -1930,9 +1930,11 @@ fn retry_command(
         metas.retain(|m| m.name == bare_name);
     }
 
-    // Compute the retry set.
-    let job_timeout = crate::core::settings::load_hooks_config()?.job_timeout;
-    let (specs, _retry_names) = build_retry_set(&metas, job_timeout);
+    // Compute the retry set. The retried jobs get `daft.hooks.timeout`'s
+    // limit, so an invalid value warns here as it does on a hook fire.
+    let hooks_config = crate::core::settings::load_hooks_config()?;
+    crate::hooks::warn_unparsed_hooks_timeout_once(&hooks_config, output);
+    let (specs, _retry_names) = build_retry_set(&metas, hooks_config.job_timeout);
 
     if specs.is_empty() {
         output.info("Nothing to retry — all jobs succeeded.");

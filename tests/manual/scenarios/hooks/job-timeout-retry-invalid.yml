@@ -1,0 +1,59 @@
+name: Retry warns about an invalid daft.hooks.timeout
+description:
+  "Regression (#1009 review): 'daft hooks jobs retry' gives the retried jobs the
+  daft.hooks.timeout limit, but read the setting without the warning a hook fire
+  prints for an invalid value. The retry silently ran under the 5m default while
+  the user believed their value was in force."
+
+repos:
+  - name: test-retry-timeout
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Retry timeout warning test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/rt
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: fails-here
+              run: "exit 1"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_RETRY_TIMEOUT
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-retry-timeout/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout the feature branch (its post-create job fails)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/rt 2>&1
+    cwd: "$WORK_DIR/test-retry-timeout/main"
+    expect:
+      exit_code: 1
+
+  - name: Set an invalid daft.hooks.timeout
+    run: git config daft.hooks.timeout "40 minutes"
+    cwd: "$WORK_DIR/test-retry-timeout/feature/rt"
+    expect:
+      exit_code: 0
+
+  - name: Retry names the invalid value and the limit in force
+    run: daft hooks jobs retry fails-here 2>&1
+    cwd: "$WORK_DIR/test-retry-timeout/feature/rt"
+    expect:
+      exit_code: 0
+      output_contains:
+        - 'Ignoring invalid git config daft.hooks.timeout "40 minutes"'
+        - "hook jobs without their own timeout use 5m"
+        - "Retried 1 job"
