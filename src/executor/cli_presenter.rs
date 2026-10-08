@@ -330,6 +330,7 @@ impl CliPresenter {
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),
+            timed_out: None,
         }
     }
 }

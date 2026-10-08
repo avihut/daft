@@ -380,6 +380,7 @@ impl CoordinatorState {
                 exit_code: None,
                 stdout: String::new(),
                 stderr: "Dependency failed; job did not run".to_string(),
+                timed_out: None,
             });
         }
 
@@ -484,6 +485,7 @@ fn run_single_background_job(
             exit_code: None,
             stdout: String::new(),
             stderr: "Cancelled before start".to_string(),
+            timed_out: None,
         });
         // Note the deliberate split: the in-memory `JobResult.status` is
         // `Skipped` (the user cancelled), but the value returned to the
@@ -505,6 +507,7 @@ fn run_single_background_job(
                 exit_code: None,
                 stdout: String::new(),
                 stderr: format!("Failed to create log dir: {e}"),
+                timed_out: None,
             });
             return NodeStatus::Failed;
         }
@@ -715,12 +718,19 @@ fn run_single_background_job(
     //    cfg!(test) so the banner doesn't bleed into unit-test logs.
     if node_status == NodeStatus::Failed && !is_silent && !cfg!(test) {
         let msg = match &cmd_result {
-            Ok(cr) => format!(
-                "daft: background job '{}' failed (exit code: {})",
-                job.name,
-                cr.exit_code
-                    .map_or("unknown".to_string(), |c| c.to_string())
-            ),
+            Ok(cr) => match cr.timed_out {
+                Some(limit) => format!(
+                    "daft: background job '{}' timed out after {}",
+                    job.name,
+                    crate::core::settings::format_timeout(limit)
+                ),
+                None => format!(
+                    "daft: background job '{}' failed (exit code: {})",
+                    job.name,
+                    cr.exit_code
+                        .map_or("unknown".to_string(), |c| c.to_string())
+                ),
+            },
             Err(e) => format!("daft: background job '{}' failed: {e}", job.name),
         };
         // Best-effort write to stderr; ignore EPIPE if the parent has closed
@@ -729,9 +739,9 @@ fn run_single_background_job(
     }
 
     // 10. Push the JobResult to the shared results vec.
-    let (stdout, stderr) = match cmd_result {
-        Ok(cr) => (cr.stdout, cr.stderr),
-        Err(_) => (String::new(), String::new()),
+    let (stdout, stderr, timed_out) = match cmd_result {
+        Ok(cr) => (cr.stdout, cr.stderr, cr.timed_out),
+        Err(_) => (String::new(), String::new(), None),
     };
 
     results.lock().unwrap().push(JobResult {
@@ -741,6 +751,7 @@ fn run_single_background_job(
         exit_code,
         stdout,
         stderr,
+        timed_out,
     });
 
     // Map outcome to a DAG-cascade-friendly status. Cancelled and Skipped

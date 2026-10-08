@@ -32,7 +32,16 @@ pub struct CommandResult {
     /// (two-stage Ctrl+C) rather than exiting on its own. When true,
     /// `exit_code` is normalized to `Some(130)` (128 + SIGINT).
     pub cancelled: bool,
+    /// The limit the command outran, when it was torn down by its timeout.
+    /// When set, `exit_code` is normalized to [`TIMED_OUT_EXIT_CODE`].
+    pub timed_out: Option<Duration>,
 }
+
+/// Exit code reported for a command killed by its timeout — GNU `timeout`'s
+/// convention. The teardown's signal death would otherwise surface as a
+/// meaningless `-1` (or a signal code that hides the cause), the same reason
+/// a cancellation normalizes to 130.
+pub const TIMED_OUT_EXIT_CODE: i32 = 124;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public API
@@ -153,9 +162,11 @@ pub fn run_command(
     });
 
     // Wait for the child, honoring both the optional timeout and the optional
-    // cancel flag. Killing the child (either path) closes the pipes and
-    // unblocks the reader threads above.
-    let outcome = wait_child(&mut child, timeout, cancel)
+    // cancel flag. Tearing the child's tree down (either path) closes the
+    // pipes and unblocks the reader threads above; a timeout keeps escalating
+    // until they have drained.
+    let drains_done = || stdout_thread.is_finished() && stderr_thread.is_finished();
+    let outcome = wait_child(&mut child, timeout, cancel, drains_done)
         .with_context(|| format!("Command execution failed: {cmd}"))?;
 
     let stdout_content = stdout_thread.join().unwrap_or_default();
@@ -168,6 +179,7 @@ pub fn run_command(
             stdout: stdout_content,
             stderr: stderr_content,
             cancelled: false,
+            timed_out: None,
         }),
         WaitOutcome::Cancelled => Ok(CommandResult {
             success: false,
@@ -177,6 +189,17 @@ pub fn run_command(
             stdout: stdout_content,
             stderr: stderr_content,
             cancelled: true,
+            timed_out: None,
+        }),
+        // A timeout is an outcome, not an error: the job failed, its output
+        // up to the teardown is kept, and callers see why it failed.
+        WaitOutcome::TimedOut(limit) => Ok(CommandResult {
+            success: false,
+            exit_code: Some(TIMED_OUT_EXIT_CODE),
+            stdout: stdout_content,
+            stderr: stderr_content,
+            cancelled: false,
+            timed_out: Some(limit),
         }),
     }
 }
@@ -237,6 +260,7 @@ pub fn run_command_interactive(
             stdout: String::new(),
             stderr: String::new(),
             cancelled: false,
+            timed_out: None,
         });
     };
 
@@ -251,6 +275,7 @@ pub fn run_command_interactive(
             stdout: String::new(),
             stderr: String::new(),
             cancelled: false,
+            timed_out: None,
         }),
         WaitOutcome::Cancelled => Ok(CommandResult {
             success: false,
@@ -258,7 +283,10 @@ pub fn run_command_interactive(
             stdout: String::new(),
             stderr: String::new(),
             cancelled: true,
+            timed_out: None,
         }),
+        // Interactive children are never given a deadline.
+        WaitOutcome::TimedOut(_) => unreachable!("interactive commands have no timeout"),
     }
 }
 
@@ -281,11 +309,13 @@ fn status_exit_code(status: &ExitStatus) -> i32 {
     status.code().unwrap_or(-1)
 }
 
-/// Terminal outcome of waiting on a child: it exited on its own, or it was
-/// torn down by a user cancellation.
+/// Terminal outcome of waiting on a child: it exited on its own, it was torn
+/// down by a user cancellation, or it outran its timeout (the limit) and was
+/// torn down.
 enum WaitOutcome {
     Exited(ExitStatus),
     Cancelled,
+    TimedOut(Duration),
 }
 
 /// Wait for a captured-output child, polling at 100ms intervals.
@@ -294,16 +324,28 @@ enum WaitOutcome {
 /// - `cancel` (checked first): once the flag is raised, the child's process
 ///   tree is torn down — SIGTERM+SIGCONT at level 1, SIGKILL at level 2 — via
 ///   [`GroupCascade`], and the eventual reap returns [`WaitOutcome::Cancelled`].
-/// - `timeout`: when `Some(t)` and exceeded, the child is killed and an error
-///   is returned (the pre-existing hook timeout semantics). `None` waits
-///   forever (task jobs).
+/// - `timeout`: when `Some(t)` and exceeded, the same tree teardown runs on a
+///   clock — SIGTERM+SIGCONT at the deadline, SIGKILL once
+///   [`TIMEOUT_HARD_GRACE`] has passed — and the wait returns
+///   [`WaitOutcome::TimedOut`]. `None` waits forever (task jobs).
+///
+/// A timed-out wait returns only once the child is reaped **and**
+/// `drains_done` reports its output pipes closed: a workload `sh` forked
+/// outlives the shell, keeps the pipes open, and would otherwise hang the
+/// caller's reader join with nothing left to escalate against it (the
+/// `ChildSupervisor::wait` contract). Signalling only the bare pid — the
+/// previous behavior — killed the shell and orphaned exactly that workload.
 ///
 /// `cancel: None` polls no flag and is behaviorally identical to the previous
 /// `wait_with_timeout`.
+///
+/// [`GroupCascade`]: crate::git::cancel::GroupCascade
+/// [`TIMEOUT_HARD_GRACE`]: crate::git::cancel::TIMEOUT_HARD_GRACE
 fn wait_child(
     child: &mut std::process::Child,
     timeout: Option<Duration>,
     cancel: Option<&crate::git::cancel::CancelFlag>,
+    drains_done: impl Fn() -> bool,
 ) -> Result<WaitOutcome> {
     use std::thread;
     use std::time::Instant;
@@ -311,16 +353,26 @@ fn wait_child(
     let start = Instant::now();
     let poll_interval = Duration::from_millis(100);
     let mut cancelling = false;
+    let mut timed_out: Option<Duration> = None;
+    let mut exited: Option<ExitStatus> = None;
     #[cfg(unix)]
     let mut teardown: Option<CancelTeardown> = None;
 
     loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(if cancelling {
-                WaitOutcome::Cancelled
-            } else {
-                WaitOutcome::Exited(status)
-            });
+        if exited.is_none() {
+            exited = child.try_wait()?;
+        }
+        if let Some(status) = exited {
+            if cancelling {
+                return Ok(WaitOutcome::Cancelled);
+            }
+            match timed_out {
+                None => return Ok(WaitOutcome::Exited(status)),
+                Some(limit) if drains_done() => return Ok(WaitOutcome::TimedOut(limit)),
+                // Reaped, but a descendant still holds the pipes: keep
+                // escalating the teardown against it.
+                Some(_) => {}
+            }
         }
 
         // Cancellation takes precedence over the timeout deadline.
@@ -344,11 +396,26 @@ fn wait_child(
             continue;
         }
 
-        if let Some(t) = timeout
-            && start.elapsed() >= t
-        {
-            child.kill().ok();
-            anyhow::bail!("Command timed out after {t:?}");
+        if let Some(t) = timeout {
+            let elapsed = start.elapsed();
+            if elapsed >= t {
+                timed_out = Some(t);
+                #[cfg(unix)]
+                {
+                    let level = if elapsed >= t + crate::git::cancel::TIMEOUT_HARD_GRACE {
+                        2
+                    } else {
+                        1
+                    };
+                    teardown
+                        .get_or_insert_with(|| CancelTeardown::new(child.id()))
+                        .tick(level);
+                }
+                #[cfg(not(unix))]
+                {
+                    child.kill().ok();
+                }
+            }
         }
         thread::sleep(poll_interval);
     }
@@ -478,6 +545,7 @@ mod tests {
             stdout: "hello\n".into(),
             stderr: String::new(),
             cancelled: false,
+            timed_out: None,
         };
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
@@ -493,6 +561,7 @@ mod tests {
             stdout: String::new(),
             stderr: "error\n".into(),
             cancelled: false,
+            timed_out: None,
         };
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(1));
@@ -507,6 +576,7 @@ mod tests {
             stdout: "ok".into(),
             stderr: String::new(),
             cancelled: false,
+            timed_out: None,
         };
         let cloned = result.clone();
         assert_eq!(cloned.success, result.success);
@@ -522,6 +592,7 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             cancelled: false,
+            timed_out: None,
         };
         let debug = format!("{result:?}");
         assert!(debug.contains("CommandResult"));
@@ -709,12 +780,62 @@ mod tests {
             None,
             None,
         );
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        let msg = format!("{err:#}");
+        // A timeout is an outcome, not an error: the result says which limit
+        // was hit and normalizes the exit code.
+        let result = result.expect("a timed-out command still returns a result");
+        assert!(!result.success);
+        assert_eq!(result.timed_out, Some(Duration::from_millis(200)));
+        assert_eq!(result.exit_code, Some(TIMED_OUT_EXIT_CODE));
+        assert!(!result.cancelled);
+    }
+
+    /// Regression (#1009): the timeout used to SIGKILL only the `sh` pid. A
+    /// compound command runs its workload as a child of `sh` (the trailing
+    /// `echo` keeps every shell from exec'ing the `sleep` in place), and that
+    /// child survived the kill, kept the output pipes open, and kept running.
+    /// The deadline must tear the whole tree down, promptly, and keep the
+    /// output captured before the teardown.
+    #[cfg(unix)]
+    #[test]
+    fn run_command_timeout_tears_down_forked_workload() {
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        let marker = "sleep 31.25";
+        let started = std::time::Instant::now();
+        let result = run_command(
+            &format!("echo started; {marker}; echo after"),
+            &env,
+            &dir,
+            Some(Duration::from_millis(300)),
+            None,
+            None,
+            None,
+        )
+        .expect("a timed-out command still returns a result");
+        let elapsed = started.elapsed();
+
+        assert_eq!(result.timed_out, Some(Duration::from_millis(300)));
+        assert_eq!(result.exit_code, Some(TIMED_OUT_EXIT_CODE));
         assert!(
-            msg.contains("timed out"),
-            "expected timeout error, got: {msg}"
+            result.stdout.contains("started"),
+            "output before the teardown is kept: {:?}",
+            result.stdout
+        );
+        assert!(!result.stdout.contains("after"));
+        // The soft cascade (SIGTERM) ends sleep at once; well inside the hard
+        // grace, and nowhere near the 31s the orphan would have run.
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout returned after {elapsed:?}"
+        );
+        let survivors = Command::new("pgrep")
+            .args(["-f", marker])
+            .output()
+            .expect("pgrep runs");
+        assert!(
+            survivors.stdout.is_empty(),
+            "the forked workload survived the timeout: {}",
+            String::from_utf8_lossy(&survivors.stdout)
         );
     }
 

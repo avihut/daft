@@ -878,6 +878,7 @@ fn run_bg_inline_with_prefailed(
             exit_code: None,
             stdout: String::new(),
             stderr: "foreground dependency failed".to_string(),
+            timed_out: None,
         });
     }
     Ok(results)
@@ -936,11 +937,7 @@ fn job_results_to_hook_result(results: &[crate::executor::JobResult]) -> Result<
         .iter()
         .find(|r| r.status == crate::executor::NodeStatus::Failed);
     if let Some(failed) = first_failure {
-        return Ok(HookResult::failed(
-            failed.exit_code.unwrap_or(-1),
-            failed.stdout.clone(),
-            failed.stderr.clone(),
-        ));
+        return Ok(HookResult::failed_job(failed));
     }
 
     // A cancelled run (Ctrl+C on a `daft run` task) must not read as
@@ -1075,6 +1072,7 @@ mod tests {
             exit_code,
             stdout: String::new(),
             stderr: String::new(),
+            timed_out: None,
         }
     }
 
@@ -1108,6 +1106,25 @@ mod tests {
         let hr = job_results_to_hook_result(&results).unwrap();
         assert!(!hr.success);
         assert_eq!(hr.exit_code, Some(7));
+    }
+
+    #[test]
+    fn timed_out_failure_carries_its_cause_into_the_hook_result() {
+        let limit = std::time::Duration::from_secs(300);
+        let results = [crate::executor::JobResult {
+            timed_out: Some(limit),
+            ..job_result(crate::executor::NodeStatus::Failed, Some(124))
+        }];
+        let hr = job_results_to_hook_result(&results).unwrap();
+        assert!(!hr.success);
+        assert_eq!(hr.exit_code, Some(124));
+        assert_eq!(
+            hr.timed_out,
+            Some(crate::hooks::TimedOutJob {
+                job: "j".into(),
+                limit,
+            })
+        );
     }
 
     /// Build a `HookContext` whose `git_dir` is a real temp directory and

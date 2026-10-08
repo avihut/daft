@@ -2229,6 +2229,7 @@ mod tests {
                 hook_type: HookType::PreMerge,
                 exit_code: 3,
                 invocation_id: Some("abcd".into()),
+                timed_out: None,
             }));
         assert_eq!(verdict_status(&red_gate), "gate-failed");
 
@@ -2238,6 +2239,7 @@ mod tests {
             hook_type: HookType::PostMerge,
             exit_code: 1,
             invocation_id: None,
+            timed_out: None,
         }));
         assert_eq!(verdict_status(&post), "failed");
 

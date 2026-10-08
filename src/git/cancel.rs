@@ -140,7 +140,7 @@ pub struct OperationTimedOut {
 
 /// Once a unit is past its deadline: this long on the soft cascade
 /// (TERM+CONT per group) before escalating to SIGKILL.
-const TIMEOUT_HARD_GRACE: Duration = Duration::from_secs(10);
+pub(crate) const TIMEOUT_HARD_GRACE: Duration = Duration::from_secs(10);
 
 /// Pausable wall-clock budget for one supervised unit (#678 stage 4).
 ///

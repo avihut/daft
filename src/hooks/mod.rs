@@ -67,7 +67,7 @@ pub use environment::{
     DaftVarKind, HookContext, HookEnvironment, RemovalReason, daft_var_kind, daft_var_names,
 };
 pub(crate) use environment::{derived_injection, derived_injection_at};
-pub use executor::{HookAborted, HookExecutor, HookResult};
+pub use executor::{HookAborted, HookExecutor, HookResult, TimedOutJob};
 pub use run_mode::HookMode;
 pub use trust::{Rekeyed, TrustDatabase, TrustEntry, TrustLevel, get_remote_url_for_git_dir};
 

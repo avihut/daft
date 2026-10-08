@@ -222,6 +222,10 @@ pub struct JobResult {
     pub stdout: String,
     /// Captured standard error.
     pub stderr: String,
+    /// The limit the job outran, when its timeout tore it down. Such a job
+    /// is `NodeStatus::Failed` — every failure check, the DAG cascade, and
+    /// piped's stop-on-failure treat it as one — and this field says why.
+    pub timed_out: Option<Duration>,
 }
 
 #[cfg(test)]
@@ -367,6 +371,7 @@ mod tests {
             exit_code: Some(0),
             stdout: "compiled ok\n".into(),
             stderr: String::new(),
+            timed_out: None,
         };
 
         assert_eq!(result.name, "build");
@@ -384,6 +389,7 @@ mod tests {
             exit_code: Some(1),
             stdout: String::new(),
             stderr: "assertion failed\n".into(),
+            timed_out: None,
         };
 
         assert_eq!(result.status, NodeStatus::Failed);
@@ -400,6 +406,7 @@ mod tests {
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),
+            timed_out: None,
         };
 
         assert!(result.exit_code.is_none());
@@ -414,6 +421,7 @@ mod tests {
             exit_code: Some(0),
             stdout: "ok".into(),
             stderr: String::new(),
+            timed_out: None,
         };
         let cloned = result.clone();
         assert_eq!(cloned.name, result.name);
