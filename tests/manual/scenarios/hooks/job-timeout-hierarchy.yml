@@ -1,0 +1,79 @@
+name: hook job timeout precedence (job, hook, daft.hooks.timeout)
+description:
+  "#1009: a daft.yml `timeout:` resolves job first, then hook, then
+  daft.hooks.timeout. The hook's 1s beats the git config's 30s for a job without
+  its own value; a job's own 10s, or its `off`, beats the hook's 1s."
+
+repos:
+  - name: test-job-timeout-tiers
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# job timeout tiers"
+        commits:
+          - message: "Initial commit"
+      - name: feature
+        from: main
+        files:
+          - path: f.txt
+            content: "f"
+        commits:
+          - message: "Feature work"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          timeout: 1
+          jobs:
+            - name: inherits
+              run: |
+                sleep 3
+                touch "$DAFT_MERGE_TARGET_PATH/.inherits-done"
+            - name: own-limit
+              timeout: 10
+              run: |
+                sleep 3
+                touch "$DAFT_MERGE_TARGET_PATH/.own-limit-done"
+            - name: lifted
+              timeout: "off"
+              run: |
+                sleep 3
+                touch "$DAFT_MERGE_TARGET_PATH/.lifted-done"
+
+steps:
+  - name: Clone with trusted hooks
+    run:
+      daft clone --layout contained --trust-hooks $REMOTE_TEST_JOB_TIMEOUT_TIERS
+    expect:
+      exit_code: 0
+
+  - name: A generous git-config limit, which the hook's 1s overrides
+    run: git config daft.hooks.timeout 30
+    cwd: "$WORK_DIR/test-job-timeout-tiers/main"
+    expect:
+      exit_code: 0
+
+  - name: Only the job without its own limit times out, at the hook's 1s
+    run: daft merge feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-job-timeout-tiers/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "pre-merge hook failed: job 'inherits' timed out after 1s"
+      output_not_contains:
+        - "job 'own-limit' timed out"
+        - "job 'lifted' timed out"
+
+  - name: The jobs with their own limit, or none, ran to completion
+    run: |
+      test -f .own-limit-done && echo "own-limit finished"
+      test -f .lifted-done && echo "lifted finished"
+      test -f .inherits-done || echo "inherits cut short"
+    cwd: "$WORK_DIR/test-job-timeout-tiers/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "own-limit finished"
+        - "lifted finished"
+        - "inherits cut short"

@@ -3,7 +3,7 @@
 //! Validates a parsed `YamlConfig` for semantic correctness beyond
 //! what serde can enforce.
 
-use super::yaml_config::{CopyConfig, HookDef, JobDef, YamlConfig};
+use super::yaml_config::{CopyConfig, HookDef, JobDef, TimeoutScalar, YamlConfig};
 use crate::VERSION;
 use anyhow::Result;
 
@@ -111,6 +111,18 @@ pub fn validate_config(config: &YamlConfig) -> Result<ValidationResult> {
                 format!("tasks.{task_name}"),
                 "'fail_mode' has no effect on tasks (daft run exits on the first \
                  job failure); it applies to lifecycle hooks only",
+            );
+        }
+        let job_sets_timeout = task_def
+            .jobs
+            .iter()
+            .flatten()
+            .any(|job| job.timeout.is_some());
+        if task_def.timeout.is_some() || job_sets_timeout {
+            result.warn(
+                format!("tasks.{task_name}"),
+                "'timeout' has no effect on tasks (daft run jobs run until they \
+                 exit or are cancelled); it applies to lifecycle hooks only",
             );
         }
         validate_hook_def("tasks", task_name, task_def, &mut result);
@@ -333,6 +345,24 @@ fn validate_copy(copy: &CopyConfig, result: &mut ValidationResult) {
     }
 }
 
+/// Report a `timeout:` value (hook- or job-level) that does not parse. A hook
+/// fire treats the same value as a configuration error and aborts the hook's
+/// preparation, so this is an error, not a warning.
+fn validate_timeout(path: &str, timeout: Option<&TimeoutScalar>, result: &mut ValidationResult) {
+    if let Some(raw) = timeout
+        && raw.parse().is_none()
+    {
+        result.error(
+            path,
+            format!(
+                "invalid timeout '{}' (expected bare seconds or a value with an \
+                 s/m/h/d suffix, e.g. '30m', or 'off' for no limit)",
+                raw.as_str()
+            ),
+        );
+    }
+}
+
 /// Validate a task name for CLI and shell-completion safety.
 ///
 /// A task name is typed as a bare `daft run <name>` argument and completed on
@@ -385,6 +415,8 @@ fn validate_hook_def(section: &str, name: &str, hook: &HookDef, result: &mut Val
         result.error(&path, "Only one of parallel, piped, or follow can be true");
     }
 
+    validate_timeout(&path, hook.timeout.as_ref(), result);
+
     // Validate jobs
     if let Some(ref jobs) = hook.jobs {
         for (i, job) in jobs.iter().enumerate() {
@@ -395,6 +427,14 @@ fn validate_hook_def(section: &str, name: &str, hook: &HookDef, result: &mut Val
             };
             validate_job(&job_path, job, result);
             validate_background_fields(job, hook, &job_path, result);
+            // Tasks get one section-wide warning instead (see validate_config).
+            if section == "hooks" && job.interactive == Some(true) && job.timeout.is_some() {
+                result.warn(
+                    &job_path,
+                    "'timeout' has no effect on an interactive job; it owns the \
+                     terminal and runs until it exits",
+                );
+            }
         }
 
         // Check for duplicate named jobs
@@ -452,6 +492,8 @@ fn validate_job(path: &str, job: &JobDef, result: &mut ValidationResult) {
     if !has_run && !has_script && !has_group {
         result.error(path, "Job must have 'run', 'script', or 'group'");
     }
+
+    validate_timeout(path, job.timeout.as_ref(), result);
 
     // script requires runner
     if has_script && job.runner.is_none() {
@@ -754,6 +796,114 @@ hooks:
             "expected a no-op + legacy-suppression warning, got: {:?}",
             result.warnings
         );
+    }
+
+    fn validate_yaml(yaml: &str) -> ValidationResult {
+        let config: YamlConfig = serde_yaml::from_str(yaml).expect(yaml);
+        validate_config(&config).unwrap()
+    }
+
+    #[test]
+    fn valid_timeouts_pass_validation() {
+        let result = validate_yaml(
+            r#"
+hooks:
+  pre-merge:
+    timeout: 20m
+    jobs:
+      - name: a
+        run: "true"
+        timeout: 2400
+      - name: b
+        run: "true"
+        timeout: off
+"#,
+        );
+        assert!(result.is_ok(), "{:?}", result.errors);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    }
+
+    #[test]
+    fn invalid_timeouts_are_errors_at_every_level() {
+        let result = validate_yaml(
+            r#"
+hooks:
+  pre-merge:
+    timeout: soon
+    jobs:
+      - name: gate
+        run: "true"
+        timeout: false
+      - name: grouped
+        group:
+          jobs:
+            - name: inner
+              run: "true"
+              timeout: 1.5
+"#,
+        );
+        let paths: Vec<&str> = result.errors.iter().map(|e| e.path.as_str()).collect();
+        for path in [
+            "hooks.pre-merge",
+            "hooks.pre-merge.jobs[gate]",
+            "hooks.pre-merge.jobs[grouped].group.jobs[inner]",
+        ] {
+            assert!(
+                paths.contains(&path),
+                "no error at {path}: {:?}",
+                result.errors
+            );
+        }
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("invalid timeout 'soon'")),
+            "{:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn timeout_on_an_interactive_hook_job_warns_it_has_no_effect() {
+        let result = validate_yaml(
+            r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: login
+        run: "./login.sh"
+        interactive: true
+        timeout: 5m
+"#,
+        );
+        assert!(result.is_ok(), "{:?}", result.errors);
+        assert!(
+            result.warnings.iter().any(|w| {
+                w.path == "hooks.worktree-post-create.jobs[login]"
+                    && w.message.contains("no effect on an interactive job")
+            }),
+            "{:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn timeout_in_a_task_warns_it_has_no_effect() {
+        for yaml in [
+            "tasks:\n  dev:\n    timeout: 5m\n    jobs:\n      - name: web\n        run: 'true'\n",
+            "tasks:\n  dev:\n    jobs:\n      - name: web\n        run: 'true'\n        timeout: 5m\n",
+        ] {
+            let result = validate_yaml(yaml);
+            assert!(result.is_ok(), "{yaml}: {:?}", result.errors);
+            assert!(
+                result.warnings.iter().any(|w| {
+                    w.path == "tasks.dev" && w.message.contains("'timeout' has no effect on tasks")
+                }),
+                "{yaml}: {:?}",
+                result.warnings
+            );
+        }
     }
 
     #[test]

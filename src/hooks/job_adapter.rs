@@ -10,10 +10,11 @@ use super::changed_files::{CHANGED_FILES_TEMPLATE, ChangedFilesProvider, FileFil
 use super::config_merge::merge_log_configs;
 use crate::executor::{JobSpec, LogConfig};
 use crate::hooks::environment::{HookContext, HookEnvironment};
-use crate::hooks::yaml_config::JobDef;
+use crate::hooks::yaml_config::{JobDef, TimeoutScalar};
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Why-category of a pre-execution skip — the typed half of the skip
 /// taxonomy. The human-readable `reason` string carries the detail; the
@@ -68,6 +69,52 @@ pub struct SkippedJob {
 /// `--skip-hooks` skip-attribution paths so it lives in exactly one place.
 pub fn resolve_background(job_background: Option<bool>, hook_background: Option<bool>) -> bool {
     job_background.or(hook_background).unwrap_or(false)
+}
+
+/// How the jobs of one fire get their time limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobTimeouts {
+    /// Lifecycle hooks: the job's `timeout:`, else the hook's, else
+    /// `default` — `daft.hooks.timeout` (`None` = no limit).
+    Resolve { default: Option<Duration> },
+    /// `daft run` tasks: attended processes that run until they exit or are
+    /// cancelled. A daft.yml `timeout:` has no effect (`daft hooks validate`
+    /// warns).
+    Unlimited,
+}
+
+/// Resolve one job's time limit: the job's `timeout:`, then the hook's, then
+/// the fire's default — the same precedence as [`resolve_background`]. An
+/// explicit `off` is a value like any other, so a job's `off` beats a hook's
+/// `10m`. Interactive jobs get none: they own the terminal, and the user
+/// watching them is their deadline. An unparseable value is a configuration
+/// error that aborts the fire's preparation, like a malformed glob — never a
+/// silent fallback to some other limit.
+pub fn resolve_timeout(
+    job_name: &str,
+    job: &JobDef,
+    hook_timeout: Option<&TimeoutScalar>,
+    timeouts: JobTimeouts,
+) -> Result<Option<Duration>> {
+    let JobTimeouts::Resolve { default } = timeouts else {
+        return Ok(None);
+    };
+    if job.interactive == Some(true) {
+        return Ok(None);
+    }
+    let (raw, whose) = match (&job.timeout, hook_timeout) {
+        (Some(raw), _) => (raw, format!("job '{job_name}'")),
+        (None, Some(raw)) => (raw, format!("job '{job_name}': the hook's")),
+        (None, None) => return Ok(default),
+    };
+    match raw.parse() {
+        Some(limit) => Ok(limit),
+        None => bail!(
+            "{whose} timeout {:?} is not a duration (expected e.g. 30m, 2h, 90 for \
+             seconds, or off)",
+            raw.as_str()
+        ),
+    }
 }
 
 /// Parsed `--skip-hooks` selectors.
@@ -279,11 +326,13 @@ pub struct JobAdapterContext<'a> {
     /// Top-level `log:` config from `daft.yml`, merged into each job's
     /// `log_config` so cleanup policies inherit repo-wide defaults.
     pub repo_log: Option<&'a LogConfig>,
-    /// Default timeout stamped on each produced [`JobSpec`]. Lifecycle hooks
-    /// pass `daft.hooks.timeout` (the `Default` uses its built-in
-    /// `JobSpec::DEFAULT_TIMEOUT`); `daft run` tasks pass `None` so
-    /// long-running processes aren't force-killed.
-    pub default_timeout: Option<std::time::Duration>,
+    /// How each produced [`JobSpec`] gets its time limit — see
+    /// [`resolve_timeout`]. The `Default` resolves against the built-in
+    /// `JobSpec::DEFAULT_TIMEOUT`.
+    pub timeouts: JobTimeouts,
+    /// Hook-level `timeout:` — the per-job default a job without its own
+    /// `timeout:` falls back to before `JobTimeouts::Resolve`'s default.
+    pub hook_timeout: Option<&'a TimeoutScalar>,
     /// The operation's changed-file source, consulted by file-aware jobs
     /// (`glob:`/`exclude:`/`{changed_files}`) and `changed:` rules. `None`
     /// for hook types with no changed set — a file-aware job there is a
@@ -296,13 +345,16 @@ pub struct JobAdapterContext<'a> {
 
 impl Default for JobAdapterContext<'_> {
     fn default() -> Self {
-        // Preserve the historical hook default so the many
-        // `&JobAdapterContext::default()` test callers keep 300s timeouts.
+        // Preserve the built-in hook default so the many
+        // `&JobAdapterContext::default()` test callers keep 5m timeouts.
         Self {
             rc: None,
             hook_background: None,
             repo_log: None,
-            default_timeout: Some(JobSpec::DEFAULT_TIMEOUT),
+            timeouts: JobTimeouts::Resolve {
+                default: Some(JobSpec::DEFAULT_TIMEOUT),
+            },
+            hook_timeout: None,
             changed_files: None,
             hook_exclude: &[],
         }
@@ -341,7 +393,6 @@ pub fn yaml_jobs_to_specs(
     let rc = adapter.rc;
     let hook_background = adapter.hook_background;
     let repo_log = adapter.repo_log;
-    let default_timeout = adapter.default_timeout;
     let mut kept: Vec<JobSpec> = Vec::new();
     let mut skipped: Vec<SkippedJob> = Vec::new();
 
@@ -479,6 +530,8 @@ pub fn yaml_jobs_to_specs(
             );
         }
 
+        let timeout = resolve_timeout(&name, job, adapter.hook_timeout, adapter.timeouts)?;
+
         kept.push(JobSpec {
             name,
             command: cmd,
@@ -488,7 +541,7 @@ pub fn yaml_jobs_to_specs(
             needs: job.needs.clone().unwrap_or_default(),
             interactive: job.interactive == Some(true),
             fail_text: job.fail_text.clone(),
-            timeout: default_timeout,
+            timeout,
             background: declared_background,
             background_output: job.background_output.clone(),
             log_config: merge_job_log(job.log.clone(), repo_log),
@@ -728,6 +781,155 @@ mod tests {
 
     // ── yaml_jobs_to_specs ──────────────────────────────────────────────
 
+    // ── timeout resolution (#1009) ───────────────────────────────────────
+
+    fn timed(raw: &str) -> Option<TimeoutScalar> {
+        Some(TimeoutScalar::new(raw))
+    }
+
+    fn job_with_timeout(timeout: Option<TimeoutScalar>) -> JobDef {
+        JobDef {
+            name: Some("gate".into()),
+            run: Some(RunCommand::Simple("true".into())),
+            timeout,
+            ..Default::default()
+        }
+    }
+
+    const FIVE_MINUTES: JobTimeouts = JobTimeouts::Resolve {
+        default: Some(JobSpec::DEFAULT_TIMEOUT),
+    };
+
+    #[test]
+    fn timeout_resolves_job_then_hook_then_default() {
+        let mins = |m: u64| Some(Duration::from_secs(m * 60));
+        let resolve = |job: Option<TimeoutScalar>, hook: Option<TimeoutScalar>, t: JobTimeouts| {
+            resolve_timeout("gate", &job_with_timeout(job), hook.as_ref(), t).unwrap()
+        };
+
+        assert_eq!(resolve(None, None, FIVE_MINUTES), mins(5), "the default");
+        assert_eq!(
+            resolve(None, timed("20m"), FIVE_MINUTES),
+            mins(20),
+            "hook beats default"
+        );
+        assert_eq!(
+            resolve(timed("40m"), timed("20m"), FIVE_MINUTES),
+            mins(40),
+            "job beats hook"
+        );
+        assert_eq!(
+            resolve(timed("2400"), None, FIVE_MINUTES),
+            mins(40),
+            "bare seconds"
+        );
+        // `off` is a value: it stops the lookup rather than falling through.
+        assert_eq!(resolve(timed("off"), timed("10m"), FIVE_MINUTES), None);
+        assert_eq!(resolve(None, timed("0"), FIVE_MINUTES), None);
+        assert_eq!(
+            resolve(None, None, JobTimeouts::Resolve { default: None }),
+            None,
+            "daft.hooks.timeout off"
+        );
+        // Tasks: daft.yml values have no effect at any level.
+        assert_eq!(
+            resolve(timed("1m"), timed("1m"), JobTimeouts::Unlimited),
+            None
+        );
+    }
+
+    #[test]
+    fn interactive_jobs_get_no_timeout() {
+        let job = JobDef {
+            interactive: Some(true),
+            ..job_with_timeout(timed("1m"))
+        };
+        assert_eq!(
+            resolve_timeout("gate", &job, timed("1m").as_ref(), FIVE_MINUTES).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unparseable_timeout_is_a_config_error_naming_the_job() {
+        let err = resolve_timeout(
+            "gate",
+            &job_with_timeout(timed("forever")),
+            None,
+            FIVE_MINUTES,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("job 'gate'"), "{err}");
+        assert!(err.contains("\"forever\""), "{err}");
+
+        let err = resolve_timeout(
+            "gate",
+            &job_with_timeout(None),
+            timed("false").as_ref(),
+            FIVE_MINUTES,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("the hook's timeout"), "{err}");
+
+        // A job's own valid value never consults the hook's broken one.
+        assert!(
+            resolve_timeout(
+                "gate",
+                &job_with_timeout(timed("1m")),
+                timed("false").as_ref(),
+                FIVE_MINUTES
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn specs_carry_the_resolved_timeouts() {
+        let ctx = make_ctx();
+        let jobs = vec![
+            JobDef {
+                name: Some("own".into()),
+                ..job_with_timeout(timed("90"))
+            },
+            JobDef {
+                name: Some("inherits".into()),
+                ..job_with_timeout(None)
+            },
+        ];
+        let hook_timeout = TimeoutScalar::new("20m");
+        let adapter = JobAdapterContext {
+            hook_timeout: Some(&hook_timeout),
+            ..JobAdapterContext::default()
+        };
+        let (specs, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/project"),
+            &adapter,
+        )
+        .unwrap();
+        assert_eq!(specs[0].timeout, Some(Duration::from_secs(90)));
+        assert_eq!(specs[1].timeout, Some(Duration::from_secs(1_200)));
+
+        // An invalid value aborts the conversion, like a malformed glob.
+        let broken = vec![job_with_timeout(timed("soon"))];
+        assert!(
+            yaml_jobs_to_specs(
+                &broken,
+                &ctx,
+                &HashMap::new(),
+                ".daft",
+                Path::new("/project"),
+                &JobAdapterContext::default()
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn simple_job_maps_all_fields() {
         let ctx = make_ctx();
@@ -767,7 +969,8 @@ mod tests {
         assert_eq!(s.fail_text.as_deref(), Some("install failed"));
         assert_eq!(s.env.get("MY_VAR").unwrap(), "hello");
         assert_eq!(s.working_dir, PathBuf::from("/project"));
-        assert_eq!(s.timeout, Some(JobSpec::DEFAULT_TIMEOUT));
+        // Interactive: it owns the terminal and is never given a deadline.
+        assert_eq!(s.timeout, None);
     }
 
     #[test]

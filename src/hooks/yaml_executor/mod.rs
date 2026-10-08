@@ -117,11 +117,11 @@ pub struct HookExecutionContext<'a> {
     /// job's effective `LogConfig`.
     pub repo_log: Option<&'a LogConfig>,
 
-    /// Default timeout stamped on every job spec. Lifecycle hooks pass
-    /// `daft.hooks.timeout`; `daft run` tasks pass `None` so an
-    /// attended long-running process (dev server) is never force-killed by the
-    /// hook execution timeout.
-    pub default_job_timeout: Option<std::time::Duration>,
+    /// How every job spec gets its time limit. Lifecycle hooks resolve the
+    /// job's and hook's daft.yml `timeout:` against `daft.hooks.timeout`;
+    /// `daft run` tasks pass `JobTimeouts::Unlimited` so an attended
+    /// long-running process (dev server) is never force-killed.
+    pub job_timeouts: crate::hooks::job_adapter::JobTimeouts,
 
     /// Two-stage cancellation flag observed by the foreground runner. `None`
     /// (all hook callers) means no flag is polled — behavior-identical to
@@ -163,7 +163,9 @@ pub fn execute_yaml_hook(
         filter: &filter,
         presenter: &presenter,
         repo_log: None,
-        default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+        job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+            default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+        },
         cancel: None,
         trigger_label: None,
         // Callers wanting a different mode build the context themselves (or
@@ -434,7 +436,8 @@ pub fn execute_yaml_hook_with_rc(
         rc,
         hook_background: hook_def.background,
         repo_log,
-        default_timeout: cfg.default_job_timeout,
+        timeouts: cfg.job_timeouts,
+        hook_timeout: hook_def.timeout.as_ref(),
         changed_files,
         hook_exclude: hook_def.exclude.as_deref().unwrap_or(&[]),
     };
@@ -1975,7 +1978,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
@@ -2025,7 +2030,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
@@ -2075,7 +2082,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
@@ -2122,7 +2131,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
@@ -2186,7 +2197,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Background,
@@ -2233,7 +2246,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Background,
@@ -2503,7 +2518,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2535,7 +2552,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2573,7 +2592,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2638,7 +2659,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2677,7 +2700,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2713,7 +2738,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2768,7 +2795,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2815,7 +2844,7 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: None,
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Unlimited,
             cancel: None,
             trigger_label: Some("run dev".to_string()),
             hook_mode: crate::hooks::HookMode::Auto,

@@ -750,7 +750,9 @@ impl HookExecutor {
             // Lifecycle hooks time jobs out at `daft.hooks.timeout` and are
             // never cancel-flag-driven; the trigger label follows the hook
             // default.
-            default_job_timeout: self.config.job_timeout,
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: self.config.job_timeout,
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: self.hook_mode,
