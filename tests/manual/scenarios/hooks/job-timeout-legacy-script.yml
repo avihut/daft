@@ -1,0 +1,64 @@
+name: hook job timeout for a legacy script hook
+description:
+  "#1009: a .daft/hooks/ script is bounded by daft.hooks.timeout (it was stamped
+  with a fixed 300s), and a script that times out goes through its hook's fail
+  mode like any other failure — it used to bypass it as a raw error, aborting
+  even a warn-mode hook. With failMode warn the merge continues, and the warning
+  names the timed-out script."
+
+repos:
+  - name: test-job-timeout-legacy
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# legacy job timeout"
+        commits:
+          - message: "Initial commit"
+      - name: feature
+        from: main
+        files:
+          - path: f.txt
+            content: "f"
+        commits:
+          - message: "Feature work"
+    hook_scripts:
+      - name: pre-merge
+        content: |
+          #!/bin/sh
+          echo legacy gate started
+          sleep 43
+          echo legacy gate finished
+
+steps:
+  - name: Clone with trusted hooks
+    run:
+      daft clone --layout contained --trust-hooks
+      $REMOTE_TEST_JOB_TIMEOUT_LEGACY
+    expect:
+      exit_code: 0
+
+  - name: Give hook jobs a 2-second limit and let pre-merge warn
+    run: |
+      git config daft.hooks.timeout 2
+      git config daft.hooks.preMerge.failMode warn
+    cwd: "$WORK_DIR/test-job-timeout-legacy/main"
+    expect:
+      exit_code: 0
+
+  - name: The script times out, the warning names it, and the merge proceeds
+    run: daft merge feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-job-timeout-legacy/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "pre-merge hook failed: job 'pre-merge' timed out after 2s (continuing
+          anyway)"
+        - "Merged feature into main"
+
+  - name: The script's forked workload did not survive the teardown
+    run: pgrep -f "[s]leep 43" || echo "no survivors"
+    expect:
+      exit_code: 0
+      output_contains: ["no survivors"]

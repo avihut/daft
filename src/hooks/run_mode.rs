@@ -19,9 +19,9 @@ pub enum HookMode {
     ///
     /// A promoted job's failure then counts against the hook outcome, which
     /// for `worktree-post-create` aborts the command (#765). Promoted jobs
-    /// keep the standard job timeout: it already applies on the detached
-    /// path, so a job that dies at five minutes must not start succeeding
-    /// just because someone is watching it.
+    /// keep their job timeout: it already applies on the detached path, so a
+    /// job that would time out there must not start succeeding just because
+    /// someone is watching it.
     Foreground,
     /// Dispatch every job to the coordinator and return without waiting.
     ///

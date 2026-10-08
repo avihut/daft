@@ -443,13 +443,13 @@ Each strategy decides the branch owner from the commits in the range
 
 ## Hooks Settings
 
-| Key                        | Default                 | Description                                                                 |
-| -------------------------- | ----------------------- | --------------------------------------------------------------------------- |
-| `daft.hooks.enabled`       | `true`                  | Master switch for all hooks                                                 |
-| `daft.hooks.defaultTrust`  | `"deny"`                | Default trust level for unknown repositories (`deny`, `prompt`, or `allow`) |
-| `daft.hooks.userDirectory` | `~/.config/daft/hooks/` | Path to user-global hooks directory                                         |
-| `daft.hooks.timeout`       | `300`                   | Hook execution timeout in seconds                                           |
-| `daft.hooks.trustPrune`    | `true`                  | Auto-prune stale entries from the trust database (background, once per 24h) |
+| Key                        | Default                 | Description                                                                                                                                                                          |
+| -------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `daft.hooks.enabled`       | `true`                  | Master switch for all hooks                                                                                                                                                          |
+| `daft.hooks.defaultTrust`  | `"deny"`                | Default trust level for unknown repositories (`deny`, `prompt`, or `allow`)                                                                                                          |
+| `daft.hooks.userDirectory` | `~/.config/daft/hooks/` | Path to user-global hooks directory                                                                                                                                                  |
+| `daft.hooks.timeout`       | `5m`                    | Time limit for each hook job: seconds (`300`) or a unit (`40m`, `2h`); `0`/`off` for none. A `timeout:` in `daft.yml` overrides it ([Timeouts](../hooks/yaml-reference.md#timeouts)) |
+| `daft.hooks.trustPrune`    | `true`                  | Auto-prune stale entries from the trust database (background, once per 24h)                                                                                                          |
 
 ### Per-Hook Settings
 

@@ -67,7 +67,8 @@ pub use environment::{
     DaftVarKind, HookContext, HookEnvironment, RemovalReason, daft_var_kind, daft_var_names,
 };
 pub(crate) use environment::{derived_injection, derived_injection_at};
-pub use executor::{HookAborted, HookExecutor, HookResult};
+pub(crate) use executor::warn_unparsed_hooks_timeout_once;
+pub use executor::{HookAborted, HookExecutor, HookResult, TimedOutJob};
 pub use run_mode::HookMode;
 pub use trust::{Rekeyed, TrustDatabase, TrustEntry, TrustLevel, get_remote_url_for_git_dir};
 
@@ -407,8 +408,15 @@ pub struct HooksConfig {
     pub default_trust: TrustLevel,
     /// Path to user-global hooks directory.
     pub user_directory: std::path::PathBuf,
-    /// Timeout for hook execution in seconds.
-    pub timeout_seconds: u32,
+    /// Time limit for each hook job (`daft.hooks.timeout`): the fallback when
+    /// neither the job nor its hook sets a `timeout:` in daft.yml. `None`
+    /// means no limit (`off` / `0`).
+    pub job_timeout: Option<std::time::Duration>,
+    /// The raw `daft.hooks.timeout` value when it was present but did not
+    /// parse. The default stays in force; the executor surfaces this as a
+    /// warning (once per process) rather than the loader, which runs several
+    /// times per command and may run under a TUI.
+    pub job_timeout_git_unparsed: Option<String>,
     /// Output display configuration.
     pub output: HookOutputConfig,
     /// Per-hook configurations.
@@ -427,7 +435,8 @@ impl Default for HooksConfig {
             enabled: true,
             default_trust: TrustLevel::Deny,
             user_directory: default_user_hooks_dir(),
-            timeout_seconds: 300,
+            job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeout_git_unparsed: None,
             output: HookOutputConfig::default(),
             post_clone: HookConfig::new(HookType::PostClone),
             worktree_pre_create: HookConfig::new(HookType::PreCreate),
@@ -835,7 +844,11 @@ mod tests {
         let config = HooksConfig::default();
         assert!(config.enabled);
         assert_eq!(config.default_trust, TrustLevel::Deny);
-        assert_eq!(config.timeout_seconds, 300);
+        assert_eq!(
+            config.job_timeout,
+            Some(std::time::Duration::from_secs(300))
+        );
+        assert_eq!(config.job_timeout_git_unparsed, None);
         assert!(config.worktree_pre_create.enabled);
         assert_eq!(config.worktree_pre_create.fail_mode, FailMode::Abort);
         assert!(config.worktree_post_create.enabled);

@@ -303,8 +303,9 @@ fn cmd_run(args: &Args, forced_args: bool, output: &mut dyn Output) -> Result<()
         filter: &filter,
         presenter: &presenter,
         repo_log: config.log.as_ref(),
-        // Tasks run until they exit or are cancelled — no execution timeout.
-        default_job_timeout: None,
+        // Tasks run until they exit or are cancelled — no execution timeout,
+        // and a daft.yml `timeout:` has no effect here.
+        job_timeouts: crate::hooks::job_adapter::JobTimeouts::Unlimited,
         cancel: Some(&cancel),
         trigger_label: Some(if task_args.is_empty() {
             format!("run {task_name}")

@@ -40,7 +40,7 @@
 //! |-----|---------|-------------|
 //! | `daft.hooks.enabled` | `true` | Master switch for all hooks |
 //! | `daft.hooks.defaultTrust` | `deny` | Default trust level for unknown repos |
-//! | `daft.hooks.timeout` | `300` | Timeout for hook execution in seconds |
+//! | `daft.hooks.timeout` | `5m` | Time limit for each hook job (bare seconds or `30m`/`2h`; `0`/`off` = none). A job's or hook's `timeout:` in `daft.yml` overrides it |
 //! | `daft.hooks.output.quiet` | `false` | Suppress hook stdout/stderr |
 //! | `daft.hooks.output.timerDelay` | `5` | Seconds before showing elapsed timer |
 //! | `daft.hooks.output.tailLines` | `6` | Rolling output tail lines per job (0 = none) |
@@ -317,15 +317,17 @@ impl MemoryReserve {
     }
 }
 
-/// Parse `daft.sync.pushTimeout`: `off`/`0` disables (outer `Some(None)`);
-/// otherwise a positive duration with an optional case-insensitive
-/// `s`/`m`/`h`/`d` suffix (bare numbers are seconds). Outer `None` =
-/// unparseable (caller warns and keeps the default) — including an
-/// overflowing product, which `checked_mul` rejects rather than wrapping to a
-/// nonsensical budget (mirrors `MemoryReserve::parse` above).
-pub fn parse_push_timeout(value: &str) -> Option<Option<std::time::Duration>> {
+/// Parse a timeout in the bare-seconds dialect (`DurationDialect::BareSeconds`)
+/// shared by `daft.sync.pushTimeout`, `daft.hooks.timeout`, and the daft.yml
+/// `timeout:` key: `off` or a zero (`0`, `0s`, `0m`, …) disables (outer
+/// `Some(None)`); otherwise a positive duration with an optional
+/// case-insensitive `s`/`m`/`h`/`d` suffix (bare numbers are seconds). Outer
+/// `None` = unparseable (caller reports it and keeps the default) — including
+/// an overflowing product, which `checked_mul` rejects rather than wrapping to
+/// a nonsensical budget (mirrors `MemoryReserve::parse` above).
+pub fn parse_timeout(value: &str) -> Option<Option<std::time::Duration>> {
     let value = value.trim().to_ascii_lowercase();
-    if value == "off" || value == "0" {
+    if value == "off" {
         return Some(None);
     }
     let (digits, unit_secs) = if let Some(d) = value.strip_suffix('d') {
@@ -341,7 +343,26 @@ pub fn parse_push_timeout(value: &str) -> Option<Option<std::time::Duration>> {
     };
     let n: u64 = digits.trim().parse().ok()?;
     let secs = n.checked_mul(unit_secs)?;
-    (secs > 0).then(|| Some(std::time::Duration::from_secs(secs)))
+    Some((secs > 0).then(|| std::time::Duration::from_secs(secs)))
+}
+
+/// Render a timeout exactly, in the largest unit that divides it — `90s`,
+/// `40m`, `2h`, `1d` — so a message names the limit the user configured
+/// (`shorthand_from_seconds` truncates: 90 s would read "1m"). The output
+/// parses back through [`parse_timeout`]. Sub-second limits (tests only)
+/// render as milliseconds.
+pub fn format_timeout(limit: std::time::Duration) -> String {
+    if limit.subsec_nanos() != 0 {
+        return format!("{}ms", limit.as_millis());
+    }
+    let secs = limit.as_secs();
+    match secs {
+        0 => "0s".to_string(),
+        s if s % 86_400 == 0 => format!("{}d", s / 86_400),
+        s if s % 3_600 == 0 => format!("{}h", s / 3_600),
+        s if s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
 }
 
 /// Default values for settings.
@@ -1106,7 +1127,7 @@ impl DaftSettings {
         if let Some(value) = git.config_get(keys::SYNC_PUSH_TIMEOUT)?
             && !value.is_empty()
         {
-            match parse_push_timeout(&value) {
+            match parse_timeout(&value) {
                 Some(timeout) => settings.sync_push_timeout = timeout,
                 None => eprintln!(
                     "daft: unknown value for {}: {:?} — using default",
@@ -1674,10 +1695,8 @@ pub fn load_hooks_config_with(git: &GitCommand) -> Result<HooksConfig> {
         config.user_directory = expanded;
     }
 
-    if let Some(value) = git.config_get(keys::hooks::TIMEOUT)?
-        && let Ok(timeout) = value.parse::<u32>()
-    {
-        config.timeout_seconds = timeout;
+    if let Some(value) = git.config_get(keys::hooks::TIMEOUT)? {
+        apply_hooks_timeout(&mut config, &value);
     }
 
     // Load output settings
@@ -1708,6 +1727,23 @@ pub fn load_hooks_config_with(git: &GitCommand) -> Result<HooksConfig> {
     }
 
     Ok(config)
+}
+
+/// Apply a git-config `daft.hooks.timeout` value: bare seconds or a unit
+/// (`40m`), `off`/`0` for no limit. An unparseable value keeps the default and
+/// is recorded raw for the executor to report — the loader runs several
+/// times per command (and under TUIs), so it must not print.
+fn apply_hooks_timeout(config: &mut HooksConfig, value: &str) {
+    if value.trim().is_empty() {
+        return;
+    }
+    match parse_timeout(value) {
+        Some(timeout) => {
+            config.job_timeout = timeout;
+            config.job_timeout_git_unparsed = None;
+        }
+        None => config.job_timeout_git_unparsed = Some(value.to_string()),
+    }
 }
 
 /// Load hooks configuration from global git config only.
@@ -1743,10 +1779,8 @@ pub fn load_hooks_config_global() -> Result<HooksConfig> {
         config.user_directory = expanded;
     }
 
-    if let Some(value) = git.config_get_global(keys::hooks::TIMEOUT)?
-        && let Ok(timeout) = value.parse::<u32>()
-    {
-        config.timeout_seconds = timeout;
+    if let Some(value) = git.config_get_global(keys::hooks::TIMEOUT)? {
+        apply_hooks_timeout(&mut config, &value);
     }
 
     // Load output settings
@@ -2262,6 +2296,117 @@ mod tests {
         );
     }
 
+    /// Regression (#1009): `daft.hooks.timeout` was parsed as `u32` seconds and
+    /// then never read. Both loaders must accept the shared timeout dialect —
+    /// a unit, bare seconds, `off` — and capture (not swallow) a value that
+    /// does not parse, keeping the default in force.
+    #[test]
+    #[serial_test::serial]
+    fn hooks_timeout_is_read_by_both_loaders() {
+        use std::time::Duration;
+
+        struct Restore {
+            cwd: Option<std::path::PathBuf>,
+            global: Option<std::ffi::OsString>,
+            nosystem: Option<std::ffi::OsString>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(cwd) = &self.cwd {
+                    let _ = std::env::set_current_dir(cwd);
+                }
+                unsafe {
+                    match self.global.take() {
+                        Some(v) => std::env::set_var("GIT_CONFIG_GLOBAL", v),
+                        None => std::env::remove_var("GIT_CONFIG_GLOBAL"),
+                    }
+                    match self.nosystem.take() {
+                        Some(v) => std::env::set_var("GIT_CONFIG_NOSYSTEM", v),
+                        None => std::env::remove_var("GIT_CONFIG_NOSYSTEM"),
+                    }
+                }
+            }
+        }
+
+        let _restore = Restore {
+            cwd: std::env::current_dir().ok(),
+            global: std::env::var_os("GIT_CONFIG_GLOBAL"),
+            nosystem: std::env::var_os("GIT_CONFIG_NOSYSTEM"),
+        };
+
+        let home = tempfile::tempdir().unwrap();
+        let global_cfg = home.path().join("gitconfig-global");
+        std::fs::write(&global_cfg, "").unwrap();
+        unsafe {
+            std::env::set_var("GIT_CONFIG_GLOBAL", &global_cfg);
+            std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+        }
+
+        let repo = tempfile::tempdir().unwrap();
+        let repo_path = repo.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let out = crate::utils::git_command_at(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        std::env::set_current_dir(&repo_path).unwrap();
+        let local = || load_hooks_config_with(&GitCommand::new(true)).unwrap();
+
+        // Unset: the built-in five minutes.
+        assert_eq!(local().job_timeout, Some(Duration::from_secs(300)));
+
+        git(&["config", "daft.hooks.timeout", "40m"]);
+        let config = local();
+        assert_eq!(config.job_timeout, Some(Duration::from_secs(2_400)));
+        assert_eq!(config.job_timeout_git_unparsed, None);
+
+        git(&["config", "daft.hooks.timeout", "2400"]);
+        assert_eq!(local().job_timeout, Some(Duration::from_secs(2_400)));
+
+        git(&["config", "daft.hooks.timeout", "off"]);
+        assert_eq!(local().job_timeout, None);
+        git(&["config", "daft.hooks.timeout", "0"]);
+        assert_eq!(local().job_timeout, None);
+
+        git(&["config", "daft.hooks.timeout", "40 minutes"]);
+        let config = local();
+        assert_eq!(
+            config.job_timeout,
+            Some(Duration::from_secs(300)),
+            "an unparseable value keeps the default in force"
+        );
+        assert_eq!(
+            config.job_timeout_git_unparsed.as_deref(),
+            Some("40 minutes"),
+            "the local loader must capture the unparseable value"
+        );
+
+        // Global-only loader (clone path): same dialect, same capture.
+        let set_global = |value: &str| {
+            git(&[
+                "config",
+                "--file",
+                global_cfg.to_str().unwrap(),
+                "daft.hooks.timeout",
+                value,
+            ])
+        };
+        set_global("2h");
+        let global = load_hooks_config_global().unwrap();
+        assert_eq!(global.job_timeout, Some(Duration::from_secs(7_200)));
+        set_global("forever");
+        let global = load_hooks_config_global().unwrap();
+        assert_eq!(global.job_timeout, Some(Duration::from_secs(300)));
+        assert_eq!(global.job_timeout_git_unparsed.as_deref(), Some("forever"));
+    }
+
     #[test]
     fn governor_mode_parse() {
         assert_eq!(GovernorMode::parse("auto"), Some(GovernorMode::Auto));
@@ -2328,37 +2473,49 @@ mod tests {
     }
 
     #[test]
-    fn push_timeout_parse() {
+    fn timeout_parse() {
         use std::time::Duration;
-        assert_eq!(parse_push_timeout("off"), Some(None));
-        assert_eq!(parse_push_timeout("OFF"), Some(None));
-        assert_eq!(parse_push_timeout("0"), Some(None));
-        assert_eq!(
-            parse_push_timeout("30m"),
-            Some(Some(Duration::from_secs(1_800)))
-        );
-        assert_eq!(parse_push_timeout("2s"), Some(Some(Duration::from_secs(2))));
-        assert_eq!(
-            parse_push_timeout("1h"),
-            Some(Some(Duration::from_secs(3_600)))
-        );
-        assert_eq!(
-            parse_push_timeout("90"),
-            Some(Some(Duration::from_secs(90)))
-        );
-        assert_eq!(parse_push_timeout("forever"), None);
-        assert_eq!(parse_push_timeout("-5m"), None);
-        assert_eq!(parse_push_timeout(""), None);
+        assert_eq!(parse_timeout("off"), Some(None));
+        assert_eq!(parse_timeout("OFF"), Some(None));
+        assert_eq!(parse_timeout("0"), Some(None));
+        // A zero with a unit is off too, not unparseable.
+        assert_eq!(parse_timeout("0s"), Some(None));
+        assert_eq!(parse_timeout("0m"), Some(None));
+        assert_eq!(parse_timeout(" 0H "), Some(None));
+        assert_eq!(parse_timeout("30m"), Some(Some(Duration::from_secs(1_800))));
+        assert_eq!(parse_timeout("2s"), Some(Some(Duration::from_secs(2))));
+        assert_eq!(parse_timeout("1h"), Some(Some(Duration::from_secs(3_600))));
+        assert_eq!(parse_timeout("90"), Some(Some(Duration::from_secs(90))));
+        assert_eq!(parse_timeout("forever"), None);
+        assert_eq!(parse_timeout("-5m"), None);
+        assert_eq!(parse_timeout(""), None);
         // Day suffix (consistent with clean_policy's duration parser).
         assert_eq!(
-            parse_push_timeout("2d"),
+            parse_timeout("2d"),
             Some(Some(Duration::from_secs(172_800)))
         );
         // An overflowing product (n × unit_secs > u64::MAX) is rejected (outer
         // None → default kept), not wrapped to a nonsensical budget nor a
         // debug-build panic. 6e15 h × 3600 s/h overflows u64.
-        assert_eq!(parse_push_timeout("6000000000000000h"), None);
-        assert_eq!(parse_push_timeout("999999999999999999d"), None);
+        assert_eq!(parse_timeout("6000000000000000h"), None);
+        assert_eq!(parse_timeout("999999999999999999d"), None);
+    }
+
+    #[test]
+    fn format_timeout_is_exact() {
+        use std::time::Duration;
+        assert_eq!(format_timeout(Duration::from_secs(90)), "90s");
+        assert_eq!(format_timeout(Duration::from_secs(2_400)), "40m");
+        assert_eq!(format_timeout(Duration::from_secs(5_400)), "90m");
+        assert_eq!(format_timeout(Duration::from_secs(7_200)), "2h");
+        assert_eq!(format_timeout(Duration::from_secs(86_400)), "1d");
+        assert_eq!(format_timeout(Duration::from_secs(300)), "5m");
+        assert_eq!(format_timeout(Duration::from_millis(200)), "200ms");
+        // Every rendering parses back to the same limit.
+        for secs in [1, 59, 90, 300, 2_400, 3_600, 5_400, 86_400, 90_000] {
+            let d = Duration::from_secs(secs);
+            assert_eq!(parse_timeout(&format_timeout(d)), Some(Some(d)));
+        }
     }
 
     #[test]

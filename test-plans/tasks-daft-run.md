@@ -40,7 +40,7 @@ tasks:
 - [ ] `daft run` (the parallel `web` + `ticker` task): both jobs stream live,
       labeled output; the ticker's `tick` lines keep coming
 - [ ] One Ctrl+C stops both jobs promptly (SIGTERM) and daft exits; the shell
-      prompt returns within ~1s, not after the (absent) 300s hook timeout
+      prompt returns within ~1s, not after an (absent) hook timeout
 - [ ] After exit, no orphaned children survive: `pgrep -f 'http.server 8973'`
       and `pgrep -f 'while true'` both return nothing
 - [ ] A job that traps SIGTERM (`run: sh -c 'trap "" TERM; sleep 300'`): first
@@ -53,7 +53,7 @@ tasks:
 
 - [ ] A task job that runs well past 5 minutes (`sleep 400`) is NOT killed at
       300s — it runs until it exits or you cancel (contrast: the same job under
-      a lifecycle hook still times out at 300s)
+      a lifecycle hook times out at its configured limit, 5m by default)
 
 ## Interactive job (TTY passthrough)
 

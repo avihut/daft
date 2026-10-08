@@ -1,0 +1,83 @@
+name: hook job timeout in a piped hook
+description:
+  "#1009: in a piped (sequential, stop-on-failure) hook a timed-out job used to
+  escape the runner as an error — reported as a config error, the job never
+  recorded, the remaining jobs neither run nor accounted for. It is an ordinary
+  job failure now: recorded, named in the abort, and the jobs after it are
+  skipped as for any other failure."
+
+repos:
+  - name: test-job-timeout-piped
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# piped job timeout"
+        commits:
+          - message: "Initial commit"
+      - name: feature
+        from: main
+        files:
+          - path: f.txt
+            content: "f"
+        commits:
+          - message: "Feature work"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          piped: true
+          jobs:
+            - name: slow-step
+              run: |
+                echo step started
+                sleep 42
+                echo step finished
+            - name: next-step
+              run: touch "$DAFT_MERGE_TARGET_PATH/.next-step-ran"
+
+steps:
+  - name: Clone with trusted hooks
+    run:
+      daft clone --layout contained --trust-hooks $REMOTE_TEST_JOB_TIMEOUT_PIPED
+    expect:
+      exit_code: 0
+
+  - name: Give hook jobs a 2-second limit
+    run: git config daft.hooks.timeout 2
+    cwd: "$WORK_DIR/test-job-timeout-piped/main"
+    expect:
+      exit_code: 0
+
+  - name: The first step times out and the merge is refused, naming it
+    run: daft merge feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-job-timeout-piped/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "pre-merge hook failed: job 'slow-step' timed out after 2s"
+      output_not_contains:
+        - "exit code -1"
+        - "Command execution failed"
+
+  - name: The step after the timed-out one did not run
+    run: test -f .next-step-ran && echo "next ran" || echo "next skipped"
+    cwd: "$WORK_DIR/test-job-timeout-piped/main"
+    expect:
+      exit_code: 0
+      output_contains: ["next skipped"]
+
+  - name: The timed-out step is recorded
+    run: daft hooks jobs --last --failed 2>&1
+    cwd: "$WORK_DIR/test-job-timeout-piped/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "slow-step"
+        - "step started"
+
+  - name: The step's forked workload did not survive the teardown
+    run: pgrep -f "[s]leep 42" || echo "no survivors"
+    expect:
+      exit_code: 0
+      output_contains: ["no survivors"]

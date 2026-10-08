@@ -420,6 +420,108 @@ impl<'de> Deserialize<'de> for SizeScalar {
     }
 }
 
+/// A `timeout:` value as written in daft.yml: bare seconds (`300`), a
+/// duration with a unit (`40m`, `2h`), or `off` / `0` for no limit — the
+/// `daft.sync.pushTimeout` dialect ([`parse_timeout`]). The raw text is
+/// kept, so `hooks dump`, `file merge`, and visitor propagation write back
+/// the user's spelling rather than a canonical one.
+///
+/// Any scalar deserializes. `timeout: false` and `timeout: 1.5` arrive as a
+/// bool and a float; rejecting them here would fail the whole file, and a
+/// file that fails to load drops every hook back to legacy scripts — a
+/// pre-merge gate would silently stop running. They fail [`Self::parse`]
+/// instead, which `daft hooks validate` reports and a hook fire treats as a
+/// configuration error under the hook's fail mode.
+///
+/// [`parse_timeout`]: crate::core::settings::parse_timeout
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimeoutScalar(String);
+
+impl TimeoutScalar {
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    /// The value as written.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// `Some(None)` = no limit, `Some(Some(d))` = a limit, `None` = not a
+    /// timeout at all.
+    pub fn parse(&self) -> Option<Option<std::time::Duration>> {
+        crate::core::settings::parse_timeout(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for TimeoutScalar {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = TimeoutScalar;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a timeout such as `30m`, `2h`, `90`, or `off`")
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                value: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(TimeoutScalar(value.to_string()))
+            }
+
+            fn visit_u64<E: serde::de::Error>(
+                self,
+                value: u64,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(TimeoutScalar(value.to_string()))
+            }
+
+            fn visit_i64<E: serde::de::Error>(
+                self,
+                value: i64,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(TimeoutScalar(value.to_string()))
+            }
+
+            fn visit_f64<E: serde::de::Error>(
+                self,
+                value: f64,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(TimeoutScalar(value.to_string()))
+            }
+
+            fn visit_bool<E: serde::de::Error>(
+                self,
+                value: bool,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(TimeoutScalar(value.to_string()))
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
+impl Serialize for TimeoutScalar {
+    /// Round-trips the spelling: bare seconds go back out as an integer
+    /// (`300`, not `'300'`), everything else as the string it was.
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.0.parse::<u64>() {
+            Ok(secs) if self.0.bytes().all(|b| b.is_ascii_digit()) => {
+                serializer.serialize_u64(secs)
+            }
+            _ => serializer.serialize_str(&self.0),
+        }
+    }
+}
+
 impl CopyConfig {
     /// The declared entries, in config order, whichever form was written.
     pub fn paths(&self) -> &[String] {
@@ -768,6 +870,13 @@ pub struct HookDef {
     /// `resolve_fail_mode`). Has no effect on `tasks:` entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fail_mode: Option<super::FailMode>,
+
+    /// Time limit for each job in this hook that does not set its own — a
+    /// per-job default (like `background:`), not a budget for the whole
+    /// hook. Falls back to `daft.hooks.timeout`. Has no effect on `tasks:`
+    /// entries or interactive jobs. See [`TimeoutScalar`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<TimeoutScalar>,
 }
 
 /// Target operating system for platform constraints.
@@ -1025,6 +1134,12 @@ pub struct JobDef {
     /// Log configuration for this job.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log: Option<LogConfig>,
+
+    /// Time limit for this job, overriding the hook's `timeout:` and
+    /// `daft.hooks.timeout`; `off` lifts any limit. Has no effect on
+    /// interactive jobs or in `tasks:`. See [`TimeoutScalar`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<TimeoutScalar>,
 }
 
 /// Legacy command definition (alias for JobDef).
@@ -2187,6 +2302,71 @@ copy:
             serde_yaml::from_str("shared:\n  - .env\ncopy:\n  paths: [target]\n  max_size: 5000\n")
                 .unwrap();
         assert_eq!(config.shared.unwrap(), [".env"]);
+    }
+
+    fn pre_merge(yaml: &str) -> HookDef {
+        let config: YamlConfig = serde_yaml::from_str(yaml).expect(yaml);
+        config
+            .hooks
+            .get("pre-merge")
+            .cloned()
+            .expect("a pre-merge hook")
+    }
+
+    #[test]
+    fn timeout_parses_at_hook_and_job_level_in_every_spelling() {
+        use std::time::Duration;
+        let hook = pre_merge(
+            "hooks:\n  pre-merge:\n    timeout: 20m\n    jobs:\n\
+             \x20     - name: a\n        run: 'true'\n        timeout: 2400\n\
+             \x20     - name: b\n        run: 'true'\n        timeout: off\n\
+             \x20     - name: c\n        run: 'true'\n        timeout: 0\n\
+             \x20     - name: d\n        run: 'true'\n",
+        );
+        assert_eq!(
+            hook.timeout.as_ref().unwrap().parse(),
+            Some(Some(Duration::from_secs(1_200)))
+        );
+        let jobs = hook.jobs.unwrap();
+        let job_timeout = |i: usize| jobs[i].timeout.as_ref().map(TimeoutScalar::parse);
+        assert_eq!(job_timeout(0), Some(Some(Some(Duration::from_secs(2_400)))));
+        assert_eq!(job_timeout(1), Some(Some(None)), "off = no limit");
+        assert_eq!(job_timeout(2), Some(Some(None)), "0 = no limit");
+        assert_eq!(job_timeout(3), None, "unset inherits");
+    }
+
+    /// `timeout: false` / `1.5` arrive as a bool and a float. Rejecting them at
+    /// deserialization would fail the whole daft.yml — and a file that fails to
+    /// load drops every hook to the legacy-script fallback, so a pre-merge gate
+    /// would silently stop running. They load, and fail `parse()` instead.
+    #[test]
+    fn a_non_duration_timeout_does_not_fail_the_whole_file() {
+        for value in ["false", "true", "1.5", "forever", "'40 minutes'"] {
+            let hook = pre_merge(&format!(
+                "hooks:\n  pre-merge:\n    jobs:\n      - name: gate\n        run: 'true'\n        timeout: {value}\n"
+            ));
+            let timeout = hook.jobs.unwrap()[0].timeout.clone().expect(value);
+            assert_eq!(timeout.parse(), None, "{value} is not a duration");
+        }
+    }
+
+    /// `hooks dump`, `file merge`, and visitor propagation re-serialize the
+    /// typed config: a user's `300` must not come back quoted, nor `40m` as
+    /// seconds.
+    #[test]
+    fn timeout_round_trips_its_spelling() {
+        let yaml = "hooks:\n  pre-merge:\n    timeout: 40m\n    jobs:\n\
+                    \x20     - name: a\n        run: 'true'\n        timeout: 300\n\
+                    \x20     - name: b\n        run: 'true'\n        timeout: off\n";
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let out = serde_yaml::to_string(&config).unwrap();
+        assert!(out.contains("timeout: 40m"), "{out}");
+        assert!(
+            out.contains("timeout: 300\n"),
+            "bare seconds stay an integer: {out}"
+        );
+        let again: YamlConfig = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(again, config);
     }
 
     #[test]

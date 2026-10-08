@@ -32,7 +32,16 @@ pub struct CommandResult {
     /// (two-stage Ctrl+C) rather than exiting on its own. When true,
     /// `exit_code` is normalized to `Some(130)` (128 + SIGINT).
     pub cancelled: bool,
+    /// The limit the command outran, when it was torn down by its timeout.
+    /// When set, `exit_code` is normalized to [`TIMED_OUT_EXIT_CODE`].
+    pub timed_out: Option<Duration>,
 }
+
+/// Exit code reported for a command killed by its timeout — GNU `timeout`'s
+/// convention. The teardown's signal death would otherwise surface as a
+/// meaningless `-1` (or a signal code that hides the cause), the same reason
+/// a cancellation normalizes to 130.
+pub const TIMED_OUT_EXIT_CODE: i32 = 124;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public API
@@ -115,6 +124,9 @@ pub fn run_command(
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
 
+    // Kept back from the reader threads: a teardown that leaves processes
+    // behind says so in the job's own output.
+    let tx_notice = line_sender.clone();
     let tx_stdout = line_sender.clone();
     let tx_stderr = line_sender;
 
@@ -153,13 +165,22 @@ pub fn run_command(
     });
 
     // Wait for the child, honoring both the optional timeout and the optional
-    // cancel flag. Killing the child (either path) closes the pipes and
-    // unblocks the reader threads above.
-    let outcome = wait_child(&mut child, timeout, cancel)
+    // cancel flag. Tearing the child's tree down (either path) closes the
+    // pipes and unblocks the reader threads above; a timeout keeps escalating
+    // until they have drained.
+    let drains_done = || stdout_thread.is_finished() && stderr_thread.is_finished();
+    let (outcome, survivors) = wait_child(&mut child, timeout, cancel, drains_done)
         .with_context(|| format!("Command execution failed: {cmd}"))?;
 
     let stdout_content = stdout_thread.join().unwrap_or_default();
-    let stderr_content = stderr_thread.join().unwrap_or_default();
+    let mut stderr_content = stderr_thread.join().unwrap_or_default();
+    if let Some(notice) = survivors_notice(&survivors) {
+        if let Some(tx) = &tx_notice {
+            tx.send((OutputKind::Stderr, notice.clone())).ok();
+        }
+        stderr_content.push_str(&notice);
+        stderr_content.push('\n');
+    }
 
     match outcome {
         WaitOutcome::Exited(status) => Ok(CommandResult {
@@ -168,6 +189,7 @@ pub fn run_command(
             stdout: stdout_content,
             stderr: stderr_content,
             cancelled: false,
+            timed_out: None,
         }),
         WaitOutcome::Cancelled => Ok(CommandResult {
             success: false,
@@ -177,8 +199,37 @@ pub fn run_command(
             stdout: stdout_content,
             stderr: stderr_content,
             cancelled: true,
+            timed_out: None,
+        }),
+        // A timeout is an outcome, not an error: the job failed, its output
+        // up to the teardown is kept, and callers see why it failed.
+        WaitOutcome::TimedOut(limit) => Ok(CommandResult {
+            success: false,
+            exit_code: Some(TIMED_OUT_EXIT_CODE),
+            stdout: stdout_content,
+            stderr: stderr_content,
+            cancelled: false,
+            timed_out: Some(limit),
         }),
     }
+}
+
+/// The line a teardown that left process groups alive adds to the job's
+/// stderr — the rail tail, the background job's log, and `daft hooks jobs
+/// logs` all show it. Worded like `daft sync`'s cancel report.
+fn survivors_notice(pgids: &[u32]) -> Option<String> {
+    if pgids.is_empty() {
+        return None;
+    }
+    let list = pgids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "daft: processes this job started may still be running (process group(s): {list}). \
+         Recover manually with: kill -KILL -<pgid>"
+    ))
 }
 
 /// Spawn a shell command with inherited stdin/stdout/stderr (interactive).
@@ -237,6 +288,7 @@ pub fn run_command_interactive(
             stdout: String::new(),
             stderr: String::new(),
             cancelled: false,
+            timed_out: None,
         });
     };
 
@@ -251,6 +303,7 @@ pub fn run_command_interactive(
             stdout: String::new(),
             stderr: String::new(),
             cancelled: false,
+            timed_out: None,
         }),
         WaitOutcome::Cancelled => Ok(CommandResult {
             success: false,
@@ -258,7 +311,10 @@ pub fn run_command_interactive(
             stdout: String::new(),
             stderr: String::new(),
             cancelled: true,
+            timed_out: None,
         }),
+        // Interactive children are never given a deadline.
+        WaitOutcome::TimedOut(_) => unreachable!("interactive commands have no timeout"),
     }
 }
 
@@ -281,78 +337,164 @@ fn status_exit_code(status: &ExitStatus) -> i32 {
     status.code().unwrap_or(-1)
 }
 
-/// Terminal outcome of waiting on a child: it exited on its own, or it was
-/// torn down by a user cancellation.
+/// Terminal outcome of waiting on a child: it exited on its own, it was torn
+/// down by a user cancellation, or it outran its timeout (the limit) and was
+/// torn down.
 enum WaitOutcome {
     Exited(ExitStatus),
     Cancelled,
+    TimedOut(Duration),
 }
 
 /// Wait for a captured-output child, polling at 100ms intervals.
 ///
 /// Honors two independent deadlines:
-/// - `cancel` (checked first): once the flag is raised, the child's process
-///   tree is torn down — SIGTERM+SIGCONT at level 1, SIGKILL at level 2 — via
-///   [`GroupCascade`], and the eventual reap returns [`WaitOutcome::Cancelled`].
-/// - `timeout`: when `Some(t)` and exceeded, the child is killed and an error
-///   is returned (the pre-existing hook timeout semantics). `None` waits
-///   forever (task jobs).
+/// - `cancel`: once the flag is raised, the child's process tree is torn
+///   down — SIGTERM+SIGCONT at level 1, SIGKILL at level 2 — via
+///   [`GroupCascade`], and the wait returns [`WaitOutcome::Cancelled`].
+/// - `timeout`: when `Some(t)` and exceeded, the same tree teardown runs on a
+///   clock — SIGTERM+SIGCONT at the deadline, SIGKILL once
+///   [`TIMEOUT_HARD_GRACE`] has passed — and the wait returns
+///   [`WaitOutcome::TimedOut`]. `None` waits forever (task jobs).
 ///
-/// `cancel: None` polls no flag and is behaviorally identical to the previous
-/// `wait_with_timeout`.
+/// The wait returns only once the child is reaped **and** `drains_done`
+/// reports its output pipes closed (the `ChildSupervisor::wait` contract): a
+/// process the shell leaves behind can hold the pipes past the shell's exit,
+/// and returning early would hang the caller's reader join with nothing left
+/// to escalate against it. Both deadlines keep applying until then, so the
+/// limit bounds the whole job, pipe holders included.
+///
+/// The outcome is labeled the way `ChildSupervisor::wait` labels it: a cancel
+/// or a deadline counts only if it lands while the shell is still running. A
+/// shell that exited on its own keeps its exit status even when a leftover
+/// pipe holder is torn down afterwards — its tests passed; daft just stopped
+/// waiting for the straggler.
+///
+/// Once a deadline teardown starts, the wait also holds until every process
+/// group it signaled is gone: a descendant that ignores SIGTERM and holds no
+/// pipe would otherwise outlive a job reported as stopped. A group still alive
+/// [`HARD_SETTLE`] after the SIGKILL is not waited on forever: it is returned
+/// beside the outcome, for the caller to report, and recorded for `daft
+/// sync`'s leftover report.
+///
+/// The teardown reaches the groups it can find by walking the tree from the
+/// shell. A process that started its own session and whose parent has already
+/// exited is out of reach; the wait then lasts until it closes the pipes.
+///
+/// `cancel: None` polls no flag.
+///
+/// [`GroupCascade`]: crate::git::cancel::GroupCascade
+/// [`TIMEOUT_HARD_GRACE`]: crate::git::cancel::TIMEOUT_HARD_GRACE
 fn wait_child(
     child: &mut std::process::Child,
     timeout: Option<Duration>,
     cancel: Option<&crate::git::cancel::CancelFlag>,
-) -> Result<WaitOutcome> {
+    drains_done: impl Fn() -> bool,
+) -> Result<(WaitOutcome, Vec<u32>)> {
     use std::thread;
     use std::time::Instant;
 
     let start = Instant::now();
     let poll_interval = Duration::from_millis(100);
     let mut cancelling = false;
+    let mut timed_out: Option<Duration> = None;
+    let mut exited: Option<ExitStatus> = None;
     #[cfg(unix)]
     let mut teardown: Option<CancelTeardown> = None;
 
     loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(if cancelling {
-                WaitOutcome::Cancelled
-            } else {
-                WaitOutcome::Exited(status)
-            });
+        if exited.is_none() {
+            exited = child.try_wait()?;
+        }
+        let running = exited.is_none();
+
+        let flag_level = cancel.map_or(0, crate::git::cancel::CancelFlag::level);
+        // 0 = within budget, 1 = past the deadline, 2 = past deadline + grace.
+        let deadline_level = match timeout {
+            Some(t) => {
+                let elapsed = start.elapsed();
+                if elapsed < t {
+                    0
+                } else if elapsed < t + crate::git::cancel::TIMEOUT_HARD_GRACE {
+                    1
+                } else {
+                    2
+                }
+            }
+            None => 0,
+        };
+        if flag_level > 0 && running {
+            cancelling = true;
+        }
+        if deadline_level > 0 && running {
+            timed_out = timeout;
         }
 
-        // Cancellation takes precedence over the timeout deadline.
-        if let Some(flag) = cancel
-            && flag.is_cancelled()
+        if let Some(status) = exited
+            && drains_done()
         {
-            cancelling = true;
+            // A deadline teardown finishes before the wait returns.
+            #[cfg(unix)]
+            let settled =
+                deadline_level == 0 || teardown.as_ref().is_none_or(CancelTeardown::settled);
+            #[cfg(not(unix))]
+            let settled = true;
+            if settled {
+                // Whatever outlived a settled deadline teardown is reported
+                // rather than left to vanish silently.
+                #[cfg(unix)]
+                let survivors = match &teardown {
+                    Some(teardown) if deadline_level > 0 => {
+                        let survivors = teardown.survivors();
+                        crate::git::cancel::record_survivors(&survivors);
+                        survivors
+                    }
+                    _ => Vec::new(),
+                };
+                #[cfg(not(unix))]
+                let survivors = Vec::new();
+                // Priority: a user cancel outranks a timeout; a timeout
+                // outranks the exit status (the teardown forged it anyway).
+                let outcome = if cancelling {
+                    WaitOutcome::Cancelled
+                } else if let Some(limit) = timed_out {
+                    WaitOutcome::TimedOut(limit)
+                } else {
+                    WaitOutcome::Exited(status)
+                };
+                return Ok((outcome, survivors));
+            }
+        }
+
+        // Escalation applies whether or not the shell is still running: a
+        // reaped shell's pipe holders are torn down the same way.
+        let level = flag_level.max(deadline_level);
+        if level > 0 {
             #[cfg(unix)]
             {
                 teardown
                     .get_or_insert_with(|| CancelTeardown::new(child.id()))
-                    .tick(flag.level());
+                    .tick(level);
             }
             #[cfg(not(unix))]
             {
-                // No process-group teardown off-unix; direct kill is the
-                // best available escalation.
-                child.kill().ok();
+                // No process-group teardown off-unix; a direct kill of a
+                // still-running child is the best available escalation.
+                if running {
+                    child.kill().ok();
+                }
             }
-            thread::sleep(poll_interval);
-            continue;
-        }
-
-        if let Some(t) = timeout
-            && start.elapsed() >= t
-        {
-            child.kill().ok();
-            anyhow::bail!("Command timed out after {t:?}");
         }
         thread::sleep(poll_interval);
     }
 }
+
+/// How long [`wait_child`] keeps waiting for a signaled process group to
+/// disappear after SIGKILL — enough for the kernel to finish the kill and for
+/// init to reap an orphan, short of hanging on a process in uninterruptible
+/// sleep.
+#[cfg(unix)]
+const HARD_SETTLE: Duration = Duration::from_secs(1);
 
 /// Wait for an interactive (stdio-inherited) child under cancellation.
 ///
@@ -425,14 +567,14 @@ fn wait_interactive_child(
 }
 
 /// Escalating process-tree teardown state for a captured-output child under
-/// cancellation. Wraps a [`GroupCascade`] with the tick cadence: the first
-/// soft tick fires immediately, then every ~500ms while at level 1; a single
-/// hard tick fires on the transition to level 2.
+/// cancellation or past its deadline. Wraps a [`GroupCascade`] with the tick
+/// cadence: the first soft tick fires immediately, then every ~500ms while at
+/// level 1; a single hard tick fires on the transition to level 2.
 #[cfg(unix)]
 struct CancelTeardown {
     cascade: crate::git::cancel::GroupCascade,
     last_soft: Option<std::time::Instant>,
-    hard_sent: bool,
+    hard_sent: Option<std::time::Instant>,
 }
 
 #[cfg(unix)]
@@ -441,15 +583,15 @@ impl CancelTeardown {
         Self {
             cascade: crate::git::cancel::GroupCascade::new(root_pid),
             last_soft: None,
-            hard_sent: false,
+            hard_sent: None,
         }
     }
 
     fn tick(&mut self, level: usize) {
         if level >= 2 {
-            if !self.hard_sent {
+            if self.hard_sent.is_none() {
                 self.cascade.hard_tick();
-                self.hard_sent = true;
+                self.hard_sent = Some(std::time::Instant::now());
             }
             return;
         }
@@ -460,6 +602,18 @@ impl CancelTeardown {
             self.cascade.soft_tick();
             self.last_soft = Some(std::time::Instant::now());
         }
+    }
+
+    /// Signaled process groups that still have live members.
+    fn survivors(&self) -> Vec<u32> {
+        self.cascade.survivors()
+    }
+
+    /// Whether the teardown is over: every signaled group is gone, or the
+    /// SIGKILL went out at least [`HARD_SETTLE`] ago and waiting longer would
+    /// not help.
+    fn settled(&self) -> bool {
+        self.hard_sent.is_some_and(|at| at.elapsed() >= HARD_SETTLE) || self.survivors().is_empty()
     }
 }
 
@@ -478,6 +632,7 @@ mod tests {
             stdout: "hello\n".into(),
             stderr: String::new(),
             cancelled: false,
+            timed_out: None,
         };
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
@@ -493,6 +648,7 @@ mod tests {
             stdout: String::new(),
             stderr: "error\n".into(),
             cancelled: false,
+            timed_out: None,
         };
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(1));
@@ -507,6 +663,7 @@ mod tests {
             stdout: "ok".into(),
             stderr: String::new(),
             cancelled: false,
+            timed_out: None,
         };
         let cloned = result.clone();
         assert_eq!(cloned.success, result.success);
@@ -522,6 +679,7 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             cancelled: false,
+            timed_out: None,
         };
         let debug = format!("{result:?}");
         assert!(debug.contains("CommandResult"));
@@ -709,13 +867,181 @@ mod tests {
             None,
             None,
         );
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        let msg = format!("{err:#}");
+        // A timeout is an outcome, not an error: the result says which limit
+        // was hit and normalizes the exit code.
+        let result = result.expect("a timed-out command still returns a result");
+        assert!(!result.success);
+        assert_eq!(result.timed_out, Some(Duration::from_millis(200)));
+        assert_eq!(result.exit_code, Some(TIMED_OUT_EXIT_CODE));
+        assert!(!result.cancelled);
+    }
+
+    /// Regression (#1009): the timeout used to SIGKILL only the `sh` pid. A
+    /// compound command runs its workload as a child of `sh` (the trailing
+    /// `echo` keeps every shell from exec'ing the `sleep` in place), and that
+    /// child survived the kill, kept the output pipes open, and kept running.
+    /// The deadline must tear the whole tree down, promptly, and keep the
+    /// output captured before the teardown.
+    #[cfg(unix)]
+    #[test]
+    fn run_command_timeout_tears_down_forked_workload() {
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        let (pid_tx, pid_rx) = mpsc::channel::<u32>();
+        let started = std::time::Instant::now();
+        let result = run_command(
+            "echo started; sleep 31; echo after",
+            &env,
+            &dir,
+            Some(Duration::from_millis(300)),
+            None,
+            Some(pid_tx),
+            None,
+        )
+        .expect("a timed-out command still returns a result");
+        let elapsed = started.elapsed();
+
+        assert_eq!(result.timed_out, Some(Duration::from_millis(300)));
+        assert_eq!(result.exit_code, Some(TIMED_OUT_EXIT_CODE));
         assert!(
-            msg.contains("timed out"),
-            "expected timeout error, got: {msg}"
+            result.stdout.contains("started"),
+            "output before the teardown is kept: {:?}",
+            result.stdout
         );
+        assert!(!result.stdout.contains("after"));
+        // The soft cascade (SIGTERM) ends sleep at once; well inside the hard
+        // grace, and nowhere near the 31s the orphan would have run.
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout returned after {elapsed:?}"
+        );
+        // The job is its own process-group leader (pid == pgid), and the
+        // forked `sleep` lives in that group. Probing the group — not a
+        // machine-wide command-line match — keeps a concurrent run of this
+        // suite from failing the test.
+        let pgid = pid_rx.recv().expect("the child pid is reported");
+        let survivors = Command::new("pgrep")
+            .args(["-g", &pgid.to_string()])
+            .output()
+            .expect("pgrep runs");
+        assert!(
+            survivors.stdout.is_empty(),
+            "the forked workload survived the timeout: {}",
+            String::from_utf8_lossy(&survivors.stdout)
+        );
+    }
+
+    /// A group that outlives even SIGKILL (a process in uninterruptible
+    /// sleep, a recycled pgid) can't be produced on demand, so the notice
+    /// that reports one is tested as a formatter.
+    #[test]
+    fn survivors_notice_names_the_groups_and_the_recovery() {
+        assert_eq!(survivors_notice(&[]), None);
+        let notice = survivors_notice(&[4242, 4343]).expect("survivors are reported");
+        assert!(
+            notice.contains("may still be running (process group(s): 4242, 4343)"),
+            "{notice}"
+        );
+        assert!(notice.contains("kill -KILL -<pgid>"), "{notice}");
+    }
+
+    /// Live members of process group `pgid`, killed on the way out so a
+    /// failing assertion leaves nothing behind.
+    #[cfg(unix)]
+    fn group_survivors(pgid: u32) -> String {
+        let out = Command::new("pgrep")
+            .args(["-g", &pgid.to_string()])
+            .output()
+            .expect("pgrep runs");
+        let found = String::from_utf8_lossy(&out.stdout).into_owned();
+        if !found.is_empty() {
+            let _ = Command::new("kill")
+                .args(["-KILL", &format!("-{pgid}")])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        found
+    }
+
+    /// Regression (#1009 review): a descendant that ignores SIGTERM and holds
+    /// no output pipe outlived the timeout. The soft cascade killed the shell,
+    /// the pipes closed, and the wait returned — reporting the job stopped
+    /// while its workload kept running, with no SIGKILL ever sent. The
+    /// teardown must reach the hard kill before the wait returns.
+    #[cfg(unix)]
+    #[test]
+    fn run_command_timeout_kills_a_term_immune_descendant_without_pipes() {
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        let (pid_tx, pid_rx) = mpsc::channel::<u32>();
+        let started = std::time::Instant::now();
+        let result = run_command(
+            "sh -c 'trap \"\" TERM; exec sleep 33' >/dev/null 2>&1 & wait",
+            &env,
+            &dir,
+            Some(Duration::from_millis(300)),
+            None,
+            Some(pid_tx),
+            None,
+        )
+        .expect("a timed-out command still returns a result");
+        let elapsed = started.elapsed();
+        let pgid = pid_rx.recv().expect("the child pid is reported");
+        let survivors = group_survivors(pgid);
+
+        assert_eq!(result.timed_out, Some(Duration::from_millis(300)));
+        assert!(
+            survivors.is_empty(),
+            "the TERM-immune descendant survived the timeout: {survivors}"
+        );
+        // SIGKILL goes out TIMEOUT_HARD_GRACE after the limit; the bound only
+        // guards against waiting on the 33s sleep itself.
+        assert!(
+            elapsed < Duration::from_secs(25),
+            "timeout returned after {elapsed:?}"
+        );
+    }
+
+    /// Regression (#1009 review): a shell that exits before its limit while a
+    /// process it backgrounded still holds the output pipes left the deadline
+    /// unsupervised — the wait returned on the exit, and the reader join then
+    /// blocked until the straggler finished, however long that took. The
+    /// limit must still tear the straggler down. The shell's own exit status
+    /// stands: it finished in time.
+    #[cfg(unix)]
+    #[test]
+    fn run_command_timeout_tears_down_a_pipe_holder_left_by_an_exited_shell() {
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        let (pid_tx, pid_rx) = mpsc::channel::<u32>();
+        let started = std::time::Instant::now();
+        let result = run_command(
+            "sleep 34 & echo exited",
+            &env,
+            &dir,
+            Some(Duration::from_millis(300)),
+            None,
+            Some(pid_tx),
+            None,
+        )
+        .expect("the command returns a result");
+        let elapsed = started.elapsed();
+        let pgid = pid_rx.recv().expect("the child pid is reported");
+        let survivors = group_survivors(pgid);
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the wait outlived the limit by {elapsed:?}"
+        );
+        assert!(
+            survivors.is_empty(),
+            "the pipe holder survived the limit: {survivors}"
+        );
+        assert!(result.success, "the shell exited 0 before the limit");
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.timed_out, None);
+        assert_eq!(result.stdout.trim(), "exited");
     }
 
     #[test]

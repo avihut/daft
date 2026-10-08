@@ -2016,7 +2016,7 @@ mod tests {
         let mut state = state_with(vec![]);
         while state
             .selected()
-            .is_some_and(|r| r.spec.key != keys::hooks::TIMEOUT)
+            .is_some_and(|r| r.spec.key != keys::hooks::OUTPUT_TAIL_LINES)
         {
             state.move_down();
         }

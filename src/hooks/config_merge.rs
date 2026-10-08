@@ -177,6 +177,7 @@ pub fn merge_hook_defs(base: HookDef, overlay: HookDef) -> HookDef {
         jobs,
         commands,
         fail_mode,
+        timeout,
     } = overlay;
 
     let mut merged = base;
@@ -208,6 +209,9 @@ pub fn merge_hook_defs(base: HookDef, overlay: HookDef) -> HookDef {
     }
     if fail_mode.is_some() {
         merged.fail_mode = fail_mode;
+    }
+    if timeout.is_some() {
+        merged.timeout = timeout;
     }
 
     // Jobs: merge named jobs by name, append unnamed
@@ -589,6 +593,7 @@ fn merge3_hook_defs(
         jobs: b_jobs,
         commands: b_commands,
         fail_mode: b_fail_mode,
+        timeout: b_timeout,
     } = base;
 
     HookDef {
@@ -663,6 +668,13 @@ fn merge3_hook_defs(
             b_fail_mode,
             &ours.fail_mode,
             &theirs.fail_mode,
+            tally,
+        ),
+        timeout: pick3(
+            &format!("{prefix}.timeout"),
+            b_timeout,
+            &ours.timeout,
+            &theirs.timeout,
             tally,
         ),
     }
@@ -1286,6 +1298,43 @@ mod tests {
         };
         let merged = merge_hook_defs(HookDef::default(), overlay);
         assert_eq!(merged.fail_mode, Some(FailMode::Abort));
+    }
+
+    #[test]
+    fn merge_hook_defs_carries_timeout() {
+        use crate::hooks::yaml_config::TimeoutScalar;
+        let base = HookDef {
+            timeout: Some(TimeoutScalar::new("10m")),
+            ..Default::default()
+        };
+        // An overlay without a timeout keeps the base's...
+        let merged = merge_hook_defs(base.clone(), HookDef::default());
+        assert_eq!(merged.timeout, Some(TimeoutScalar::new("10m")));
+        // ...and one with a timeout wins.
+        let overlay = HookDef {
+            timeout: Some(TimeoutScalar::new("40m")),
+            ..Default::default()
+        };
+        let merged = merge_hook_defs(base, overlay);
+        assert_eq!(merged.timeout, Some(TimeoutScalar::new("40m")));
+    }
+
+    #[test]
+    fn merge3_takes_a_timeout_change_from_theirs() {
+        use crate::hooks::yaml_config::TimeoutScalar;
+        let base = cfg_with_job("pre-merge", "gate", "true");
+        let mut theirs = base.clone();
+        theirs.hooks.get_mut("pre-merge").unwrap().timeout = Some(TimeoutScalar::new("40m"));
+
+        let out = merge3(&base, &base.clone(), &theirs);
+        assert_eq!(
+            out.merged.hooks["pre-merge"].timeout,
+            Some(TimeoutScalar::new("40m"))
+        );
+        assert_eq!(
+            out.took_from_theirs,
+            vec!["hooks.pre-merge.timeout".to_string()]
+        );
     }
 
     // ── merge3 ───────────────────────────────────────────────────────

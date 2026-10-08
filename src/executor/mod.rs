@@ -93,8 +93,11 @@ pub struct JobSpec {
     pub fail_text: Option<String>,
     /// Maximum time the job is allowed to run, in seconds. `None` means the
     /// job runs until it exits or is cancelled — used by `daft run` tasks,
-    /// which are attended long-running processes (dev servers). Hooks stamp
-    /// `Some(DEFAULT_TIMEOUT)`. Custom adapter because `Duration` has no
+    /// which are attended long-running processes (dev servers). Hook jobs
+    /// carry their resolved limit — the job's or hook's daft.yml `timeout:`,
+    /// else `daft.hooks.timeout`, else [`Self::DEFAULT_TIMEOUT`]; a job that
+    /// outruns it has its process tree torn down and fails with
+    /// `CommandResult::timed_out` set. Custom adapter because `Duration` has no
     /// built-in serde and we don't want to pull in `humantime_serde` solely
     /// for the coordinator-payload tempfile.
     #[serde(default, with = "opt_duration_secs")]
@@ -132,7 +135,8 @@ mod opt_duration_secs {
 }
 
 impl JobSpec {
-    /// Default timeout for non-interactive jobs (5 minutes).
+    /// Built-in limit for a hook job when `daft.hooks.timeout` is unset
+    /// (5 minutes).
     pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 }
 
@@ -222,6 +226,10 @@ pub struct JobResult {
     pub stdout: String,
     /// Captured standard error.
     pub stderr: String,
+    /// The limit the job outran, when its timeout tore it down. Such a job
+    /// is `NodeStatus::Failed` — every failure check, the DAG cascade, and
+    /// piped's stop-on-failure treat it as one — and this field says why.
+    pub timed_out: Option<Duration>,
 }
 
 #[cfg(test)]
@@ -367,6 +375,7 @@ mod tests {
             exit_code: Some(0),
             stdout: "compiled ok\n".into(),
             stderr: String::new(),
+            timed_out: None,
         };
 
         assert_eq!(result.name, "build");
@@ -384,6 +393,7 @@ mod tests {
             exit_code: Some(1),
             stdout: String::new(),
             stderr: "assertion failed\n".into(),
+            timed_out: None,
         };
 
         assert_eq!(result.status, NodeStatus::Failed);
@@ -400,6 +410,7 @@ mod tests {
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),
+            timed_out: None,
         };
 
         assert!(result.exit_code.is_none());
@@ -414,6 +425,7 @@ mod tests {
             exit_code: Some(0),
             stdout: "ok".into(),
             stderr: String::new(),
+            timed_out: None,
         };
         let cloned = result.clone();
         assert_eq!(cloned.name, result.name);

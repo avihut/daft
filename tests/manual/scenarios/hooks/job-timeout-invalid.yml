@@ -1,0 +1,68 @@
+name: an invalid daft.yml timeout fails the gate, never skips it
+description:
+  "#1009: `timeout: false` (or any non-duration) must not fail the whole
+  daft.yml — a file that fails to load falls back to legacy script hooks, so a
+  pre-merge gate would silently not run and the merge would go through. The file
+  loads, the gate fails with a configuration error naming the job and the value,
+  the merge is refused, and `daft hooks validate` reports it."
+
+repos:
+  - name: test-job-timeout-invalid
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# invalid job timeout"
+        commits:
+          - message: "Initial commit"
+      - name: feature
+        from: main
+        files:
+          - path: f.txt
+            content: "f"
+        commits:
+          - message: "Feature work"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: gate
+              timeout: false
+              run: touch "$DAFT_MERGE_TARGET_PATH/.gate-ran"
+
+steps:
+  - name: Clone with trusted hooks
+    run:
+      daft clone --layout contained --trust-hooks
+      $REMOTE_TEST_JOB_TIMEOUT_INVALID
+    expect:
+      exit_code: 0
+
+  - name: daft hooks validate reports the bad value
+    run: daft hooks validate 2>&1
+    cwd: "$WORK_DIR/test-job-timeout-invalid/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "invalid timeout 'false'"
+
+  - name: The merge is refused with a configuration error naming the job
+    run: daft merge feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-job-timeout-invalid/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "pre-merge hook failed"
+        - 'job ''gate'' timeout "false" is not a duration'
+
+  - name: Nothing was merged and the gate never started
+    run: |
+      test -f f.txt && echo "merged" || echo "not merged"
+      test -f .gate-ran && echo "gate ran" || echo "gate never ran"
+    cwd: "$WORK_DIR/test-job-timeout-invalid/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "not merged"
+        - "gate never ran"

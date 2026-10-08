@@ -310,6 +310,7 @@ mod tests {
             exit_code: Some(0),
             stdout: String::new(),
             stderr: String::new(),
+            timed_out: None,
         }
     }
 

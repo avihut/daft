@@ -16,6 +16,7 @@ use crate::store::models::invocation::SKIP_REASON_PROMPT_UNAVAILABLE;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Resolve a hook's effective fail mode from the two sources that can set it.
 ///
@@ -55,6 +56,43 @@ fn unparsed_git_fail_mode_warning(
     }
 }
 
+/// Build the warning for a `daft.hooks.timeout` value that did not parse.
+/// The loader kept the default in force and recorded the raw value; left
+/// silent, someone who set `daft.hooks.timeout "40 min"` would believe a
+/// slow gate had 40 minutes while it is still killed at five.
+fn unparsed_hooks_timeout_warning(config: &HooksConfig) -> Option<String> {
+    let bad = config.job_timeout_git_unparsed.as_ref()?;
+    let in_force = config.job_timeout.map_or_else(
+        || "no limit".to_string(),
+        crate::core::settings::format_timeout,
+    );
+    Some(format!(
+        "Ignoring invalid git config daft.hooks.timeout {bad:?} (expected a duration such as \
+         30m, 2h or 90, or off); hook jobs without their own timeout use {in_force}"
+    ))
+}
+
+/// Emit [`unparsed_hooks_timeout_warning`] once per `warned` flag. The
+/// production flag is process-wide: one command fires several hooks (merge
+/// fires pre-merge then post-merge), each through a fresh executor.
+fn warn_unparsed_hooks_timeout(config: &HooksConfig, output: &mut dyn Output, warned: &AtomicBool) {
+    if let Some(msg) = unparsed_hooks_timeout_warning(config)
+        && !warned.swap(true, Ordering::Relaxed)
+    {
+        output.warning(&msg);
+    }
+}
+
+/// Process-wide guard for [`warn_unparsed_hooks_timeout`].
+static WARNED_UNPARSED_HOOKS_TIMEOUT: AtomicBool = AtomicBool::new(false);
+
+/// Warn about an invalid `daft.hooks.timeout`, at most once per process.
+/// Every path that puts that setting's limit on a job calls this: hook fires
+/// and `daft hooks jobs retry`.
+pub(crate) fn warn_unparsed_hooks_timeout_once(config: &HooksConfig, output: &mut dyn Output) {
+    warn_unparsed_hooks_timeout(config, output, &WARNED_UNPARSED_HOOKS_TIMEOUT);
+}
+
 /// A hook that failed under `FailMode::Abort`, carrying the recorded
 /// invocation id out with the failure.
 ///
@@ -63,12 +101,34 @@ fn unparsed_git_fail_mode_warning(
 /// is exactly when a caller most needs to address the recorded jobs
 /// (`daft merge --format json` reports it as the verdict's join key into
 /// `daft hooks jobs`), so the abort carries it instead. `Display` reproduces
-/// the previous message verbatim; nothing user-visible changed.
+/// the previous message verbatim; nothing user-visible changed. A job torn
+/// down by its timeout is the exception: the abort names it (`timed_out`),
+/// since its normalized exit code says nothing about the cause.
 #[derive(Debug)]
 pub struct HookAborted {
     pub hook_type: HookType,
     pub exit_code: i32,
     pub invocation_id: Option<String>,
+    pub timed_out: Option<TimedOutJob>,
+}
+
+/// A hook job its timeout tore down — reported as the hook failure's cause
+/// instead of the job's normalized exit code (`TIMED_OUT_EXIT_CODE`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimedOutJob {
+    pub job: String,
+    pub limit: std::time::Duration,
+}
+
+impl std::fmt::Display for TimedOutJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "job '{}' timed out after {}",
+            self.job,
+            crate::core::settings::format_timeout(self.limit)
+        )
+    }
 }
 
 impl HookAborted {
@@ -82,9 +142,23 @@ impl std::fmt::Display for HookAborted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} hook failed with exit code {}",
-            self.hook_type, self.exit_code
+            "{}",
+            failure_headline(self.hook_type, self.exit_code, self.timed_out.as_ref())
         )
+    }
+}
+
+/// The one-line statement of a hook failure: the timed-out job when a
+/// timeout caused it, the exit code otherwise. Shared by the printed error
+/// and [`HookAborted`]'s `Display` so the two never drift.
+fn failure_headline(
+    hook_type: HookType,
+    exit_code: i32,
+    timed_out: Option<&TimedOutJob>,
+) -> String {
+    match timed_out {
+        Some(job) => format!("{hook_type} hook failed: {job}"),
+        None => format!("{hook_type} hook failed with exit code {exit_code}"),
     }
 }
 
@@ -114,6 +188,8 @@ pub struct HookResult {
     /// Whether the skip was due to a platform mismatch (OS-keyed run with no matching variant).
     /// Platform skips are completely silent — no output, not even a skip message.
     pub platform_skip: bool,
+    /// The job whose timeout tore it down, when that is what failed the hook.
+    pub timed_out: Option<TimedOutJob>,
 }
 
 impl HookResult {
@@ -129,6 +205,7 @@ impl HookResult {
             skip_ran_command: false,
             invocation_id: None,
             platform_skip: false,
+            timed_out: None,
         }
     }
 
@@ -144,6 +221,7 @@ impl HookResult {
             skip_ran_command: false,
             invocation_id: None,
             platform_skip: false,
+            timed_out: None,
         }
     }
 
@@ -159,6 +237,7 @@ impl HookResult {
             skip_ran_command: true,
             invocation_id: None,
             platform_skip: false,
+            timed_out: None,
         }
     }
 
@@ -182,6 +261,7 @@ impl HookResult {
             skip_ran_command: false,
             invocation_id: None,
             platform_skip: false,
+            timed_out: None,
         }
     }
 
@@ -200,6 +280,7 @@ impl HookResult {
             skip_ran_command: false,
             invocation_id: None,
             platform_skip: true,
+            timed_out: None,
         }
     }
 
@@ -215,7 +296,24 @@ impl HookResult {
             skip_ran_command: false,
             invocation_id: None,
             platform_skip: false,
+            timed_out: None,
         }
+    }
+
+    /// Create a failed result from the hook's first failing job. A job its
+    /// timeout tore down is named as the cause; anything else reports its exit
+    /// code (`-1` only when none was recorded, e.g. a job that never spawned).
+    pub fn failed_job(job: &crate::executor::JobResult) -> Self {
+        let mut result = Self::failed(
+            job.exit_code.unwrap_or(-1),
+            job.stdout.clone(),
+            job.stderr.clone(),
+        );
+        result.timed_out = job.timed_out.map(|limit| TimedOutJob {
+            job: job.name.clone(),
+            limit,
+        });
+        result
     }
 
     /// Stamp the log-store invocation id this result was recorded under.
@@ -346,9 +444,9 @@ impl HookExecutor {
     ///
     /// This is the same promotion `DAFT_NO_BACKGROUND_JOBS` triggers, so it
     /// inherits that path's semantics: a promoted job's failure folds into
-    /// the hook outcome, and the default job timeout keeps applying — it
-    /// already does on the detached path, so a job that would be killed at
-    /// 300s must not start succeeding just because someone is watching.
+    /// the hook outcome, and the job's timeout keeps applying — it already
+    /// does on the detached path, so a job that would time out there must not
+    /// start succeeding just because someone is watching.
     pub fn with_hook_execution_mode(mut self, mode: crate::hooks::HookMode) -> Self {
         self.hook_mode = mode;
         self
@@ -647,6 +745,8 @@ impl HookExecutor {
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
 
+        warn_unparsed_hooks_timeout_once(&self.config, output);
+
         let cfg = yaml_executor::HookExecutionContext {
             source_dir,
             working_dir,
@@ -654,9 +754,12 @@ impl HookExecutor {
             filter: &self.job_filter,
             presenter,
             repo_log: yaml_config.log.as_ref(),
-            // Lifecycle hooks keep the 300s job timeout and are never
-            // cancel-flag-driven; the trigger label follows the hook default.
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            // Lifecycle hooks time jobs out at `daft.hooks.timeout` and are
+            // never cancel-flag-driven; the trigger label follows the hook
+            // default.
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: self.config.job_timeout,
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: self.hook_mode,
@@ -790,9 +893,15 @@ impl HookExecutor {
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
 
-        // Convert legacy hook paths to generic JobSpecs
-        let specs =
-            crate::hooks::job_adapter::scripts_to_specs(&discovery.hooks, &env, working_dir);
+        // Convert legacy hook paths to generic JobSpecs; scripts have no
+        // daft.yml, so `daft.hooks.timeout` is their limit.
+        warn_unparsed_hooks_timeout_once(&self.config, output);
+        let specs = crate::hooks::job_adapter::scripts_to_specs(
+            &discovery.hooks,
+            &env,
+            working_dir,
+            self.config.job_timeout,
+        );
 
         // Use presenter for header and execution
         let hook_type_name = ctx.hook_type.yaml_name();
@@ -819,11 +928,7 @@ impl HookExecutor {
                 .iter()
                 .find(|r| r.status == crate::executor::NodeStatus::Failed)
                 .unwrap();
-            let hook_result = HookResult::failed(
-                failed.exit_code.unwrap_or(-1),
-                failed.stdout.clone(),
-                failed.stderr.clone(),
-            );
+            let hook_result = HookResult::failed_job(failed);
             return self.handle_hook_failure(
                 ctx.hook_type,
                 hook_config.fail_mode,
@@ -891,12 +996,11 @@ impl HookExecutor {
             )
         });
 
+        let headline = failure_headline(hook_type, exit_code, result.timed_out.as_ref());
+
         match fail_mode {
             FailMode::Abort => {
-                output.error(&format!(
-                    "{} hook failed with exit code {}",
-                    hook_type, exit_code
-                ));
+                output.error(&headline);
                 if !result.stderr.is_empty() {
                     output.error(&format!("Hook stderr: {}", result.stderr.trim()));
                 }
@@ -907,13 +1011,11 @@ impl HookExecutor {
                     hook_type,
                     exit_code,
                     invocation_id: result.invocation_id.clone(),
+                    timed_out: result.timed_out.clone(),
                 }))
             }
             FailMode::Warn => {
-                output.warning(&format!(
-                    "{} hook failed with exit code {} (continuing anyway)",
-                    hook_type, exit_code
-                ));
+                output.warning(&format!("{headline} (continuing anyway)"));
                 if !result.stderr.is_empty() {
                     output.warning(&format!("Hook stderr: {}", result.stderr.trim()));
                 }
@@ -1138,6 +1240,123 @@ mod tests {
         assert_eq!(result.exit_code, Some(1));
         assert_eq!(result.stdout, "out");
         assert_eq!(result.stderr, "err");
+    }
+
+    fn failed_job_result(timed_out: Option<std::time::Duration>) -> crate::executor::JobResult {
+        crate::executor::JobResult {
+            name: "check-all".to_string(),
+            status: crate::executor::NodeStatus::Failed,
+            duration: std::time::Duration::from_secs(1),
+            exit_code: Some(if timed_out.is_some() { 124 } else { 2 }),
+            stdout: "tests passing\n".to_string(),
+            stderr: String::new(),
+            timed_out,
+        }
+    }
+
+    #[test]
+    fn failed_job_names_a_timeout_as_the_cause() {
+        let limit = std::time::Duration::from_secs(2_400);
+        let result = HookResult::failed_job(&failed_job_result(Some(limit)));
+        assert!(!result.success);
+        assert_eq!(result.exit_code, Some(124));
+        assert_eq!(result.stdout, "tests passing\n");
+        assert_eq!(
+            result.timed_out,
+            Some(TimedOutJob {
+                job: "check-all".to_string(),
+                limit,
+            })
+        );
+
+        let plain = HookResult::failed_job(&failed_job_result(None));
+        assert_eq!(plain.exit_code, Some(2));
+        assert_eq!(plain.timed_out, None);
+    }
+
+    /// Regression (#1009): a gate killed by its timeout read
+    /// `pre-merge hook failed with exit code -1`. The abort names the job and
+    /// the limit, in the printed error and in `HookAborted` (what callers like
+    /// the TUI and `daft merge` render).
+    #[test]
+    fn timed_out_gate_abort_names_the_job_and_limit() {
+        let executor =
+            HookExecutor::with_trust_db(HooksConfig::default(), TrustDatabase::default());
+        let mut output = TestOutput::default();
+        let result = HookResult::failed_job(&failed_job_result(Some(
+            std::time::Duration::from_secs(2_400),
+        )));
+
+        let err = executor
+            .handle_hook_failure(HookType::PreMerge, FailMode::Abort, result, &mut output)
+            .expect_err("abort mode fails the hook");
+
+        let expected = "pre-merge hook failed: job 'check-all' timed out after 40m";
+        assert!(output.has_error(expected), "{:?}", output.errors());
+        assert!(!output.has_error("exit code"), "{:?}", output.errors());
+        let aborted = HookAborted::from_error(&err).expect("a HookAborted");
+        assert_eq!(aborted.to_string(), expected);
+        assert_eq!(aborted.exit_code, 124);
+    }
+
+    #[test]
+    fn timed_out_warn_mode_names_the_job_and_continues() {
+        let executor =
+            HookExecutor::with_trust_db(HooksConfig::default(), TrustDatabase::default());
+        let mut output = TestOutput::default();
+        let result =
+            HookResult::failed_job(&failed_job_result(Some(std::time::Duration::from_secs(90))));
+
+        executor
+            .handle_hook_failure(HookType::PostCreate, FailMode::Warn, result, &mut output)
+            .expect("warn mode continues");
+
+        assert!(
+            output.has_warning(
+                "worktree-post-create hook failed: job 'check-all' timed out after 90s (continuing anyway)"
+            ),
+            "{:?}",
+            output.warnings()
+        );
+    }
+
+    #[test]
+    fn unparsed_hooks_timeout_warns_once_and_names_the_limit_in_force() {
+        let config = HooksConfig {
+            job_timeout_git_unparsed: Some("40 minutes".to_string()),
+            ..Default::default()
+        };
+        let warned = AtomicBool::new(false);
+        let mut output = TestOutput::default();
+
+        warn_unparsed_hooks_timeout(&config, &mut output, &warned);
+        warn_unparsed_hooks_timeout(&config, &mut output, &warned);
+
+        let warnings = output.warnings();
+        assert_eq!(warnings.len(), 1, "once per flag: {warnings:?}");
+        assert!(warnings[0].contains("daft.hooks.timeout \"40 minutes\""));
+        assert!(warnings[0].contains("use 5m"), "{warnings:?}");
+
+        let mut quiet = TestOutput::default();
+        warn_unparsed_hooks_timeout(&HooksConfig::default(), &mut quiet, &AtomicBool::new(false));
+        assert!(
+            quiet.warnings().is_empty(),
+            "a valid (or unset) value is silent"
+        );
+    }
+
+    #[test]
+    fn non_timeout_abort_keeps_the_exit_code_message() {
+        let aborted = HookAborted {
+            hook_type: HookType::PreMerge,
+            exit_code: 3,
+            invocation_id: None,
+            timed_out: None,
+        };
+        assert_eq!(
+            aborted.to_string(),
+            "pre-merge hook failed with exit code 3"
+        );
     }
 
     #[test]

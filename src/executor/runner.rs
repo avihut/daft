@@ -195,6 +195,7 @@ fn skip_remaining(
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),
+            timed_out: None,
         });
     }
 }
@@ -400,6 +401,7 @@ fn run_dag_execution(
                             exit_code: cr.exit_code,
                             stdout: cr.stdout,
                             stderr: cr.stderr,
+                            timed_out: cr.timed_out,
                         },
                     );
                     durations.lock().unwrap().insert(idx, duration);
@@ -416,6 +418,7 @@ fn run_dag_execution(
                             exit_code: None,
                             stdout: String::new(),
                             stderr: String::new(),
+                            timed_out: None,
                         };
                         s.on_job_complete(job, &failed_result);
                     }
@@ -490,6 +493,7 @@ fn run_dag_sequential_exec(
                         exit_code: cr.exit_code,
                         stdout: cr.stdout,
                         stderr: cr.stderr,
+                        timed_out: cr.timed_out,
                     },
                 );
                 durations.lock().unwrap().insert(idx, duration);
@@ -506,6 +510,7 @@ fn run_dag_sequential_exec(
                         exit_code: None,
                         stdout: String::new(),
                         stderr: String::new(),
+                        timed_out: None,
                     };
                     s.on_job_complete(job, &failed_result);
                 }
@@ -532,6 +537,7 @@ struct CapturedOutput {
     exit_code: Option<i32>,
     stdout: String,
     stderr: String,
+    timed_out: Option<Duration>,
 }
 
 /// Build a name -> JobSpec lookup map.
@@ -660,6 +666,7 @@ fn command_to_job_result(name: &str, cr: &CommandResult, duration: Duration) -> 
         exit_code: cr.exit_code,
         stdout: cr.stdout.clone(),
         stderr: cr.stderr.clone(),
+        timed_out: cr.timed_out,
     }
 }
 
@@ -671,7 +678,16 @@ fn report_completion(job: &JobSpec, result: &JobResult, presenter: &Arc<dyn JobP
         }
         NodeStatus::Failed => {
             presenter.on_job_failure(&job.name, result.duration);
-            if let Some(code) = result.exit_code {
+            // A timeout names its cause — the bare exit code (124) would not.
+            // Worded so the rail does not fold it away with the redundant
+            // `Job '<name>' failed` line: it is the one fact the ✗ row lacks.
+            if let Some(limit) = result.timed_out {
+                presenter.on_message(&format!(
+                    "Job '{}' timed out after {}",
+                    job.name,
+                    crate::core::settings::format_timeout(limit)
+                ));
+            } else if let Some(code) = result.exit_code {
                 presenter.on_message(&format!("Job '{}' failed (exit code: {code})", job.name));
             } else {
                 presenter.on_message(&format!("Job '{}' failed", job.name));
@@ -733,6 +749,7 @@ fn build_results_from_statuses(
                     exit_code: cap.exit_code,
                     stdout: cap.stdout.clone(),
                     stderr: cap.stderr.clone(),
+                    timed_out: cap.timed_out,
                 },
                 None => JobResult {
                     name: name.clone(),
@@ -741,6 +758,7 @@ fn build_results_from_statuses(
                     exit_code: None,
                     stdout: String::new(),
                     stderr: String::new(),
+                    timed_out: None,
                 },
             }
         })
@@ -933,6 +951,109 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, NodeStatus::Failed);
         assert_eq!(results[0].exit_code, Some(1));
+    }
+
+    // ── Timeouts (#1009) ───────────────────────────────────────────────
+    //
+    // Each workload is a distinct `sleep` followed by an `echo`, so every
+    // shell forks it (no exec-in-place) — the shape the timeout used to
+    // orphan — and no two tests share a command line.
+
+    fn make_timed_job(name: &str, command: &str, limit: Duration) -> JobSpec {
+        JobSpec {
+            timeout: Some(limit),
+            ..make_job(name, command)
+        }
+    }
+
+    const LIMIT: Duration = Duration::from_millis(200);
+    const TIMED_OUT: Option<i32> = Some(crate::executor::command::TIMED_OUT_EXIT_CODE);
+
+    /// Sequential mode used to `?` a timeout out of the whole run: the job
+    /// went unrecorded, later jobs never ran, and a hook reported it as a
+    /// config error. It is a recorded failure now, and the run moves on.
+    #[test]
+    fn sequential_timeout_is_a_recorded_failure() {
+        let presenter = RecordingPresenter::new();
+        let dyn_presenter: Arc<dyn JobPresenter> = presenter.clone();
+        let jobs = vec![
+            make_timed_job("slow", "sleep 32.25; echo after", LIMIT),
+            make_job("next", "echo next"),
+        ];
+        let results = run_jobs(&jobs, ExecutionMode::Sequential, &dyn_presenter, None)
+            .expect("a timeout is a job outcome, not a runner error");
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].status, NodeStatus::Failed);
+        assert_eq!(results[0].timed_out, Some(LIMIT));
+        assert_eq!(results[0].exit_code, TIMED_OUT);
+        assert_eq!(results[1].status, NodeStatus::Succeeded);
+
+        let events = presenter.events();
+        assert!(
+            events.contains(&"message:Job 'slow' timed out after 200ms".to_string()),
+            "{events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.starts_with("message:Job 'slow' failed")),
+            "{events:?}"
+        );
+    }
+
+    /// The parallel arm — the hook default — dropped the timeout and left a
+    /// Failed job with no exit code: the ticket's `exit code -1`.
+    #[test]
+    fn parallel_timeout_keeps_its_cause() {
+        let presenter = RecordingPresenter::new();
+        let dyn_presenter: Arc<dyn JobPresenter> = presenter.clone();
+        let jobs = vec![
+            make_timed_job("slow", "sleep 32.5; echo after", LIMIT),
+            make_job("quick", "echo ok"),
+        ];
+        let results = run_jobs(&jobs, ExecutionMode::Parallel, &dyn_presenter, None).unwrap();
+
+        let slow = results.iter().find(|r| r.name == "slow").unwrap();
+        assert_eq!(slow.status, NodeStatus::Failed);
+        assert_eq!(slow.timed_out, Some(LIMIT));
+        assert_eq!(slow.exit_code, TIMED_OUT);
+        let quick = results.iter().find(|r| r.name == "quick").unwrap();
+        assert_eq!(quick.status, NodeStatus::Succeeded);
+        assert!(
+            presenter
+                .events()
+                .contains(&"message:Job 'slow' timed out after 200ms".to_string())
+        );
+    }
+
+    #[test]
+    fn piped_timeout_stops_the_run() {
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let jobs = vec![
+            make_timed_job("slow", "sleep 32.75; echo after", LIMIT),
+            make_job("next", "echo next"),
+        ];
+        let results = run_jobs(&jobs, ExecutionMode::Piped, &presenter, None).unwrap();
+
+        assert_eq!(results[0].timed_out, Some(LIMIT));
+        assert_eq!(results[1].status, NodeStatus::Skipped);
+    }
+
+    #[test]
+    fn dag_timeout_fails_its_dependents() {
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let jobs = vec![
+            make_timed_job("slow", "sleep 33.25; echo after", LIMIT),
+            make_job_with_needs("after-slow", "echo ran", vec!["slow"]),
+        ];
+        let results = run_jobs(&jobs, ExecutionMode::Parallel, &presenter, None).unwrap();
+
+        let slow = results.iter().find(|r| r.name == "slow").unwrap();
+        assert_eq!(slow.status, NodeStatus::Failed);
+        assert_eq!(slow.timed_out, Some(LIMIT));
+        let dependent = results.iter().find(|r| r.name == "after-slow").unwrap();
+        assert_eq!(dependent.status, NodeStatus::DepFailed);
     }
 
     #[test]
@@ -1357,6 +1478,7 @@ mod tests {
             stdout: "out".into(),
             stderr: String::new(),
             cancelled: false,
+            timed_out: None,
         };
         let result = command_to_job_result("test", &cr, Duration::from_secs(1));
         assert_eq!(result.name, "test");
@@ -1373,6 +1495,7 @@ mod tests {
             stdout: String::new(),
             stderr: "error\n".into(),
             cancelled: false,
+            timed_out: None,
         };
         let result = command_to_job_result("test", &cr, Duration::from_millis(500));
         assert_eq!(result.status, NodeStatus::Failed);
@@ -1388,6 +1511,7 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             cancelled: true,
+            timed_out: None,
         };
         let result = command_to_job_result("test", &cr, Duration::from_millis(500));
         assert_eq!(result.status, NodeStatus::Cancelled);

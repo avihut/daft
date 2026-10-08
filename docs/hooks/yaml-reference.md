@@ -288,9 +288,10 @@ Task-specific rules:
   match. Forwarding requires the task to resolve to a single foreground job with
   a single-line command — narrow multi-job tasks with `--job`.
 - **Jobs only** — the deprecated `commands:` form is rejected in tasks.
-- **No execution timeout** — a task job runs until it exits or is cancelled
-  (lifecycle-hook jobs keep the 300-second default). This makes tasks the right
-  home for long-running processes.
+- **No execution timeout** — a task job runs until it exits or is cancelled, and
+  a `timeout:` on a task or its jobs has no effect (`daft hooks validate`
+  warns). Lifecycle-hook jobs are bounded instead (see [Timeouts](#timeouts)).
+  This makes tasks the right home for long-running processes.
 - **Foreground** — a task that resolves to a single job passes the terminal
   straight through: the job inherits daft's stdio and its raw output is the
   whole interface, exactly as if you ran the command yourself. A multi-job task
@@ -318,18 +319,19 @@ hooks:
         run: npm run build
 ```
 
-| Field          | Type                 | Default | Description                                                                |
-| -------------- | -------------------- | ------- | -------------------------------------------------------------------------- |
-| `parallel`     | bool                 | `true`  | Run jobs in parallel                                                       |
-| `piped`        | bool                 |         | Run jobs sequentially, stop on first failure                               |
-| `follow`       | bool                 |         | Run jobs sequentially, continue on failure                                 |
-| `background`   | bool                 |         | Default background execution for all jobs in this hook                     |
-| `exclude_tags` | list                 |         | Tags to exclude at hook level                                              |
-| `exclude`      | list                 |         | Glob patterns appended to every file-aware job's `exclude` list            |
-| `skip`         | bool / string / list |         | Skip condition (see [Skip and only conditions](#skip-and-only-conditions)) |
-| `only`         | bool / string / list |         | Only condition (see [Skip and only conditions](#skip-and-only-conditions)) |
-| `jobs`         | list                 |         | Jobs to execute                                                            |
-| `fail_mode`    | `abort` / `warn`     | varies  | Behavior when this hook fails (see [Failure mode](#failure-mode))          |
+| Field          | Type                 | Default | Description                                                                   |
+| -------------- | -------------------- | ------- | ----------------------------------------------------------------------------- |
+| `parallel`     | bool                 | `true`  | Run jobs in parallel                                                          |
+| `piped`        | bool                 |         | Run jobs sequentially, stop on first failure                                  |
+| `follow`       | bool                 |         | Run jobs sequentially, continue on failure                                    |
+| `background`   | bool                 |         | Default background execution for all jobs in this hook                        |
+| `exclude_tags` | list                 |         | Tags to exclude at hook level                                                 |
+| `exclude`      | list                 |         | Glob patterns appended to every file-aware job's `exclude` list               |
+| `skip`         | bool / string / list |         | Skip condition (see [Skip and only conditions](#skip-and-only-conditions))    |
+| `only`         | bool / string / list |         | Only condition (see [Skip and only conditions](#skip-and-only-conditions))    |
+| `jobs`         | list                 |         | Jobs to execute                                                               |
+| `fail_mode`    | `abort` / `warn`     | varies  | Behavior when this hook fails (see [Failure mode](#failure-mode))             |
+| `timeout`      | duration / `off`     |         | Time limit for each job that sets none of its own (see [Timeouts](#timeouts)) |
 
 Only one of `parallel`, `piped`, or `follow` can be set at a time.
 
@@ -359,6 +361,67 @@ a typo does not silently change the failure behavior.
 
 `fail_mode` has no effect under `tasks:` — `daft run` stops on the first failing
 job regardless.
+
+### Timeouts
+
+Every lifecycle-hook job has a time limit. A job that outruns it is stopped and
+counts as a failed job, handled under the hook's [failure mode](#failure-mode).
+Each job's limit is the first of these that is set:
+
+1. the job's own `timeout:`
+2. the hook's `timeout:` (a default for each of its jobs, not a budget for the
+   whole hook)
+3. the `daft.hooks.timeout` git config
+   ([Configuration](../reference/configuration.md#hooks-settings))
+4. five minutes
+
+```yaml
+hooks:
+  pre-merge:
+    timeout: 20m # every job in this hook...
+    jobs:
+      - name: check-all
+        run: mise run check-all
+        timeout: 40m # ...except this one
+      - name: lint
+        run: mise run lint # 20m, from the hook
+```
+
+A value is a number of seconds (`300`) or a number with a unit: `s`, `m`, `h`,
+or `d` (`90s`, `40m`, `2h`). `off` or `0` means no limit, and is a value in its
+own right: a job's `timeout: off` beats its hook's `timeout: 10m`. An invalid
+value fails the hook with a configuration error rather than falling back to
+another limit, and `daft hooks validate` reports it.
+
+When the limit passes, daft sends SIGTERM to the job's whole process tree (not
+just the shell that runs the command), then SIGKILL to anything still running 10
+seconds later. The job fails with exit code 124 — the convention GNU `timeout`
+uses — and the failure says why:
+
+```
+Job 'check-all' timed out after 40m
+pre-merge hook failed: job 'check-all' timed out after 40m
+```
+
+Output the job printed before the limit is kept in its log
+(`daft hooks jobs logs`).
+
+The limit also covers a process the job leaves running with its output still
+open, such as `server &` without a redirect: daft waits for that output to
+close, and at the limit it stops the process the same way. A job whose command
+had already finished keeps its own exit status. To leave a process running past
+the job, redirect its output (`server > server.log 2>&1 &`).
+
+The teardown reaches the processes it can trace back to the job. One that starts
+a session of its own (`setsid`, Python's `start_new_session=True`) and whose
+parent has already exited is out of reach: daft waits for it to close the job's
+output, however long that takes. If a process survives even SIGKILL, the job's
+output names its process group so you can stop it by hand.
+
+`timeout:` has no effect on interactive jobs (`interactive: true`) or under
+`tasks:`: those run until they exit or you cancel them. `daft hooks jobs retry`
+replays the recorded command rather than re-reading `daft.yml`, so a retried job
+gets the `daft.hooks.timeout` limit.
 
 ## Job entries
 
@@ -390,6 +453,7 @@ Each job in the `jobs` list supports:
 | `background`        | bool                 | Run this job in the background (see [Background jobs](#background-jobs))                                     |
 | `background_output` | `log` / `silent`     | Output behavior for background jobs (default: `log`)                                                         |
 | `log`               | object               | Log configuration (`retention`, `max_log_size`) for this job                                                 |
+| `timeout`           | duration / `off`     | Time limit for this job; overrides the hook's (see [Timeouts](#timeouts))                                    |
 
 A job must have exactly one of `run`, `script`, or `group`.
 
@@ -705,10 +769,10 @@ visible:
   refusal. That is the intended behavior for a mode whose whole purpose is to
   stop and show you the failure; skip an individual offender with
   `--skip-hooks <job>` rather than dropping the promotion.
-- **The job timeout still applies.** Promoted jobs keep the same 300-second
-  default every job is stamped with — the coordinator enforces it on the
-  detached path too, so a job that dies at five minutes detached dies at five
-  minutes promoted. Promotion changes who is waiting, not the budget.
+- **The job timeout still applies.** Promoted jobs keep the [timeout](#timeouts)
+  they resolved — the coordinator enforces it on the detached path too, so a job
+  that times out detached times out promoted. Promotion changes who is waiting,
+  not the budget.
 
 On `daft merge` the mode reaches the same jobs `--skip-hooks` does — the
 pre-merge and post-merge job lists, never the core gate-policy checks. It is

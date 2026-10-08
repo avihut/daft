@@ -117,11 +117,11 @@ pub struct HookExecutionContext<'a> {
     /// job's effective `LogConfig`.
     pub repo_log: Option<&'a LogConfig>,
 
-    /// Default timeout stamped on every job spec. Lifecycle hooks pass
-    /// `Some(JobSpec::DEFAULT_TIMEOUT)`; `daft run` tasks pass `None` so an
-    /// attended long-running process (dev server) is never force-killed by the
-    /// hook execution timeout.
-    pub default_job_timeout: Option<std::time::Duration>,
+    /// How every job spec gets its time limit. Lifecycle hooks resolve the
+    /// job's and hook's daft.yml `timeout:` against `daft.hooks.timeout`;
+    /// `daft run` tasks pass `JobTimeouts::Unlimited` so an attended
+    /// long-running process (dev server) is never force-killed.
+    pub job_timeouts: crate::hooks::job_adapter::JobTimeouts,
 
     /// Two-stage cancellation flag observed by the foreground runner. `None`
     /// (all hook callers) means no flag is polled — behavior-identical to
@@ -163,7 +163,9 @@ pub fn execute_yaml_hook(
         filter: &filter,
         presenter: &presenter,
         repo_log: None,
-        default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+        job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+            default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+        },
         cancel: None,
         trigger_label: None,
         // Callers wanting a different mode build the context themselves (or
@@ -434,7 +436,8 @@ pub fn execute_yaml_hook_with_rc(
         rc,
         hook_background: hook_def.background,
         repo_log,
-        default_timeout: cfg.default_job_timeout,
+        timeouts: cfg.job_timeouts,
+        hook_timeout: hook_def.timeout.as_ref(),
         changed_files,
         hook_exclude: hook_def.exclude.as_deref().unwrap_or(&[]),
     };
@@ -732,8 +735,9 @@ pub fn execute_yaml_hook_with_rc(
     // empty string, and anyone already exporting it depends on that.
     //
     // Promoted jobs keep their timeout and their failures count. The former
-    // is not new (the coordinator honors `job.timeout` too, so a 300s job
-    // dies either way); the latter is what the promotion is *for* — a
+    // is not new (the coordinator honors `job.timeout` too, so a job that
+    // outruns its limit dies either way); the latter is what the promotion is
+    // *for* — a
     // command that waited for a job and then reported success over its
     // failure would be a false green.
     if cfg.hook_mode.is_foreground() || std::env::var("DAFT_NO_BACKGROUND_JOBS").is_ok() {
@@ -878,6 +882,7 @@ fn run_bg_inline_with_prefailed(
             exit_code: None,
             stdout: String::new(),
             stderr: "foreground dependency failed".to_string(),
+            timed_out: None,
         });
     }
     Ok(results)
@@ -936,11 +941,7 @@ fn job_results_to_hook_result(results: &[crate::executor::JobResult]) -> Result<
         .iter()
         .find(|r| r.status == crate::executor::NodeStatus::Failed);
     if let Some(failed) = first_failure {
-        return Ok(HookResult::failed(
-            failed.exit_code.unwrap_or(-1),
-            failed.stdout.clone(),
-            failed.stderr.clone(),
-        ));
+        return Ok(HookResult::failed_job(failed));
     }
 
     // A cancelled run (Ctrl+C on a `daft run` task) must not read as
@@ -1075,6 +1076,7 @@ mod tests {
             exit_code,
             stdout: String::new(),
             stderr: String::new(),
+            timed_out: None,
         }
     }
 
@@ -1108,6 +1110,25 @@ mod tests {
         let hr = job_results_to_hook_result(&results).unwrap();
         assert!(!hr.success);
         assert_eq!(hr.exit_code, Some(7));
+    }
+
+    #[test]
+    fn timed_out_failure_carries_its_cause_into_the_hook_result() {
+        let limit = std::time::Duration::from_secs(300);
+        let results = [crate::executor::JobResult {
+            timed_out: Some(limit),
+            ..job_result(crate::executor::NodeStatus::Failed, Some(124))
+        }];
+        let hr = job_results_to_hook_result(&results).unwrap();
+        assert!(!hr.success);
+        assert_eq!(hr.exit_code, Some(124));
+        assert_eq!(
+            hr.timed_out,
+            Some(crate::hooks::TimedOutJob {
+                job: "j".into(),
+                limit,
+            })
+        );
     }
 
     /// Build a `HookContext` whose `git_dir` is a real temp directory and
@@ -1957,7 +1978,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
@@ -2007,7 +2030,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
@@ -2057,7 +2082,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
@@ -2104,7 +2131,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Foreground,
@@ -2168,7 +2197,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Background,
@@ -2215,7 +2246,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Background,
@@ -2231,13 +2264,13 @@ mod tests {
         );
     }
 
-    /// A promoted job keeps the default timeout it was already stamped with.
+    /// A promoted job keeps the timeout it was already stamped with.
     ///
     /// The detached path honors `job.timeout` too (the coordinator passes it
     /// straight into `run_command`), so promotion must not quietly hand a
-    /// job an unlimited budget — a job that dies at 300s when detached must
+    /// job an unlimited budget — a job that would time out when detached must
     /// not start succeeding just because someone is watching it. Asserted on
-    /// the spec rather than by sleeping for five minutes.
+    /// the spec rather than by sleeping out the limit.
     #[test]
     fn background_specs_carry_the_default_timeout() {
         let hook_def = HookDef {
@@ -2485,7 +2518,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2517,7 +2552,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2555,7 +2592,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2620,7 +2659,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2659,7 +2700,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2695,7 +2738,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2750,7 +2795,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Resolve {
+                default: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            },
             cancel: None,
             trigger_label: None,
             hook_mode: crate::hooks::HookMode::Auto,
@@ -2797,7 +2844,7 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
-            default_job_timeout: None,
+            job_timeouts: crate::hooks::job_adapter::JobTimeouts::Unlimited,
             cancel: None,
             trigger_label: Some("run dev".to_string()),
             hook_mode: crate::hooks::HookMode::Auto,
