@@ -818,7 +818,7 @@ mod tests {
 
     #[test]
     fn a_text_field_reports_what_is_wrong_while_you_type() {
-        let mut modal = open(keys::hooks::TIMEOUT, vec![]);
+        let mut modal = open(keys::hooks::OUTPUT_TAIL_LINES, vec![]);
         assert_eq!(
             modal.text_feedback().as_deref(),
             Some("a whole number"),
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(
             modal.apply().unwrap(),
             Apply::Set {
-                key: keys::hooks::TIMEOUT.to_string(),
+                key: keys::hooks::OUTPUT_TAIL_LINES.to_string(),
                 scope: WriteScope::Local,
                 value: "90".to_string(),
             }

@@ -1,0 +1,78 @@
+name: hook job timeout honors daft.hooks.timeout
+description:
+  "#1009: daft.hooks.timeout bounds each hook job. A pre-merge gate that outruns
+  it is torn down together with the workload its shell forked, the merge is
+  refused with a message naming the job and the limit (never 'exit code -1'),
+  and the job is recorded with the output it produced. Before the fix the
+  setting was ignored: this merge waited out the 41s gate and went through."
+
+repos:
+  - name: test-job-timeout
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# job timeout"
+        commits:
+          - message: "Initial commit"
+      - name: feature
+        from: main
+        files:
+          - path: f.txt
+            content: "f"
+        commits:
+          - message: "Feature work"
+    # The trailing echo keeps every shell from exec'ing the sleep in place, so
+    # the sleep is a forked child of `sh` — the workload the old timeout
+    # orphaned. The duration is unique to this scenario for the pgrep below.
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: slow-gate
+              run: |
+                echo gate started
+                sleep 41
+                echo gate finished
+
+steps:
+  - name: Clone with trusted hooks
+    run: daft clone --layout contained --trust-hooks $REMOTE_TEST_JOB_TIMEOUT
+    expect:
+      exit_code: 0
+
+  - name: Give hook jobs a 2-second limit
+    run: git config daft.hooks.timeout 2
+    cwd: "$WORK_DIR/test-job-timeout/main"
+    expect:
+      exit_code: 0
+
+  - name: The gate times out and the merge is refused, naming the job
+    run: daft merge feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-job-timeout/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "pre-merge hook failed: job 'slow-gate' timed out after 2s"
+        - "hooks jobs --last --hook pre-merge"
+      output_not_contains:
+        - "exit code -1"
+
+  - name: The timed-out job is recorded with the output it produced
+    run: daft hooks jobs --last --failed 2>&1
+    cwd: "$WORK_DIR/test-job-timeout/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "slow-gate"
+        - "gate started"
+      output_not_contains:
+        - "gate finished"
+
+  - name: The gate's forked workload did not survive the teardown
+    # `[s]leep` keeps pgrep from matching this step's own command line.
+    run: pgrep -f "[s]leep 41" || echo "no survivors"
+    expect:
+      exit_code: 0
+      output_contains: ["no survivors"]

@@ -68,7 +68,8 @@ pub enum SpecKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DurationDialect {
     /// Bare numbers are seconds and `off` / `0` disables the timeout —
-    /// `daft.sync.pushTimeout`.
+    /// `daft.sync.pushTimeout`, `daft.hooks.timeout`, and the `daft.yml`
+    /// `timeout:` key.
     BareSeconds,
     /// A `d` / `h` / `m` / `s` suffix is required — the `daft.yml` log
     /// durations.
@@ -1087,11 +1088,11 @@ fn git_specs() -> Vec<SettingSpec> {
         ),
         SettingSpec::git(
             keys::hooks::TIMEOUT,
-            "Hook timeout",
-            "Seconds a hook may run before daft gives up.",
+            "Hook job timeout",
+            "Time limit for each hook job unless daft.yml sets one; 0 or off disables it.",
             Hooks,
-            Int,
-            Fixed("300"),
+            Duration(DurationDialect::BareSeconds),
+            Fixed("5m"),
         ),
         SettingSpec::git(
             keys::hooks::TRUST_PRUNE,

@@ -118,7 +118,7 @@ pub struct HookExecutionContext<'a> {
     pub repo_log: Option<&'a LogConfig>,
 
     /// Default timeout stamped on every job spec. Lifecycle hooks pass
-    /// `Some(JobSpec::DEFAULT_TIMEOUT)`; `daft run` tasks pass `None` so an
+    /// `daft.hooks.timeout`; `daft run` tasks pass `None` so an
     /// attended long-running process (dev server) is never force-killed by the
     /// hook execution timeout.
     pub default_job_timeout: Option<std::time::Duration>,
@@ -732,8 +732,9 @@ pub fn execute_yaml_hook_with_rc(
     // empty string, and anyone already exporting it depends on that.
     //
     // Promoted jobs keep their timeout and their failures count. The former
-    // is not new (the coordinator honors `job.timeout` too, so a 300s job
-    // dies either way); the latter is what the promotion is *for* — a
+    // is not new (the coordinator honors `job.timeout` too, so a job that
+    // outruns its limit dies either way); the latter is what the promotion is
+    // *for* — a
     // command that waited for a job and then reported success over its
     // failure would be a false green.
     if cfg.hook_mode.is_foreground() || std::env::var("DAFT_NO_BACKGROUND_JOBS").is_ok() {
@@ -2248,13 +2249,13 @@ mod tests {
         );
     }
 
-    /// A promoted job keeps the default timeout it was already stamped with.
+    /// A promoted job keeps the timeout it was already stamped with.
     ///
     /// The detached path honors `job.timeout` too (the coordinator passes it
     /// straight into `run_command`), so promotion must not quietly hand a
-    /// job an unlimited budget — a job that dies at 300s when detached must
+    /// job an unlimited budget — a job that would time out when detached must
     /// not start succeeding just because someone is watching it. Asserted on
-    /// the spec rather than by sleeping for five minutes.
+    /// the spec rather than by sleeping out the limit.
     #[test]
     fn background_specs_carry_the_default_timeout() {
         let hook_def = HookDef {

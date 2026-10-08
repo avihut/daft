@@ -40,7 +40,7 @@
 //! |-----|---------|-------------|
 //! | `daft.hooks.enabled` | `true` | Master switch for all hooks |
 //! | `daft.hooks.defaultTrust` | `deny` | Default trust level for unknown repos |
-//! | `daft.hooks.timeout` | `300` | Timeout for hook execution in seconds |
+//! | `daft.hooks.timeout` | `5m` | Time limit for each hook job (bare seconds or `30m`/`2h`; `0`/`off` = none). A job's or hook's `timeout:` in `daft.yml` overrides it |
 //! | `daft.hooks.output.quiet` | `false` | Suppress hook stdout/stderr |
 //! | `daft.hooks.output.timerDelay` | `5` | Seconds before showing elapsed timer |
 //! | `daft.hooks.output.tailLines` | `6` | Rolling output tail lines per job (0 = none) |
@@ -1695,10 +1695,8 @@ pub fn load_hooks_config_with(git: &GitCommand) -> Result<HooksConfig> {
         config.user_directory = expanded;
     }
 
-    if let Some(value) = git.config_get(keys::hooks::TIMEOUT)?
-        && let Ok(timeout) = value.parse::<u32>()
-    {
-        config.timeout_seconds = timeout;
+    if let Some(value) = git.config_get(keys::hooks::TIMEOUT)? {
+        apply_hooks_timeout(&mut config, &value);
     }
 
     // Load output settings
@@ -1729,6 +1727,23 @@ pub fn load_hooks_config_with(git: &GitCommand) -> Result<HooksConfig> {
     }
 
     Ok(config)
+}
+
+/// Apply a git-config `daft.hooks.timeout` value: bare seconds or a unit
+/// (`40m`), `off`/`0` for no limit. An unparseable value keeps the default and
+/// is recorded raw for the executor to report — the loader runs several
+/// times per command (and under TUIs), so it must not print.
+fn apply_hooks_timeout(config: &mut HooksConfig, value: &str) {
+    if value.trim().is_empty() {
+        return;
+    }
+    match parse_timeout(value) {
+        Some(timeout) => {
+            config.job_timeout = timeout;
+            config.job_timeout_git_unparsed = None;
+        }
+        None => config.job_timeout_git_unparsed = Some(value.to_string()),
+    }
 }
 
 /// Load hooks configuration from global git config only.
@@ -1764,10 +1779,8 @@ pub fn load_hooks_config_global() -> Result<HooksConfig> {
         config.user_directory = expanded;
     }
 
-    if let Some(value) = git.config_get_global(keys::hooks::TIMEOUT)?
-        && let Ok(timeout) = value.parse::<u32>()
-    {
-        config.timeout_seconds = timeout;
+    if let Some(value) = git.config_get_global(keys::hooks::TIMEOUT)? {
+        apply_hooks_timeout(&mut config, &value);
     }
 
     // Load output settings
@@ -2281,6 +2294,117 @@ mod tests {
             Some("abrot"),
             "load_hooks_config_global must also capture the unparseable value"
         );
+    }
+
+    /// Regression (#1009): `daft.hooks.timeout` was parsed as `u32` seconds and
+    /// then never read. Both loaders must accept the shared timeout dialect —
+    /// a unit, bare seconds, `off` — and capture (not swallow) a value that
+    /// does not parse, keeping the default in force.
+    #[test]
+    #[serial_test::serial]
+    fn hooks_timeout_is_read_by_both_loaders() {
+        use std::time::Duration;
+
+        struct Restore {
+            cwd: Option<std::path::PathBuf>,
+            global: Option<std::ffi::OsString>,
+            nosystem: Option<std::ffi::OsString>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(cwd) = &self.cwd {
+                    let _ = std::env::set_current_dir(cwd);
+                }
+                unsafe {
+                    match self.global.take() {
+                        Some(v) => std::env::set_var("GIT_CONFIG_GLOBAL", v),
+                        None => std::env::remove_var("GIT_CONFIG_GLOBAL"),
+                    }
+                    match self.nosystem.take() {
+                        Some(v) => std::env::set_var("GIT_CONFIG_NOSYSTEM", v),
+                        None => std::env::remove_var("GIT_CONFIG_NOSYSTEM"),
+                    }
+                }
+            }
+        }
+
+        let _restore = Restore {
+            cwd: std::env::current_dir().ok(),
+            global: std::env::var_os("GIT_CONFIG_GLOBAL"),
+            nosystem: std::env::var_os("GIT_CONFIG_NOSYSTEM"),
+        };
+
+        let home = tempfile::tempdir().unwrap();
+        let global_cfg = home.path().join("gitconfig-global");
+        std::fs::write(&global_cfg, "").unwrap();
+        unsafe {
+            std::env::set_var("GIT_CONFIG_GLOBAL", &global_cfg);
+            std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+        }
+
+        let repo = tempfile::tempdir().unwrap();
+        let repo_path = repo.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let out = crate::utils::git_command_at(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        std::env::set_current_dir(&repo_path).unwrap();
+        let local = || load_hooks_config_with(&GitCommand::new(true)).unwrap();
+
+        // Unset: the built-in five minutes.
+        assert_eq!(local().job_timeout, Some(Duration::from_secs(300)));
+
+        git(&["config", "daft.hooks.timeout", "40m"]);
+        let config = local();
+        assert_eq!(config.job_timeout, Some(Duration::from_secs(2_400)));
+        assert_eq!(config.job_timeout_git_unparsed, None);
+
+        git(&["config", "daft.hooks.timeout", "2400"]);
+        assert_eq!(local().job_timeout, Some(Duration::from_secs(2_400)));
+
+        git(&["config", "daft.hooks.timeout", "off"]);
+        assert_eq!(local().job_timeout, None);
+        git(&["config", "daft.hooks.timeout", "0"]);
+        assert_eq!(local().job_timeout, None);
+
+        git(&["config", "daft.hooks.timeout", "40 minutes"]);
+        let config = local();
+        assert_eq!(
+            config.job_timeout,
+            Some(Duration::from_secs(300)),
+            "an unparseable value keeps the default in force"
+        );
+        assert_eq!(
+            config.job_timeout_git_unparsed.as_deref(),
+            Some("40 minutes"),
+            "the local loader must capture the unparseable value"
+        );
+
+        // Global-only loader (clone path): same dialect, same capture.
+        let set_global = |value: &str| {
+            git(&[
+                "config",
+                "--file",
+                global_cfg.to_str().unwrap(),
+                "daft.hooks.timeout",
+                value,
+            ])
+        };
+        set_global("2h");
+        let global = load_hooks_config_global().unwrap();
+        assert_eq!(global.job_timeout, Some(Duration::from_secs(7_200)));
+        set_global("forever");
+        let global = load_hooks_config_global().unwrap();
+        assert_eq!(global.job_timeout, Some(Duration::from_secs(300)));
+        assert_eq!(global.job_timeout_git_unparsed.as_deref(), Some("forever"));
     }
 
     #[test]

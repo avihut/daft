@@ -93,8 +93,10 @@ pub struct JobSpec {
     pub fail_text: Option<String>,
     /// Maximum time the job is allowed to run, in seconds. `None` means the
     /// job runs until it exits or is cancelled — used by `daft run` tasks,
-    /// which are attended long-running processes (dev servers). Hooks stamp
-    /// `Some(DEFAULT_TIMEOUT)`. Custom adapter because `Duration` has no
+    /// which are attended long-running processes (dev servers). Hook jobs
+    /// carry `daft.hooks.timeout` (built-in [`Self::DEFAULT_TIMEOUT`]); a
+    /// job that outruns it has its process tree torn down and fails with
+    /// `CommandResult::timed_out` set. Custom adapter because `Duration` has no
     /// built-in serde and we don't want to pull in `humantime_serde` solely
     /// for the coordinator-payload tempfile.
     #[serde(default, with = "opt_duration_secs")]
@@ -132,7 +134,8 @@ mod opt_duration_secs {
 }
 
 impl JobSpec {
-    /// Default timeout for non-interactive jobs (5 minutes).
+    /// Built-in limit for a hook job when `daft.hooks.timeout` is unset
+    /// (5 minutes).
     pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 }
 

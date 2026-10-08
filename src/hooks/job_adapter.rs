@@ -280,8 +280,9 @@ pub struct JobAdapterContext<'a> {
     /// `log_config` so cleanup policies inherit repo-wide defaults.
     pub repo_log: Option<&'a LogConfig>,
     /// Default timeout stamped on each produced [`JobSpec`]. Lifecycle hooks
-    /// use `Some(JobSpec::DEFAULT_TIMEOUT)` (the `Default`); `daft run` tasks
-    /// pass `None` so long-running processes aren't force-killed.
+    /// pass `daft.hooks.timeout` (the `Default` uses its built-in
+    /// `JobSpec::DEFAULT_TIMEOUT`); `daft run` tasks pass `None` so
+    /// long-running processes aren't force-killed.
     pub default_timeout: Option<std::time::Duration>,
     /// The operation's changed-file source, consulted by file-aware jobs
     /// (`glob:`/`exclude:`/`{changed_files}`) and `changed:` rules. `None`
@@ -602,10 +603,13 @@ fn apply_file_filter(
 ///
 /// Each script path becomes a single job that runs the script directly
 /// (not via `sh -c`). The environment includes all daft hook variables.
+/// `timeout` is stamped on every job: scripts have no daft.yml to set their
+/// own, so the caller passes `daft.hooks.timeout` (`None` = no limit).
 pub fn scripts_to_specs(
     hook_paths: &[PathBuf],
     env: &HookEnvironment,
     working_dir: &Path,
+    timeout: Option<std::time::Duration>,
 ) -> Vec<JobSpec> {
     hook_paths
         .iter()
@@ -620,6 +624,7 @@ pub fn scripts_to_specs(
                 command: path.to_string_lossy().into_owned(),
                 working_dir: working_dir.to_path_buf(),
                 env: env.vars().clone(),
+                timeout,
                 ..Default::default()
             }
         })
@@ -1744,7 +1749,12 @@ mod tests {
             PathBuf::from("/home/user/.config/daft/hooks/post-clone"),
         ];
 
-        let specs = scripts_to_specs(&paths, &env, Path::new("/project/feature/new"));
+        let specs = scripts_to_specs(
+            &paths,
+            &env,
+            Path::new("/project/feature/new"),
+            Some(JobSpec::DEFAULT_TIMEOUT),
+        );
 
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].name, "worktree-post-create");
@@ -1757,7 +1767,12 @@ mod tests {
         let env = HookEnvironment::from_context(&ctx);
         let paths = vec![PathBuf::from("/project/.daft/hooks/post-clone")];
 
-        let specs = scripts_to_specs(&paths, &env, Path::new("/project"));
+        let specs = scripts_to_specs(
+            &paths,
+            &env,
+            Path::new("/project"),
+            Some(JobSpec::DEFAULT_TIMEOUT),
+        );
 
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].command, "/project/.daft/hooks/post-clone");
@@ -1770,7 +1785,7 @@ mod tests {
         let paths = vec![PathBuf::from("/some/hook")];
         let wd = Path::new("/custom/dir");
 
-        let specs = scripts_to_specs(&paths, &env, wd);
+        let specs = scripts_to_specs(&paths, &env, wd, Some(JobSpec::DEFAULT_TIMEOUT));
 
         assert_eq!(specs[0].working_dir, PathBuf::from("/custom/dir"));
     }
@@ -1781,7 +1796,12 @@ mod tests {
         let env = HookEnvironment::from_context(&ctx);
         let paths = vec![PathBuf::from("/some/hook")];
 
-        let specs = scripts_to_specs(&paths, &env, Path::new("/tmp"));
+        let specs = scripts_to_specs(
+            &paths,
+            &env,
+            Path::new("/tmp"),
+            Some(JobSpec::DEFAULT_TIMEOUT),
+        );
 
         assert_eq!(
             specs[0].env.get("DAFT_HOOK").map(String::as_str),
@@ -1799,7 +1819,12 @@ mod tests {
         let env = HookEnvironment::from_context(&ctx);
         let paths = vec![PathBuf::from("/some/hook")];
 
-        let specs = scripts_to_specs(&paths, &env, Path::new("/tmp"));
+        let specs = scripts_to_specs(
+            &paths,
+            &env,
+            Path::new("/tmp"),
+            Some(JobSpec::DEFAULT_TIMEOUT),
+        );
 
         let s = &specs[0];
         assert!(!s.interactive);
@@ -1807,6 +1832,22 @@ mod tests {
         assert!(s.fail_text.is_none());
         assert!(s.description.is_none());
         assert_eq!(s.timeout, Some(JobSpec::DEFAULT_TIMEOUT));
+    }
+
+    /// Regression (#1009): scripts were stamped with the built-in 300s whatever
+    /// `daft.hooks.timeout` said. The caller's limit — or its absence — wins.
+    #[test]
+    fn scripts_take_the_timeout_they_are_given() {
+        let ctx = make_ctx();
+        let env = HookEnvironment::from_context(&ctx);
+        let paths = vec![PathBuf::from("/some/hook")];
+
+        let forty_minutes = Some(std::time::Duration::from_secs(2_400));
+        let specs = scripts_to_specs(&paths, &env, Path::new("/tmp"), forty_minutes);
+        assert_eq!(specs[0].timeout, forty_minutes);
+
+        let specs = scripts_to_specs(&paths, &env, Path::new("/tmp"), None);
+        assert_eq!(specs[0].timeout, None);
     }
 
     // ── repo-level log merge ─────────────────────────────────────────────

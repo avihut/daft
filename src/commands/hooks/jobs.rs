@@ -551,8 +551,14 @@ fn retry_target_from_arg(arg: Option<&str>, flags: &RetryFlags) -> RetryTarget {
     }
 }
 
+/// Rebuild the failed and cancelled jobs of an invocation as specs to run
+/// again. A retry replays the recorded command, env, and working directory —
+/// it never re-reads daft.yml — and the job record does not keep the limit
+/// a job ran under, so every retried job gets `timeout`: the caller passes
+/// `daft.hooks.timeout` (`None` = no limit).
 fn build_retry_set(
     metas: &[crate::coordinator::log_store::JobMeta],
+    timeout: Option<std::time::Duration>,
 ) -> (Vec<crate::executor::JobSpec>, Vec<String>) {
     let retry_names: std::collections::HashSet<String> = metas
         .iter()
@@ -577,6 +583,7 @@ fn build_retry_set(
                 env: m.env.clone(),
                 background: m.background,
                 needs,
+                timeout,
                 ..Default::default()
             }
         })
@@ -1924,7 +1931,8 @@ fn retry_command(
     }
 
     // Compute the retry set.
-    let (specs, _retry_names) = build_retry_set(&metas);
+    let job_timeout = crate::core::settings::load_hooks_config()?.job_timeout;
+    let (specs, _retry_names) = build_retry_set(&metas, job_timeout);
 
     if specs.is_empty() {
         output.info("Nothing to retry — all jobs succeeded.");
@@ -2835,7 +2843,7 @@ mod tests {
             make_test_job_meta("c", JobStatus::Cancelled, vec!["b".into()]),
             make_test_job_meta("d", JobStatus::Skipped, vec![]),
         ];
-        let (specs, _) = build_retry_set(&metas);
+        let (specs, _) = build_retry_set(&metas, Some(crate::executor::JobSpec::DEFAULT_TIMEOUT));
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names.len(), 2);
         assert!(names.contains(&"b"));
@@ -2854,14 +2862,26 @@ mod tests {
             make_test_job_meta("a", JobStatus::Completed, vec![]),
             make_test_job_meta("b", JobStatus::Completed, vec!["a".into()]),
         ];
-        let (specs, _) = build_retry_set(&metas);
+        let (specs, _) = build_retry_set(&metas, Some(crate::executor::JobSpec::DEFAULT_TIMEOUT));
         assert!(specs.is_empty());
+    }
+
+    /// Regression (#1009): retried jobs were rebuilt with the built-in 300s
+    /// whatever `daft.hooks.timeout` said.
+    #[test]
+    fn test_build_retry_set_applies_the_given_timeout() {
+        let metas = vec![make_test_job_meta("only", JobStatus::Failed, vec![])];
+        let forty_minutes = Some(std::time::Duration::from_secs(2_400));
+        let (specs, _) = build_retry_set(&metas, forty_minutes);
+        assert_eq!(specs[0].timeout, forty_minutes);
+        let (specs, _) = build_retry_set(&metas, None);
+        assert_eq!(specs[0].timeout, None);
     }
 
     #[test]
     fn test_build_retry_set_single_failed() {
         let metas = vec![make_test_job_meta("only", JobStatus::Failed, vec![])];
-        let (specs, _) = build_retry_set(&metas);
+        let (specs, _) = build_retry_set(&metas, Some(crate::executor::JobSpec::DEFAULT_TIMEOUT));
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, "only");
     }

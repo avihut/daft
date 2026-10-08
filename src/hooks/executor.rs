@@ -16,6 +16,7 @@ use crate::store::models::invocation::SKIP_REASON_PROMPT_UNAVAILABLE;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Resolve a hook's effective fail mode from the two sources that can set it.
 ///
@@ -54,6 +55,36 @@ fn unparsed_git_fail_mode_warning(
         _ => None,
     }
 }
+
+/// Build the warning for a `daft.hooks.timeout` value that did not parse.
+/// The loader kept the default in force and recorded the raw value; left
+/// silent, someone who set `daft.hooks.timeout "40 min"` would believe a
+/// slow gate had 40 minutes while it is still killed at five.
+fn unparsed_hooks_timeout_warning(config: &HooksConfig) -> Option<String> {
+    let bad = config.job_timeout_git_unparsed.as_ref()?;
+    let in_force = config.job_timeout.map_or_else(
+        || "no limit".to_string(),
+        crate::core::settings::format_timeout,
+    );
+    Some(format!(
+        "Ignoring invalid git config daft.hooks.timeout {bad:?} (expected a duration such as \
+         30m, 2h or 90, or off); hook jobs without their own timeout use {in_force}"
+    ))
+}
+
+/// Emit [`unparsed_hooks_timeout_warning`] once per `warned` flag. The
+/// production flag is process-wide: one command fires several hooks (merge
+/// fires pre-merge then post-merge), each through a fresh executor.
+fn warn_unparsed_hooks_timeout(config: &HooksConfig, output: &mut dyn Output, warned: &AtomicBool) {
+    if let Some(msg) = unparsed_hooks_timeout_warning(config)
+        && !warned.swap(true, Ordering::Relaxed)
+    {
+        output.warning(&msg);
+    }
+}
+
+/// Process-wide guard for [`warn_unparsed_hooks_timeout`].
+static WARNED_UNPARSED_HOOKS_TIMEOUT: AtomicBool = AtomicBool::new(false);
 
 /// A hook that failed under `FailMode::Abort`, carrying the recorded
 /// invocation id out with the failure.
@@ -406,9 +437,9 @@ impl HookExecutor {
     ///
     /// This is the same promotion `DAFT_NO_BACKGROUND_JOBS` triggers, so it
     /// inherits that path's semantics: a promoted job's failure folds into
-    /// the hook outcome, and the default job timeout keeps applying — it
-    /// already does on the detached path, so a job that would be killed at
-    /// 300s must not start succeeding just because someone is watching.
+    /// the hook outcome, and the job's timeout keeps applying — it already
+    /// does on the detached path, so a job that would time out there must not
+    /// start succeeding just because someone is watching.
     pub fn with_hook_execution_mode(mut self, mode: crate::hooks::HookMode) -> Self {
         self.hook_mode = mode;
         self
@@ -707,6 +738,8 @@ impl HookExecutor {
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
 
+        warn_unparsed_hooks_timeout(&self.config, output, &WARNED_UNPARSED_HOOKS_TIMEOUT);
+
         let cfg = yaml_executor::HookExecutionContext {
             source_dir,
             working_dir,
@@ -714,9 +747,10 @@ impl HookExecutor {
             filter: &self.job_filter,
             presenter,
             repo_log: yaml_config.log.as_ref(),
-            // Lifecycle hooks keep the 300s job timeout and are never
-            // cancel-flag-driven; the trigger label follows the hook default.
-            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            // Lifecycle hooks time jobs out at `daft.hooks.timeout` and are
+            // never cancel-flag-driven; the trigger label follows the hook
+            // default.
+            default_job_timeout: self.config.job_timeout,
             cancel: None,
             trigger_label: None,
             hook_mode: self.hook_mode,
@@ -850,9 +884,15 @@ impl HookExecutor {
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
 
-        // Convert legacy hook paths to generic JobSpecs
-        let specs =
-            crate::hooks::job_adapter::scripts_to_specs(&discovery.hooks, &env, working_dir);
+        // Convert legacy hook paths to generic JobSpecs; scripts have no
+        // daft.yml, so `daft.hooks.timeout` is their limit.
+        warn_unparsed_hooks_timeout(&self.config, output, &WARNED_UNPARSED_HOOKS_TIMEOUT);
+        let specs = crate::hooks::job_adapter::scripts_to_specs(
+            &discovery.hooks,
+            &env,
+            working_dir,
+            self.config.job_timeout,
+        );
 
         // Use presenter for header and execution
         let hook_type_name = ctx.hook_type.yaml_name();
@@ -1268,6 +1308,31 @@ mod tests {
             ),
             "{:?}",
             output.warnings()
+        );
+    }
+
+    #[test]
+    fn unparsed_hooks_timeout_warns_once_and_names_the_limit_in_force() {
+        let config = HooksConfig {
+            job_timeout_git_unparsed: Some("40 minutes".to_string()),
+            ..Default::default()
+        };
+        let warned = AtomicBool::new(false);
+        let mut output = TestOutput::default();
+
+        warn_unparsed_hooks_timeout(&config, &mut output, &warned);
+        warn_unparsed_hooks_timeout(&config, &mut output, &warned);
+
+        let warnings = output.warnings();
+        assert_eq!(warnings.len(), 1, "once per flag: {warnings:?}");
+        assert!(warnings[0].contains("daft.hooks.timeout \"40 minutes\""));
+        assert!(warnings[0].contains("use 5m"), "{warnings:?}");
+
+        let mut quiet = TestOutput::default();
+        warn_unparsed_hooks_timeout(&HooksConfig::default(), &mut quiet, &AtomicBool::new(false));
+        assert!(
+            quiet.warnings().is_empty(),
+            "a valid (or unset) value is silent"
         );
     }
 
