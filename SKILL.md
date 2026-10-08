@@ -491,6 +491,14 @@ continue-on-failure; a repo can also commit `fail_mode: warn` (or `abort`) on a
 hook in `daft.yml` to ship that default to every clone, with the git config
 taking precedence over the committed value.
 
+Every hook job has a time limit: the job's `timeout:`, else its hook's
+`timeout:`, else `git config daft.hooks.timeout`, else 5 minutes. Values are
+seconds (`300`) or a unit (`40m`, `2h`); `off`/`0` lifts the limit. A job that
+outruns it is torn down with its whole process tree and fails (exit code 124,
+"Job 'x' timed out after 40m") under the hook's fail mode — so give a slow gate
+(a full test suite in `pre-merge`) a `timeout:` rather than `--skip-hooks`.
+`timeout:` has no effect on interactive jobs or tasks.
+
 `pre-merge` aborts the merge on failure; `post-merge` warns but never rolls
 back. Both expose `DAFT_MERGE_*` env vars: `SOURCES`, `TARGET_BRANCH`,
 `TARGET_PATH`, `MODE` (`merge`/`ff`/`squash`/`octopus`), `STRATEGY`,
@@ -516,6 +524,7 @@ env: # Optional: derived per-worktree values (see `daft env`)
 hooks:
   worktree-post-create:
     parallel: true # Run jobs concurrently (default)
+    timeout: 10m # Optional: per-job time limit for this hook (default 5m)
     jobs:
       - name: install-deps
         run: npm install
@@ -571,6 +580,7 @@ Set one per hook (default is `parallel`):
   log: # Log configuration
     retention: "7d" # How long to keep logs
     path: "./logs/job.log" # Custom log path (absolute or relative)
+  timeout: 40m # Time limit for this job (seconds or s/m/h/d; off = none)
 ```
 
 ### Job Dependencies
@@ -616,8 +626,7 @@ process manages them and writes output to log files.
   exactly `--skip-hooks all`, and is the only mode that also affects legacy
   `.daft/hooks/*` scripts. All of it is orthogonal to `--skip-hooks`, which
   picks _which_ jobs run, so the two compose. `DAFT_NO_BACKGROUND_JOBS=1`
-  promotes for commands without the flag. Promoted jobs keep the standard job
-  timeout.
+  promotes for commands without the flag. Promoted jobs keep their job timeout.
 - `daft hooks jobs` lists, cancels, retries, and prunes records; removing a
   worktree cancels its running background jobs.
 
@@ -1056,8 +1065,9 @@ Tasks reuse the full job schema — `parallel`/`piped`/`follow`, `needs`, groups
 `env`, `root`, `skip`/`only`, `interactive`, `background`. Differences from
 lifecycle hooks:
 
-- **No execution timeout.** A task runs until it exits or is cancelled (hook
-  jobs keep the 300s default) — the right home for dev servers and watchers.
+- **No execution timeout.** A task runs until it exits or is cancelled, and a
+  `timeout:` on a task has no effect (hook jobs are bounded) — the right home
+  for dev servers and watchers.
 - **Foreground and attended.** A single-job task passes the terminal straight
   through — the job's raw output, no wrapper. A multi-job task renders one live
   row per job with the logs threaded beneath. Ctrl+C cancels the job tree
@@ -1406,7 +1416,7 @@ invocation.
 | `daft.merge.adoptTargetOnDemand` | `"prompt"`            | Ephemeral-target behavior for `daft merge` (`prompt`, `yes`, `no`)                                                                                                          |
 | `daft.hooks.enabled`             | `true`                | Master switch for hooks                                                                                                                                                     |
 | `daft.hooks.defaultTrust`        | `"deny"`              | Default trust for unknown repos                                                                                                                                             |
-| `daft.hooks.timeout`             | `300`                 | Hook timeout in seconds                                                                                                                                                     |
+| `daft.hooks.timeout`             | `5m`                  | Time limit for each hook job (seconds or `40m`/`2h`; `off`/`0` = none); a `timeout:` in `daft.yml` overrides it                                                             |
 | `daft.<cmd>.stat`                | `"summary"`           | Statistics mode (`summary` or `lines`) for `list`/`sync`/`prune`                                                                                                            |
 | `daft.<cmd>.columns`             | (all columns)         | Default columns for `list`/`sync`/`prune` (same syntax as `--columns`)                                                                                                      |
 | `daft.list.sizeConcurrency`      | (CPU count)           | Max concurrent directory-size walks for `--columns +size` (both `daft list` and `daft repo list`); lower on slow/network filesystems (env `DAFT_SIZE_WALK_JOBS` overrides). |
