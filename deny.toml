@@ -43,6 +43,14 @@ ignore = [
     #      yaml-rust2. Reaches us transitively through syntect. Revisit
     #      once syntect migrates to yaml-rust2.
     "RUSTSEC-2024-0320",
+    # why: `unmaintained` advisory, not a security CVE. unsafe-libyaml (a
+    #      c2rust port of libyaml) was archived upstream in 2024-03 and
+    #      takes no fixes. Reaches us through serde_yaml 0.9 — itself
+    #      deprecated — which daft and xtask use directly. No safe upgrade
+    #      exists, and the serde_yaml_ng fork does not help: it sits on the
+    #      same unsafe-libyaml. Revisit once serde_yaml is replaced with a
+    #      safe-Rust parser (e.g. serde-saphyr).
+    "RUSTSEC-2024-0449",
 ]
 
 [licenses]
