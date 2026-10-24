@@ -54,7 +54,7 @@ jobs:
       # invisible here otherwise (#931). Node 26 is Current until 2026-10-28
       # and Active LTS after, EOL 2029-04-30; that is a year more runway than
       # the 24 this replaced, which drops to Maintenance on 2026-10-20.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "26"
 
