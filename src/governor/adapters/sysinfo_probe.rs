@@ -15,14 +15,18 @@ use crate::governor::ports::ResourceProbe;
 
 /// Production probe over [`sysinfo`].
 pub struct SysinfoProbe {
-    system: Mutex<sysinfo::System>,
+    /// `None` when sysinfo cannot initialise on this platform
+    /// (`sysinfo::Error::Unsupported`; never on macOS/Linux/Windows). The
+    /// probe then reports what an empty pre-0.40 `System` did: zeroed
+    /// memory and no process trees.
+    system: Mutex<Option<sysinfo::System>>,
 }
 
 impl SysinfoProbe {
     /// A probe with an empty (not yet refreshed) system handle.
     pub fn new() -> Self {
         Self {
-            system: Mutex::new(sysinfo::System::new()),
+            system: Mutex::new(sysinfo::System::new().ok()),
         }
     }
 }
@@ -35,7 +39,15 @@ impl Default for SysinfoProbe {
 
 impl ResourceProbe for SysinfoProbe {
     fn sample(&self) -> ResourceSample {
-        let mut system = self.system.lock().unwrap();
+        let mut guard = self.system.lock().unwrap();
+        let Some(system) = guard.as_mut() else {
+            return ResourceSample {
+                mem_total: 0,
+                mem_available: 0,
+                swap_used: 0,
+                psi_some_avg10: read_psi_some_avg10(),
+            };
+        };
         system.refresh_memory();
         ResourceSample {
             mem_total: system.total_memory(),
@@ -49,7 +61,10 @@ impl ResourceProbe for SysinfoProbe {
         if roots.is_empty() {
             return Vec::new();
         }
-        let mut system = self.system.lock().unwrap();
+        let mut guard = self.system.lock().unwrap();
+        let Some(system) = guard.as_mut() else {
+            return vec![None; roots.len()];
+        };
         // One full process refresh serves every root this tick. Memory-only
         // refresh kind: no cwd/env/cmdline reads.
         system.refresh_processes_specifics(
@@ -252,6 +267,21 @@ mod tests {
             sample.mem_available <= sample.mem_total,
             "available must not exceed total"
         );
+    }
+
+    #[test]
+    fn sysinfo_probe_without_system_degrades_to_empty() {
+        // sysinfo 0.40 made `System::new()` fallible; an uninitialisable
+        // platform must degrade like the old empty `System`, not panic.
+        let probe = SysinfoProbe {
+            system: Mutex::new(None),
+        };
+        let sample = probe.sample();
+        assert_eq!(sample.mem_total, 0);
+        assert_eq!(sample.mem_available, 0);
+        assert_eq!(sample.swap_used, 0);
+        assert_eq!(probe.tree_rss(&[std::process::id(), 1]), vec![None, None]);
+        assert!(probe.tree_rss(&[]).is_empty());
     }
 
     #[test]

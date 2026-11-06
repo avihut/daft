@@ -154,7 +154,7 @@ r2d2_sqlite = "0.34"
 # only feature daft needs (RAM/swap + process RSS); the public API is fully
 # safe, keeping `forbid(unsafe_code)` intact — same precedent as `rusqlite`.
 # The 0.39 line declares MSRV 1.95, which daft now meets (see #713).
-sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+sysinfo = { version = "0.40.0", default-features = false, features = ["system"] }
 
 # libc is Unix-only (uses fork/pipes)
 [target.'cfg(unix)'.dependencies]
