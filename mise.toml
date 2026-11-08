@@ -20,7 +20,7 @@ minimum_release_age = "7d"
 # worktree-post-create hook timeout (the failure that motivated this entry).
 # Pin the aqua backend explicitly so binstall itself never falls back to a
 # cargo-from-source build (chicken-and-egg).
-"aqua:cargo-bins/cargo-binstall" = "1.26.1"
+"aqua:cargo-bins/cargo-binstall" = "1.26.2"
 rust = "1.95"
 lefthook = "2.2.2"
 cocogitto = "7.0.0"
@@ -39,7 +39,7 @@ neovim = "stable"
 # the lockfile-age CI check (scripts/check-lockfile-age.sh). Disabled in CI
 # (see MISE_DISABLE_TOOLS in .github/workflows/test.yml lint job) because
 # scripts/check-lockfile-age.sh enforces the same policy at PR boundary.
-"cargo:cargo-cooldown" = "0.3.5"
+"cargo:cargo-cooldown" = "0.4.1"
 # cargo-deny: license / advisory / source policy gate. Run via `mise run
 # deny`; enforced in CI on every PR that touches Cargo.toml, Cargo.lock, or
 # deny.toml. Pinned to lockfile version (matches the post-#498 convention
