@@ -167,7 +167,7 @@ checksum = "sha256:0f20ce6674d4f2dbcc8c5d59fdf99f7ba45f8c3b367e0f5781cbfa30a1c78
 url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-windows-x64-baseline.zip"
 
 [[tools."cargo:cargo-cooldown"]]
-version = "0.4.1"
+version = "0.4.2"
 backend = "cargo:cargo-cooldown"
 
 [[tools."cargo:cargo-deny"]]
