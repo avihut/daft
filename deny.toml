@@ -51,6 +51,13 @@ ignore = [
     #      same unsafe-libyaml. Revisit once serde_yaml is replaced with a
     #      safe-Rust parser (e.g. serde-saphyr).
     "RUSTSEC-2024-0449",
+    # why: `unmaintained` advisory, not a security CVE. chrono was declared
+    #      unmaintained upstream (chronotope/chrono#1768); every version is
+    #      affected and no safe upgrade exists. daft uses it directly — store
+    #      row timestamps, coordinator logs, forge cache, serde — across ~70
+    #      files, so the exit is a migration rather than a bump. Revisit once
+    #      daft moves to jiff (already in the graph via gix-date) or time.
+    "RUSTSEC-2026-0543",
 ]
 
 [licenses]
@@ -70,7 +77,6 @@ allow = [
     "BSL-1.0",
     "ISC",
     "Zlib",
-    "Unicode-DFS-2016",
     "Unicode-3.0",
     "CC0-1.0",
     "0BSD",

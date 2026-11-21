@@ -146,10 +146,10 @@ reflink-copy = "0.1.29"
 # release builds, +C compiler at build time). The rationale is in CLAUDE.md
 # under "Database & Storage" — every daft installation gets the same SQLite
 # version, no system-library skew, WAL mode works out of the box.
-rusqlite = { version = "0.39", features = ["bundled"] }
-rusqlite_migration = "2.5"
+rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite_migration = "2.7"
 r2d2 = "0.8"
-r2d2_sqlite = "0.34"
+r2d2_sqlite = "0.36"
 # Memory probe for the sync push resource governor (#678). `system` is the
 # only feature daft needs (RAM/swap + process RSS); the public API is fully
 # safe, keeping `forbid(unsafe_code)` intact — same precedent as `rusqlite`.
